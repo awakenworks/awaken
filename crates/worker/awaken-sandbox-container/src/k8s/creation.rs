@@ -1,30 +1,11 @@
 //! Transactional realization of a Kubernetes Sandbox and retained claim.
 
 use super::*;
-
-const SANDBOX_SCOPE_ANNOTATION: &str = "awaken.dev/sandbox-scope";
-const RESOLVED_IMAGE_ANNOTATION: &str = "awaken.dev/resolved-image";
-// Correlation evidence must never narrow the generic Sandbox scope contract.
-// Generated Session ids and OCI references are far below this additive budget;
-// an arbitrary longer scope remains runnable but deliberately yields no proof.
-const RELEASE_ANNOTATION_VALUE_BUDGET: usize = 4 * 1024;
-
-fn stamp_sandbox_release_annotations(pod: &mut Pod, scope: &str, resolved_image: &str) -> bool {
-    if scope
-        .len()
-        .checked_add(resolved_image.len())
-        .is_none_or(|size| size > RELEASE_ANNOTATION_VALUE_BUDGET)
-    {
-        return false;
-    }
-    let annotations = pod
-        .metadata
-        .annotations
-        .get_or_insert_with(Default::default);
-    annotations.insert(SANDBOX_SCOPE_ANNOTATION.into(), scope.into());
-    annotations.insert(RESOLVED_IMAGE_ANNOTATION.into(), resolved_image.into());
-    true
-}
+use crate::k8s_package_realization::stamp_sandbox_release_annotations;
+#[cfg(test)]
+use crate::k8s_package_realization::{
+    PACKAGE_REALIZATION_CONTRACT_ANNOTATION, RESOLVED_IMAGE_ANNOTATION, SANDBOX_SCOPE_ANNOTATION,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExistingContinuationDecision {
@@ -369,8 +350,15 @@ mod tests {
         );
         assert_eq!(
             annotations.len(),
-            3,
-            "SR2 two correlation facts plus the existing realization digest"
+            4,
+            "SR2 versioned correlation facts plus the existing realization digest"
+        );
+        assert_eq!(
+            annotations
+                .get(PACKAGE_REALIZATION_CONTRACT_ANNOTATION)
+                .map(String::as_str),
+            Some(crate::k8s_package_realization::K8S_PACKAGE_REALIZATION_CONTRACT_VERSION),
+            "SR2 exact contract version"
         );
         assert!(
             annotations.contains_key("awaken.dev/realization-digest"),
@@ -385,7 +373,7 @@ mod tests {
             "SR2 secrets and the adapter-local identity stay out of annotations"
         );
 
-        let overlong_scope = "s".repeat(RELEASE_ANNOTATION_VALUE_BUDGET + 1);
+        let overlong_scope = "s".repeat(4 * 1024 + 1);
         let overlong_runtime_id = k8s_runtime_id(&overlong_scope).unwrap();
         let mut overlong_pod = runtime.pod(&overlong_runtime_id, &plan);
         assert!(

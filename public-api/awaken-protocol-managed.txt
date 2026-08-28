@@ -790,6 +790,10 @@ pub awaken_protocol_managed::types::session::RetryStatus::Terminal
 pub enum awaken_protocol_managed::types::session::SessionMultiagentRosterEntry
 pub awaken_protocol_managed::types::session::SessionMultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterEntry)
 pub awaken_protocol_managed::types::session::SessionMultiagentRosterEntry::Agent(awaken_protocol_managed::types::SessionThreadAgent)
+pub enum awaken_protocol_managed::types::session::SessionPreparationStatus
+pub awaken_protocol_managed::types::session::SessionPreparationStatus::Failed
+pub awaken_protocol_managed::types::session::SessionPreparationStatus::Preparing
+pub awaken_protocol_managed::types::session::SessionPreparationStatus::Ready
 pub enum awaken_protocol_managed::types::session::SessionStatus
 pub awaken_protocol_managed::types::session::SessionStatus::Idle
 pub awaken_protocol_managed::types::session::SessionStatus::Rescheduling
@@ -896,6 +900,7 @@ pub awaken_protocol_managed::types::session::Session::id: alloc::string::String
 pub awaken_protocol_managed::types::session::Session::kind: &'static str
 pub awaken_protocol_managed::types::session::Session::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::session::Session::outcome_evaluations: alloc::vec::Vec<awaken_protocol_managed::types::OutcomeEvaluation>
+pub awaken_protocol_managed::types::session::Session::preparation: awaken_protocol_managed::types::SessionPreparation
 pub awaken_protocol_managed::types::session::Session::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::SessionResource>
 pub awaken_protocol_managed::types::session::Session::stats: awaken_protocol_managed::types::SessionStats
 pub awaken_protocol_managed::types::session::Session::status: awaken_protocol_managed::types::SessionStatus
@@ -943,6 +948,9 @@ pub fn awaken_protocol_managed::types::SessionError::classify(&str, impl core::c
 pub struct awaken_protocol_managed::types::session::SessionMultiagentCoordinator
 pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionMultiagentRosterEntry>
 pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::kind: &'static str
+pub struct awaken_protocol_managed::types::session::SessionPreparation
+pub awaken_protocol_managed::types::session::SessionPreparation::error: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::SessionPreparation::status: awaken_protocol_managed::types::SessionPreparationStatus
 pub struct awaken_protocol_managed::types::session::SessionStats
 pub struct awaken_protocol_managed::types::session::SessionThread
 pub awaken_protocol_managed::types::session::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgentValue
@@ -1514,6 +1522,10 @@ pub awaken_protocol_managed::types::RetryStatus::Terminal
 pub enum awaken_protocol_managed::types::SessionMultiagentRosterEntry
 pub awaken_protocol_managed::types::SessionMultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterEntry)
 pub awaken_protocol_managed::types::SessionMultiagentRosterEntry::Agent(awaken_protocol_managed::types::SessionThreadAgent)
+pub enum awaken_protocol_managed::types::SessionPreparationStatus
+pub awaken_protocol_managed::types::SessionPreparationStatus::Failed
+pub awaken_protocol_managed::types::SessionPreparationStatus::Preparing
+pub awaken_protocol_managed::types::SessionPreparationStatus::Ready
 pub enum awaken_protocol_managed::types::SessionStatus
 pub awaken_protocol_managed::types::SessionStatus::Idle
 pub awaken_protocol_managed::types::SessionStatus::Rescheduling
@@ -1635,6 +1647,7 @@ pub awaken_protocol_managed::types::Session::id: alloc::string::String
 pub awaken_protocol_managed::types::Session::kind: &'static str
 pub awaken_protocol_managed::types::Session::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::Session::outcome_evaluations: alloc::vec::Vec<awaken_protocol_managed::types::OutcomeEvaluation>
+pub awaken_protocol_managed::types::Session::preparation: awaken_protocol_managed::types::SessionPreparation
 pub awaken_protocol_managed::types::Session::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::SessionResource>
 pub awaken_protocol_managed::types::Session::stats: awaken_protocol_managed::types::SessionStats
 pub awaken_protocol_managed::types::Session::status: awaken_protocol_managed::types::SessionStatus
@@ -1682,6 +1695,9 @@ pub fn awaken_protocol_managed::types::SessionError::classify(&str, impl core::c
 pub struct awaken_protocol_managed::types::SessionMultiagentCoordinator
 pub awaken_protocol_managed::types::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionMultiagentRosterEntry>
 pub awaken_protocol_managed::types::SessionMultiagentCoordinator::kind: &'static str
+pub struct awaken_protocol_managed::types::SessionPreparation
+pub awaken_protocol_managed::types::SessionPreparation::error: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::SessionPreparation::status: awaken_protocol_managed::types::SessionPreparationStatus
 pub struct awaken_protocol_managed::types::SessionStats
 pub struct awaken_protocol_managed::types::SessionThread
 pub awaken_protocol_managed::types::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgentValue
@@ -1853,6 +1869,7 @@ impl core::default::Default for awaken_protocol_managed::ManagedRateLimits
 pub fn awaken_protocol_managed::ManagedRateLimits::default() -> Self
 pub struct awaken_protocol_managed::ManagedState
 impl awaken_protocol_managed::ManagedState
+pub async fn awaken_protocol_managed::ManagedState::accept_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::archive_session(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::check_bind(&self, &str, &awaken_protocol_managed::types::SessionCreateParams) -> core::result::Result<(), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::create_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
@@ -1864,6 +1881,9 @@ pub async fn awaken_protocol_managed::ManagedState::list_sessions_scoped_durable
 pub fn awaken_protocol_managed::ManagedState::owner_scope(&self, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_protocol_managed::ManagedState::resolve_owner(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::session_revision(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::SessionRevision, awaken_protocol_managed::StateError>
+impl awaken_protocol_managed::ManagedState
+pub async fn awaken_protocol_managed::ManagedState::accept_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
+pub async fn awaken_protocol_managed::ManagedState::create_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::archive_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::get_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
@@ -1879,8 +1899,6 @@ pub fn awaken_protocol_managed::ManagedState::list_resources(&self, &str) -> cor
 pub async fn awaken_protocol_managed::ManagedState::reconcile_resource_activations(&self) -> usize
 pub async fn awaken_protocol_managed::ManagedState::replace_resource_manifest(&self, &str, awaken_protocol_managed::types::resource::ResourceManifestReplaceParams, core::option::Option<alloc::string::String>, core::option::Option<awaken_session_contract::session_repo::SessionRevision>, alloc::string::String) -> core::result::Result<(awaken_protocol_managed::types::resource::SessionResourceManifest, awaken_session_contract::session_repo::SessionRevision), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::update_resource(&self, &str, &str, awaken_protocol_managed::types::resource::ResourceUpdateParams) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
-impl awaken_protocol_managed::ManagedState
-pub async fn awaken_protocol_managed::ManagedState::create_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::environment_execution(&self) -> alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>
 pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<awaken_session_application::SessionApplication>, alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> Self

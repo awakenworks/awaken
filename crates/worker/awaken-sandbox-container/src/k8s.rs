@@ -55,10 +55,9 @@ mod realization;
 use client::K8sClients;
 pub(crate) use client::install_rustls_crypto_provider;
 use error::api_not_found;
-pub(crate) use error::{api_conflict, backend};
-use names::{
-    configmap_name, continuation_claim_name, credential_secret_name, k8s_runtime_id, pod_name,
-};
+pub(crate) use error::backend;
+use names::{configmap_name, continuation_claim_name, credential_secret_name};
+pub(crate) use names::{k8s_runtime_id, pod_name};
 use pod_projection::{
     CONFIGMAP_KEY, append_writable_and_cache_volumes, build_configmap, build_credential_secret,
     content_binds, credential_binds, credential_key,
@@ -72,8 +71,9 @@ use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result}
 use process::{k8s_exit_status, signal_effect_is_complete};
 use realization::{
     PodReadiness, await_pod_deleted, create_or_verify, create_or_verify_with_status, pod_readiness,
-    reap_terminal_pod, stamp_pod_realization, stamp_realization,
+    reap_terminal_pod, stamp_pod_realization,
 };
+pub(crate) use realization::{create_or_verify_with_status_exact, stamp_realization};
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 
