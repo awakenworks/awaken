@@ -786,6 +786,101 @@ fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr
     Ok(order.unwrap_or(SessionListOrder::Asc))
 }
 
+#[derive(Debug, Default)]
+struct EventListFilter {
+    created_at_gt: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_at_gte: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_at_lt: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_at_lte: Option<chrono::DateTime<chrono::FixedOffset>>,
+    types: HashSet<String>,
+}
+
+impl EventListFilter {
+    fn includes(&self, event: &Event) -> bool {
+        if !self.types.is_empty() && !self.types.contains(event.type_str()) {
+            return false;
+        }
+        if self.created_at_gt.is_none()
+            && self.created_at_gte.is_none()
+            && self.created_at_lt.is_none()
+            && self.created_at_lte.is_none()
+        {
+            return true;
+        }
+        let Some(processed_at) = event
+            .processed_at
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        else {
+            return false;
+        };
+        self.created_at_gt
+            .as_ref()
+            .is_none_or(|bound| processed_at > *bound)
+            && self
+                .created_at_gte
+                .as_ref()
+                .is_none_or(|bound| processed_at >= *bound)
+            && self
+                .created_at_lt
+                .as_ref()
+                .is_none_or(|bound| processed_at < *bound)
+            && self
+                .created_at_lte
+                .as_ref()
+                .is_none_or(|bound| processed_at <= *bound)
+    }
+}
+
+fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilter, WireErr> {
+    let mut filter = EventListFilter::default();
+    let mut seen_bounds = HashSet::new();
+    let mut type_count = 0usize;
+    for (key, value) in raw
+        .into_iter()
+        .flat_map(|query| form_urlencoded::parse(query.as_bytes()))
+    {
+        match key.as_ref() {
+            "created_at[gt]" | "created_at[gte]" | "created_at[lt]" | "created_at[lte]" => {
+                if !seen_bounds.insert(key.to_string()) {
+                    return Err(error_response(StateError::Run(RunError::bad_request(
+                        format!("{key} may be specified once"),
+                    ))));
+                }
+                let Some(value) = crate::types::page::non_empty_query_value(&value) else {
+                    continue;
+                };
+                let parsed = chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
+                    error_response(StateError::Run(RunError::bad_request(format!(
+                        "{key} must be an RFC 3339 timestamp"
+                    ))))
+                })?;
+                match key.as_ref() {
+                    "created_at[gt]" => filter.created_at_gt = Some(parsed),
+                    "created_at[gte]" => filter.created_at_gte = Some(parsed),
+                    "created_at[lt]" => filter.created_at_lt = Some(parsed),
+                    "created_at[lte]" => filter.created_at_lte = Some(parsed),
+                    _ => unreachable!("matched timestamp key"),
+                }
+            }
+            "types" | "types[]" => {
+                let Some(value) = crate::types::page::non_empty_query_value(&value) else {
+                    continue;
+                };
+                type_count += 1;
+                if type_count > 100 {
+                    return Err(error_response(StateError::Run(RunError::bad_request(
+                        "types allows at most 100 values",
+                    ))));
+                }
+                filter.types.insert(value.to_owned());
+            }
+            _ => {}
+        }
+    }
+    Ok(filter)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SseTerminalScope {
     /// Session and primary-Thread streams close only at the aggregate boundary.
@@ -1423,16 +1518,18 @@ async fn list_events(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let order = parse_event_list_order(raw.as_deref())?;
+    let filter = parse_event_list_filter(raw.as_deref())?;
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
     state
-        .list_events(
+        .list_events_filtered(
             &id,
             query.page.as_deref(),
             query.limit,
             order == SessionListOrder::Desc,
+            |event| filter.includes(event),
         )
         .map(Json)
         .map_err(error_response)

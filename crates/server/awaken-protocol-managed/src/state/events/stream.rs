@@ -89,6 +89,20 @@ impl ManagedState {
         limit: Option<usize>,
         descending: bool,
     ) -> Result<ListEventsResponse, StateError> {
+        self.list_events_filtered(session_id, cursor, limit, descending, |_| true)
+    }
+
+    /// Filter the canonical projection before ordering and cursor pagination.
+    /// Applying a filter after paging would silently skip matching rows and
+    /// manufacture incorrect continuation cursors.
+    pub(crate) fn list_events_filtered(
+        &self,
+        session_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        descending: bool,
+        include: impl Fn(&Event) -> bool,
+    ) -> Result<ListEventsResponse, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         let primary_answerable_event_ids = record.primary_answerable_event_ids();
@@ -103,10 +117,11 @@ impl ManagedState {
                 primary_references_event,
             )
         });
+        let matching = primary_events.filter(include);
         let ordered = if descending {
-            primary_events.rev().collect::<Vec<_>>()
+            matching.rev().collect::<Vec<_>>()
         } else {
-            primary_events.collect::<Vec<_>>()
+            matching.collect::<Vec<_>>()
         };
         let page = paginate_by_id(&ordered, cursor, limit, |e| e.id.as_str())
             .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;

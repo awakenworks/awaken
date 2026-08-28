@@ -21,6 +21,12 @@ async function sendMessage(client, sessionId, text) {
   });
 }
 
+async function drain(page) {
+  const rows = [];
+  for await (const row of page) rows.push(row);
+  return rows;
+}
+
 async function main() {
   await withRealServer('echo', PORT, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
@@ -89,6 +95,61 @@ async function main() {
     const messages = events.filter((e) => e.type === 'agent.message').map((e) => e.content[0].text);
     assert.deepEqual(messages, ['Echo: hi there', 'Echo: second']);
     pass('multi-turn conversation');
+
+    // Event-list causal graph: canonical committed events -> type/time filter
+    // -> order -> cursor page. Filtering after paging would lose matches and
+    // corrupt next_page, while ignoring a declared axis would return the full
+    // ledger. Decision table exercises type, all four time comparators,
+    // composition, descending pagination, TS empty-array/null spellings, and
+    // malformed timestamps through the official SDK serializer.
+    const agentMessages = await drain(client.beta.sessions.events.list(session.id, {
+      types: ['agent.message'],
+      betas: BETAS,
+    }));
+    assert.deepEqual(
+      agentMessages.map((event) => event.content[0].text),
+      ['Echo: hi there', 'Echo: second'],
+      'type filter',
+    );
+    const firstAgentAt = agentMessages[0].processed_at;
+    const lastAgentAt = agentMessages.at(-1).processed_at;
+    const latestAgent = await client.beta.sessions.events.list(session.id, {
+      types: ['agent.message'],
+      'created_at[gte]': firstAgentAt,
+      'created_at[lte]': lastAgentAt,
+      order: 'desc',
+      limit: 1,
+      betas: BETAS,
+    });
+    assert.equal(latestAgent.data.length, 1, 'composed filter page');
+    assert.equal(latestAgent.data[0].content[0].text, 'Echo: second');
+    assert.deepEqual(
+      await drain(client.beta.sessions.events.list(session.id, {
+        'created_at[gt]': '9999-12-31T23:59:59Z',
+        betas: BETAS,
+      })),
+      [],
+      'exclusive lower bound',
+    );
+    assert.deepEqual(
+      await drain(client.beta.sessions.events.list(session.id, {
+        'created_at[lt]': '0001-01-01T00:00:00Z',
+        betas: BETAS,
+      })),
+      [],
+      'exclusive upper bound',
+    );
+    assert.equal(
+      (await drain(client.beta.sessions.events.list(session.id, { types: [], betas: BETAS }))).length,
+      events.length,
+      'empty array equals omission',
+    );
+    const malformedTime = await fetch(
+      `${baseUrl}/v1/sessions/${session.id}/events?beta=true&created_at%5Bgte%5D=not-a-time`,
+      { headers: { 'anthropic-beta': BETAS[0] } },
+    );
+    assert.equal(malformedTime.status, 400, 'malformed time fails closed');
+    pass('event type/time/order/page filter decision table');
 
     // --- SSE stream (events.stream) ---
     const stream = await client.beta.sessions.events.stream(session.id, { betas: BETAS });
