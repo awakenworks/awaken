@@ -64,7 +64,6 @@ impl ManagedState {
     fn project_update_outcome(
         &self,
         outcome: &awaken_session_application::SessionUpdateOutcome,
-        title_in_request: bool,
     ) -> Result<(), StateError> {
         self.refresh_cached_projection(&outcome.session)?;
         if !outcome.command_applied || !outcome.changes.any() {
@@ -77,10 +76,12 @@ impl ManagedState {
         let event = Event {
             id: self.next_event_id(),
             kind: OutboundKind::SessionUpdated {
-                title: title_in_request
-                    .then(|| record.session.title.clone())
-                    .flatten(),
-                metadata: record.session.metadata.clone(),
+                title: outcome.changes.title.then(|| record.session.title.clone()),
+                metadata: if outcome.changes.metadata {
+                    record.session.metadata.clone()
+                } else {
+                    Default::default()
+                },
                 agent: outcome
                     .changes
                     .agent()
@@ -128,19 +129,18 @@ impl ManagedState {
         id: &str,
         command: awaken_session_application::SessionUpdateCommand,
     ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
-        let title_in_request = command.title.is_some();
         let outcome = match self.application.update_session(id, command).await {
             Ok(outcome) => outcome,
             Err(awaken_session_application::SessionUpdateError::ProjectionAfterCommit {
                 outcome,
                 source,
             }) => {
-                self.project_update_outcome(&outcome, title_in_request)?;
+                self.project_update_outcome(&outcome)?;
                 return Err(StateError::Run(source));
             }
             Err(error) => return Err(Self::map_update_error(error)),
         };
-        self.project_update_outcome(&outcome, title_in_request)?;
+        self.project_update_outcome(&outcome)?;
         Ok((self.get_session(id)?, outcome.command_revision))
     }
 }

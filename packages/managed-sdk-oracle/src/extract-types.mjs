@@ -66,8 +66,7 @@ function oneDeclaration(context, name, predicate) {
   return matches[0];
 }
 
-function interfaceProperties(root, relative, interfaceName) {
-  const context = declarationContext(root, relative);
+function interfaceProperties(context, interfaceName) {
   const declaration = oneDeclaration(context, interfaceName, ts.isInterfaceDeclaration);
   const symbol = context.checker.getSymbolAtLocation(declaration.name);
   if (!symbol) throw new Error(`${context.filename}: ${interfaceName} has no type symbol`);
@@ -124,6 +123,10 @@ function literalEventTypes(root, relative) {
 
 export function managedWireContract(moduleName) {
   const sdk = resolveSdkPackage(moduleName);
+  const sessions = declarationContext(
+    sdk.root,
+    'resources/beta/sessions/sessions.d.ts',
+  );
   const events = declarationSource(
     sdk.root,
     'resources/beta/sessions/events.d.ts',
@@ -136,11 +139,12 @@ export function managedWireContract(moduleName) {
     }
   }
   return {
-    session: interfaceProperties(
-      sdk.root,
-      'resources/beta/sessions/sessions.d.ts',
-      'BetaManagedAgentsSession',
-    ),
+    session: {
+      ...interfaceProperties(sessions, 'BetaManagedAgentsSession'),
+      nested: {
+        agent: interfaceProperties(sessions, 'BetaManagedAgentsSessionAgent'),
+      },
+    },
     events: literalEventTypes(sdk.root, 'resources/beta/sessions/events.d.ts'),
     managed_betas: [...managedBetas].sort(),
   };

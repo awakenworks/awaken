@@ -244,8 +244,7 @@ pub struct SessionAgent {
     pub tools: Vec<AgentTool>,
     pub mcp_servers: Vec<AgentMcpServer>,
     pub skills: Vec<AgentSkill>,
-    /// The multiagent coordinator roster, omitted when the agent delegates to no one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// SDK-required nullable coordinator roster; serialized as `null` when absent.
     pub multiagent: Option<SessionMultiagentCoordinator>,
 }
 
@@ -736,8 +735,9 @@ pub enum RetryStatus {
 /// (`unknown_error` plus the classified `model_rate_limited_error` /
 /// `model_request_failed_error`), each a human-readable `message` plus the
 /// `retry_status` the client keys recovery on. The neutral runtime's stable fault
-/// `code` selects the variant; an unrecognized code honestly falls back to
-/// `unknown_error`.
+/// `code` selects the variant; the Session aggregate's terminal
+/// `activation_failed` classification remains an `unknown_error` but is not
+/// retryable. An unrecognized code honestly falls back to `unknown_error`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionError {
     /// The SDK error type, e.g. `"unknown_error"` or `"model_rate_limited_error"`.
@@ -752,10 +752,11 @@ pub struct SessionError {
 impl SessionError {
     /// Classify a neutral runtime fault `(code, message)` into an SDK error object.
     /// The `code` is the stable snake_case class from `Failure::Inference`
-    /// (`rate_limited` / `context_overflow` / `unauthorized` / …); it picks the error
-    /// `type` and the `retry_status`. An unknown code (or a plain internal fault) is
-    /// the catch-all `unknown_error` / `exhausted` — the session stays usable, so we
-    /// don't force-terminate on one failed Run.
+    /// (`rate_limited` / `context_overflow` / `unauthorized` / …), or the Session
+    /// aggregate's `activation_failed` state; it picks the error `type` and the
+    /// `retry_status`. An unknown code (or a plain internal fault) is the catch-all
+    /// `unknown_error` / `exhausted` — the session stays usable, so we don't
+    /// force-terminate on one failed Run.
     pub fn classify(code: &str, message: impl Into<String>) -> Self {
         let message = message.into();
         let mcp_server_name = code_message_server_name(code, &message);
@@ -768,6 +769,7 @@ impl SessionError {
             "context_overflow" | "unauthorized" => {
                 ("model_request_failed_error", RetryStatus::Terminal)
             }
+            "activation_failed" => ("unknown_error", RetryStatus::Terminal),
             _ => ("unknown_error", RetryStatus::Exhausted),
         };
         Self {
@@ -962,11 +964,12 @@ pub enum OutboundKind {
         agent_name: String,
     },
     /// The session's `metadata`/`title` changed (`session.updated`), carrying the
-    /// title (when the update set it) and the full metadata bag (when non-empty).
+    /// title (including `null`) only when it changed and the full metadata bag
+    /// only when it changed to a non-empty value.
     #[serde(rename = "session.updated")]
     SessionUpdated {
         #[serde(skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
+        title: Option<Option<String>>,
         #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         metadata: std::collections::BTreeMap<String, String>,
         #[serde(skip_serializing_if = "Option::is_none")]

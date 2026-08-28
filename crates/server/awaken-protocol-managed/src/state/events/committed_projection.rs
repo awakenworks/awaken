@@ -23,6 +23,45 @@ struct CanonicalizationEvidence<'a> {
 }
 
 impl ManagedState {
+    /// Derive the public terminal error from the Session root's one durable
+    /// activation-failure fact. A missing/empty cause violates the application
+    /// invariant and fails projection closed instead of inventing public bytes.
+    fn append_activation_failure_error_projection(
+        &self,
+        record: &mut SessionRecord,
+        persisted: &awaken_session_contract::PersistedSession,
+    ) -> Result<(), StateError> {
+        if persisted.execution != awaken_session_contract::SessionExecutionState::ActivationFailed {
+            return Ok(());
+        }
+        let message = persisted
+            .realization_progress
+            .last_error
+            .as_deref()
+            .filter(|message| !message.trim().is_empty())
+            .ok_or_else(|| {
+                StateError::Run(RunError::internal(
+                    "activation_failed Session has no durable realization failure cause",
+                ))
+            })?;
+        let id = managed_multiagent_event_id(
+            &record.session.id,
+            &record.session.id,
+            "activation-failed-error",
+            ManagedMultiagentEventProvenance::ParentTerminal,
+        );
+        if !record.events.iter().any(|event| event.id == id) {
+            record.events.push(Event {
+                id,
+                kind: OutboundKind::SessionError {
+                    error: SessionError::classify(persisted.execution.as_str(), message),
+                },
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
+        Ok(())
+    }
+
     fn canonicalize_committed_events(
         record: &mut SessionRecord,
         evidence: CanonicalizationEvidence<'_>,
@@ -618,9 +657,43 @@ impl ManagedState {
             }
         }
 
-        let terminal_source = persisted.terminal_cleanup.runtime_commit_cursor();
-        for (terminal_source, thread_id, role, phase) in
-            terminal_source.into_iter().flat_map(|terminal_source| {
+        let cleanup_terminal_source = persisted.terminal_cleanup.runtime_commit_cursor();
+        // Initial activation can fail before Runtime owns a cleanup cursor. In
+        // that case terminality follows the complete immutable prefix already
+        // indexed above. The derived maximum is disposable ordering, never a
+        // second persisted cursor or Session state.
+        let parent_terminal_source = cleanup_terminal_source.or_else(|| {
+            (persisted.execution
+                == awaken_session_contract::SessionExecutionState::ActivationFailed)
+                .then(|| {
+                    orders
+                        .values()
+                        .map(|order| order.source_commit_cursor)
+                        .max()
+                        .unwrap_or_default()
+                })
+        });
+        if persisted.execution == awaken_session_contract::SessionExecutionState::ActivationFailed
+            && let Some(source_commit_cursor) = parent_terminal_source
+        {
+            retain_earliest_order(
+                &mut orders,
+                managed_multiagent_event_id(
+                    &record.session.id,
+                    &record.session.id,
+                    "activation-failed-error",
+                    ManagedMultiagentEventProvenance::ParentTerminal,
+                ),
+                CanonicalEventOrder {
+                    source_commit_cursor,
+                    phase: 109,
+                    ordinal: 0,
+                },
+            );
+        }
+        for (terminal_source, thread_id, role, phase) in parent_terminal_source
+            .into_iter()
+            .flat_map(|terminal_source| {
                 links
                     .iter()
                     .map(|link| {
@@ -1724,7 +1797,10 @@ impl ManagedState {
         // derived child lifecycle. Keeping this at the end of the sole warm/cold
         // projector preserves child output/lifecycle ordering, closes each child
         // stream, then closes only the aggregate primary stream.
-        if persisted.terminal_cleanup.runtime_commit_cursor().is_some() {
+        self.append_activation_failure_error_projection(record, &persisted)?;
+        if persisted.execution == awaken_session_contract::SessionExecutionState::ActivationFailed
+            || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
+        {
             self.append_parent_terminal_projection(record);
         }
         // A cold prefix can contain multiple completed root turns. The legacy
