@@ -275,7 +275,11 @@ def shared_conformance_errors(
     )
     if len(conformance_bindings) != 3:
         errors.append("dispatch conformance suite is not applied to exactly three backends")
-    if ingress_tests.count("assert_dispatch_operational_feed_conformance(") != 3:
+    operational_feed_bindings = re.findall(
+        r"\bassert_dispatch_operational_feed_conformance(?:_with_clock)?\(",
+        ingress_tests,
+    )
+    if len(operational_feed_bindings) != 3:
         errors.append("dispatch operational-feed suite is not applied to exactly three backends")
     return errors
 
@@ -531,6 +535,44 @@ def self_test() -> None:
             ingress_tests.replace("async fn postgres_dispatch_conforms", "async fn detached"),
         )
     ), "R8 ingress testkit"
+
+    # Operational-feed binding cause/effect design:
+    # C13=a production backend uses the canonical default-clock entrypoint;
+    # C14=a production backend uses the canonical explicit-clock entrypoint.
+    # E13=both spellings count as one binding to the same shared suite. R14
+    # rejects a missing binding; R15 rejects a duplicate binding, regardless of
+    # which spelling introduced it. This keeps clock policy orthogonal to suite
+    # ownership and preserves the exactly-three-backends invariant.
+    assert not shared_conformance_errors(
+        store_suite, backend_tests, ingress_tests
+    ), "R1/C13-C14 mixed operational-feed clocks"
+    missing_operational_feed = ingress_tests.replace(
+        "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;",
+        "",
+        1,
+    )
+    assert any(
+        "operational-feed suite is not applied to exactly three backends" in error
+        for error in shared_conformance_errors(
+            store_suite, backend_tests, missing_operational_feed
+        )
+    ), "R14 missing operational-feed binding"
+    duplicate_operational_feed = ingress_tests.replace(
+        "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;",
+        (
+            "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;\n"
+            "    assert_dispatch_operational_feed_conformance_with_clock(\n"
+            "        &store, \"conformance-postgres-duplicate\", &set_clock,\n"
+            "    ).await;"
+        ),
+        1,
+    )
+    assert any(
+        "operational-feed suite is not applied to exactly three backends" in error
+        for error in shared_conformance_errors(
+            store_suite, backend_tests, duplicate_operational_feed
+        )
+    ), "R15 duplicate operational-feed binding"
 
 
 def main(argv: list[str]) -> int:
