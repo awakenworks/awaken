@@ -111,10 +111,12 @@ async function createAwaitingChild(client, prompt) {
     betas: BETAS,
   })).data[0];
   let boundary = null;
-  // Awaiting-child receipt rule A1: C4 the creating command has an exact
-  // receipt; E4 that receipt is processed with the occurrence-qualified child
-  // requires_action boundary. K1 an older primary/child event cannot satisfy
-  // E4. Decision A1=C1-C4=>E1-E4.
+  // Awaiting-child receipt rule A1: C0 the frozen researcher publication
+  // explicitly asks for both mutating calls (the official Agent toolset default
+  // is allow); C4 the creating command has an exact receipt; E4 that receipt is
+  // processed with the occurrence-qualified child requires_action boundary. K1
+  // an older primary/child event cannot satisfy E4. Decision
+  // A1=C0+C1-C4=>E1-E4.
   await waitForSessionEventReceipt(
     client,
     session.id,
