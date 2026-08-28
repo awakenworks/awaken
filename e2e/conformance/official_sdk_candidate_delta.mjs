@@ -9,12 +9,16 @@ import {
 import {
   managedRuntimeFingerprintFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-runtime.mjs';
+import {
+  managedExportFingerprintFromPackageRoot,
+} from '../../packages/managed-sdk-oracle/src/extract-exports.mjs';
 import { stableJson } from '../../packages/managed-sdk-oracle/src/normalize.mjs';
 
 const deltaKinds = Object.freeze([
   ['operations', 'id'],
   ['declarations', 'path'],
   ['runtime', 'path'],
+  ['exports', 'id'],
 ]);
 
 function changedEntries(current, candidate, key) {
@@ -39,12 +43,15 @@ export function officialSdkCandidateDelta(currentRoot, candidateRoot, scope) {
   const candidateTypes = managedTypeFingerprintFromPackageRoot(candidateRoot, scope);
   const currentRuntime = managedRuntimeFingerprintFromPackageRoot(currentRoot, scope);
   const candidateRuntime = managedRuntimeFingerprintFromPackageRoot(candidateRoot, scope);
+  const currentExports = managedExportFingerprintFromPackageRoot(currentRoot, scope);
+  const candidateExports = managedExportFingerprintFromPackageRoot(candidateRoot, scope);
   return Object.freeze({
     currentVersion: currentOperations.version,
     candidateVersion: candidateOperations.version,
     operations: changedEntries(currentOperations.operations, candidateOperations.operations, 'id'),
     declarations: changedEntries(currentTypes.files, candidateTypes.files, 'path'),
     runtime: changedEntries(currentRuntime.files, candidateRuntime.files, 'path'),
+    exports: changedEntries(currentExports.exports, candidateExports.exports, 'id'),
   });
 }
 
@@ -142,7 +149,7 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   if (delta.declarations.added.length > 0 || delta.declarations.removed.length > 0) {
     throw new Error('candidate adds or removes scoped declaration files; review the SDK scope');
   }
-  const supportedDeclaration = /^beta\/(?:files(?:\/|\.d\.ts$)|skills(?:\/|\.d\.ts$)|webhooks\.d\.ts$)/u;
+  const supportedDeclaration = /^(?:beta\/(?:files(?:\/|\.d\.ts$)|skills(?:\/|\.d\.ts$)|webhooks\.d\.ts$)|managed\/(?:lib\/sessions\/accumulate|tools\/agent-toolset\/(?:node(?:\.browser)?|skills))\.d\.ts$)/u;
   const unsupportedDeclaration = delta.declarations.changed.find(
     ({ path }) => !supportedDeclaration.test(path),
   );
@@ -151,6 +158,13 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   }
   if (delta.runtime.added.length > 0 || delta.runtime.removed.length > 0) {
     throw new Error('candidate adds or removes Managed runtime dependencies; add explicit behavior ownership');
+  }
+  const recognizedRemovedExports = new Set([
+    'tools/agent-toolset/node.mjs#resolveSkillVersion',
+  ]);
+  if (delta.exports.added.length > 0 || delta.exports.changed.length > 0
+    || delta.exports.removed.some(({ id }) => !recognizedRemovedExports.has(id))) {
+    throw new Error('candidate changes the Managed helper export surface; add explicit behavior ownership');
   }
   const runtimeOwners = [
     /^(?:core\/middleware|internal\/(?:errors|parse|uploads))\.mjs$/u,

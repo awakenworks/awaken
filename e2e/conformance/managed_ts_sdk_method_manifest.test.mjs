@@ -6,13 +6,22 @@ import {
   loadQualifiedClients,
   qualifiedClient,
 } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
-import { MANAGED_TS_METHOD_MANIFEST } from './managed_ts_sdk_method_manifest.mjs';
+import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
+import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
+import {
+  MANAGED_TS_METHOD_MANIFEST,
+  managedTsMethodManifestForOperations,
+} from './managed_ts_sdk_method_manifest.mjs';
 
 const E2E = resolve(import.meta.dirname, '..');
 const Anthropic = qualifiedClient(await loadQualifiedClients(), 'current_oracle').Client;
 const operationCoverage = JSON.parse(readFileSync(resolve(
   E2E,
   '../contracts/anthropic-managed/operation-coverage.generated.json',
+), 'utf8'));
+const scope = JSON.parse(readFileSync(resolve(
+  E2E,
+  '../packages/managed-sdk-oracle/config/scope.json',
 ), 'utf8'));
 
 function publicMethods(resource, prefix = '', depth = 0, found = []) {
@@ -160,5 +169,96 @@ test('Managed SDK method ownership rejects missing and overlapping scoped entrie
     ),
     /exactly once/,
     'R3/E2',
+  );
+});
+
+test('one behavior-owner graph projects the exact wire contract of each SDK version', () => {
+  // Metamorphic version projection: C1 0.121 and 0.122 retain the same operation
+  // identities/owners; C2 0.122 removes the Files/Skills feature betas from its
+  // generated requests. E1 current projection is byte-equivalent to the
+  // generated manifest; E2 candidate projection changes only generated wire
+  // coordinates and preserves every owner. This lets one real-process suite
+  // replay both versions without freezing 0.121 headers into 0.122 evidence.
+  const currentOperations = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-current').root,
+    scope,
+  ).operations;
+  const candidateOperations = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-candidate').root,
+    scope,
+  ).operations;
+  const current = managedTsMethodManifestForOperations(currentOperations);
+  const candidate = managedTsMethodManifestForOperations(candidateOperations);
+  assert.deepEqual(current, MANAGED_TS_METHOD_MANIFEST, 'C1/E1');
+  assert.deepEqual(
+    candidate.map(({ sdkMethod, owner }) => ({ sdkMethod, owner })),
+    current.map(({ sdkMethod, owner }) => ({ sdkMethod, owner })),
+    'C1/E2',
+  );
+  assert.deepEqual(
+    current.find(({ sdkMethod }) => sdkMethod === 'beta.files.delete').betas,
+    ['files-api-2025-04-14'],
+    'C2',
+  );
+  assert.deepEqual(
+    candidate.find(({ sdkMethod }) => sdkMethod === 'beta.files.delete').betas,
+    [],
+    'C2/E2',
+  );
+});
+
+test('wire projection rejects missing, extra, and duplicate operation identities', () => {
+  // Fault table: the behavior graph is reusable only when the selected exact
+  // SDK has the same closed operation identity set. Missing, newly added, and
+  // duplicate identities must fail before any real-process scenario starts.
+  const operations = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-current').root,
+    scope,
+  ).operations;
+  assert.throws(
+    () => managedTsMethodManifestForOperations(operations.slice(1)),
+    /exact qualified Managed operation identities/u,
+  );
+  assert.throws(
+    () => managedTsMethodManifestForOperations([
+      ...operations,
+      { ...operations[0], id: 'beta.future.create' },
+    ]),
+    /exact qualified Managed operation identities/u,
+  );
+  assert.throws(
+    () => managedTsMethodManifestForOperations([...operations, operations[0]]),
+    /is duplicated/u,
+  );
+});
+
+test('historical wire projection admits only the exact official operation subset', () => {
+  // Monotonic-version relation: the oldest supported SDK owns 99 identities
+  // from the current 127-operation graph. E1 every historical identity retains
+  // its one owner and exact historical wire coordinates; E2 current-only owner
+  // families disappear; E3 an unknown identity still fails closed. This reuses
+  // the behavior graph without treating a candidate removal as historical.
+  const oldest = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-oldest').root,
+    scope,
+  ).operations;
+  const projected = managedTsMethodManifestForOperations(oldest, {
+    allowHistoricalSubset: true,
+  });
+  assert.equal(projected.filter(({ method }) => method).length, 99, 'E1');
+  assert.deepEqual(
+    projected.filter(({ method }) => method).map(({ sdkMethod }) => sdkMethod).sort(),
+    oldest.map(({ id }) => id).sort(),
+    'E1',
+  );
+  assert.ok(!projected.some(({ owner }) => owner === 'managed_dream_e2e.ts'), 'E2');
+  assert.ok(!projected.some(({ owner }) => owner === 'management_tunnels_contract_e2e.mjs'), 'E2');
+  assert.throws(
+    () => managedTsMethodManifestForOperations([
+      ...oldest,
+      { ...oldest[0], id: 'beta.future.create' },
+    ], { allowHistoricalSubset: true }),
+    /subset of the qualified Managed identities/u,
+    'E3',
   );
 });

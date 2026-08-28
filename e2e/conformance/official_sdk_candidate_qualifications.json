@@ -5,7 +5,7 @@
       "candidate_version": "0.122.0",
       "module": "@anthropic-ai/sdk-candidate",
       "package_integrity": "sha512-GGPNftt0caaz9MDlmNQGHX8855Ojaduyy5pm9Sm1h7HalCn0cWNb5/bweadJF+4yzbal+QL6ztBa09WAAOzLmQ==",
-      "delta_fingerprint": "444a9bdd3e4837c56a7fda9a696a216a59837bb104ee965c5d80e6c53eb992ee",
+      "delta_fingerprint": "f66ef9916f8973d35ac870e435a72516e84efca694073ec5c0c6595ff2e0a257",
       "evidence_groups": [
         {
           "owner": "candidate.typescript-change-points",
@@ -78,18 +78,23 @@
         {
           "owner": "candidate.session-accumulator",
           "coordinates": [
+            "declarations:changed:managed/lib/sessions/accumulate.d.ts",
             "runtime:changed:lib/sessions/accumulate.mjs"
           ]
         },
         {
           "owner": "candidate.agent-toolset-node",
           "coordinates": [
+            "declarations:changed:managed/tools/agent-toolset/node.browser.d.ts",
+            "declarations:changed:managed/tools/agent-toolset/node.d.ts",
+            "exports:removed:tools/agent-toolset/node.mjs#resolveSkillVersion",
             "runtime:changed:tools/agent-toolset/node.mjs"
           ]
         },
         {
           "owner": "candidate.skill-setup-recovery",
           "coordinates": [
+            "declarations:changed:managed/tools/agent-toolset/skills.d.ts",
             "runtime:changed:tools/agent-toolset/skills.mjs"
           ]
         }

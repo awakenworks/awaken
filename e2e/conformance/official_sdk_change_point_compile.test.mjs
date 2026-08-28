@@ -35,9 +35,11 @@ test('candidate compile fixtures are projection-complete and contain no escape h
   // E4 no any/cast/ts-ignore. Rules T1 C1->E1+E4; T2 C2+C3->E2+E3+E4.
   const beta = officialSdkChangePointFixture({
     filesProjection: 'beta', skillsProjection: 'beta', parseUnverified: false,
+    resolveSkillVersion: true,
   });
   const ga = officialSdkChangePointFixture({
     filesProjection: 'ga', skillsProjection: 'ga', parseUnverified: true,
+    resolveSkillVersion: false,
   });
   assert.match(beta, /fileMetadata\.scope/u, 'T1/E1');
   assert.match(beta, /skill\.latest_version;/u, 'T1/E1');
@@ -45,6 +47,8 @@ test('candidate compile fixtures are projection-complete and contain no escape h
   assert.match(ga, /expires_in_seconds: 3_600/u, 'T2/E2');
   assert.match(ga, /skill\.latest_version_id;/u, 'T2/E2');
   assert.match(ga, /parseUnverified/u, 'T2/E3');
+  assert.match(beta, /typeof resolveSkillVersion/u, '0.121 helper is strongly typed');
+  assert.match(ga, /noRetiredResolveHelper/u, '0.122 helper removal is strongly typed');
   for (const fixture of [beta, ga]) {
     assert.match(fixture, /betaAgentToolset20260401/u, 'Managed helper subpath compiles');
     assert.match(fixture, /accumulateManagedAgentsEvent/u, 'Session accumulator subpath compiles');

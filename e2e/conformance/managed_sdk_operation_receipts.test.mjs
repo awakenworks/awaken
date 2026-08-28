@@ -32,27 +32,32 @@ const betaReceipt = {
   beta: 'true',
   betas: ['files-api-2025-04-14'],
   sdk: true,
+  sdkVersion: '0.121.0',
   status: 200,
 };
+const sdkVersion = '0.121.0';
 
 test('runtime receipts distinguish Beta and GA calls sharing one route', () => {
   // Cause/effect graph: C1=method/path are equal; C2=query selector differs;
   // C3=capability header differs. Effects: E1 the Beta receipt owns only the
   // Beta operation; E2 omitting either discriminator cannot certify GA as Beta
   // or Beta as GA. Decision table: C1+C2+C3=>E1; C1+(!C2||!C3)=>E2.
-  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation), true, 'C1+C2+C3/E1');
-  assert.equal(receiptMatchesOperation(betaReceipt, gaOperation), false, 'C1+C2/E2');
+  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation, sdkVersion), true, 'C1+C2+C3/E1');
+  assert.equal(receiptMatchesOperation(betaReceipt, gaOperation, sdkVersion), false, 'C1+C2/E2');
   assert.equal(receiptMatchesOperation(
     { ...betaReceipt, beta: null },
     betaOperation,
+    sdkVersion,
   ), false, 'C1+!C2/E2');
   assert.equal(receiptMatchesOperation(
     { ...betaReceipt, betas: [] },
     betaOperation,
+    sdkVersion,
   ), false, 'C1+!C3/E2');
   assert.equal(receiptMatchesOperation(
     { ...betaReceipt, betas: [...betaReceipt.betas, 'managed-agents-2026-04-01'] },
     betaOperation,
+    sdkVersion,
   ), true, 'orthogonal capabilities compose without changing operation ownership');
 });
 
@@ -60,16 +65,35 @@ test('only an official SDK request can satisfy executable ownership', () => {
   // Cause: a direct fetch can duplicate the public method, route and headers.
   // Effect: the Stainless SDK marker remains required, so source text plus a
   // hand-written fetch cannot masquerade as an official SDK behavior proof.
-  assert.equal(receiptMatchesOperation({ ...betaReceipt, sdk: false }, betaOperation), false);
+  assert.equal(receiptMatchesOperation(
+    { ...betaReceipt, sdk: false },
+    betaOperation,
+    sdkVersion,
+  ), false);
+});
+
+test('an adjacent SDK version cannot satisfy executable ownership', () => {
+  // Metamorphic relation: preserve method, path, selectors, response and SDK
+  // marker while changing only x-stainless-package-version. Ownership must
+  // flip from true to false, preventing a current-package execution from being
+  // reported as candidate evidence by the orchestration layer.
+  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation, '0.121.0'), true);
+  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation, '0.122.0'), false);
 });
 
 test('a request attempt without one non-server-fault response is not behavior evidence', () => {
   // Cause/effect partitions: no response, a 2xx/4xx application response, and
   // a 5xx server fault. Only a completed non-5xx exchange proves the SDK crossed
   // the product boundary; an attempted or failed transport cannot certify it.
-  assert.equal(receiptMatchesOperation({ ...betaReceipt, status: undefined }, betaOperation), false);
-  assert.equal(receiptMatchesOperation({ ...betaReceipt, status: 404 }, betaOperation), true);
-  assert.equal(receiptMatchesOperation({ ...betaReceipt, status: 500 }, betaOperation), false);
+  assert.equal(receiptMatchesOperation(
+    { ...betaReceipt, status: undefined }, betaOperation, sdkVersion,
+  ), false);
+  assert.equal(receiptMatchesOperation(
+    { ...betaReceipt, status: 404 }, betaOperation, sdkVersion,
+  ), true);
+  assert.equal(receiptMatchesOperation(
+    { ...betaReceipt, status: 500 }, betaOperation, sdkVersion,
+  ), false);
 });
 
 test('owner qualification fails closed for every missing runtime edge', () => {
@@ -80,12 +104,12 @@ test('owner qualification fails closed for every missing runtime edge', () => {
   const manifest = [betaOperation, gaOperation];
   const gaReceipt = { ...betaReceipt, beta: null, betas: [] };
   assert.equal(
-    assertOwnerOperationReceipts(manifest, 'files.mjs', [betaReceipt, gaReceipt]),
+    assertOwnerOperationReceipts(manifest, 'files.mjs', [betaReceipt, gaReceipt], sdkVersion),
     2,
     'R1',
   );
   assert.throws(
-    () => assertOwnerOperationReceipts(manifest, 'files.mjs', [betaReceipt]),
+    () => assertOwnerOperationReceipts(manifest, 'files.mjs', [betaReceipt], sdkVersion),
     /files\.retrieveMetadata/u,
     'R2',
   );
@@ -95,9 +119,11 @@ test('path placeholders match one non-empty segment and no broader route', () =>
   // Boundary partition: one encoded ID is valid; missing, extra and nested
   // path segments are invalid. This prevents a nearby endpoint from producing
   // a false receipt for the owned operation.
-  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation), true);
+  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation, sdkVersion), true);
   for (const path of ['/v1/files/', '/v1/files', '/v1/files/a/extra']) {
-    assert.equal(receiptMatchesOperation({ ...betaReceipt, path }, betaOperation), false, path);
+    assert.equal(receiptMatchesOperation(
+      { ...betaReceipt, path }, betaOperation, sdkVersion,
+    ), false, path);
   }
 });
 
@@ -127,6 +153,7 @@ test('transport hook records only non-secret completed exchange coordinates', ()
       beta: null,
       betas: ['one', 'two'],
       sdk: true,
+      sdkVersion: null,
       status: 200,
     });
   } finally {
@@ -147,6 +174,7 @@ test('in-process and child-process receipt collection share one encoder', async 
       'anthropic-beta': 'files-api-2025-04-14',
       'x-api-key': 'must-not-leak', // awaken-allow: secret
       'x-stainless-lang': 'js',
+      'x-stainless-package-version': sdkVersion,
     },
   });
   const fetch = recordingFetch(async () => response, (receipt) => receipts.push(receipt));
@@ -157,8 +185,8 @@ test('in-process and child-process receipt collection share one encoder', async 
 });
 
 test('finite receipt model accepts exactly the conjunction of all ownership coordinates', () => {
-  // Finite model check over the six independent predicates in the ownership
-  // invariant. Exhausting 2^6 combinations proves no single missing coordinate
+  // Finite model check over the seven independent predicates in the ownership
+  // invariant. Exhausting 2^7 combinations proves no single missing coordinate
   // or interaction of missing coordinates can satisfy the matcher accidentally.
   const dimensions = [true, false];
   let cases = 0;
@@ -168,26 +196,29 @@ test('finite receipt model accepts exactly the conjunction of all ownership coor
         for (const path of dimensions) {
           for (const selector of dimensions) {
             for (const capability of dimensions) {
-              const receipt = {
-                ...betaReceipt,
-                sdk,
-                status: healthy ? 200 : 500,
-                method: method ? 'GET' : 'POST',
-                path: path ? '/v1/files/file_1' : '/v1/files/file_1/extra',
-                beta: selector ? 'true' : null,
-                betas: capability ? ['files-api-2025-04-14'] : [],
-              };
-              assert.equal(
-                receiptMatchesOperation(receipt, betaOperation),
-                sdk && healthy && method && path && selector && capability,
-                JSON.stringify(receipt),
-              );
-              cases += 1;
+              for (const version of dimensions) {
+                const receipt = {
+                  ...betaReceipt,
+                  sdk,
+                  sdkVersion: version ? sdkVersion : '0.122.0',
+                  status: healthy ? 200 : 500,
+                  method: method ? 'GET' : 'POST',
+                  path: path ? '/v1/files/file_1' : '/v1/files/file_1/extra',
+                  beta: selector ? 'true' : null,
+                  betas: capability ? ['files-api-2025-04-14'] : [],
+                };
+                assert.equal(
+                  receiptMatchesOperation(receipt, betaOperation, sdkVersion),
+                  sdk && healthy && method && path && selector && capability && version,
+                  JSON.stringify(receipt),
+                );
+                cases += 1;
+              }
             }
           }
         }
       }
     }
   }
-  assert.equal(cases, 64);
+  assert.equal(cases, 128);
 });

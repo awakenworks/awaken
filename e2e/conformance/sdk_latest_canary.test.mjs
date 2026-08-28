@@ -217,7 +217,8 @@ test('registry drift without one valid release-age policy fails closed', () => {
 test('the release canary reaches both official TypeScript and Python SDK oracles', () => {
   // Orchestration cause/effect graph: C1=the release entry executes the local
   // multi-language oracle check; C2=it executes the online Python wheel canary;
-  // C3=it executes the TypeScript runtime canary. Effect E1=no language can be
+  // C3=it executes the TypeScript runtime canary; C4=the reviewed candidate
+  // executes the same cross-version behavior suites as stable anchors. Effect E1=no language can be
   // silently dropped while the outer `test:sdk-latest-canary` command remains
   // green. Decision table: C1+C2+C3=>E1; removal of any exact edge=>reject.
   const source = readFileSync(new URL('./sdk_latest_canary.mjs', import.meta.url), 'utf8');
@@ -225,9 +226,15 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
     "'check'",
     "'check:python:online'",
     "'sdk_latest_runtime_canary.mjs'",
+    "'test:managed-sdk-candidate-matrix'",
   ]) {
     assert.ok(source.includes(edge), `release canary is missing ${edge}`);
   }
+  assert.match(
+    source,
+    /verifyRuntime\(candidate\);\s*verifyCandidateMatrix\(\s*candidateQualification\.module,\s*candidateQualification\.candidate_version,/u,
+    'the exact candidate passes delta runtime proof before the shared behavior matrix',
+  );
   const scripts = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts;
   assert.match(scripts['test:sdk-latest-canary'], /npm run test:sdk-python-runtime/u);
   assert.equal(
