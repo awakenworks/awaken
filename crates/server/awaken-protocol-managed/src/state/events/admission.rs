@@ -469,7 +469,7 @@ impl ManagedState {
                 // An archived session is terminal and read-only: refuse every inbound write
                 // (message, resume, interrupt, outcome) with a 409, before touching the
                 // runtime — the contract makes an archived session read-only.
-                let (agent_id, is_built_in_dream_agent, inference_geo) = {
+                let (agent_id, inference_geo) = {
                     let sessions = self.sessions.lock().unwrap();
                     let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
                     if record.session.archived_at.is_some() {
@@ -477,21 +477,13 @@ impl ManagedState {
                     }
                     (
                         record.agent_id.clone(),
-                        record.agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
-                            && record
-                                .session
-                                .metadata
-                                .get("awaken.session.origin")
-                                .is_some_and(|origin| origin == "dream"),
                         record.session.agent.model.inference_geo,
                     )
                 };
                 let owner_scope = self
                     .owner_scope(session_id)
                     .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
-                if self.application.agent_unavailable(&owner_scope, &agent_id)
-                    && !is_built_in_dream_agent
-                {
+                if self.application.agent_unavailable(&owner_scope, &agent_id) {
                     return Err(StateError::Run(RunError::bad_request(format!(
                         "agent_unavailable: agent `{agent_id}` cannot admit a new event"
                     ))));

@@ -580,6 +580,20 @@ impl EchoFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for EchoFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,
@@ -1151,6 +1165,20 @@ struct CapableFake;
 
 #[async_trait::async_trait]
 impl SessionRuntime for CapableFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn session_thread_recovery_snapshot(
         &self,
         _session_id: &str,
@@ -1510,6 +1538,20 @@ impl ToolAwaitingFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ToolAwaitingFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,
@@ -1835,6 +1877,20 @@ struct OutcomePrepareGate {
 
 #[async_trait::async_trait]
 impl SessionRuntime for OutcomeFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn session_thread_recovery_snapshot(
         &self,
         session_id: &str,
@@ -2652,6 +2708,20 @@ struct RecordingFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,
@@ -3026,6 +3096,20 @@ struct InterruptRedirectFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for InterruptRedirectFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn reserve_session_run(
         &self,
         command: AdmitSessionRun,

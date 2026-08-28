@@ -85,12 +85,25 @@ impl SessionRuntime for PreparingFake {
         ))
     }
 
-    fn install_session_request_context(
+    async fn install_session_projection(
         &self,
-        _thread: &str,
-        _messages: Vec<Message>,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        Ok(())
+        if matches!(
+            mode,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch
+                | awaken_session_contract::SessionProjectionInstallMode::Realization {
+                    prepare_session: true,
+                    ..
+                }
+        ) {
+            self.prepare_session(thread, projection.session_init())
+                .await
+        } else {
+            Ok(())
+        }
     }
 
     async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
@@ -233,6 +246,22 @@ struct HotRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for HotRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        if let Some(init) = awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )? {
+            self.prepare_session(thread, init).await?;
+        }
+        Ok(())
+    }
+
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
         Ok(())
     }
@@ -2391,6 +2420,20 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     struct HauntedRuntime;
     #[async_trait::async_trait]
     impl SessionRuntime for HauntedRuntime {
+        async fn install_session_projection(
+            &self,
+            thread: &str,
+            projection: awaken_session_contract::FrozenSessionProjection,
+            mode: awaken_session_contract::SessionProjectionInstallMode,
+        ) -> Result<(), RunError> {
+            awaken_protocol_managed::test_support::complete_session_projection_init(
+                thread,
+                &projection,
+                &mode,
+            )?;
+            Ok(())
+        }
+
         async fn run(
             &self,
             _agent: &str,

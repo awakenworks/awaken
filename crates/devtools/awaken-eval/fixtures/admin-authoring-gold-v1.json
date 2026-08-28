@@ -42,7 +42,7 @@
         { "kind": "has_plugin", "plugin_id": "compact" },
         { "kind": "compact_has_instructions" },
         { "kind": "compact_instructions_are_prose" },
-        { "kind": "compact_trigger_ratio_set" }
+        { "kind": "compaction_window_set" }
       ]
     },
     {

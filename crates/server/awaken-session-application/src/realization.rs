@@ -177,27 +177,15 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         prepare_session: bool,
     ) -> Result<(), RunError> {
         self.runtime
-            .install_session_request_context(session_id, projection.request_context.clone())?;
-        if !prepare_session {
-            return Ok(());
-        }
-        self.runtime
-            .install_session_realization_lease(session_id, lease.clone());
-        self.runtime.install_expected_environment_binding(
-            session_id,
-            projection.environment.binding().map(str::to_owned),
-        )?;
-        self.runtime
-            .install_session_baseline(session_id, &projection.baseline)?;
-        self.runtime
-            .prepare_session(session_id, projection.session_init())
-            .await?;
-        if let Some(binding) = projection.environment.binding() {
-            self.runtime
-                .adopt_session_environment(&projection.baseline.agent_id, session_id, binding)
-                .await?;
-        }
-        Ok(())
+            .install_session_projection(
+                session_id,
+                projection.clone(),
+                awaken_session_contract::SessionProjectionInstallMode::Realization {
+                    lease: lease.clone(),
+                    prepare_session,
+                },
+            )
+            .await
     }
 }
 
@@ -455,16 +443,11 @@ impl SessionApplication {
                 SessionRealizationError::Effect(RunError::internal(error.to_string()))
             })?;
         self.runtime()
-            .install_session_baseline(&session.session_id, &projection.baseline)
-            .map_err(SessionRealizationError::Effect)?;
-        self.runtime()
-            .install_session_request_context(
+            .install_session_projection(
                 &session.session_id,
-                projection.request_context.clone(),
+                projection,
+                awaken_session_contract::SessionProjectionInstallMode::Dispatch,
             )
-            .map_err(SessionRealizationError::Effect)?;
-        self.runtime()
-            .prepare_session(&session.session_id, projection.session_init())
             .await
             .map_err(SessionRealizationError::Effect)
     }

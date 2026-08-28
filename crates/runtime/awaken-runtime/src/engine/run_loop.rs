@@ -32,7 +32,14 @@ pub(crate) async fn run_agent_loop(
     let run_input: std::sync::Arc<[Message]> = activation.input.clone().into();
     let (committed, fresh_input) =
         committed_history_and_fresh_input(&context, &thread_id, activation.input);
-    let mut transcript = model_transcript(&context, committed);
+    let mut transcript = model_transcript(
+        &context,
+        committed,
+        &run_id,
+        &thread_id,
+        &activation.snapshot.fingerprint.0,
+        &activation.snapshot.resolved_spec.instructions,
+    );
 
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.

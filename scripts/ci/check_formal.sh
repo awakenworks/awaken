@@ -269,6 +269,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness fallback_selection_preserves_the_complete_publication_pin \
     --harness every_route_pin_axis_participates_in_exact_identity \
     --harness transcript_prefix_is_exact_request_only_context_not_durable_truth \
+    --harness legacy_derived_context_remains_durable_but_never_reaches_a_new_model_request \
     --harness capture_meet_is_exact_commutative_and_non_widening \
     --harness capture_projection_admits_content_only_at_full \
     --harness non_full_capture_fails_closed_before_redaction \

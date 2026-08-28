@@ -321,6 +321,20 @@ impl ScriptFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ScriptFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
+        Ok(())
+    }
+
     async fn execute_terminal_cleanup(
         &self,
         command: awaken_session_contract::SessionCleanupCommand,

@@ -737,11 +737,18 @@ fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
     let mut activation = activation();
     activation.snapshot.resolved_spec.instructions = "follow policy".into();
     let original = activation.input.clone();
-    let context = vec![Message::text(
-        MessageId("request-memory".into()),
-        Role::System,
-        "remember the user's preference",
-    )];
+    let context = vec![
+        Message::text(
+            MessageId("session-baseline:historical".into()),
+            Role::System,
+            "obsolete resource revision",
+        ),
+        Message::text(
+            MessageId("request-memory".into()),
+            Role::System,
+            "remember the user's preference",
+        ),
+    ];
 
     let prompt = super::initial_prompt(&activation, &context);
 
@@ -750,6 +757,10 @@ fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
     let input = prompt.find("do it").expect("C3");
     assert!(instructions < recalled && recalled < input, "R1: {prompt}");
     assert!(prompt.contains("authoritative task"), "R1: {prompt}");
+    assert!(
+        !prompt.contains("obsolete resource revision"),
+        "R1: legacy derived context must not reach ACP"
+    );
     assert_eq!(activation.input, original, "E2");
 
     activation.snapshot.resolved_spec.instructions.clear();

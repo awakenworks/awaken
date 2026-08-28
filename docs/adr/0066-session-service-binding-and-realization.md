@@ -371,3 +371,71 @@ migration owner.
 | P13 | Managed create | system prompt is replaced | freeze `Replace(value)`, return that exact value, and use a distinct fingerprint |
 | P14 | post-cutover profiled retry | only old metadata/default-payload identity exists | return typed 409; do not adopt, backfill, or perform effects |
 | P15 | any receipt replay | receipt is dangling, ahead, or paired with two identities | return typed internal corruption; do not mutate or perform effects |
+
+## 2026-08-29 amendment: one effective publication and request-only Session context
+
+### Whole-system decision
+
+The Session aggregate continues to own durable desired state; Agent publication
+continues to own executable policy; Thread commits continue to own transcript
+truth. Their only Runtime seam is one complete `FrozenSessionProjection` and one
+backend-neutral `NormalizedModelInput`. Local realization and claimed Worker
+recovery may transport or validate these values, but may not reconstruct an
+Agent override, install individual projection fields, or append derived context
+to a Thread delta.
+
+### Static structure
+
+| Classification | Authoritative owner | Decision |
+|---|---|---|
+| Reused unchanged | `ManagedSessionRepository`, `SessionBaseline`, Resource/MCP generations, `ThreadCommit` | remain the only durable authorities |
+| Modified | `FrozenSessionProjection` and `SessionRuntime` port | carry the exact effective publication and install the complete projection through one operation |
+| Modified | Runtime request context and Native/ACP/A2A executors | consume one normalized ordering: frozen instructions, current request-only context, durable input |
+| Modified | Coordinator Dream exporter | reuse the same visibility rule while preserving tool payloads and durable ordering |
+| Added | pure `project_effective_agent_publication` and content-free `ModelInputProjectionTrace` | one lowering rule plus auditable counts; no repository, state machine, fallback, or feature flag |
+
+Resource, MemoryStore, Skill, transcript-prefix, and automatic-memory recall
+prompts are rebuildable request context. Stable content-addressed message ids make
+an attempt replay idempotent. They are never inserted into `RunActivation.input`
+and therefore never enter `ThreadCommit.new_messages`. Historical messages whose
+reserved id starts with `session-baseline:` remain in append-only Thread truth,
+but the shared normalized projection hides only those records from every new
+Native, ACP, A2A, and Dream model request. An explicit protocol-authored System
+message with an ordinary id remains visible.
+
+The Managed protocol adapter contains no Dream-specific availability or metadata
+state machine. Dream lifecycle remains owned by the Dream application and uses
+the ordinary Session/Run realization boundary.
+
+### Dynamic behavior and failure boundary
+
+```text
+Session root snapshot
+  -> Coordinator resolves one baseline Agent publication
+  -> pure effective-publication projection applies model/inference/prompt choice
+  -> complete FrozenSessionProjection crosses local or Worker boundary
+  -> Host validates every immutable coordinate and prepares fallible Resources
+  -> one logical slot publication; optional realization lease is installed
+  -> each attempt snapshots current Resource/MemoryStore/Skill context
+  -> NormalizedModelInput filters only historical derived ids
+  -> Native structured messages OR ACP/A2A text envelope
+  -> ThreadCommit appends only durable activation input and model/tool results
+```
+
+Missing or mismatched pinned publication, conflicting baseline/environment, and
+failed Resource/Skill preparation fail before a new logical Session projection is
+published. A Resource revision replacement is visible only to attempts that
+start after that complete revision; an attempt that already captured the old
+context remains immutable. Projection audit logs record backend, Run, Thread,
+publication id, supplied/visible counts, and filtered count, never content.
+
+### Cause-effect rules
+
+| Rule | Cause | Effect |
+|---|---|---|
+| C1 | `Inherit`, `Clear`, or `Replace` system-prompt choice | the one pure publisher returns the exact effective snapshot and fingerprint |
+| C2 | current derived Session context | visible for this request, absent from every new Thread delta |
+| C3 | historical `session-baseline:*` record | retained durably, hidden from every new model request |
+| C4 | explicit ordinary-id System event | retained durably and visible |
+| C5 | Resource generation R1 is replaced by R2 | a fresh attempt sees only R2; an already captured R1 attempt does not mix revisions |
+| C6 | invalid publication or Resource preparation fault | no partial new baseline/workspace/manifest/prompt/lease projection |

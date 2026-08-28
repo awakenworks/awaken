@@ -1639,6 +1639,22 @@ async fn agent_default_environment_requires_the_exact_revision() {
 
 #[async_trait::async_trait]
 impl SessionRuntime for AcceptingFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        if let Some(init) = awaken_protocol_managed::test_support::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )? {
+            self.prepare_session(thread, init).await?;
+        }
+        Ok(())
+    }
+
     async fn execute_terminal_cleanup(
         &self,
         command: awaken_session_contract::SessionCleanupCommand,

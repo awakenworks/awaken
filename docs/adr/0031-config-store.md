@@ -88,3 +88,38 @@ whole-catalog handoff is historical. The current implementation persists
 replaces that second step with `ExecutableAgentRegistrar::register` and a
 rebuildable Coordinator projection. See
 [ADR-0071](0071-distributed-service-boundaries-and-executable-agent-registration.md).
+
+## Amendment (2026-08-29): executable-only fingerprints and one compaction trigger
+
+`AgentConfig` remains the lossless authoring aggregate, while
+`ExecutableAgentSnapshot` remains the only Runtime publication. Compilation now
+canonicalizes `plugin_config` at that boundary: a selected plugin section is
+executable; the backend-owned `acp` section is executable only for an ACP route;
+unselected residue remains editable but is excluded from both the snapshot and
+its fingerprint. The existing legacy `permission` codec remains executable until
+its already-decided migration into typed Agent bindings; it is not classified as
+an inactive plugin.
+
+`AgentConfig.compaction` is the sole authored trigger strategy. Publication
+derives the effective token window once from the pinned model context/output
+limits, creates the selected Native compact or ACP section when needed, and
+stamps that same effective value into both realizations. Legacy JSON
+`max_tokens`, `trigger_ratio`, `threshold`, `keep_last`, and `compact_window`
+cannot override the typed decision: the sole effective `max_tokens` window is
+replaced or removed, legacy count/ratio trigger fields are absent, and
+`keep_last` is present only when `keep_recent` is authored. Runtime realizers
+decode the frozen result and make no second authoring decision; no effective
+window means no compaction rather than a message-count fallback.
+
+Static ownership is unchanged: Config owns intent and compilation, the plugin
+registry owns activation, and Runtime owns execution. No compatibility flag,
+dual write, synchronized fingerprint, or second compaction state machine is
+introduced.
+
+| Rule | Selected/executable? | Config change | Publication effect |
+|---|---|---|---|
+| F1 | no | inactive plugin residue changes | identical snapshot and fingerprint |
+| F2 | yes | active plugin config changes | changed executable fingerprint |
+| F3 | Native | ACP-only residue changes | identical Native snapshot and fingerprint |
+| F4 | ACP | ACP section changes | changed executable fingerprint |
+| T1 | compact or ACP realization selected | legacy trigger conflicts with typed strategy | typed derived trigger wins; legacy threshold is absent |

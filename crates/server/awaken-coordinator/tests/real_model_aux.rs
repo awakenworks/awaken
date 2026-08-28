@@ -309,7 +309,7 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
     // alternate causes.
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     // Compact once history passes 4 messages, keeping the last 2 verbatim.
-    let host = host.with_compaction(4, 2);
+    let host = host.with_compaction_tokens(4, 2);
 
     // Several short Runs to build history past the threshold.
     for i in 0..3 {

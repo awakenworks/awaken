@@ -13,7 +13,7 @@
 // C1 explicit live opt-in; C2 deployment profile is host-login or container;
 // C3 Codex owns an available login; C4 Awaken publishes a BackendDefault Agent;
 // C5 one real prompt completes. E1 the committed transcript contains the unique
-// marker and running -> idle states. Host-login additionally proves zero-config
+// marker and thread running -> idle states. Host-login additionally proves zero-config
 // discovery plus a live Worker capability; container additionally proves a new
 // managed sandbox was observed.
 //
@@ -148,7 +148,6 @@ async function startHostLoginProfile() {
     // separate live gate and must not become an implicit prerequisite.
     'identity_mode = "self-managed"',
     `control_seal_key = ${JSON.stringify(randomBytes(32).toString('hex'))}`,
-    'identity_mode = "no-login"',
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.
     'sandbox_tier = "local"',
@@ -224,7 +223,7 @@ try {
   let transcript;
   try {
     // Receipt decision L1: C5 has an exact SDK receipt; E1 requires that exact
-    // receipt processed with marker and running->idle effects. K1 no prior
+    // receipt processed with marker and thread running->idle effects. K1 no prior
     // transcript can satisfy the live gate. D1=C1-C5=>E1.
     const receipt = (await client.beta.sessions.events.send(session.id, {
       events: [{
@@ -239,8 +238,8 @@ try {
       receipt.id,
       BETAS,
       ({ delta }) => JSON.stringify(delta).includes(marker)
-        && delta.some((event) => event.type === 'session.status_running')
-        && delta.some((event) => event.type === 'session.status_idle'),
+        && delta.some((event) => event.type === 'session.thread_status_running')
+        && delta.some((event) => event.type === 'session.thread_status_idle'),
       'real Codex ACP marker and running-to-idle lifecycle',
       { timeoutMs: 600_000, pollMs: 200 },
     ));
@@ -264,12 +263,12 @@ try {
     `real Codex ACP reply did not contain the marker; replies=${JSON.stringify(replies)}`,
   );
   assert.ok(
-    transcript.some((event) => event.type === 'session.status_running'),
-    `the managed transcript did not expose a running state; events=${transcript.map((event) => event.type)}`,
+    transcript.some((event) => event.type === 'session.thread_status_running'),
+    `the managed transcript did not expose a thread running state; events=${transcript.map((event) => event.type)}`,
   );
   assert.ok(
-    transcript.some((event) => event.type === 'session.status_idle'),
-    `the managed transcript did not return to idle; events=${transcript.map((event) => event.type)}`,
+    transcript.some((event) => event.type === 'session.thread_status_idle'),
+    `the managed transcript did not return the thread to idle; events=${transcript.map((event) => event.type)}`,
   );
 
   console.log(

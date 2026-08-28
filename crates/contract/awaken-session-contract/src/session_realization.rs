@@ -39,6 +39,55 @@ pub struct FrozenSessionProjection {
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
 }
 
+/// The two valid installation intents for a complete frozen projection.
+/// Invalid partial combinations are unrepresentable at the application port.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionProjectionInstallMode {
+    /// Install dispatch facts before durable enqueue; no realization authority
+    /// or physical Environment adoption is implied.
+    Dispatch,
+    /// Install the exact realization fence and optionally perform the Stage
+    /// effects selected by the canonical realization driver.
+    Realization {
+        lease: crate::SessionRealizationLease,
+        prepare_session: bool,
+    },
+}
+
+impl SessionProjectionInstallMode {
+    /// Whether this installation materializes the Session execution context.
+    #[must_use]
+    pub const fn prepares_session(&self) -> bool {
+        match self {
+            Self::Dispatch => true,
+            Self::Realization {
+                prepare_session, ..
+            } => *prepare_session,
+        }
+    }
+
+    /// Whether a resident Environment binding must be adopted after prepare.
+    #[must_use]
+    pub const fn adopts_resident_environment(&self) -> bool {
+        matches!(
+            self,
+            Self::Realization {
+                prepare_session: true,
+                ..
+            }
+        )
+    }
+
+    /// Exact realization fence carried by the mode, when one exists.
+    #[must_use]
+    pub const fn realization_lease(&self) -> Option<&crate::SessionRealizationLease> {
+        match self {
+            Self::Dispatch => None,
+            Self::Realization { lease, .. } => Some(lease),
+        }
+    }
+}
+
 impl FrozenSessionProjection {
     #[must_use]
     pub fn session_init(&self) -> crate::SessionInit {
@@ -54,6 +103,47 @@ impl FrozenSessionProjection {
             environment: self.baseline.environment.clone(),
         }
     }
+}
+
+/// Project every Session-owned Agent override onto one immutable publication.
+///
+/// This is the only lowering rule for Session-local model, inference, and
+/// system-prompt selection. Coordinator publication, co-located execution, and
+/// cold Worker recovery must reuse the returned snapshot; Runtime adapters may
+/// validate its frozen coordinates but must not reconstruct it field by field.
+pub fn project_effective_agent_publication(
+    model_override: Option<&crate::SessionModelOverride>,
+    system_prompt: &crate::SessionSystemPromptSelection,
+    workspace_id: &str,
+    mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
+    if let Some(model_override) = model_override {
+        if let Some(publication) = &model_override.publication {
+            publication
+                .validate_for_workspace(workspace_id)
+                .map_err(|error| {
+                    RunError::internal(format!(
+                        "frozen Session model override publication is invalid: {error}"
+                    ))
+                })?;
+            snapshot.resolved_spec.model_binding = publication.primary.clone();
+            snapshot.resolved_spec.model_candidates = publication.candidates.clone();
+        }
+        snapshot.resolved_spec.plugin_config.inference = model_override.inference.clone();
+    }
+    if !system_prompt.is_inherit() {
+        snapshot.resolved_spec.instructions = system_prompt
+            .resolve(Some(snapshot.resolved_spec.instructions.clone()))
+            .unwrap_or_default();
+    }
+    if model_override.is_some() || !system_prompt.is_inherit() {
+        snapshot.recompute_fingerprint().map_err(|error| {
+            RunError::internal(format!(
+                "Session-local Agent publication is invalid: {error}"
+            ))
+        })?;
+    }
+    Ok(snapshot)
 }
 
 /// Total decision for binding an immutable Agent publication to one frozen
@@ -171,6 +261,7 @@ fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
 #[cfg(test)]
 mod frozen_agent_publication_tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn worker_publication_decision_table_is_total_and_fail_closed() {
@@ -205,6 +296,76 @@ mod frozen_agent_publication_tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn effective_publication_system_prompt_decision_table_is_exact() {
+        // Cause/effect graph: C1 selection is Inherit, Clear, or Replace; C2 an
+        // Agent publication carries original instructions. Effects: E1 retain
+        // them byte-for-byte; E2 emit an empty system instruction; E3 emit only
+        // the Session replacement; E4 changed executable semantics recompute a
+        // self-consistent fingerprint. Decision rules are the three rows below.
+        let base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "provider", "model", "genai",
+            ))
+            .instructions("agent instructions")
+            .build();
+        for (selection, expected, changed) in [
+            (
+                crate::SessionSystemPromptSelection::Inherit,
+                "agent instructions",
+                false,
+            ),
+            (crate::SessionSystemPromptSelection::Clear, "", true),
+            (
+                crate::SessionSystemPromptSelection::Replace("session instructions".into()),
+                "session instructions",
+                true,
+            ),
+        ] {
+            let projected =
+                project_effective_agent_publication(None, &selection, "workspace", base.clone())
+                    .expect("valid effective publication");
+            assert_eq!(projected.resolved_spec.instructions, expected);
+            assert_eq!(projected.fingerprint != base.fingerprint, changed);
+            assert_eq!(
+                projected.fingerprint,
+                projected.resolved_spec.catalog_fingerprint
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn effective_publication_projection_is_idempotent(prompt in ".{0,128}") {
+            // Property design: cause C1 is any valid replacement text, including
+            // empty and Unicode; effect E1 is exact replacement and E2 is a
+            // second projection producing the identical snapshot/fingerprint.
+            // This covers the replay rule that Coordinator and Worker may both
+            // observe the same already-effective immutable publication.
+            let selection = crate::SessionSystemPromptSelection::Replace(prompt.clone());
+            let base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "provider", "model", "genai",
+                ))
+                .instructions("agent instructions")
+                .build();
+            let once = project_effective_agent_publication(
+                None,
+                &selection,
+                "workspace",
+                base,
+            ).expect("valid first projection");
+            let twice = project_effective_agent_publication(
+                None,
+                &selection,
+                "workspace",
+                once.clone(),
+            ).expect("valid replay projection");
+            prop_assert_eq!(&once.resolved_spec.instructions, &prompt);
+            prop_assert_eq!(twice, once);
         }
     }
 }
@@ -800,14 +961,55 @@ pub async fn drive_session_realization(
 mod tests {
     use super::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-        FailSessionRealization, SessionRealizationControl, SessionRealizationControlDisposition,
-        SessionRealizationControlFailure, SessionRealizationDirective,
-        realization_generation_authorizes, realization_lease_authorizes,
-        realization_lease_is_live_at,
+        FailSessionRealization, SessionProjectionInstallMode, SessionRealizationControl,
+        SessionRealizationControlDisposition, SessionRealizationControlFailure,
+        SessionRealizationDirective, realization_generation_authorizes,
+        realization_lease_authorizes, realization_lease_is_live_at,
     };
     use crate::{McpAttachmentId, McpGeneration, McpGenerationRef, SessionRealizationLease};
 
     struct MinimalControl;
+
+    #[test]
+    fn projection_install_mode_effect_decision_table_is_closed() {
+        // Cause/effect graph: C1 dispatch versus realization; C2 realization requests
+        // preparation. Effects: E1 prepare execution context; E2 adopt a resident
+        // Environment; E3 carry a realization lease. Decision rules:
+        // D1 dispatch => E1,!E2,!E3; D2 realization+prepare => E1,E2,E3;
+        // D3 realization+no-prepare => !E1,!E2,E3.
+        let lease = SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker/boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: 2,
+        };
+        let rules = [
+            (SessionProjectionInstallMode::Dispatch, true, false, false),
+            (
+                SessionProjectionInstallMode::Realization {
+                    lease: lease.clone(),
+                    prepare_session: true,
+                },
+                true,
+                true,
+                true,
+            ),
+            (
+                SessionProjectionInstallMode::Realization {
+                    lease,
+                    prepare_session: false,
+                },
+                false,
+                false,
+                true,
+            ),
+        ];
+        for (mode, prepares, adopts, has_lease) in rules {
+            assert_eq!(mode.prepares_session(), prepares);
+            assert_eq!(mode.adopts_resident_environment(), adopts);
+            assert_eq!(mode.realization_lease().is_some(), has_lease);
+        }
+    }
 
     #[async_trait::async_trait]
     impl SessionRealizationControl for MinimalControl {
