@@ -17,7 +17,7 @@
 // C4 gated mutations are approved; C5 archive/reconciliation succeeds; C6 exported
 // evidence verifies and applies externally. Effects: E1 attached and repository-local
 // Skills are announced and read; E2 Memory publishes while the Repository remote is unchanged;
-// E3 patch, manifest, SHA and output Files have exact bytes; E4 extraction
+// E3 patch, typed manifest and output Files have exact bytes; E4 extraction
 // persists cross-Session memory; E5 equal authored Skill bytes are idempotent and
 // changed bytes append one version. Any missing cause must fail the scenario,
 // never be interpreted as an empty store or successful no-op.
@@ -290,14 +290,14 @@ async function main() {
       const names = listedArray.map((file) => file.filename ?? file.path ?? file.logical_path ?? '');
       if (
         memContent.includes(MEMO_MARKER)
-        && ['result.txt', 'change.patch', 'manifest.json', 'manifest.sha256']
+        && ['result.txt', 'change.patch', 'manifest.json']
           .every((name) => names.some((listedName) => listedName.endsWith(name)))
       ) break;
       await sleep(200);
     }
 
     // Artifact handoff decision table: C1 a sandbox commit exists; C2 archive
-    // harvested all four outputs; C3 patch and manifest hashes agree; C4 the
+    // harvested all three outputs; C3 the manifest authenticates the patch; C4 the
     // external checkout is still at the recorded base; C5 an operator explicitly
     // selects a review ref. Effects: E1 main stays unchanged; E2 `git apply
     // --check` succeeds; E3 apply changes only CHAIN.txt; E4 repository test and
@@ -324,14 +324,13 @@ async function main() {
     const resultBytes = await download('result.txt');
     const patchBytes = await download('change.patch');
     const manifestBytes = await download('manifest.json');
-    const manifestShaBytes = await download('manifest.sha256');
     assert.equal(resultBytes.toString('utf8'), ARTIFACT_MARKER, 'sandbox output bytes are exact');
     const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    assert.equal(manifest.schema, 'awaken.repository_patch.v1', 'manifest has one typed contract');
     assert.equal(manifest.base_commit, remoteHeadBefore, 'manifest records the mounted baseline');
     assert.notEqual(manifest.sandbox_commit, remoteHeadBefore, 'manifest records the sandbox commit');
     assert.equal(manifest.patch_sha256, sha256(patchBytes), 'manifest authenticates the patch');
-    assert.equal(manifestShaBytes.toString('utf8').trim(), sha256(manifestBytes), 'SHA file authenticates manifest');
     assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'archive does not publish the sandbox commit');
 
     // Negative partitions are checked before the successful application so
