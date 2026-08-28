@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./current-types": "./src/current-types.ts",
+    "./current-wire": "./src/current-wire.generated.ts"
+  },
   "scripts": {
     "generate": "node src/cli.mjs generate",
     "check": "node src/cli.mjs check",

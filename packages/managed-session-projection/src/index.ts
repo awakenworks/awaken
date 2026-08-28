@@ -1,7 +1,12 @@
 import type {
   BetaManagedAgentsSessionEvent,
   BetaManagedAgentsStreamSessionEvents,
-} from "@anthropic-ai/sdk/resources/beta/sessions/events";
+} from "@awaken/managed-sdk-oracle/current-types";
+
+export {
+  MANAGED_SESSION_EVENT_TYPES,
+  MANAGED_SESSION_PREVIEW_TYPES,
+} from "@awaken/managed-sdk-oracle/current-wire";
 
 export type ManagedEvent = BetaManagedAgentsSessionEvent;
 export type ManagedStreamEvent = BetaManagedAgentsStreamSessionEvents;

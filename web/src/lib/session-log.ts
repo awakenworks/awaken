@@ -24,31 +24,11 @@ export function sessionStatusPresentation(status?: string): SessionStatusPresent
   }
 }
 
-/** The SSE event family the host names by `type` (a committed-replay stream). */
-export const SSE_EVENT_NAMES = [
-  "agent.message",
-  "agent.tool_use",
-  "agent.tool_result",
-  "agent.custom_tool_use",
-  "session.status_running",
-  "session.status_idle",
-  "session.error",
-  "span.outcome_evaluation_start",
-  "span.outcome_evaluation_end",
-] as const;
-
 /** Flatten a content-block array to display text (non-text blocks show a tag). */
 export function textOf(content: ContentBlock[] | undefined): string {
   return (content ?? [])
     .map((b) => ("text" in b && typeof b.text === "string" ? b.text : `[${b.type}]`))
     .join("");
-}
-
-/** Merge new events into the log: dedupe by id, keep arrival order. */
-export function mergeEvents(log: SessionEvent[], incoming: SessionEvent[]): SessionEvent[] {
-  const seen = new Set(log.map((e) => e.id));
-  const fresh = incoming.filter((e) => !seen.has(e.id));
-  return fresh.length ? [...log, ...fresh] : log;
 }
 
 /** Pair each tool_use with its tool_result (keyed by the tool_use id). */

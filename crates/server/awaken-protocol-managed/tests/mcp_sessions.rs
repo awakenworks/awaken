@@ -1087,9 +1087,11 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
     // loses recovery; projecting a permanent failure as live admits Runs without
     // a Runtime; hiding it loses the durable cause and makes exact GET disagree
     // with the Session repository. The error kind and persisted retry budget
-    // distinguish those outcomes at the same realization boundary. The resolved
-    // Agent snapshot still echoes accepted MCP config in every state; Runtime
-    // activation is a separate fact and cannot erase API configuration.
+    // distinguish those outcomes at the same realization boundary. The Managed
+    // Session projects only the official status union; the durable root, not an
+    // adapter-private response field, owns the detailed realization cause. The
+    // resolved Agent snapshot still echoes accepted MCP config in every state;
+    // Runtime activation is a separate fact and cannot erase API configuration.
     // Constraint K0: this preparation-only fixture commits no Run, so its one
     // atomic Thread recovery query returns None; unsupported production runtimes
     // remain fail-closed rather than falling back to split transcript reads.
@@ -1156,16 +1158,21 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
         } else {
             assert_eq!(read_status, StatusCode::OK, "R1/R2 durable failed root");
             assert_eq!(read["status"], "terminated", "R1/R2: {kind:?}");
-            assert_eq!(read["preparation"]["status"], "failed", "R1/R2: {kind:?}");
+            support::assert_current_sdk_session_shape(&read);
             assert_eq!(
                 failed.execution,
                 SessionExecutionState::ActivationFailed,
                 "R1/R2: {kind:?}"
             );
+            let expected_cause = match kind {
+                RunErrorKind::BadRequest => "run failed: prepare refused",
+                RunErrorKind::Internal => "run failed: prepare blew up",
+                RunErrorKind::Unavailable => unreachable!("R3 remains preparing"),
+            };
             assert_eq!(
-                read["preparation"]["error"].as_str(),
                 failed.realization_progress.last_error.as_deref(),
-                "R1/R2 exact GET preserves the durable cause: {kind:?}"
+                Some(expected_cause),
+                "R1/R2 durable root retains the exact realization cause: {kind:?}"
             );
             assert_eq!(
                 failed.mcp.attachments[0].state,

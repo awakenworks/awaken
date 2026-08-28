@@ -8,16 +8,18 @@
 import assert from 'node:assert/strict';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
-import Anthropic0120 from '@anthropic-ai/sdk-0-120';
+import AnthropicCurrent from '@anthropic-ai/sdk';
+import { sdkVersionBinding } from './catalog.mjs';
 import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38137);
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_BETA = 'agent-memory-2026-07-22';
+const CURRENT_SDK_VERSION = sdkVersionBinding().oracle;
 const CLIENTS = [
   ['0.105.0', Anthropic0105],
   ['0.117.1', Anthropic0117],
-  ['0.120.0', Anthropic0120],
+  [CURRENT_SDK_VERSION, AnthropicCurrent],
 ];
 
 async function drain(items) {
@@ -54,9 +56,14 @@ function assertSdkCapabilityBoundary() {
     'Dreams and current Tunnels are explicit current-SDK capability boundaries',
   );
   assert.deepEqual(
-    keys[1],
-    keys[2],
-    '0.120 retains the reviewed 0.117 Beta resource families while adding GA roots',
+    keys[2].filter((key) => !keys[1].includes(key)),
+    ['organization'],
+    `${CURRENT_SDK_VERSION} adds only the unrelated Beta organization admin root beyond the reviewed Managed scope`,
+  );
+  assert.deepEqual(
+    keys[1].filter((key) => !keys[2].includes(key)),
+    [],
+    `${CURRENT_SDK_VERSION} removes no reviewed 0.117 Beta resource family`,
   );
   const shared = keys[0].filter((key) => keys[1].includes(key));
   for (const key of shared) {
@@ -67,6 +74,13 @@ function assertSdkCapabilityBoundary() {
         `${key}: generated method/nested-resource surface differs across supported SDKs`,
       );
     }
+  }
+  for (const key of keys[1]) {
+    assert.deepEqual(
+      resourceMethods(resources[1][1][key]),
+      resourceMethods(resources[2][1][key]),
+      `${key}: 0.117 and ${CURRENT_SDK_VERSION} generated method/nested-resource surfaces differ`,
+    );
   }
   pass(`${shared.length} shared Beta resource families have identical generated method surfaces`);
   pass('Dreams and Tunnels remain tested as explicit current-SDK-only capabilities');
@@ -381,11 +395,11 @@ async function main() {
         'legacy and current Memory SDKs receive one additive response schema',
       );
     }
-    pass('Memory SDK 0.105.0, 0.117.1 and 0.120.0 share response and cursor contracts');
+    pass(`Memory SDK 0.105.0, 0.117.1 and ${CURRENT_SDK_VERSION} share response and cursor contracts`);
   };
   if (remoteBaseURL) await run(remoteBaseURL);
   else await withRealServer('echo', PORT, run);
-  console.log('E2E PASS: Managed Agents supports Anthropic SDK 0.105.0, 0.117.1 and 0.120.0 across Managed and Memory beta selectors.');
+  console.log(`E2E PASS: Managed Agents supports Anthropic SDK 0.105.0, 0.117.1 and ${CURRENT_SDK_VERSION} across Managed and Memory beta selectors.`);
 }
 
 main().catch((error) => {

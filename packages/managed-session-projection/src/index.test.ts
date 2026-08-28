@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_LIVE_PREVIEW,
+  MANAGED_SESSION_EVENT_TYPES,
+  MANAGED_SESSION_PREVIEW_TYPES,
   isCommittedStreamEvent,
   mergeCommittedEvents,
   reduceLivePreview,
@@ -12,6 +14,20 @@ const event = (value: Record<string, unknown>): ManagedEvent => value as unknown
 const stream = (value: Record<string, unknown>): ManagedStreamEvent => value as unknown as ManagedStreamEvent;
 
 describe("Managed Session projection decision table", () => {
+  /**
+   * Cause-effect rules:
+   * R0: C0 current SDK oracle adds/removes a committed event type -> E0 the
+   * generated browser subscription catalog changes with it.
+   * Constraint: this package and its browser consumers contain no second
+   * hand-maintained SSE event list.
+   */
+  it("exports the oracle-generated committed SSE catalog", () => {
+    expect(MANAGED_SESSION_EVENT_TYPES).toContain("agent.message");
+    expect(MANAGED_SESSION_EVENT_TYPES).toContain("session.status_terminated");
+    expect(MANAGED_SESSION_EVENT_TYPES).toContain("user.message");
+    expect(MANAGED_SESSION_PREVIEW_TYPES).toEqual(["event_delta", "event_start"]);
+  });
+
   /**
    * Cause-effect rules:
    * R1: C1 current event and C2 incoming event have different IDs -> E1 retain both in first-seen order.

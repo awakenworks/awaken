@@ -11,6 +11,51 @@ use awaken_session_contract::{
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
+/// Assert one serialized Session against the current official SDK interface
+/// extracted by `@awaken/managed-sdk-oracle`. Optional upstream properties may
+/// be absent, but adapter-private properties and missing required properties
+/// both fail closed.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub fn assert_current_sdk_session_shape(session: &serde_json::Value) {
+    let oracle: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/anthropic-managed/upstream-oracle.generated.json"
+    ))
+    .expect("generated Managed SDK oracle is valid JSON");
+    let shape = &oracle["current"]["wire_contract"]["session"];
+    let names = |key: &str| -> BTreeSet<String> {
+        shape[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("current SDK Session {key} properties are generated"))
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| panic!("current SDK Session {key} property is a string"))
+                    .to_owned()
+            })
+            .collect()
+    };
+    let required = names("required");
+    let optional = names("optional");
+    let actual: BTreeSet<String> = session
+        .as_object()
+        .expect("Session response is an object")
+        .keys()
+        .cloned()
+        .collect();
+    let allowed: BTreeSet<String> = required.union(&optional).cloned().collect();
+    let missing: BTreeSet<_> = required.difference(&actual).cloned().collect();
+    let unknown: BTreeSet<_> = actual.difference(&allowed).cloned().collect();
+    assert!(
+        missing.is_empty(),
+        "missing current SDK Session fields: {missing:?}"
+    );
+    assert!(
+        unknown.is_empty(),
+        "non-SDK Session fields leaked: {unknown:?}"
+    );
+}
+
 /// Advance retained Session Event commands through the production-owned
 /// [`awaken_session_application::SessionApplication`] driver.
 ///

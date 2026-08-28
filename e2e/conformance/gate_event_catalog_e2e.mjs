@@ -1,6 +1,6 @@
 // Event-catalog exhaustiveness gate (fx oracle, offline).
 //
-// Compares the installed SDK's event `type` catalog against awaken's Rust wire
+// Compares the generated current-SDK event `type` catalog against awaken's Rust wire
 // enums (OutboundKind / InboundEvent). A divergence not listed in CATALOG_WAIVERS
 // fails the gate — so a future SDK bump that adds an event, or a Rust enum that
 // drifts, goes red instead of silently slipping through. Today the catalogs match
@@ -57,7 +57,7 @@ async function main() {
     // R3 C1+(!C2||!C3)=>E2. Constraint: this gate owns vocabulary parity;
     // behavioral ownership is delegated to the adjacent manifest test.
     const version = sdkVersionBinding();
-    console.log(`  SDK version: pinned=${version.pinned} installed=${version.installed}`);
+    console.log(`  SDK version: oracle=${version.oracle} pinned=${version.pinned} installed=${version.installed}`);
     const sdk = sdkEventTypes();
     checkFamily('outbound', sdk.outbound, rustOutboundTypes(), {
       missing: CATALOG_WAIVERS.outboundMissing,
@@ -65,7 +65,7 @@ async function main() {
     });
     checkFamily('inbound', sdk.inbound, rustInboundTypes(), { missing: {}, extra: {} });
     checkFamily('preview', sdk.preview, rustPreviewTypes(), { missing: {}, extra: {} });
-    console.log('GATE PASS: Rust event catalog matches the installed SDK (no undocumented drift).');
+    console.log('GATE PASS: Rust event catalog matches the generated current SDK oracle.');
     process.exitCode = 0;
   } catch (err) {
     console.error('GATE FAIL:', err.message || err);

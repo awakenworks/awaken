@@ -267,66 +267,101 @@ async fn session_create_idempotency_replays_one_canonical_session() {
 }
 
 #[tokio::test]
-async fn async_session_create_returns_the_durable_preparing_aggregate() {
-    // Cause/effect graph: C1 Prefer respond-async is absent/present; C2 the
-    // owner-scoped idempotency key is new/replayed; C3 physical realization has
-    // not run. Effects: E1 ordinary create retains its synchronous compatibility
-    // response; E2 async create returns 202 with the stable Session id and a
-    // truthful preparing projection; E3 exact replay returns the same aggregate;
-    // E4 GET observes the same root, so no Job database is involved.
-    // Decision rules: A1 !C1=>E1 (covered by I1/I2 above); A2 C1+C2(new)+C3
-    // =>E2+E4; A3 C1+C2(replay)+C3=>E3+E4.
+async fn prefer_header_cannot_select_a_second_standard_create_semantics() {
+    // Cause/effect graph: C1 Prefer respond-async is absent/present; C2 each
+    // request admits a new owner-scoped Session. Effects: E1 both requests run
+    // the one synchronous official create path and return 200; E2 both return a
+    // fully realized, exact current-SDK Session; E3 GET observes each same root.
+    // Decision rules: A1 !C1+C2=>E1+E2+E3; A2 C1+C2=>E1+E2+E3.
+    // Constraint: product async admission remains under `/v1/awaken`; a generic
+    // HTTP preference cannot create an undocumented Managed response contract.
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
-    let post = || async {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/sessions")
-                    .header("content-type", "application/json")
-                    .header("prefer", "respond-async")
-                    .header("idempotency-key", "async-create")
-                    .body(Body::from(
-                        serde_json::to_vec(&session_request(serde_json::json!({
-                            "agent": "coder",
-                            "title": "recoverable"
-                        })))
+    let post = |prefer: bool, key: &'static str| {
+        let app = app.clone();
+        async move {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/v1/sessions")
+                .header("content-type", "application/json")
+                .header("idempotency-key", key);
+            if prefer {
+                request = request.header("prefer", "respond-async");
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(Body::from(
+                            serde_json::to_vec(&session_request(serde_json::json!({
+                                "agent": "coder",
+                                "title": "recoverable"
+                            })))
+                            .unwrap(),
+                        ))
                         .unwrap(),
-                    ))
-                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
             )
-            .await
-            .unwrap();
-        let status = response.status();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        (
-            status,
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-        )
+        }
     };
 
-    let first = post().await;
-    let replay = post().await;
-    assert_eq!(first.0, StatusCode::ACCEPTED, "A2/E2");
-    assert_eq!(
-        first.1["status"], "rescheduling",
-        "A2/E2 truthful preparing"
-    );
-    assert_eq!(first.1["preparation"]["status"], "preparing", "A2/E2");
-    assert_eq!(replay.0, StatusCode::ACCEPTED, "A3/E3");
-    assert_eq!(first.1["id"], replay.1["id"], "A3/E3 stable identity");
+    for (rule, created) in [
+        ("A1", post(false, "official-create-without-prefer").await),
+        ("A2", post(true, "official-create-with-prefer").await),
+    ] {
+        assert_eq!(created.0, StatusCode::OK, "{rule}/E1");
+        assert_eq!(created.1["status"], "idle", "{rule}/E2 fully realized");
+        support::assert_current_sdk_session_shape(&created.1);
+
+        let retrieved = json_call(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{}", created.1["id"].as_str().unwrap()),
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(retrieved["id"], created.1["id"], "{rule}/E3");
+        assert_eq!(retrieved["status"], "idle", "{rule}/E3");
+        support::assert_current_sdk_session_shape(&retrieved);
+    }
+}
+
+#[tokio::test]
+async fn session_routes_emit_only_the_current_official_sdk_outer_shape() {
+    // Cause/effect graph: C1 the current SDK declares required and optional
+    // Session properties; C2 create/retrieve/list serialize the same adapter
+    // DTO; C3 an internal lifecycle/property is present or a required official
+    // property is missing. Effects: E1 every route emits all required fields
+    // and only current-SDK fields; E2 C3 fails this offline gate. Decision
+    // rules: S1 C1+C2+!C3=>E1; S2 C3=>E2. The SDK oracle, not this test, owns
+    // the property catalog.
+    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let created = json_call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        session_request(serde_json::json!({ "agent": "coder" })),
+    )
+    .await;
+    support::assert_current_sdk_session_shape(&created);
 
     let retrieved = json_call(
         &app,
         "GET",
-        &format!("/v1/sessions/{}", first.1["id"].as_str().unwrap()),
+        &format!("/v1/sessions/{}", created["id"].as_str().unwrap()),
         serde_json::Value::Null,
     )
     .await;
-    assert_eq!(retrieved["id"], first.1["id"], "A2+A3/E4");
-    assert_eq!(retrieved["status"], "rescheduling", "A2+A3/E4");
-    assert_eq!(retrieved["preparation"]["status"], "preparing", "A2+A3/E4");
+    support::assert_current_sdk_session_shape(&retrieved);
+
+    let listed = json_call(&app, "GET", "/v1/sessions", serde_json::Value::Null).await;
+    support::assert_current_sdk_session_shape(&listed["data"][0]);
 }
 
 #[tokio::test]
@@ -335,7 +370,8 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     // durable; C2 owner and request fingerprint match; C3 execution is
     // ActivationFailed; C4 the process cache is cold. Effects: E1 replay is 409
     // `invalid_request_error` with the stable machine-readable message; E2 exact
-    // GET returns the same aggregate as terminated/failed plus its durable error;
+    // GET returns the same official Session projection as terminated while the
+    // durable root retains the adapter-private realization error;
     // E3 neither request creates, retries, replaces, or mutates the failed Session.
     //
     // | Rule | C1 | C2 | C3 | C4 | POST replay | exact GET | Side effect |
@@ -388,10 +424,11 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     assert_eq!(status, StatusCode::OK, "F1/E2: {body}");
     assert_eq!(body["id"], id, "F1/E2 stable identity");
     assert_eq!(body["status"], "terminated", "F1/E2");
-    assert_eq!(body["preparation"]["status"], "failed", "F1/E2");
+    support::assert_current_sdk_session_shape(&body);
     assert_eq!(
-        body["preparation"]["error"], "repository realization timed out",
-        "F1/E2 durable cause"
+        failed.realization_progress.last_error.as_deref(),
+        Some("repository realization timed out"),
+        "F1/E2 durable cause remains internal"
     );
     assert_eq!(repo.get(&id).await.unwrap(), failed, "F1/E3 durable truth");
 }

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "./api/types";
 import {
   isRunning,
-  mergeEvents,
   pairToolResults,
   pendingConfirmIds,
   projectSessionRuntime,
@@ -38,21 +37,6 @@ describe("textOf", () => {
   });
   it("handles undefined", () => {
     expect(textOf(undefined)).toBe("");
-  });
-});
-
-describe("mergeEvents", () => {
-  it("appends only unseen ids, preserving order", () => {
-    const log = [ev({ id: "a", type: "agent.message" })];
-    const merged = mergeEvents(log, [
-      ev({ id: "a", type: "agent.message" }),
-      ev({ id: "b", type: "agent.message" }),
-    ]);
-    expect(merged.map((e) => e.id)).toEqual(["a", "b"]);
-  });
-  it("returns the same reference when nothing is fresh (no needless rerender)", () => {
-    const log = [ev({ id: "a", type: "agent.message" })];
-    expect(mergeEvents(log, [ev({ id: "a", type: "agent.message" })])).toBe(log);
   });
 });
 
