@@ -9,6 +9,26 @@ use std::collections::BTreeSet;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
+use serde::{Deserialize, Serialize};
+
+/// Queue effect requested by one Session Run admission.
+///
+/// The value is part of the immutable reservation identity: recovery must
+/// preserve whether this Run merely follows prior work or replaces every older
+/// live dispatch on its logical Thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRunReplacement {
+    #[default]
+    PreservePrior,
+    SupersedePrior,
+}
+
+impl SessionRunReplacement {
+    #[must_use]
+    pub const fn supersedes_prior(self) -> bool {
+        matches!(self, Self::SupersedePrior)
+    }
+}
 
 /// Immutable execution restrictions contributed by the application that owns
 /// a Session Run. These values can only narrow tool authority or require a
@@ -50,6 +70,9 @@ pub struct AdmitSessionRun {
     /// Per-Run application requirements intersected with the canonical Session
     /// runtime projection before the reservation becomes durable.
     pub execution_requirements: SessionRunExecutionRequirements,
+    /// Explicit newest-wins intent. This is typed domain input, not an HTTP or
+    /// queue option inferred from the presence of an awaiting ticket.
+    pub replacement: SessionRunReplacement,
 }
 
 impl AdmitSessionRun {

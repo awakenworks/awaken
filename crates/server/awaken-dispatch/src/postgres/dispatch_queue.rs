@@ -55,11 +55,15 @@ impl DispatchQueue for PostgresDispatchStore {
             tx.commit().await.map_err(reject)?;
             return Ok(outcome);
         }
+        let options = SubmitOptions {
+            supersede: request.session_run_replacement.supersedes_prior(),
+            ..Default::default()
+        };
         insert_dispatch_with_state(
             &mut tx,
             p,
             &request,
-            &SubmitOptions::default(),
+            &options,
             "reserved",
             Some(crate::clock::db_millis(deadline)),
         )

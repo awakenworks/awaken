@@ -308,6 +308,37 @@ impl DispatchState {
     }
 }
 
+/// Whether a prior Session dispatch has crossed a boundary at which queue
+/// replacement cannot strand an open Session activity.
+#[must_use]
+pub const fn session_run_replacement_candidate_is_safe(state: DispatchState) -> bool {
+    matches!(state, DispatchState::Awaiting | DispatchState::Superseded)
+}
+
+#[cfg(kani)]
+mod session_replacement_proofs {
+    use super::{DispatchState, session_run_replacement_candidate_is_safe};
+
+    #[kani::proof]
+    fn only_awaiting_or_already_superseded_is_replacement_safe() {
+        let tag: u8 = kani::any();
+        kani::assume(tag < 7);
+        let state = match tag {
+            0 => DispatchState::Reserved,
+            1 => DispatchState::ReservationLeased,
+            2 => DispatchState::Pending,
+            3 => DispatchState::Leased,
+            4 => DispatchState::Awaiting,
+            5 => DispatchState::DeadLetter,
+            _ => DispatchState::Superseded,
+        };
+        assert_eq!(
+            session_run_replacement_candidate_is_safe(state),
+            matches!(state, DispatchState::Awaiting | DispatchState::Superseded)
+        );
+    }
+}
+
 /// An operational view of one dispatch row, for monitoring and maintenance — the
 /// `DispatchQueue` query role (ADR-0025). Carries no live handle, just committed
 /// queue state.
@@ -579,6 +610,31 @@ impl<T: DispatchQueue + Inbox + Outbox> Dispatch for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_replacement_safety_partition_is_exhaustive() {
+        // Cause/effect graph: each closed DispatchState either has crossed the
+        // settled Awaiting boundary/already been superseded, or may still own
+        // execution/admission activity. Effect: only the first partition is
+        // replaceable. This table must name every variant so adding a phase
+        // forces an explicit policy decision.
+        let cases = [
+            (DispatchState::Reserved, false),
+            (DispatchState::ReservationLeased, false),
+            (DispatchState::Pending, false),
+            (DispatchState::Leased, false),
+            (DispatchState::Awaiting, true),
+            (DispatchState::DeadLetter, false),
+            (DispatchState::Superseded, true),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(
+                session_run_replacement_candidate_is_safe(state),
+                expected,
+                "closed replacement policy for {state:?}"
+            );
+        }
+    }
     use awaken_runtime_contract::resume::ResumeResult;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
