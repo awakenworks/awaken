@@ -1264,6 +1264,40 @@ async fn create_session_defaults_to_empty_surface() {
     assert!(s["agent"]["skills"].as_array().unwrap().is_empty());
     assert!(s["agent"]["multiagent"].is_null());
     assert!(s["resources"].as_array().unwrap().is_empty());
+    // Wire-shape partition: ordinary synchronous creation is Ready, for which
+    // the Awaken-only preparation projection is neutral and therefore absent.
+    // Preparing/failed responses are owned by the explicit respond-async tests.
+    // This exact key set is the official SDK's required Session response plus
+    // no product extension; adding an unconditional field cannot hide behind
+    // the SDK's permissive JSON decoder.
+    assert_eq!(
+        s.as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "agent",
+            "archived_at",
+            "budget",
+            "created_at",
+            "environment_id",
+            "id",
+            "metadata",
+            "outcome_evaluations",
+            "resources",
+            "stats",
+            "status",
+            "title",
+            "type",
+            "updated_at",
+            "usage",
+            "vault_ids",
+        ]
+        .into_iter()
+        .collect(),
+        "ready Session exposes only the official top-level wire shape",
+    );
 }
 
 /// Golden wire contract for the created session's agent object: the exact Managed
