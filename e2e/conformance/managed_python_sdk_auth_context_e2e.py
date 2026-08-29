@@ -46,8 +46,9 @@ def main() -> None:
     # no resource. Wheels exposing the dynamic provider surface additionally
     # resolve one AccessToken and carry the same authenticated facts through a
     # real request. The same wheels also load an in-memory user-OAuth config and
-    # private token file through the SDK's own provider chain; 0.92 is the
-    # explicit pre-provider/config change point.
+    # private token file, then a named profile in an isolated config directory,
+    # through the SDK's own provider chain; 0.92 is the explicit
+    # pre-provider/config/profile change point.
     #
     # Decision table:
     # | credential | action | Python result         | Workspace | side effect |
@@ -56,6 +57,7 @@ def main() -> None:
     # | admin      | read   | Vault page           | exact     | none        |
     # | provider   | read   | Vault page, one lookup| exact    | none        |
     # | config     | read   | Vault page, file token| exact    | none        |
+    # | profile    | read   | Vault page, named file| exact    | none        |
     #
     # Constraints: the wheel is selected only by the generated Python anchor
     # matrix; retries are disabled; no caller-supplied Workspace is accepted as
@@ -143,7 +145,7 @@ def main() -> None:
                 "version": "1.0",
                 "type": "oauth_token",
                 "access_token": ADMIN_TOKEN,
-            }))
+            }), encoding="utf-8")
             credentials_path.chmod(0o600)
             with anthropic.Anthropic(
                 api_key=None,
@@ -171,7 +173,54 @@ def main() -> None:
                 assert raw_config_page.headers.get("anthropic-workspace-id") == WORKSPACE_ID
                 config_page = raw_config_page.parse()
                 assert isinstance(config_page.data, list)
-        extended_auth_request_count = 2
+
+            profile_root = Path(directory) / "profile-root"
+            profile_config_directory = profile_root / "configs"
+            profile_config_directory.mkdir(parents=True)
+            profile_credentials_path = profile_root / "credentials.json"
+            profile_credentials_path.write_text(json.dumps({
+                "version": "1.0",
+                "type": "oauth_token",
+                "access_token": ADMIN_TOKEN,
+            }), encoding="utf-8")
+            profile_credentials_path.chmod(0o600)
+            (profile_config_directory / "fixture.json").write_text(json.dumps({
+                "version": "1.0",
+                "authentication": {
+                    "type": "user_oauth",
+                    "credentials_path": str(profile_credentials_path),
+                },
+                "base_url": BASE_URL,
+                "workspace_id": WORKSPACE_ID,
+            }), encoding="utf-8")
+            previous_config_directory = os.environ.get("ANTHROPIC_CONFIG_DIR")
+            os.environ["ANTHROPIC_CONFIG_DIR"] = str(profile_root)
+            try:
+                with anthropic.Anthropic(
+                    profile="fixture",
+                    # Pin the credential-bearing request to the fixture even
+                    # if profile host selection regresses upstream.
+                    base_url=BASE_URL,
+                    max_retries=0,
+                ) as profiled:
+                    raw_profile_page = profiled.beta.vaults.with_raw_response.list()
+                    record_request_id(
+                        request_ids,
+                        raw_profile_page.headers.get("request-id"),
+                        f"{label}: profile-credential response",
+                    )
+                    assert (
+                        raw_profile_page.headers.get("anthropic-workspace-id")
+                        == WORKSPACE_ID
+                    )
+                    profile_page = raw_profile_page.parse()
+                    assert isinstance(profile_page.data, list)
+            finally:
+                if previous_config_directory is None:
+                    os.environ.pop("ANTHROPIC_CONFIG_DIR", None)
+                else:
+                    os.environ["ANTHROPIC_CONFIG_DIR"] = previous_config_directory
+        extended_auth_request_count = 3
 
     with anthropic.Anthropic(
         api_key=None,
@@ -216,7 +265,7 @@ def main() -> None:
         assert all(vault.display_name != denied_name for vault in verification.data)
 
     assert len(request_ids) == 4 + extended_auth_request_count
-    auth_modes = "static/provider/config" if supports_credentials else "static"
+    auth_modes = "static/provider/config/profile" if supports_credentials else "static"
     print(
         f"PYTHON SDK AUTH CONTEXT PASS {version}: "
         f"{auth_modes} 401/403/200 and no denied side effect"

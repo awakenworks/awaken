@@ -78,6 +78,9 @@ async function main() {
     // exact supported SDK + in-memory user-OAuth config + private token file
     //   -> config-selected base URL and Workspace header
     //   -> the same real scoped 200 contract;
+    // exact supported SDK + named profile in an isolated config directory
+    //   -> profile/config/credential-file resolution
+    //   -> the same real scoped 200 contract;
     // exact supported SDK + read-only Bearer token + Vault mutation
     //   -> resolved Workspace scope + denied action
     //   -> exact SDK PermissionDeniedError + exact Workspace + no side effect.
@@ -92,6 +95,7 @@ async function main() {
     // | admin      | resolved | read   | Vault page            | exact     |
     // | provider   | resolved | read   | Vault page, one lookup| exact     |
     // | config     | resolved | read   | Vault page, file token| exact     |
+    // | profile    | resolved | read   | Vault page, named file| exact     |
     for (const { role, version, Client } of CLIENTS) {
       const label = `${role}:${version}`;
       const projectsWorkspace = projectsWorkspaceResponseContext(version);
@@ -240,6 +244,63 @@ async function main() {
         assert.equal(configPage.workspace_id, workspace, `${label}: promoted config Workspace`);
       }
 
+      const profileRoot = path.join(root, `sdk-profile-${version}`);
+      const profileConfigDirectory = path.join(profileRoot, 'configs');
+      const profileCredentialsPath = path.join(profileRoot, 'credentials.json');
+      fs.mkdirSync(profileConfigDirectory, { recursive: true });
+      fs.writeFileSync(profileCredentialsPath, JSON.stringify({
+        version: '1.0',
+        type: 'oauth_token',
+        access_token: token,
+      }), { mode: 0o600 });
+      fs.writeFileSync(path.join(profileConfigDirectory, 'fixture.json'), JSON.stringify({
+        version: '1.0',
+        authentication: {
+          type: 'user_oauth',
+          credentials_path: profileCredentialsPath,
+        },
+        base_url: running.baseUrl,
+        workspace_id: workspace,
+      }), { mode: 0o600 });
+      const previousConfigDirectory = process.env.ANTHROPIC_CONFIG_DIR;
+      process.env.ANTHROPIC_CONFIG_DIR = profileRoot;
+      try {
+        const profiled = new Client({
+          profile: 'fixture',
+          baseURL: null,
+          maxRetries: 0,
+        });
+        const profilePage = await profiled.beta.vaults.list({ betas: BETAS }).withResponse();
+        assert.equal(
+          profiled.baseURL,
+          running.baseUrl,
+          `${label}: first request adopts the profile API host`,
+        );
+        const profileRequestID = recordUniqueRequestID(
+          requestIDs,
+          profilePage.response.headers.get('request-id'),
+          `${label}: profile-credential response`,
+        );
+        assert.equal(profilePage.request_id, profileRequestID, `${label}: profile request-id`);
+        assert.equal(
+          profilePage.response.headers.get('anthropic-workspace-id'),
+          workspace,
+          `${label}: profile Workspace agrees with authenticated scope`,
+        );
+        assert.equal(Array.isArray(profilePage.data.data), true, `${label}: profile decodes Vault page`);
+        assert.equal(
+          'workspace_id' in profilePage,
+          projectsWorkspace,
+          `${label}: reviewed profile Workspace capability`,
+        );
+        if (projectsWorkspace) {
+          assert.equal(profilePage.workspace_id, workspace, `${label}: promoted profile Workspace`);
+        }
+      } finally {
+        if (previousConfigDirectory === undefined) delete process.env.ANTHROPIC_CONFIG_DIR;
+        else process.env.ANTHROPIC_CONFIG_DIR = previousConfigDirectory;
+      }
+
       const restricted = new Client({
         apiKey: null,
         authToken: issued.token,
@@ -287,7 +348,7 @@ async function main() {
           return true;
         },
       );
-      pass(`${label}: real self-managed static/provider/config 401/403/200 response context`);
+      pass(`${label}: real self-managed static/provider/config/profile 401/403/200 context`);
     }
 
     const current = CLIENTS.find(({ role }) => role === 'current_oracle');
@@ -326,7 +387,7 @@ async function main() {
     );
     assert.equal(
       requestIDs.size,
-      CLIENTS.length * 5 + 1,
+      CLIENTS.length * 6 + 1,
       'every observed SDK response owns one request identity',
     );
   } finally {
