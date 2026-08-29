@@ -114,12 +114,31 @@ pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMou
     })
 }
 
+fn configured_worker_upstream(
+    upstream: impl Into<String>,
+    deployment: &crate::config::ResolvedDeployment,
+) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
+    let worker = &deployment.worker;
+    let mut upstream = awaken_worker_transport_security::WorkerUpstream::new(upstream)
+        .with_worker_id(&worker.worker_id);
+    if let Some(path) = worker.request_credential_file.as_deref() {
+        upstream = upstream.with_request_authorizer(
+            awaken_worker_transport_security::load_projected_request_authorizer(
+                path,
+                &worker.worker_id,
+            )?,
+        );
+    }
+    Ok(upstream)
+}
+
 fn configured_worker_builder(
-    upstream: awaken_worker_transport_security::WorkerUpstream,
+    upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
     credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
-) -> awaken_worker::WorkerNodeBuilder {
+) -> Result<awaken_worker::WorkerNodeBuilder, String> {
     let worker = &deployment.worker;
+    let upstream = configured_worker_upstream(upstream, deployment)?;
     let mut manifest = worker
         .build_digest
         .clone()
@@ -157,7 +176,7 @@ fn configured_worker_builder(
         Some(address) => builder.with_admin_listen(address),
         None => builder.without_admin_surface(),
     };
-    builder
+    Ok(builder)
 }
 
 async fn prepare_local_acp_with(
@@ -223,20 +242,15 @@ impl PreparedLocalAcp {
             self.stores.credentials,
             self.stores.secrets,
         );
-        configured_worker_builder(
-            awaken_worker_transport_security::WorkerUpstream::new(upstream)
-                .with_worker_id(&deployment.worker.worker_id),
-            deployment,
-            credentials,
-        )
-        .with_worker_local_credential_resolver(resolver.clone())
-        .with_acp_capability_observation_source(resolver)
-        .without_admin_surface()
-        .prepare_session_environment_from_deployment()
-        .await
-        .map_err(|error| error.to_string())?
-        .build()
-        .map_err(|error| error.to_string())
+        configured_worker_builder(upstream, deployment, credentials)?
+            .with_worker_local_credential_resolver(resolver.clone())
+            .with_acp_capability_observation_source(resolver)
+            .without_admin_surface()
+            .prepare_session_environment_from_deployment()
+            .await
+            .map_err(|error| error.to_string())?
+            .build()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -258,14 +272,9 @@ impl PreparedLocalWorker {
             self.stores.credentials.clone(),
             self.stores.secrets.clone(),
         );
-        let mut builder = configured_worker_builder(
-            awaken_worker_transport_security::WorkerUpstream::new(upstream)
-                .with_worker_id(&deployment.worker.worker_id),
-            deployment,
-            credentials,
-        )
-        .with_admin_tools(self.admin_tools.clone())
-        .without_admin_surface();
+        let mut builder = configured_worker_builder(upstream, deployment, credentials)?
+            .with_admin_tools(self.admin_tools.clone())
+            .without_admin_surface();
         if let Some(resolver) = &self.resolver {
             builder = builder
                 .with_worker_local_credential_resolver(resolver.clone())
@@ -359,6 +368,74 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn all_in_one_worker_uses_the_projected_request_signer() {
+        // Causes/effects: A1 absent request credential retains the loopback-only
+        // compatibility authorizer; A2 one valid credential matching worker_id
+        // adds a route-bound AwakenWorker assertion; A3 missing/invalid/mismatched
+        // projection fails before a WorkerNode can start. Decision rules W1-W3
+        // cover each posture at the single WorkerUpstream construction boundary.
+        let directory = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        let unsigned = configured_worker_upstream("http://coordinator", &deployment).unwrap();
+        let unsigned_request = unsigned
+            .authorize_request(
+                "POST",
+                "/v1/worker/register",
+                unsigned
+                    .client()
+                    .post("http://coordinator/v1/worker/register"),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(
+            unsigned_request
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .is_none(),
+            "W1"
+        );
+
+        let credential = directory.path().join("worker.json");
+        std::fs::write(
+            &credential,
+            r#"{"worker_id":"awaken-worker","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0"}"#,
+        )
+        .unwrap();
+        deployment.worker.request_credential_file = Some(credential.clone());
+        let signed = configured_worker_upstream("http://coordinator", &deployment).unwrap();
+        let signed_request = signed
+            .authorize_request(
+                "POST",
+                "/v1/worker/register",
+                signed
+                    .client()
+                    .post("http://coordinator/v1/worker/register"),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(
+            signed_request
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("AwakenWorker ")),
+            "W2"
+        );
+
+        std::fs::write(
+            &credential,
+            r#"{"worker_id":"other-worker","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0"}"#,
+        )
+        .unwrap();
+        assert!(
+            configured_worker_upstream("http://coordinator", &deployment).is_err(),
+            "W3"
+        );
+    }
 
     struct FixedDiscovery {
         observations: BTreeMap<String, AcpHostObservation>,
