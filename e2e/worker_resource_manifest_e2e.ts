@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  FILES_BETA,
   WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
   managedFileUploadForm,
   spawnProduction,
@@ -25,11 +26,16 @@ import {
 } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  nativeProviderCandidateFixture,
+  providerCredentialTargetFixture,
+} from './fixtures/provider_candidate_fixture.mjs';
+import { detachSessionCommandFixture } from './fixtures/run_dispatch_fixture.mjs';
 import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
+import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);
@@ -47,7 +53,6 @@ const SEED_AGENT = `resource-seed-agent-${process.pid}`;
 const SEED_KEY = 'sk-resource-seed';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const SKILLS_BETA = 'skills-2025-10-02';
-const FILES_BETA = 'files-api-2025-04-14';
 const FILE_BYTES = Buffer.from('immutable input selected by the frozen Session manifest\n');
 const MOUNT_PATH = 'uploads/input.txt';
 const SKILL_NAME = `remote-worker-skill-${process.pid}`;
@@ -272,9 +277,8 @@ async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
       registration: {
         worker_id: id,
         incarnation_id: `${id}-incarnation`,
-        manifest: {
-          manifest_version: 1,
-          build_digest: 'resource-manifest-seed',
+        manifest: workdirWorkerManifestFixture({
+          buildDigest: 'resource-manifest-seed',
           // Seed claim decision table: C1 the published candidate requires a
           // shared credential source; C2 the claiming driver reports the exact
           // installed Native realization profile. C1+C2 => claim; C1+!C2 =>
@@ -285,26 +289,10 @@ async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
             'credential-source/v1',
             'host-executor/v1',
             'native-runtime',
+            'session-resources/v1',
             WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
           ],
-          zone: null,
-          architecture: process.arch,
-          sandbox: {
-            isolation: 'workdir',
-            tool_transparent: false,
-            path_fidelity: false,
-            enforced_readonly: false,
-            network_isolation: false,
-            secret_egress_substitution: false,
-            resource_limits: false,
-            custom_rootfs: false,
-          },
-          sandbox_backends: [],
-          dispatch_contract: { min: 1, max: 1 },
-          runtime_protocol: { min: 1, max: 1 },
-          checkpoint_formats: ['stream-v1'],
-          capacity: { max_concurrent: 1, resources: {} },
-        },
+        }),
       },
     },
     id,
@@ -364,21 +352,20 @@ function runRequest(
   thread = THREAD,
   skillIds: string[] = [],
 ): any {
-  const request = structuredClone(seed);
+  const request = detachSessionCommandFixture(seed);
   request.activation.run_id = `${seed.activation.run_id}-${suffix}`;
   request.activation.thread_id = thread;
   // This fixture exercises the ordinary Run resource envelope, not the
-  // SessionApplication realization protocol. `session_thread_id` is the sole
-  // contract discriminator for the latter: setting it would correctly require
-  // a durable Managed Session with this id and make the handcrafted queue item
-  // an invalid parallel Session-creation path.
+  // SessionApplication realization protocol. Session-command identity and its
+  // activity coordinate are removed together; setting that ownership would
+  // correctly require a durable Managed Session and make this handcrafted queue
+  // item an invalid parallel Session-creation path.
   //
   // | session_thread_id | Durable Session exists | Effect |
   // |---|---|---|
   // | absent | n/a | ordinary manifest realization |
   // | present | yes | canonical Session control realization |
   // | present | no | fail closed before sandbox/model use |
-  delete request.session_thread_id;
   // Raw Provider prerequisite: C0 all route coordinates, including the opaque
   // fixture dialect, are explicit -> E0 ingress admits the resource-bound Run.
   // Constraint/K: this helper supplies no default or duplicate validation;
@@ -394,6 +381,7 @@ function runRequest(
       credential: {
         credential: { id: GRANT, revision: GRANT_REVISION },
         material_source: 'worker_reference',
+        target: providerCredentialTargetFixture('fixture-provider'),
         usage: { type: 'provider_adapter' },
         policy: {
           allowed_plaintext_holders: [

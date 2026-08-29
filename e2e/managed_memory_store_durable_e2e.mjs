@@ -23,6 +23,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   allowManagedToolBoundaries,
   cleanupFixtureTree,
+  managedAgentWithAlwaysAskTools,
   pass,
   realServerEnv,
   spawnServer,
@@ -72,12 +73,13 @@ async function main() {
     assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
 
     const session = await client.beta.sessions.create({
-      agent: 'assistant',
+      agent: managedAgentWithAlwaysAskTools(['write']),
       environment_id: 'env_local',
       resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
       betas: BETAS,
     });
-    // M0 lifecycle: C1=exact write-task receipt; C2=requires_action with exact
+    // M0 lifecycle: C0=the Session explicitly owns write=always_ask; C1=exact
+    // write-task receipt; C2=requires_action with exact
     // unapproved tool ids; C3=exact allow batch; C4=canonical ordering may
     // replay an older requires_action after C3; C5=end_turn. E1=approve each
     // tool id once; E2=ignore C4; E3=successful write/read results before

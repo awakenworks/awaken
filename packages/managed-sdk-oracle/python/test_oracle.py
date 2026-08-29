@@ -230,6 +230,37 @@ def decode(sse):
         })
         self.assertNotEqual(first_fingerprint, changed_fingerprint)
 
+    def test_managed_type_closure_classifies_resource_roots_independently_of_traversal_order(self) -> None:
+        # Cause/effect graph: C1=two canonical resource roots are supplied;
+        # C2=a DTO dependency reaches the second root again; C3=input order is
+        # reversed. Effects: E1=resource transport sources remain excluded from
+        # the DTO closure; E2=both orders produce identical evidence. Decision
+        # table: C1+C2 with either C3 value => E1+E2; a path's first traversal
+        # must never change its authoritative resource-root classification.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "anthropic/resources/beta/widgets.py"
+            second = root / "anthropic/resources/skills/skills.py"
+            dto = root / "anthropic/types/beta/widget.py"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            dto.parent.mkdir(parents=True)
+            first.write_text("from ...types.beta.widget import Widget\n", encoding="utf-8")
+            second.write_text("class Skills: pass\n", encoding="utf-8")
+            dto.write_text(
+                "from ...resources.skills.skills import Skills\nclass Widget: pass\n",
+                encoding="utf-8",
+            )
+
+            forward = oracle.managed_type_source_evidence(root, [first, second])
+            reverse = oracle.managed_type_source_evidence(root, [second, first])
+
+        self.assertEqual(forward, reverse)
+        self.assertEqual(
+            [item["path"] for item in forward],
+            ["anthropic/types/beta/widget.py"],
+        )
+
     def test_managed_type_closure_rejects_unresolved_or_wildcard_reexports(self) -> None:
         # Fail-closed partitions: a resource-level imported DTO must resolve to
         # one local definition or exact re-export. A wildcard or missing symbol

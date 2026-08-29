@@ -9,7 +9,7 @@
 //       NO thread starves: every thread's runs all complete, not just the ones
 //       submitted first / on the busiest thread.
 //
-// Model exactly on durable_pool_e2e.mjs / managed_daemon_e2e.mjs: a single durable
+// Model exactly on durable_pool_e2e.mjs / durable_daemon_e2e.mjs: a single durable
 // server (SESSION_DEPLOYMENT_INGRESS=durable + AWAKEN_DISPATCH_DAEMON=1) draining a shared
 // SQLite dispatch queue with the deterministic `echo` model. Every run flows
 // through submit_background → the shared queue → the worker; the caller observes

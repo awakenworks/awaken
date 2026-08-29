@@ -1340,6 +1340,22 @@ pub struct awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::CaptureContext::decision: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::CaptureContext::sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
 pub awaken_runtime_contract::runtime_context::CaptureContext::subject: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>
+pub struct awaken_runtime_contract::runtime_context::ModelInputProjectionTrace
+pub awaken_runtime_contract::runtime_context::ModelInputProjectionTrace::durable_input_supplied: usize
+pub awaken_runtime_contract::runtime_context::ModelInputProjectionTrace::durable_input_visible: usize
+pub awaken_runtime_contract::runtime_context::ModelInputProjectionTrace::has_instructions: bool
+pub awaken_runtime_contract::runtime_context::ModelInputProjectionTrace::legacy_derived_filtered: usize
+pub awaken_runtime_contract::runtime_context::ModelInputProjectionTrace::request_context_supplied: usize
+pub awaken_runtime_contract::runtime_context::ModelInputProjectionTrace::request_context_visible: usize
+pub struct awaken_runtime_contract::runtime_context::NormalizedModelInput
+pub awaken_runtime_contract::runtime_context::NormalizedModelInput::durable_input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_runtime_contract::runtime_context::NormalizedModelInput::instructions: alloc::string::String
+pub awaken_runtime_contract::runtime_context::NormalizedModelInput::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+impl awaken_runtime_contract::runtime_context::NormalizedModelInput
+pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::new(impl core::convert::Into<alloc::string::String>, &[awaken_agent_contract::agent::message::Message], &[awaken_agent_contract::agent::message::Message]) -> Self
+pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::ordered_messages(&self) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::text_envelope(&self) -> alloc::string::String
+pub const fn awaken_runtime_contract::runtime_context::NormalizedModelInput::trace(&self) -> awaken_runtime_contract::runtime_context::ModelInputProjectionTrace
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
@@ -1393,8 +1409,10 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_co
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_output_spiller(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
+pub const awaken_runtime_contract::runtime_context::LEGACY_DERIVED_SESSION_CONTEXT_PREFIX: &str
 pub trait awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier::verify_current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::runtime_context::is_legacy_derived_session_context(&awaken_agent_contract::agent::message::Message) -> bool
 pub const fn awaken_runtime_contract::runtime_context::transcript_prefix_projects_to(awaken_runtime_contract::runtime_context::TranscriptContextDestination) -> bool
 pub mod awaken_runtime_contract::snapshot
 pub enum awaken_runtime_contract::snapshot::AgentSnapshotInput
@@ -2082,9 +2100,25 @@ impl awaken_runtime_contract::resolved::ModelBinding
 pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
+pub struct awaken_runtime_contract::ModelInputProjectionTrace
+pub awaken_runtime_contract::ModelInputProjectionTrace::durable_input_supplied: usize
+pub awaken_runtime_contract::ModelInputProjectionTrace::durable_input_visible: usize
+pub awaken_runtime_contract::ModelInputProjectionTrace::has_instructions: bool
+pub awaken_runtime_contract::ModelInputProjectionTrace::legacy_derived_filtered: usize
+pub awaken_runtime_contract::ModelInputProjectionTrace::request_context_supplied: usize
+pub awaken_runtime_contract::ModelInputProjectionTrace::request_context_visible: usize
 pub struct awaken_runtime_contract::NoopRedactor
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_contract::capture::NoopRedactor
 pub fn awaken_runtime_contract::capture::NoopRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
+pub struct awaken_runtime_contract::NormalizedModelInput
+pub awaken_runtime_contract::NormalizedModelInput::durable_input: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_runtime_contract::NormalizedModelInput::instructions: alloc::string::String
+pub awaken_runtime_contract::NormalizedModelInput::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+impl awaken_runtime_contract::runtime_context::NormalizedModelInput
+pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::new(impl core::convert::Into<alloc::string::String>, &[awaken_agent_contract::agent::message::Message], &[awaken_agent_contract::agent::message::Message]) -> Self
+pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::ordered_messages(&self) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::text_envelope(&self) -> alloc::string::String
+pub const fn awaken_runtime_contract::runtime_context::NormalizedModelInput::trace(&self) -> awaken_runtime_contract::runtime_context::ModelInputProjectionTrace
 pub struct awaken_runtime_contract::NullResolver
 impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -2467,6 +2501,7 @@ pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serializ
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String
 pub fn awaken_runtime_contract::freeze_delegation_publications(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::is_legacy_derived_session_context(&awaken_agent_contract::agent::message::Message) -> bool
 pub fn awaken_runtime_contract::resolve_delegate_snapshot(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &awaken_runtime_contract::agent_bindings::AgentDelegateBinding, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
 pub fn awaken_runtime_contract::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>

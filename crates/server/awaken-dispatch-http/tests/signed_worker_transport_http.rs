@@ -1377,6 +1377,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 lease: realization_lease,
                 prepared_resource_revision: None,
                 retryable: false,
+                source_run_id: None,
                 reason: "test failure".into(),
             },
         )

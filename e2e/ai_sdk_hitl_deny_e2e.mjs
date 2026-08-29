@@ -10,9 +10,13 @@ import {
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from 'ai';
 import { Chat } from '@ai-sdk/react';
-import { withRealServer, pass } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  withScenarioServer,
+} from './harness.mjs';
 
-const THREAD = 'sdk-hitl-deny';
 const NOTE = 'DENY-ME-NOTE';
 
 function replyText(chat) {
@@ -30,10 +34,13 @@ async function settle(chat, effect) {
 }
 
 async function main() {
-  await withRealServer('probe', 38147, async (base) => {
+  await withScenarioServer('management-probe', 'probe', 38147, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
+    const { threadId, headers } = await createCrossProtocolApplicationThread(base);
     const rawResponses = [];
     const transport = new DefaultChatTransport({
-      api: `${base}/v1/ai-sdk/threads/${THREAD}/runs`,
+      api: `${base}/v1/ai-sdk/threads/${threadId}/runs`,
+      headers,
       fetch: async (...args) => {
         const response = await fetch(...args);
         rawResponses.push(response.clone().text());
@@ -41,19 +48,19 @@ async function main() {
       },
     });
     const chat = new Chat({
-      id: THREAD,
+      id: threadId,
       transport,
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     });
     await chat.sendMessage({ text: NOTE });
     const toolPart = (chat.lastMessage?.parts ?? []).find((part) => part.toolCallId);
 
-    // Cause/effect graph: built-in write + Ask policy -> approval-requested;
+    // Cause/effect graph: published Agent + frozen write=AlwaysAsk policy -> approval-requested;
     // explicit deny -> approval-responded(false) -> Cancel resume -> no write;
     // the run remains recoverable and reaches a terminal assistant response.
     // Decision table:
     // | wait exists | explicit decision | tool effect | terminal effect |
-    // | yes         | deny              | blocked     | `done`          | (R2)
+    // | yes + frozen AlwaysAsk | deny    | blocked     | `done`          | (R2)
     // R1 (allow -> write -> done) is owned by ai_sdk_e2e.mjs.
     assert.ok(toolPart, `expected an awaiting tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
     assert.equal(

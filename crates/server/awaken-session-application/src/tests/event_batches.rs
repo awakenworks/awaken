@@ -113,20 +113,15 @@ impl SessionRuntime for EventBatchRuntime {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        if mode.prepares_session() {
+            self.trace
+                .lock()
+                .unwrap()
+                .push(format!("project:{thread}:{}", projection.resource_revision));
+            *self.projected_resources.lock().unwrap() =
+                Some((projection.resource_revision, projection.resources.clone()));
+        }
         install_complete_test_projection(self, thread, projection, mode).await
-    }
-
-    async fn prepare_session(
-        &self,
-        thread: &str,
-        init: awaken_session_contract::SessionInit,
-    ) -> Result<(), RunError> {
-        self.trace
-            .lock()
-            .unwrap()
-            .push(format!("project:{thread}:{}", init.resource_revision));
-        *self.projected_resources.lock().unwrap() = Some((init.resource_revision, init.resources));
-        Ok(())
     }
 
     async fn reserve_session_run(
@@ -976,8 +971,15 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
     );
 }
 
-#[tokio::test]
-async fn deleting_tombstone_waits_for_terminal_batch_provenance() {
+#[test]
+fn deleting_tombstone_waits_for_terminal_batch_provenance() {
+    // Coverage rationale: the async case below owns D1-D3 and their E1-E3
+    // oracle. The shared composed-test executor changes stack placement only;
+    // it adds no scenario, state owner, or alternate assertion path.
+    run_composed_async_test(deleting_tombstone_waits_for_terminal_batch_provenance_case);
+}
+
+async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
     // Cause/effect graph: C1 an old writer left Deleting+cleanup-Completed with
     // one accepted incomplete Event entry; C2 resource reconciliation runs
     // before Event reconciliation; C3 the canonical Event supervisor resolves

@@ -29,12 +29,14 @@ import {
   pass,
   startUpstream,
   realServerEnv,
+  SKILLS_BETA,
+  SKILLS_BETAS,
   waitForSessionEventReceipt,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
 const BETAS = ['managed-agents-2026-04-01'];
-const SKILLS_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
+const SKILLS_HEADERS = { 'anthropic-beta': SKILLS_BETA };
 const STORE_DIR = `/tmp/awaken-skillstore-durable-e2e-${process.pid}`;
 const MARKER = 'DURABLE_SKILL_MARKER_5501';
 const SKILL_MD = `---\nname: greet\ndescription: greet durably\n---\n${MARKER}`;
@@ -42,6 +44,7 @@ const SKILL_MD = `---\nname: greet\ndescription: greet durably\n---\n${MARKER}`;
 async function createSkill(content = SKILL_MD) {
   return client.beta.skills.create({
     files: [await toFile(Buffer.from(content), 'SKILL.md')],
+    betas: SKILLS_BETAS,
   });
 }
 
@@ -118,7 +121,7 @@ async function main() {
 
     // A malformed multipart upload (missing `files`) is rejected, not silently dropped.
     await expectStatus(
-      client.beta.skills.create({}),
+      client.beta.skills.create({ betas: SKILLS_BETAS }),
       400,
       'POST /v1/skills without files',
     );
@@ -148,7 +151,11 @@ async function main() {
     // only its selected persistence adapter changes.
     await stopServer(b.server);
     servers.pop();
-    const noStore = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
+    const noStore = spawnServer(
+      'skills-durable',
+      PORT,
+      realServerEnv('skills', upstream, { mode: 'skills-durable' }),
+    );
     servers.push(noStore.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -160,7 +167,11 @@ async function main() {
 
     await stopServer(noStore.server);
     servers.pop();
-    const freshEphemeral = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
+    const freshEphemeral = spawnServer(
+      'skills-durable',
+      PORT,
+      realServerEnv('skills', upstream, { mode: 'skills-durable' }),
+    );
     servers.push(freshEphemeral.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });

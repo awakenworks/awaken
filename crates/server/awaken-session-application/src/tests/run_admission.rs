@@ -14,6 +14,15 @@ struct ActivationOnlySessionRunRuntime {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn run(
         &self,
         _agent: &str,
@@ -104,6 +113,7 @@ async fn background_protocol_uses_the_canonical_session_admission_without_observ
                 awaken_agent_contract::agent::message::Role::User,
                 "run later",
             )],
+            None,
         )
         .await
         .expect("B1 background admission");

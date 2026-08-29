@@ -28,9 +28,9 @@ use crate::types::{
 };
 #[cfg(test)]
 use awaken_session_contract::ManagedSessionRepository;
-use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionExecutionState};
 #[cfg(test)]
-use awaken_session_contract::{SessionDisposition, SessionInit};
+use awaken_session_contract::SessionDisposition;
+use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionExecutionState};
 #[cfg(test)]
 use awaken_session_store::SqliteManagedSessionRepository;
 

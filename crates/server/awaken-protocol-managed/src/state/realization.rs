@@ -695,6 +695,7 @@ mod tests {
                 lease: failed_renewal.lease,
                 prepared_resource_revision: None,
                 retryable: false,
+                source_run_id: None,
                 reason: "MCP connection closed".into(),
             })
             .await
@@ -971,6 +972,7 @@ mod tests {
             lease: staged.lease,
             prepared_resource_revision: Some(staged.projection.resource_revision),
             retryable: false,
+            source_run_id: None,
             reason: "stage failed".into(),
         };
         failed_state

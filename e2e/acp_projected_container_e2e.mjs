@@ -19,7 +19,7 @@ import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
-import { waitForSessionEventReceipt } from './harness.mjs';
+import { FILES_BETA, waitForSessionEventReceipt } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
@@ -27,7 +27,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-projected-containe
 const STORAGE = path.join(TMP, 'storage');
 const IMAGE = `awaken-acp-projected-e2e:${process.pid}`;
 const BASE_IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
-const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const MCP_TOKEN = 'projected-container-mcp-token'; // awaken-allow: secret (fixture)
 let WORKSPACE;
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';

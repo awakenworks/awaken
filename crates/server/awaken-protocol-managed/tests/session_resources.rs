@@ -131,7 +131,7 @@ fn resource_registry() -> std::sync::Arc<awaken_resource_application::RegistryAp
     registry
 }
 
-/// A runtime that accepts every `prepare_session` — the session record exists, so
+/// A runtime that accepts every complete Session projection — the session record exists, so
 /// the resource routes can be exercised. Run methods are unused here.
 #[derive(Clone, Default)]
 struct AcceptingFake {
@@ -1650,7 +1650,7 @@ impl SessionRuntime for AcceptingFake {
             &projection,
             &mode,
         )? {
-            self.prepare_session(thread, init).await?;
+            self.prepared.lock().unwrap().push(init);
         }
         Ok(())
     }
@@ -1694,10 +1694,6 @@ impl SessionRuntime for AcceptingFake {
         )
     }
 
-    async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
-        self.prepared.lock().unwrap().push(init);
-        Ok(())
-    }
     fn capabilities_for(&self, _thread: &str) -> awaken_session_contract::AgentCapabilities {
         awaken_session_contract::AgentCapabilities {
             delegates: self

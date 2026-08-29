@@ -10,23 +10,21 @@ use super::session_mcp_projection::typed_mcp_servers;
 enum RehydrationPurpose {
     Interactive,
     CollectionRead,
-    TerminalCleanup,
+    FrozenControl,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RehydrationPublicationDecision {
     Available,
-    InteractiveUnpinned,
-    CollectionReadBypass,
-    TerminalCleanupUnpinned,
-    TerminalCleanupBypass,
+    Unpinned,
+    NonInteractiveFrozenProjection,
     RejectMissingExact,
 }
 
 /// Decide whether projection recovery may proceed without a catalog profile.
-/// Interactive recovery remains fail-closed. Collection reads and terminal
-/// cleanup may project only the Session's frozen durable baseline; neither path
-/// restores a Runtime or makes the missing publication executable.
+/// Interactive recovery remains fail-closed. Collection reads and controls over
+/// already-frozen work may project only the Session's durable baseline; neither
+/// path restores a Runtime or makes the missing publication executable.
 #[must_use]
 const fn rehydration_publication_decision(
     purpose: RehydrationPurpose,
@@ -40,21 +38,10 @@ const fn rehydration_publication_decision(
             (RehydrationPurpose::Interactive, true) => {
                 RehydrationPublicationDecision::RejectMissingExact
             }
-            (RehydrationPurpose::CollectionRead, true) => {
-                RehydrationPublicationDecision::CollectionReadBypass
+            (RehydrationPurpose::CollectionRead | RehydrationPurpose::FrozenControl, true) => {
+                RehydrationPublicationDecision::NonInteractiveFrozenProjection
             }
-            (RehydrationPurpose::TerminalCleanup, true) => {
-                RehydrationPublicationDecision::TerminalCleanupBypass
-            }
-            (RehydrationPurpose::Interactive, false) => {
-                RehydrationPublicationDecision::InteractiveUnpinned
-            }
-            (RehydrationPurpose::CollectionRead, false) => {
-                RehydrationPublicationDecision::InteractiveUnpinned
-            }
-            (RehydrationPurpose::TerminalCleanup, false) => {
-                RehydrationPublicationDecision::TerminalCleanupUnpinned
-            }
+            (_, false) => RehydrationPublicationDecision::Unpinned,
         }
     }
 }
@@ -69,18 +56,14 @@ fn missing_agent_publication_is_available_only_to_noninteractive_projection() {
     let purpose = match purpose_discriminant {
         0 => RehydrationPurpose::Interactive,
         1 => RehydrationPurpose::CollectionRead,
-        _ => RehydrationPurpose::TerminalCleanup,
+        _ => RehydrationPurpose::FrozenControl,
     };
     let decision =
         rehydration_publication_decision(purpose, has_frozen_revision, profile_available);
 
     assert_eq!(
-        decision == RehydrationPublicationDecision::TerminalCleanupBypass,
-        purpose == RehydrationPurpose::TerminalCleanup && has_frozen_revision && !profile_available
-    );
-    assert_eq!(
-        decision == RehydrationPublicationDecision::CollectionReadBypass,
-        purpose == RehydrationPurpose::CollectionRead && has_frozen_revision && !profile_available
+        decision == RehydrationPublicationDecision::NonInteractiveFrozenProjection,
+        purpose != RehydrationPurpose::Interactive && has_frozen_revision && !profile_available
     );
     assert_eq!(
         decision == RehydrationPublicationDecision::RejectMissingExact,
@@ -275,8 +258,7 @@ impl ManagedState {
     /// MCP binding (ADR-0043 Phase 3): each requested server is bound to a vault
     /// credential by exact `mcp_server_url` match across the request's
     /// `vault_ids`. The preparation intent, frozen generation-1 state, and exact
-    /// realization claim all commit before
-    /// [`SessionRuntime::prepare_session`](awaken_session_contract::SessionRuntime::prepare_session)
+    /// realization claim all commit before the complete frozen projection port
     /// performs external I/O. A failed realization leaves recoverable failed
     /// state and fails the create (the router maps the `RunError` to the error
     /// envelope). A `vault_ids` entry that names no
@@ -1118,11 +1100,9 @@ impl ManagedState {
             ))));
         }
         let multiagent = match publication_decision {
-            RehydrationPublicationDecision::CollectionReadBypass
-            | RehydrationPublicationDecision::TerminalCleanupBypass
-            | RehydrationPublicationDecision::TerminalCleanupUnpinned => None,
+            RehydrationPublicationDecision::NonInteractiveFrozenProjection => None,
             RehydrationPublicationDecision::Available
-            | RehydrationPublicationDecision::InteractiveUnpinned => {
+            | RehydrationPublicationDecision::Unpinned => {
                 self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?
             }
             RehydrationPublicationDecision::RejectMissingExact => {
@@ -1178,11 +1158,14 @@ impl ManagedState {
         })
     }
 
-    /// Rebuild only the disposable projection needed by a terminal command.
-    /// Terminal recovery must not prepare a runtime or realize MCP again: those
-    /// effects may carry expired, Run-scoped credentials and are about to be
-    /// released rather than used.
-    async fn ensure_session_for_terminal_cleanup(&self, id: &str) -> Result<(), StateError> {
+    /// Rebuild only the disposable projection needed to control already-frozen
+    /// work. Terminal cleanup and interruption must not prepare a runtime or
+    /// realize MCP again: those effects may carry expired, Run-scoped credentials
+    /// and are being stopped or released rather than used.
+    pub(super) async fn ensure_session_for_frozen_control(
+        &self,
+        id: &str,
+    ) -> Result<(), StateError> {
         if self.sessions.lock().unwrap().contains_key(id) {
             return Ok(());
         }
@@ -1205,7 +1188,7 @@ impl ManagedState {
                 id,
                 &owner_scope,
                 persisted.clone(),
-                RehydrationPurpose::TerminalCleanup,
+                RehydrationPurpose::FrozenControl,
             )?,
             persisted.resources,
             Vec::new(),
@@ -1321,7 +1304,7 @@ impl ManagedState {
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
         // A terminal command must work after a process restart without realizing
         // the soon-to-be-released Environment or MCP attachments.
-        self.ensure_session_for_terminal_cleanup(id).await?;
+        self.ensure_session_for_frozen_control(id).await?;
         // Do not remove the visible record until the repository has atomically
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
@@ -1353,7 +1336,7 @@ impl ManagedState {
     /// events. Idempotent: a re-archive observes the same fact and emits no
     /// duplicate event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
-        self.ensure_session_for_terminal_cleanup(id).await?;
+        self.ensure_session_for_frozen_control(id).await?;
         let owner = self.resolve_owner(id).await?;
         let terminated_fact = lifecycle_fact(
             format!("session:{id}:terminated"),
@@ -1379,22 +1362,28 @@ mod rehydration_publication_policy_tests {
 
     #[test]
     fn missing_exact_publication_is_readable_but_not_interactively_recoverable() {
+        // Cause/effect table: C1=exact publication available; C2=operation may
+        // start/resume execution or projects/controls only frozen truth.
+        // E1=available publication is used; E2=interactive recovery without it
+        // rejects; E3=noninteractive projection rebuilds no executable state.
+        // Rules P1 C1=>E1; P2 !C1+interactive=>E2;
+        // P3 !C1+collection-or-frozen-control=>E3.
         assert_eq!(
             rehydration_publication_decision(RehydrationPurpose::Interactive, true, false),
             RehydrationPublicationDecision::RejectMissingExact
         );
         assert_eq!(
             rehydration_publication_decision(RehydrationPurpose::CollectionRead, true, false),
-            RehydrationPublicationDecision::CollectionReadBypass
+            RehydrationPublicationDecision::NonInteractiveFrozenProjection
         );
         assert_eq!(
-            rehydration_publication_decision(RehydrationPurpose::TerminalCleanup, true, false),
-            RehydrationPublicationDecision::TerminalCleanupBypass
+            rehydration_publication_decision(RehydrationPurpose::FrozenControl, true, false),
+            RehydrationPublicationDecision::NonInteractiveFrozenProjection
         );
         for purpose in [
             RehydrationPurpose::Interactive,
             RehydrationPurpose::CollectionRead,
-            RehydrationPurpose::TerminalCleanup,
+            RehydrationPurpose::FrozenControl,
         ] {
             assert_eq!(
                 rehydration_publication_decision(purpose, true, true),

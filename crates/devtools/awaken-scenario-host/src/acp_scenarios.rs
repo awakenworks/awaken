@@ -371,6 +371,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
+        scenario_deployment(),
         None,
         move |host| host.with_acp(executor),
     )
@@ -382,11 +383,13 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 /// backend, its model resolved from the operator env (KIMI:
 /// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and α loopback-relay MCP
 /// delivery so the sandboxed CLI receives no vault secret while the host relay authenticates
-/// upstream. Each thread's config home is isolated under
-/// `DeploymentConfig::storage_dir/threads/<t>/config_home` — the CLI never touches the host's real
-/// `~/.claude`. Drives a real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
+/// upstream. The bound Session Environment selected by the model's provisioning
+/// owns the CLI's `.acp-config`; the resolver's host path is overwritten before
+/// launch, so the CLI never touches the operator's real `~/.claude`. Drives a
+/// real dynamic MCP tool call end to end. `AWAKEN_MODEL_MODE=acp-real-mcp`.
 pub async fn build_acp_real_mcp_router() -> Router {
-    let store_dir = scenario_storage_dir();
+    let deployment = scenario_deployment();
+    let store_dir = deployment.storage_dir.clone();
     let cli_id = std::env::var("AWAKEN_ACP_CLI")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -413,6 +416,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", model_ref, format!("acp:{cli_id}")),
+        deployment,
         None,
         move |host| {
             host.with_projected_acp_argv(

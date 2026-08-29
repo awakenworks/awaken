@@ -55,8 +55,8 @@ pub use operational::{
     DispatchPage, LeaseLossReason,
 };
 pub use run_dispatch::{
-    DispatchAdmissionShape, ExecutionScopeRef, PlacementRequirements, RunDispatch,
-    SessionResourceEnvelope, SessionResourceInstallDecision, SessionRuntimeEnvelope,
+    DispatchAdmissionShape, DispatchIdentityScope, ExecutionScopeRef, PlacementRequirements,
+    RunDispatch, SessionResourceEnvelope, SessionResourceInstallDecision, SessionRuntimeEnvelope,
     session_resource_install_decision,
 };
 pub use worker_transport::{

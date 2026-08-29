@@ -15,10 +15,16 @@
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { withServer, pass } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  withServer,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38604);
 const SENTINEL = `SECRET-NOTE-${randomBytes(4).toString('hex')}`;
+const AGENT = 'assistant';
 
 async function drain(res) {
   const raw = await res.text();
@@ -38,14 +44,16 @@ async function drain(res) {
 }
 
 async function main() {
-  await withServer('probe', PORT, async (base) => {
-    const thread = `xdeny-${randomBytes(4).toString('hex')}`;
+  await withServer('management-probe', PORT, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, AGENT, ['write'], ['read']);
+    const { threadId: thread, headers: applicationHeaders } =
+      await createCrossProtocolApplicationThread(base, AGENT);
 
     // Turn 1 on AI-SDK: probe writes the sentinel via the mutating `write` tool,
     // which awaits for approval.
     const r1 = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...applicationHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({
         threadId: thread,
         messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: SENTINEL }] }],
@@ -59,9 +67,9 @@ async function main() {
     pass(`awaiting on AI-SDK write tool (toolCallId=${toolCallId})`);
 
     // Turn 2 on AG-UI: DENY by including the `error` field on the tool message.
-    const r2 = await fetch(`${base}/v1/ag-ui/agents/assistant`, {
+    const r2 = await fetch(`${base}/v1/ag-ui/agents/${AGENT}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...applicationHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({
         threadId: thread,
         runId: `run-${randomBytes(3).toString('hex')}`,
@@ -79,7 +87,9 @@ async function main() {
     // The run reached a terminal turn, but the denied write never took effect:
     // the sentinel content the probe tried to persist must not appear as a
     // committed tool RESULT (a successful read-back would echo it).
-    const hist = await (await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`)).json();
+    const hist = await (await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`, {
+      headers: applicationHeaders,
+    })).json();
     const raw = JSON.stringify(hist.items);
     assert.ok(raw.includes('done'), `run completed after deny: ${raw.slice(0, 400)}`);
     // The sentinel appears exactly twice — the user message and the AWAITING write's

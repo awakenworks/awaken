@@ -92,6 +92,7 @@ pub async fn build_management_web_router() -> Router {
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(WebToolDrivingModel),
         ModelBinding::new("default", "management-web", "default"),
+        crate::scenario_deployment(),
         Some(registry),
         |host| host,
     )

@@ -43,9 +43,26 @@ impl SharedHost {
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
-        self.resolved_dispatch_with_traceparent(
+        self.resolved_dispatch_with_traceparent_and_affinity(
             activation,
             awaken_observability::current_traceparent(),
+            true,
+        )
+    }
+
+    /// Decorate an extension-owned ordinary Run that shares a prepared
+    /// Session's Thread and frozen execution inputs without converting it into
+    /// a second Session-root admission. Outcome owns these Runs and their
+    /// lifecycle; the Session aggregate remains only a conservative recovery
+    /// candidate and must not acquire a parallel activity state machine.
+    pub(crate) fn resolved_thread_extension_dispatch(
+        &self,
+        activation: RunActivation,
+    ) -> Result<RunDispatch, HostError> {
+        self.resolved_dispatch_with_traceparent_and_affinity(
+            activation,
+            awaken_observability::current_traceparent(),
+            false,
         )
     }
 
@@ -57,6 +74,15 @@ impl SharedHost {
         &self,
         activation: RunActivation,
         traceparent: Option<String>,
+    ) -> Result<RunDispatch, HostError> {
+        self.resolved_dispatch_with_traceparent_and_affinity(activation, traceparent, true)
+    }
+
+    fn resolved_dispatch_with_traceparent_and_affinity(
+        &self,
+        activation: RunActivation,
+        traceparent: Option<String>,
+        associate_prepared_session: bool,
     ) -> Result<RunDispatch, HostError> {
         // `UNCONFIGURED_MODEL_REF` is a Coordinator-owned guidance executor, not a
         // remotely materializable model.  In a coordinator-only/all-in-one
@@ -99,8 +125,9 @@ impl SharedHost {
                 })
             })
             .flatten();
-        // `SessionRuntime::prepare_session` is the sole Coordinator-side owner
-        // that installs this frozen runtime projection. Preserve that existing
+        // `SessionRuntime::install_session_projection` is the sole
+        // Coordinator-side owner that installs this frozen runtime projection.
+        // Preserve that existing
         // ownership fact in the dispatch contract so a registered Worker enters
         // the canonical Control-owned realization path before it constructs the
         // execution context. Resource manifests alone are deliberately
@@ -130,7 +157,7 @@ impl SharedHost {
         let mut request = RunDispatch::new(activation)
             .with_traceparent(traceparent)
             .with_agent_publications(agent_publications);
-        if is_session_dispatch {
+        if associate_prepared_session && is_session_dispatch {
             request = request.for_session(ThreadId(thread.clone()));
         }
         if let Some(holder) = inference_holder {
@@ -325,6 +352,7 @@ impl SharedHost {
         activation: RunActivation,
         supersede: bool,
         stream_sink: Option<Arc<dyn StreamSink>>,
+        associate_prepared_session: bool,
     ) -> Result<awaken_agent_contract::agent::run::RunState, HostError> {
         let run_id = activation.run_id.clone();
         // Register for the settle event BEFORE enqueue, so the pool cannot drive and
@@ -332,7 +360,11 @@ impl SharedHost {
         // removes the waiter if this future is dropped (client disconnect) before it
         // settles — held to the end of this method.
         let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
-        let request = self.resolved_dispatch(activation)?;
+        let request = if associate_prepared_session {
+            self.resolved_dispatch(activation)?
+        } else {
+            self.resolved_thread_extension_dispatch(activation)?
+        };
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
         // submit needs the supersede option, so it enqueues on the shared store and

@@ -130,8 +130,8 @@
         "message_stop",
         "ping"
       ],
-      "type_source_count": 680,
-      "type_source_fingerprint": "009ab2c67b177e6560a40dd26cd268b560cc6a083a036d3758660166056b351e",
+      "type_source_count": 668,
+      "type_source_fingerprint": "37237e91937a165e0c0f7851e4dc74e2a6083cbdb78472306947c4573b4407cb",
       "version": "0.92.0",
       "wheel": {
         "filename": "anthropic-0.92.0-py3-none-any.whl",
@@ -279,8 +279,8 @@
         "user.message",
         "user.tool_confirmation"
       ],
-      "type_source_count": 800,
-      "type_source_fingerprint": "057a8379a371f5d62b59552912897b08de59d6026d8851959e48a7bb7b9e7852",
+      "type_source_count": 781,
+      "type_source_fingerprint": "68bb5fdf3896cbc450ee10c4e92f6ef40436422550ddfa4be5cb9bf1db691aee",
       "version": "0.100.0",
       "wheel": {
         "filename": "anthropic-0.100.0-py3-none-any.whl",
@@ -439,8 +439,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 928,
-      "type_source_fingerprint": "7f447524a3165cd89b9e756752438c0f41ca698f1d989df9572a93ae35bcf533",
+      "type_source_count": 893,
+      "type_source_fingerprint": "dc125a5208d7d75bbc6c2ae2e0fa6108edb0fb255c5e6a2a95478a1724da64b3",
       "version": "0.109.0",
       "wheel": {
         "filename": "anthropic-0.109.0-py3-none-any.whl",
@@ -604,8 +604,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 969,
-      "type_source_fingerprint": "ae36590dd4da70d183c7aea322f8b9dab247c6c89f0e9dfc66c1bc6ec53f9f1a",
+      "type_source_count": 934,
+      "type_source_fingerprint": "6e397a4dec37abf8b45b4e52bd12125a4cd214cf586fc4cb485d5d72f4c57a09",
       "version": "0.115.0",
       "wheel": {
         "filename": "anthropic-0.115.0-py3-none-any.whl",
@@ -769,8 +769,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 961,
-      "type_source_fingerprint": "254a143fce78772b74cb0d0f5c9719141a9a190e5a5c1d7efe090667c3c17a6c",
+      "type_source_count": 926,
+      "type_source_fingerprint": "5569e1d41888b5e4782416aa8ba23de6f7773d010c2b245e8f30f97a4b5ca0c7",
       "version": "0.116.0",
       "wheel": {
         "filename": "anthropic-0.116.0-py3-none-any.whl",
@@ -919,8 +919,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 989,
-      "type_source_fingerprint": "edf83a4a1e936508257550088fadae26b9e66812de74a360d183632c0ae3009f",
+      "type_source_count": 951,
+      "type_source_fingerprint": "7ca57052c4eca17cd1a4d0853d0d9a5ae1e6d05d5cb7a6f9868876d4cf60a186",
       "version": "0.117.1",
       "wheel": {
         "filename": "anthropic-0.117.1-py3-none-any.whl",
@@ -1069,8 +1069,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1007,
-      "type_source_fingerprint": "b7f3abf080060025be03c4b97e66a4369420fed8321b2a5bac42b2eb79b2af6e",
+      "type_source_count": 969,
+      "type_source_fingerprint": "38ae762e6ad472f0cccc9330bd250151cbe3ba2073b6fee2971016ded1ac4430",
       "version": "0.118.0",
       "wheel": {
         "filename": "anthropic-0.118.0-py3-none-any.whl",
@@ -1219,8 +1219,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1031,
-      "type_source_fingerprint": "fe65e2c4c51364fef8aa7003489eb63ab288258940149cb2542d2442f323a700",
+      "type_source_count": 993,
+      "type_source_fingerprint": "be42b0530cc596b812f0f5683729d70823bf25017c30fe2110e53563e208cc2b",
       "version": "0.121.0",
       "wheel": {
         "filename": "anthropic-0.121.0-py3-none-any.whl",
@@ -1355,8 +1355,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1180,
-      "type_source_fingerprint": "6c3d9205169cb5f553cd029fbc8adbe2b36cc32ae3fa002a57d1ae37cb3d867b",
+      "type_source_count": 1138,
+      "type_source_fingerprint": "9110ee10cc7346a61d8ce95b67745ea87b98c59df56d9380fe89723a0c4fcf27",
       "version": "0.124.0",
       "wheel": {
         "filename": "anthropic-0.124.0-py3-none-any.whl",
@@ -1494,8 +1494,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1201,
-      "type_source_fingerprint": "4b64686a5bfeaf26b69590a0563147b657e5b2db5838f0775be1f65155592243",
+      "type_source_count": 1156,
+      "type_source_fingerprint": "39eb58aab262677916d44dd3f11e4689f2a5c7527c13a871fce015d5496ab6f1",
       "version": "0.125.0",
       "wheel": {
         "filename": "anthropic-0.125.0-py3-none-any.whl",
@@ -1633,8 +1633,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1198,
-      "type_source_fingerprint": "1fc8bfce029737dce788b9be421e28deb1dbb5a4d4725dd56e348fb9e7d28005",
+      "type_source_count": 1153,
+      "type_source_fingerprint": "1246e32b9ac32672dbb6b25a0d14f422e7b1b73cf539f94b3479db6f64b80f32",
       "version": "1.0.0",
       "wheel": {
         "filename": "anthropic-1.0.0-py3-none-any.whl",
@@ -1772,8 +1772,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1307,
-      "type_source_fingerprint": "c95d78555bb08083dc0db985392415b8cab0c944969bf43e1c35cf757ea60970",
+      "type_source_count": 1262,
+      "type_source_fingerprint": "86a5669927ac76a70b1765895db11952c8465708a23a03a00ae9ddc9218e4cf7",
       "version": "1.1.0",
       "wheel": {
         "filename": "anthropic-1.1.0-py3-none-any.whl",
@@ -1912,8 +1912,8 @@
         "user.tool_confirmation",
         "user.tool_result"
       ],
-      "type_source_count": 1305,
-      "type_source_fingerprint": "2d09a825475e7ba4e0661a857895ec668ed1798365654ec6ade74b8dd227225c",
+      "type_source_count": 1259,
+      "type_source_fingerprint": "745250a454a9eec8ec81bf5ffa35da469539da2b470d7d0947c54a16bf21484f",
       "version": "1.2.0",
       "wheel": {
         "filename": "anthropic-1.2.0-py3-none-any.whl",
@@ -3114,7 +3114,7 @@
       "user.tool_confirmation",
       "user.tool_result"
     ],
-    "type_source_fingerprint": "2d09a825475e7ba4e0661a857895ec668ed1798365654ec6ade74b8dd227225c",
+    "type_source_fingerprint": "745250a454a9eec8ec81bf5ffa35da469539da2b470d7d0947c54a16bf21484f",
     "type_sources": [
       {
         "path": "anthropic/__init__.py",
@@ -3245,14 +3245,6 @@
         "sha256": "28d2f154e4861430aba4bc72641062c8c6fe38996e332640a0c6c4d0d0a5fdea"
       },
       {
-        "path": "anthropic/lib/_retry.py",
-        "sha256": "00888af282d721f9e87278b6ee4552d120aa981e65b08c3a5230bf1bd50c9194"
-      },
-      {
-        "path": "anthropic/lib/_scoped_client.py",
-        "sha256": "59543676234c020989535ade511d21b4f22fdd394025fe741f3565af28193311"
-      },
-      {
         "path": "anthropic/lib/_stainless_helpers.py",
         "sha256": "f6036bfc1ec346f373bf90c1a06ba7e852e6b64db18496211585d4f8aaa38def"
       },
@@ -3293,14 +3285,6 @@
         "sha256": "679839a174d6ae01234a9a40c6330d05bb753a5b0cb74fa549608c74c0862518"
       },
       {
-        "path": "anthropic/lib/environments/_poller.py",
-        "sha256": "c5d37b29d46e5c71b13316a784ef0acbb1d20c5bd3983c8c0b0467a9e9177190"
-      },
-      {
-        "path": "anthropic/lib/environments/_worker.py",
-        "sha256": "85a66c1a91f2ff433eeb06bd45878bdf1612c19d4daac0bee24807a88e101c7c"
-      },
-      {
         "path": "anthropic/lib/streaming/__init__.py",
         "sha256": "1e343e141981ed88a5883fc7bb7f8b8b8736506f111f0b79a66daa5778970083"
       },
@@ -3333,36 +3317,8 @@
         "sha256": "23115af5df203f46e5b9a1b924a4734f5b8e4f7fd0c7e0efd590babe4c061ff4"
       },
       {
-        "path": "anthropic/lib/tools/_beta_session_runner.py",
-        "sha256": "f9c905f4cb8a94a17eed71824b09816e18a43be24df2dd4782e54bd960314b97"
-      },
-      {
-        "path": "anthropic/lib/tools/_deprecations.py",
-        "sha256": "ddb25020b3cd78e1811c698681ec575e665c4e5a71b806a815980abb060de783"
-      },
-      {
-        "path": "anthropic/lib/tools/_file_store.py",
-        "sha256": "99ea72d0a4fbace9610a55b8b9b64d98b9e22722091bd63b6b090dc57fbaf8be"
-      },
-      {
-        "path": "anthropic/lib/tools/_files.py",
-        "sha256": "90b0a38b39f1996c3e354bbfb469a12d6a8d8bf6e50961c96c615f7b50cddba4"
-      },
-      {
-        "path": "anthropic/lib/tools/_memories.py",
-        "sha256": "90a34661777c45028ae97d11a11c50d24e3ac2d65ea2808751ea2e91741a136e"
-      },
-      {
-        "path": "anthropic/lib/tools/_skills.py",
-        "sha256": "e607db89c730ad91ae99a1a180ee39c2fefbd6e6ef451161a1607e16e774f875"
-      },
-      {
         "path": "anthropic/lib/tools/_tool_dispatch.py",
         "sha256": "d4c18f2e73467e04530c55a9528e5f59c36fc253f913e85f325d7514b0d89100"
-      },
-      {
-        "path": "anthropic/lib/tools/agent_toolset.py",
-        "sha256": "1ef59122d1e62d6ac775d751c566bd26f7cfbd14bd299a8c358c3587cedcf9a0"
       },
       {
         "path": "anthropic/pagination.py",
@@ -3377,52 +3333,8 @@
         "sha256": "4cd10725d49f23fc0e989ff3dfb9d73ac0b33ef1947813b7e564c09f1124ddd0"
       },
       {
-        "path": "anthropic/resources/beta/agents/agents.py",
-        "sha256": "26062c0726334164a8184b1d02a056dab50f6b7ffecda61006d3f3e7e100a79b"
-      },
-      {
-        "path": "anthropic/resources/beta/agents/versions.py",
-        "sha256": "6876083e58bd462f47d60166a04db3e5d9830bbbcda5f1e63494a2472e14d6bf"
-      },
-      {
         "path": "anthropic/resources/beta/beta.py",
         "sha256": "8c49ac4286e49171f4e06aa8e07b4b2bd191fa0e44c571c41b1ac026449007b7"
-      },
-      {
-        "path": "anthropic/resources/beta/deployment_runs.py",
-        "sha256": "1796eed5649d2058cc5b4937e236df08862a010b8ade522c157c2f886bf18e3e"
-      },
-      {
-        "path": "anthropic/resources/beta/deployments.py",
-        "sha256": "288b05b711d6ef9655eb29c657d3a65c07711f8e7aebbeada3762acc510899cf"
-      },
-      {
-        "path": "anthropic/resources/beta/dreams.py",
-        "sha256": "6387e887163a246f70430f183c3e1140b023061be6b6eb7ebe156206cb0d345a"
-      },
-      {
-        "path": "anthropic/resources/beta/environments/environments.py",
-        "sha256": "9be25bd3e288ea79fb1a9986a287f38b9bb4ee706559c9829fc18f571c76c28c"
-      },
-      {
-        "path": "anthropic/resources/beta/environments/work.py",
-        "sha256": "ec57a4c0cefa50b46c77a84dd537e8442fa3da53bab1ea51160363449488055e"
-      },
-      {
-        "path": "anthropic/resources/beta/files.py",
-        "sha256": "37365e7446596cb0ed0d5d4688b08564af8f5be0586d89f1baf5f8f3a3cf75c8"
-      },
-      {
-        "path": "anthropic/resources/beta/memory_stores/memories.py",
-        "sha256": "ef4955c399f02febaf4695d50a5183fba4dfebf4aebb2683f1691f4c65c7ac6f"
-      },
-      {
-        "path": "anthropic/resources/beta/memory_stores/memory_stores.py",
-        "sha256": "07a61719525532afcf2f2c150a4f06f2a1e68e74d0d5d7073c38af9a0c662015"
-      },
-      {
-        "path": "anthropic/resources/beta/memory_stores/memory_versions.py",
-        "sha256": "ecd36df045046cb3defc68eeb93e706b53703826c2e2d4686c0be30e431bddea"
       },
       {
         "path": "anthropic/resources/beta/messages/batches.py",
@@ -3431,10 +3343,6 @@
       {
         "path": "anthropic/resources/beta/messages/messages.py",
         "sha256": "4859f6d1ca951a1b4f9b3ab6aa685ac403a3b7d0bb60a2f4ca950188100b53b5"
-      },
-      {
-        "path": "anthropic/resources/beta/models.py",
-        "sha256": "081271a3fa2afb4d22e674aa455c1a0bc5858aa4dfabdf94aef8ecdbf98a7317"
       },
       {
         "path": "anthropic/resources/beta/organization/api_keys.py",
@@ -3501,62 +3409,6 @@
         "sha256": "08a53c9719beb684b14c2c78f3ce494c24c80cc90c2271b4b038294902e50cb1"
       },
       {
-        "path": "anthropic/resources/beta/sessions/events.py",
-        "sha256": "49e9873e72efb77cabc66efc29fe20d1d53b1b4e043c44ba7f7ffd9245144a6f"
-      },
-      {
-        "path": "anthropic/resources/beta/sessions/resources.py",
-        "sha256": "7a598f58c81fad8795eb1401101a984e53cd0a690c0672e25bc57dbfa30c2fd6"
-      },
-      {
-        "path": "anthropic/resources/beta/sessions/sessions.py",
-        "sha256": "c8b3deb79a56a67e526d0878520a264981cbd71fcf66caa08b3abd27f4fdf8a3"
-      },
-      {
-        "path": "anthropic/resources/beta/sessions/threads/events.py",
-        "sha256": "2679086cd29719f13cdb4ea574ebb0bf485c715475ef409c432aced3ed09702c"
-      },
-      {
-        "path": "anthropic/resources/beta/sessions/threads/threads.py",
-        "sha256": "1e68c2f676705ed9d75c88a962ae0214bce396c3afa56e405a81cc364774194e"
-      },
-      {
-        "path": "anthropic/resources/beta/skills/skills.py",
-        "sha256": "866f4fa9eea2710228ebbcf8e369026cb9beb0271ba51bbe2d8a4ee71251412e"
-      },
-      {
-        "path": "anthropic/resources/beta/skills/versions.py",
-        "sha256": "17d5250c46ab1d4d44d3a15774952a5e55ce6cfe5631c6ba351a3309b22bede5"
-      },
-      {
-        "path": "anthropic/resources/beta/tunnels/certificates.py",
-        "sha256": "8faba19ffcf71c849ca01f78ae427420835ae360e92ee1a6da0e13ca2c091128"
-      },
-      {
-        "path": "anthropic/resources/beta/tunnels/tunnels.py",
-        "sha256": "784177136313f7196d565fed82e2c15caaa30cdbb37fd2a397a10be9193ea1d3"
-      },
-      {
-        "path": "anthropic/resources/beta/user_profiles.py",
-        "sha256": "85bd6c9d06eb94a20709a650971f150ff2dbc27d70a508e5fc38f7c8bb0233bf"
-      },
-      {
-        "path": "anthropic/resources/beta/vaults/credentials.py",
-        "sha256": "07e85c9244e2ec7381cd76453d3138a71d4ab495c9a75f2d6b7f74aa57aa1960"
-      },
-      {
-        "path": "anthropic/resources/beta/vaults/vaults.py",
-        "sha256": "d8a009f6995ff9579ca0ef4e7ea083d4e1b00bcbff4fe505990b554bfbcc00d6"
-      },
-      {
-        "path": "anthropic/resources/beta/webhooks.py",
-        "sha256": "57fd2a224d921e933af77b1bf2f0c7a1ade0d372f30b9fabebbe45dc512a96ec"
-      },
-      {
-        "path": "anthropic/resources/files.py",
-        "sha256": "fdaafbdb49b4f40941a6a2327c3c9a5d5aeee16c88c6e0bb654d137d36cde94d"
-      },
-      {
         "path": "anthropic/resources/messages/__init__.py",
         "sha256": "88e4818780fb3535ea7bb44d870f47642885989bc37c88151678da17baf6ed85"
       },
@@ -3567,18 +3419,6 @@
       {
         "path": "anthropic/resources/messages/messages.py",
         "sha256": "9d43eccf2e15661ee6384426815e90e865f0e995cc53bb5f30d4dbbca1a6f541"
-      },
-      {
-        "path": "anthropic/resources/models.py",
-        "sha256": "a6d9987bc6f328991daea5ea1e7757a93460c9346c35b9de9835a76fd516f276"
-      },
-      {
-        "path": "anthropic/resources/skills/__init__.py",
-        "sha256": "40c0bf1c4cdf23e9348e17ca2538545237fdc1fed5b3c1d3c525d8367bd5c76a"
-      },
-      {
-        "path": "anthropic/resources/skills/skills.py",
-        "sha256": "cc8f78dd09f58ccdf7bd0b97c6a9f25dc74cfc9ebbf003e48e11b6800820ed22"
       },
       {
         "path": "anthropic/types/__init__.py",
@@ -4481,32 +4321,8 @@
         "sha256": "9798fbeacca9ea23954539f1e30601baeb87bfa27e8d1b407b99cfe308735bc3"
       },
       {
-        "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_bash_input.py",
-        "sha256": "a9145016a4d8103837ad3cad07f5fd8ac1d88d716589881cc5afad2ddbb83653"
-      },
-      {
-        "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_edit_input.py",
-        "sha256": "6c8d169a0d5e7003b65ab9c635bcc085902cfa8d57c9aa453f2378b41b09e99f"
-      },
-      {
-        "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_glob_input.py",
-        "sha256": "b5f6197cefd4dc4faa35f83559bbef24004eb3ebbabcd864de1f9245262a571d"
-      },
-      {
-        "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_grep_input.py",
-        "sha256": "a68668471cbde36e63a17d36af39b9cd7b3ddeffb40bac0275edc6d7dd640c46"
-      },
-      {
         "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_params.py",
         "sha256": "26aa8591652b825b8cf717f35a4ef7ba14c2cb1ed44505dae76f6e882c182347"
-      },
-      {
-        "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_read_input.py",
-        "sha256": "980fa6ea6e97e757e19d209ef311987c1c931e5fe9d61d96fc6b7fdf6cc0f3e8"
-      },
-      {
-        "path": "anthropic/types/beta/beta_managed_agents_agent_toolset20260401_write_input.py",
-        "sha256": "05ecdb3ce4261b40132d59a785cb17f5d930b625897e52d04805fcdf693e67ac"
       },
       {
         "path": "anthropic/types/beta/beta_managed_agents_agent_toolset_default_config.py",

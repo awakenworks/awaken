@@ -12,7 +12,14 @@ import {
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from 'ai';
 import { Chat } from '@ai-sdk/react';
-import { withRealServer, pass, RED_PNG_DATA_URI } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  RED_PNG_DATA_URI,
+  withRealServer,
+  withScenarioServer,
+} from './harness.mjs';
 
 function newChat(base, thread, extra = {}) {
   return new Chat({
@@ -63,10 +70,13 @@ async function main() {
 
   // --- HITL: a tool needing approval awaits; `Chat.addToolApprovalResponse` submits the
   // decision and (via sendAutomaticallyWhen) auto-resends, completing the run ---
-  await withRealServer('probe', 38143, async (base) => {
+  await withScenarioServer('management-probe', 'probe', 38143, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
+    const { threadId, headers } = await createCrossProtocolApplicationThread(base);
     const rawResponses = [];
     const transport = new DefaultChatTransport({
-      api: `${base}/v1/ai-sdk/threads/sdk-hitl/runs`,
+      api: `${base}/v1/ai-sdk/threads/${threadId}/runs`,
+      headers,
       fetch: async (...args) => {
         const response = await fetch(...args);
         rawResponses.push(response.clone().text());
@@ -98,7 +108,8 @@ async function main() {
       id: toolPart.approval.id,
       approved: true,
     });
-    // Cause/effect graph: committed built-in wait -> input + approval request;
+    // Cause/effect graph: published Agent + frozen write=AlwaysAsk policy ->
+    // committed built-in wait -> input + approval request;
     // explicit allow -> SDK approval response -> runtime resume -> terminal text.
     // Decision rule HITL-R1 covers the allow edge here; the deny edge is owned by
     // ai_sdk_hitl_deny_e2e.mjs. The polling oracle requires both terminal status

@@ -19,7 +19,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  spawnServer,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38608);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -41,8 +48,10 @@ async function drain(res) {
   return events;
 }
 
-async function history(base, thread) {
-  const res = await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`);
+async function history(base, thread, applicationHeaders) {
+  const res = await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`, {
+    headers: applicationHeaders,
+  });
   assert.equal(res.status, 200, 'history read ok');
   return (await res.json()).items;
 }
@@ -58,19 +67,21 @@ async function until(fn, tries = 150) {
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-xproto-'));
-  const { server, baseUrl: base } = spawnServer('probe', PORT, {
+  const { server, baseUrl: base } = spawnServer('management-probe', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     SESSION_DEPLOYMENT_STORAGE_DIR: dir,
   });
   try {
     await waitForPort(PORT);
-    const thread = `dur-xproto-${randomBytes(4).toString('hex')}`;
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
+    const { threadId: thread, headers: applicationHeaders } =
+      await createCrossProtocolApplicationThread(base);
     const NOTE = `DUR-${randomBytes(4).toString('hex')}`;
 
     // --- Turn 1 on AI-SDK under durable ingress: awaits --------------------
     const r1 = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...applicationHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({ threadId: thread, messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: NOTE }] }] }),
     });
     assert.equal(r1.status, 200, 'ai-sdk durable turn accepted');
@@ -80,7 +91,7 @@ async function main() {
     let toolCallId = events.find((e) => e.toolCallId)?.toolCallId;
     if (!toolCallId) {
       const items = await until(async () => {
-        const h = await history(base, thread);
+        const h = await history(base, thread, applicationHeaders);
         const raw = JSON.stringify(h);
         return raw.includes('write') ? h : null;
       });
@@ -89,14 +100,14 @@ async function main() {
       toolCallId = 'w';
     }
     // Confirm the run is genuinely awaiting (not yet completed) in durable state.
-    const awaitingHist = JSON.stringify(await history(base, thread));
+    const awaitingHist = JSON.stringify(await history(base, thread, applicationHeaders));
     assert.ok(!awaitingHist.includes('done'), 'durable run awaiting (not completed) before approval');
     pass(`durable run awaiting on AI-SDK (persisted under ${path.basename(dir)}, toolCallId=${toolCallId})`);
 
     // --- Approve on AG-UI: the dispatch worker resumes the durable run ----
     const r2 = await fetch(`${base}/v1/ag-ui/agents/assistant`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...applicationHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({
         threadId: thread,
         runId: `run-${randomBytes(3).toString('hex')}`,
@@ -113,7 +124,7 @@ async function main() {
 
     // --- The durable run completed and the approved write executed --------
     const done = await until(async () => {
-      const raw = JSON.stringify(await history(base, thread));
+      const raw = JSON.stringify(await history(base, thread, applicationHeaders));
       return raw.includes('done') ? raw : null;
     });
     assert.ok(done, 'the durable cross-protocol resume reached completion');

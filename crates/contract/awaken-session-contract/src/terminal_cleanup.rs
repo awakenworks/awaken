@@ -943,8 +943,10 @@ mod tests {
     fn cleanup_layout_and_legacy_variant_fields_remain_exact() {
         // Layout cause/effect decision table: C1 PersistedSession embeds the
         // cleanup operation by value; C2 the four legacy variants retain their
-        // exact public fields; C3 publication is absent/present. Effects: E1 the
-        // operation and PersistedSession retain their exact legacy inline sizes;
+        // exact public fields; C3 publication is absent/present; C4 optional
+        // realization-failure provenance is heap-indirected. Effects: E1 the
+        // operation retains its exact legacy inline size and PersistedSession
+        // carries only one pointer field for C4;
         // E2 legacy Rust construction/destructuring keeps BTreeMap/String field
         // types; E3 publication contributes only one boxed-wrapper word; E4
         // serde emits the wrapper payload without a Box representation.
@@ -952,11 +954,14 @@ mod tests {
         // | Rule | publication | legacy fields | Effect |
         // | B1 | absent | unchanged | E1/E2 |
         // | B2 | present | isolated in wrapper | E1/E3/E4 |
+        // | B3 | either | boxed failure source | E1 (one pointer field) |
         //
         // On x86_64 the uncorrected publication layout measured 120 bytes for
         // SessionCleanupOperation and 2480 for PersistedSession. Boxing the one
         // additive wrapper, not either legacy public field, preserves the exact
-        // 104/2464-byte layout.
+        // 104-byte operation layout. The later failure-source provenance adds
+        // one boxed pointer field; aggregate alignment produces the intentional
+        // 2480-byte Session instead of the 2496-byte inline-RunId layout.
         assert_eq!(
             std::mem::size_of::<SessionCleanupOperation>(),
             std::mem::size_of::<LegacySessionCleanupOperationLayout>(),
@@ -970,7 +975,7 @@ mod tests {
         #[cfg(target_pointer_width = "64")]
         {
             assert_eq!(std::mem::size_of::<SessionCleanupOperation>(), 104, "E1");
-            assert_eq!(std::mem::size_of::<crate::PersistedSession>(), 2464, "E1");
+            assert_eq!(std::mem::size_of::<crate::PersistedSession>(), 2480, "E1");
         }
         let _legacy_requested_source_shape = SessionCleanupOperation::Requested {
             effect_id: String::new(),

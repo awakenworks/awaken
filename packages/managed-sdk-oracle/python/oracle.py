@@ -327,14 +327,16 @@ def managed_type_source_evidence(
     so an unrelated Messages DTO in a broad ``types.beta`` initializer cannot
     enlarge or satisfy the Managed compatibility claim.
     """
-    pending: list[tuple[Path, bool, bool]] = [
-        (path, True, True) for path in resource_files
+    resource_roots = {path.resolve() for path in resource_files}
+    pending: list[tuple[Path, bool]] = [
+        (path, True) for path in resource_roots
     ]
     evidence: dict[str, dict[str, str]] = {}
     visited: set[tuple[Path, bool]] = set()
     while pending:
-        filename, is_resource_root, expand_imports = pending.pop()
+        filename, expand_imports = pending.pop()
         filename = filename.resolve()
+        is_resource_root = filename in resource_roots
         visit = (filename, expand_imports)
         if visit in visited:
             continue
@@ -370,7 +372,7 @@ def managed_type_source_evidence(
                 target = python_module_file(root, imported)
                 if target is None:
                     continue
-                pending.append((target, False, target.name != "__init__.py"))
+                pending.append((target, target.name != "__init__.py"))
                 if target.name != "__init__.py":
                     continue
                 for symbol in symbols:
@@ -378,7 +380,7 @@ def managed_type_source_evidence(
                         raise AssertionError(f"{filename}: wildcard type import is not auditable")
                     source = package_symbol_source(root, target, symbol)
                     if source is not None:
-                        pending.append((source, False, source.name != "__init__.py"))
+                        pending.append((source, source.name != "__init__.py"))
     if not evidence:
         raise AssertionError("Python Managed resource graph contains no type sources")
     return [evidence[path] for path in sorted(evidence)]

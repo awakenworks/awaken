@@ -165,13 +165,10 @@ async function captureDurable(port, file, storeDir) {
   const base = `http://127.0.0.1:${port}`;
   try {
     await waitForPort(port);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
-    const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: 'env_local',
-      betas: BETAS,
-    });
-    const res = await fetch(`${base}/v1/durable/threads/${session.id}/submit_background`, {
+    const thread = `durable-trace-capture-${process.pid}`;
+    // D0 ownership: generic background ingress owns an ordinary Runtime Thread;
+    // Managed Session roots use their Session-owned reservation path instead.
+    const res = await fetch(`${base}/v1/durable/threads/${thread}/submit_background`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'DURABLE-TRACE' }),
@@ -187,7 +184,7 @@ async function captureDurable(port, file, storeDir) {
     // Decision D1 C1&&!C3=>keep observing; D2 C1+C2+C3=>E1.
     await waitForValue(
       async () => {
-        const response = await fetch(`${base}/v1/durable/threads/${session.id}/messages`);
+        const response = await fetch(`${base}/v1/durable/threads/${thread}/messages`);
         assert.equal(response.status, 200, 'D1 durable trace messages remain readable');
         return (await response.json()).messages ?? [];
       },

@@ -28,17 +28,15 @@ pub awaken_ext_compact::config::CompactConfig::instructions: core::option::Optio
 pub awaken_ext_compact::config::CompactConfig::keep_last: usize
 pub awaken_ext_compact::config::CompactConfig::max_tokens: core::option::Option<u32>
 pub awaken_ext_compact::config::CompactConfig::prefetch_ratio: f64
-pub awaken_ext_compact::config::CompactConfig::threshold: usize
-pub awaken_ext_compact::config::CompactConfig::trigger_ratio: f64
 impl core::default::Default for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::default() -> Self
 impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub fn awaken_ext_compact::config::config_schema() -> serde_json::value::Value
 pub mod awaken_ext_compact::fold
-pub fn awaken_ext_compact::fold::fold_point(usize, usize, usize) -> core::option::Option<usize>
-pub fn awaken_ext_compact::fold::prefetch_fold_point(usize, u64, usize, core::option::Option<u32>, f64, f64, usize) -> core::option::Option<usize>
-pub fn awaken_ext_compact::fold::token_fold_point(u64, u32, f64, usize, usize) -> core::option::Option<usize>
+pub fn awaken_ext_compact::fold::fold_point(usize, usize, bool) -> core::option::Option<usize>
+pub fn awaken_ext_compact::fold::prefetch_fold_point(usize, u64, u32, f64, usize) -> core::option::Option<usize>
+pub fn awaken_ext_compact::fold::token_fold_point(u64, u32, usize, usize) -> core::option::Option<usize>
 pub mod awaken_ext_compact::plugin
 pub struct awaken_ext_compact::plugin::CompactPlugin
 impl awaken_ext_compact::plugin::CompactPlugin
@@ -63,8 +61,6 @@ pub awaken_ext_compact::CompactConfig::instructions: core::option::Option<alloc:
 pub awaken_ext_compact::CompactConfig::keep_last: usize
 pub awaken_ext_compact::CompactConfig::max_tokens: core::option::Option<u32>
 pub awaken_ext_compact::CompactConfig::prefetch_ratio: f64
-pub awaken_ext_compact::CompactConfig::threshold: usize
-pub awaken_ext_compact::CompactConfig::trigger_ratio: f64
 impl core::default::Default for awaken_ext_compact::config::CompactConfig
 pub fn awaken_ext_compact::config::CompactConfig::default() -> Self
 impl<'de> serde_core::de::Deserialize<'de> for awaken_ext_compact::config::CompactConfig
@@ -94,4 +90,4 @@ pub fn awaken_ext_compact::CompactBackend::prefetch<'life0, 'async_trait>(&'life
 pub fn awaken_ext_compact::CompactBackend::summarize<'life0, 'async_trait>(&'life0 self, awaken_ext_compact::backend::CompactRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_ext_compact::backend::CompactArtifact>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_compact::compact_config_schema() -> serde_json::value::Value
 pub fn awaken_ext_compact::default_compact_agent(&str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
-pub fn awaken_ext_compact::fold_point(usize, usize, usize) -> core::option::Option<usize>
+pub fn awaken_ext_compact::fold_point(usize, usize, bool) -> core::option::Option<usize>

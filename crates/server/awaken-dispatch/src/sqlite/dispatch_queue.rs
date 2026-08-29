@@ -42,8 +42,8 @@ impl DispatchQueue for SqliteDispatchStore {
         request: RunDispatch,
         reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        let reservation_ttl_ms =
-            validate_session_run_reservation_request(&request, reservation_ttl_ms)?;
+        let (request, reservation_ttl_ms) =
+            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
         let deadline = crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
         self.with_conn(move |conn, p| {
             let tx = conn
@@ -1312,7 +1312,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 return Ok(SettleOutcome::Fenced);
             };
             let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
-            let request_fingerprint = request.canonical_fingerprint();
+            let request_fingerprint = request.admission_fingerprint();
             let claim = RunClaim {
                 run_id: RunId(run_id.clone()),
                 owner,

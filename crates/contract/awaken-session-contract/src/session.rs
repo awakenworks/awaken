@@ -825,15 +825,6 @@ pub trait SessionRuntime: Send + Sync {
         is_error: bool,
     ) -> Result<StepOutcome, RunError>;
 
-    /// Provision `thread` for a new session BEFORE its record exists (ADR-0043
-    /// Phase 3): the host materializes the init's MCP credential bindings and
-    /// stages the servers for the Thread's first Run. A failure fails the
-    /// create (fail closed). The default is a no-op, so every host without MCP
-    /// wiring is unaffected.
-    async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
-        Ok(())
-    }
-
     /// Replace the complete Session-local tool configuration after an
     /// idle-session update.
     /// Implementations rebuild the disposable runtime context; durable desired
@@ -1527,7 +1518,6 @@ mod tests {
             "no usage reported by default"
         );
         // The nonterminal lifecycle no-op defaults succeed without a host wiring them.
-        assert!(rt.prepare_session("t", init()).await.is_ok());
         assert!(rt.rebind_model("t", "m").await.is_ok());
         assert!(rt.interrupt("t").await.is_ok());
         // The default capability surface is empty.
@@ -1594,33 +1584,6 @@ mod tests {
         ] {
             assert_eq!(error.code, "mcp_runtime_unsupported", "{rule}");
             assert_eq!(error.kind, RunErrorKind::Internal, "{rule}");
-        }
-    }
-
-    fn init() -> SessionInit {
-        SessionInit {
-            workspace_id: "ws_test".into(),
-            agent_id: "a".into(),
-            delegate_ids: Vec::new(),
-            tools: None,
-            resource_revision: 0,
-            resources: crate::ResolvedSessionResources::default(),
-            model: None,
-            runtime: None,
-            environment: crate::EnvironmentSnapshot {
-                environment_id: "env".into(),
-                revision: awaken_environment_contract::EnvironmentRevision(1),
-                self_hosted: false,
-                config_fingerprint: crate::EnvironmentFingerprint("env-1".into()),
-                sandbox: Default::default(),
-                sandbox_provisioning: Default::default(),
-                idle_retention: Default::default(),
-                packages: Default::default(),
-                prepared_image: None,
-                network: crate::SessionNetworkPolicy::Unrestricted,
-                credential_realization:
-                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
-            },
         }
     }
 

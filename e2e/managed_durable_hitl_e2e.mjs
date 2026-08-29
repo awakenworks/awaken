@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  managedAgentWithAlwaysAskTools,
   spawnServer,
   stopServer,
   waitForPort,
@@ -39,19 +40,7 @@ async function main() {
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     const s = await client.beta.sessions.create({
-      agent: {
-        id: 'assistant',
-        type: 'agent_with_overrides',
-        tools: [{
-          type: 'agent_toolset_20260401',
-          configs: [{
-            name: 'write',
-            type: 'write',
-            enabled: true,
-            permission_policy: { type: 'always_ask' },
-          }],
-        }],
-      },
+      agent: managedAgentWithAlwaysAskTools(['write']),
       environment_id: 'env_local',
       betas: BETAS,
     });

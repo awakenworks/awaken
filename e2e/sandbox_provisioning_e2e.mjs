@@ -24,6 +24,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  FILES_BETA,
   cleanupFixtureTree,
   assertPendingReceiptHasNoRuntimeEffects,
   pass,
@@ -31,7 +32,7 @@ import {
   withRealServer,
 } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const PORT = Number(process.env.E2E_PORT ?? 38291);
 const TMP = path.join(os.tmpdir(), `awaken-sbxprov-e2e-${process.pid}`);
@@ -157,16 +158,19 @@ async function main() {
     // A repo is cloned host-side when the sandbox is REALIZED, before the first
     // Run is reserved. Causes: C1=the frozen Repository is structurally valid but
     // physically unresolvable; C2=the User batch is accepted by the Session root;
-    // C3=pre-Run clone fails; C4=one bounded reconciliation window elapses without
-    // external repair. Effects: E1=admission returns the exact unprocessed receipt
-    // and lists it exactly once as pending history; E2=the Session remains
-    // idle/nonterminal; E3=no Run, model, assistant, tool,
+    // C3=pre-execution clone fails after the durable Run reservation has opened
+    // its exact Session activity; C4=one bounded reconciliation window elapses
+    // without external repair. Effects: E1=admission returns the exact unprocessed
+    // receipt and lists it exactly once as pending history; E2=the Session remains
+    // running/nonterminal while that retryable activity is still admitted; E3=no
+    // committed Run, model, assistant, tool,
     // or session.error fact is fabricated; E4=no fallback Repository is used and
     // the original command remains available to the lifecycle supervisor.
     // Constraints/invariants: accepted root CAS cannot be revoked by a later
     // dependency failure; session.error requires a committed Ended(Error) Run;
-    // Repository realization precedes Run reservation; this negative absence
-    // oracle must not use the positive helper that requires a processed receipt.
+    // Repository realization precedes Run execution, not durable reservation;
+    // an Idle aggregate cannot retain the active activity epoch. This negative
+    // absence oracle must not use the positive helper that requires a processed receipt.
     // Decision F1 C1+C2+C3=>E1+E2+E3+E4; F2 F1+C4=>the same effects still hold.
     const repoSession = await client.beta.sessions.create({
       agent: 'assistant',
@@ -205,15 +209,15 @@ async function main() {
     });
     assert.equal(
       (await client.beta.sessions.retrieve(repoSession.id, { betas: BETAS })).status,
-      'idle',
-      'pre-Run clone failure leaves the Session idle and nonterminal',
+      'running',
+      'pre-execution clone failure retains the admitted retryable activity',
     );
     assert.equal(
       upstream.requests.length,
       modelRequestsBeforeRepoFailure,
       'unresolvable Repository never reaches model inference',
     );
-    pass('an unresolvable Repository remains safely retained before Run reservation');
+    pass('an unresolvable Repository remains safely retained before Run execution');
   }, {
     extraEnv: { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' },
   });

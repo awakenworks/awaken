@@ -10,6 +10,8 @@
 /// authority clock, never a caller-authored absolute timestamp.
 /// C8 replacement intent preserves/supersedes prior live work and is replayed
 /// exactly from the immutable reservation.
+/// C9 cold replay reconstructs the same Session command with different current
+/// Agent/model/placement projections.
 /// Effects: E1 persist one unclaimable intent; E2 never open or overwrite the
 /// wrong activity; E3 exact replay reports the durable phase; E4 repair never
 /// binds a Sandbox or executes; E5 admitted repair publishes ordinary Pending;
@@ -26,7 +28,7 @@
 /// |---|---|---|---|---|
 /// | SR0 | absent Session root | no activity receipt | ordinary admission surfaces | E2; no row |
 /// | SR1 | absent | valid TTL | reserve | E1/E12 |
-/// | SR2 | exact/conflict | - | reserve replay | E3 / E2 conflict |
+/// | SR2 | exact command/changed command/changed projection | - | reserve replay | E3 / E2 / E3 |
 /// | SR3 | Reserved | exact/invalid | activate | Pending / E2 |
 /// | SR4 | ReservationLeased | current | replay/bind Sandbox | E3 / E4 |
 /// | SR5 | ReservationLeased | stale/current | resolve | fenced / E5-E7 |
@@ -243,6 +245,33 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .expect("SR2 exact replay"),
         SessionRunReservationOutcome::AlreadyReserved,
         "SR2/E3"
+    );
+    let mut reprojected = request.clone();
+    reprojected.activation.snapshot.resolved_spec.instructions =
+        "a newer current projection that must not replace the reservation".into();
+    reprojected.activation.model_ref_override = Some("current-model-route".into());
+    reprojected.placement = PlacementRequirements::remote_required();
+    assert_eq!(
+        store
+            .reserve_session_run(reprojected, RESERVATION_TTL_MS)
+            .await
+            .expect("SR2 cold projection replay"),
+        SessionRunReservationOutcome::AlreadyReserved,
+        "SR2/C8/E3"
+    );
+    let mut changed_input = request.clone();
+    changed_input.activation.input = vec![awaken_agent_contract::agent::message::Message::text(
+        awaken_agent_contract::agent::message::Id("changed-reservation-input".into()),
+        awaken_agent_contract::agent::message::Role::User,
+        "different Session command",
+    )];
+    assert_eq!(
+        store
+            .reserve_session_run(changed_input, RESERVATION_TTL_MS)
+            .await
+            .expect("SR2 command conflict classification"),
+        SessionRunReservationOutcome::Conflict,
+        "SR2/E2"
     );
     let conflicting = dispatch(ns, "reservation-activate", "reservation-other")
         .for_session(thread_id(ns, "reservation-other"));
