@@ -60,6 +60,7 @@ pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
 pub async fn awaken_runtime::Runtime::active_attempt_live_inbox(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub async fn awaken_runtime::Runtime::active_attempt_run_id(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Id>
+pub async fn awaken_runtime::Runtime::cancel_activation(&self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::cancel_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::deliver_to_current_attempt(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub async fn awaken_runtime::Runtime::interrupt_awaiting_tools(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
