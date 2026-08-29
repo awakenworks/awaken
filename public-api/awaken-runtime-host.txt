@@ -453,7 +453,6 @@ pub async fn awaken_runtime_host::SharedHost::list_dispatches(&self, &str) -> co
 pub async fn awaken_runtime_host::SharedHost::pending_tool(&self, &str) -> core::result::Result<core::option::Option<awaken_session_contract::session::Pending>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::purge_dead_letters(&self, &str) -> core::result::Result<usize, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::quarantine_retry_exhausted(&self, &str, u64, u64) -> core::result::Result<usize, awaken_runtime_host::HostError>
-pub async fn awaken_runtime_host::SharedHost::quiesce_terminal_delegations(&self, &str) -> core::result::Result<awaken_session_contract::session::DelegatedRunSnapshot, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::reconcile(&self, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::requeue_dead_letter(&self, &str, &str) -> core::result::Result<bool, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::resume(&self, &str, &str, awaken_runtime_host::HostResume) -> core::result::Result<awaken_runtime_host::CommittedStepReceipt, awaken_runtime_host::HostError>
@@ -480,6 +479,8 @@ pub async fn awaken_runtime_host::SharedHost::renew_due_session_realizations(&se
 pub async fn awaken_runtime_host::SharedHost::revoke_all_session_realizations(&self) -> core::result::Result<usize, awaken_runtime_host::HostError>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+impl awaken_runtime_host::SharedHost
+pub async fn awaken_runtime_host::SharedHost::quiesce_terminal_delegations(&self, &str) -> core::result::Result<awaken_session_contract::session::DelegatedRunSnapshot, awaken_runtime_host::HostError>
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::worker_artifact_publisher(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub fn awaken_runtime_host::SharedHost::worker_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
