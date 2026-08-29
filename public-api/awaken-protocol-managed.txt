@@ -397,6 +397,23 @@ pub enum awaken_protocol_managed::types::file::FileObjectType
 pub awaken_protocol_managed::types::file::FileObjectType::File
 pub enum awaken_protocol_managed::types::file::FileScopeObjectType
 pub awaken_protocol_managed::types::file::FileScopeObjectType::Session
+pub struct awaken_protocol_managed::types::file::BetaFileCursorListParams
+pub awaken_protocol_managed::types::file::BetaFileCursorListParams::ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_protocol_managed::types::file::BetaFileCursorListParams::limit: core::option::Option<u16>
+pub awaken_protocol_managed::types::file::BetaFileCursorListParams::page: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::file::BetaFileCursorListParams::scope_id: core::option::Option<alloc::string::String>
+impl awaken_protocol_managed::types::file::BetaFileCursorListParams
+pub fn awaken_protocol_managed::types::file::BetaFileCursorListParams::from_query(&str) -> core::result::Result<Self, alloc::string::String>
+pub struct awaken_protocol_managed::types::file::BetaFileCursorMetadata
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::created_at: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::downloadable: core::option::Option<bool>
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::expires_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::filename: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::id: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::kind: awaken_protocol_managed::types::file::FileObjectType
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::mime_type: alloc::string::String
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::scope: core::option::Option<awaken_protocol_managed::types::file::BetaFileScope>
+pub awaken_protocol_managed::types::file::BetaFileCursorMetadata::size_bytes: u64
 pub struct awaken_protocol_managed::types::file::BetaFileListParams
 pub awaken_protocol_managed::types::file::BetaFileListParams::after_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::file::BetaFileListParams::before_id: core::option::Option<alloc::string::String>
@@ -470,6 +487,12 @@ pub awaken_protocol_managed::types::memory::MemoryVersion::path: core::option::O
 pub awaken_protocol_managed::types::memory::MemoryVersion::redacted_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::memory::MemoryVersion::redacted_by: core::option::Option<awaken_protocol_managed::types::memory::MemoryActor>
 pub mod awaken_protocol_managed::types::page
+pub enum awaken_protocol_managed::types::page::IdPageError
+pub awaken_protocol_managed::types::page::IdPageError::CompetingCursors
+pub awaken_protocol_managed::types::page::IdPageError::EmptyRange
+pub awaken_protocol_managed::types::page::IdPageError::InvalidLimit
+pub awaken_protocol_managed::types::page::IdPageError::UnknownAfter
+pub awaken_protocol_managed::types::page::IdPageError::UnknownBefore
 pub struct awaken_protocol_managed::types::page::Page<T>
 pub awaken_protocol_managed::types::page::Page::data: alloc::vec::Vec<T>
 pub awaken_protocol_managed::types::page::Page::first_id: core::option::Option<alloc::string::String>
@@ -485,8 +508,11 @@ pub fn awaken_protocol_managed::types::page::PageCursor<T>::single(alloc::vec::V
 pub struct awaken_protocol_managed::types::page::PageQuery
 pub awaken_protocol_managed::types::page::PageQuery::limit: core::option::Option<usize>
 pub awaken_protocol_managed::types::page::PageQuery::page: core::option::Option<alloc::string::String>
+pub const awaken_protocol_managed::types::page::DEFAULT_ID_PAGE_SIZE: usize
+pub const awaken_protocol_managed::types::page::MAX_ID_PAGE_SIZE: usize
 pub fn awaken_protocol_managed::types::page::paginate<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> &str) -> awaken_protocol_managed::types::page::PageCursor<T>
 pub fn awaken_protocol_managed::types::page::paginate_by<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> alloc::string::String) -> awaken_protocol_managed::types::page::PageCursor<T>
+pub fn awaken_protocol_managed::types::page::paginate_id_page<T: core::clone::Clone>(&[T], core::option::Option<&str>, core::option::Option<&str>, core::option::Option<usize>, impl core::ops::function::Fn(&T) -> &str) -> core::result::Result<awaken_protocol_managed::types::page::Page<T>, awaken_protocol_managed::types::page::IdPageError>
 pub mod awaken_protocol_managed::types::resource
 pub enum awaken_protocol_managed::types::resource::FileResourceKind
 pub awaken_protocol_managed::types::resource::FileResourceKind::File
@@ -714,7 +740,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::agent: core::option::Option<awaken_protocol_managed::types::SessionAgent>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::title: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUsage
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUsage::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUsage::usage: awaken_protocol_managed::types::Usage
@@ -1114,23 +1140,31 @@ pub enum awaken_protocol_managed::types::user_profile::TrustGrantStatus
 pub awaken_protocol_managed::types::user_profile::TrustGrantStatus::Active
 pub awaken_protocol_managed::types::user_profile::TrustGrantStatus::Pending
 pub awaken_protocol_managed::types::user_profile::TrustGrantStatus::Rejected
+pub enum awaken_protocol_managed::types::user_profile::UserProfile
+pub awaken_protocol_managed::types::user_profile::UserProfile::Current(awaken_protocol_managed::types::user_profile::CurrentUserProfile)
+pub awaken_protocol_managed::types::user_profile::UserProfile::Legacy(awaken_protocol_managed::types::user_profile::LegacyUserProfile)
+pub struct awaken_protocol_managed::types::user_profile::CurrentUserProfile
+pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
+pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::core: awaken_protocol_managed::types::user_profile::UserProfileCore
+pub awaken_protocol_managed::types::user_profile::CurrentUserProfile::relationship: core::option::Option<awaken_protocol_managed::types::user_profile::Relationship>
 pub struct awaken_protocol_managed::types::user_profile::EnrollmentUrl
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::expires_at: alloc::string::String
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::object_type: &'static str
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::url: alloc::string::String
+pub struct awaken_protocol_managed::types::user_profile::LegacyUserProfile
+pub awaken_protocol_managed::types::user_profile::LegacyUserProfile::core: awaken_protocol_managed::types::user_profile::UserProfileCore
+pub awaken_protocol_managed::types::user_profile::LegacyUserProfile::relationship: awaken_protocol_managed::types::user_profile::Relationship
 pub struct awaken_protocol_managed::types::user_profile::TrustGrant
 pub awaken_protocol_managed::types::user_profile::TrustGrant::status: awaken_protocol_managed::types::user_profile::TrustGrantStatus
-pub struct awaken_protocol_managed::types::user_profile::UserProfile
-pub awaken_protocol_managed::types::user_profile::UserProfile::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
-pub awaken_protocol_managed::types::user_profile::UserProfile::created_at: alloc::string::String
-pub awaken_protocol_managed::types::user_profile::UserProfile::external_id: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::user_profile::UserProfile::id: alloc::string::String
-pub awaken_protocol_managed::types::user_profile::UserProfile::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_protocol_managed::types::user_profile::UserProfile::name: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::user_profile::UserProfile::object_type: &'static str
-pub awaken_protocol_managed::types::user_profile::UserProfile::relationship: awaken_protocol_managed::types::user_profile::Relationship
-pub awaken_protocol_managed::types::user_profile::UserProfile::trust_grants: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_protocol_managed::types::user_profile::TrustGrant>
-pub awaken_protocol_managed::types::user_profile::UserProfile::updated_at: alloc::string::String
+pub struct awaken_protocol_managed::types::user_profile::UserProfileCore
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::created_at: alloc::string::String
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::external_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::id: alloc::string::String
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::name: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::object_type: &'static str
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::trust_grants: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_protocol_managed::types::user_profile::TrustGrant>
+pub awaken_protocol_managed::types::user_profile::UserProfileCore::updated_at: alloc::string::String
 pub struct awaken_protocol_managed::types::user_profile::UserProfileCreateParams
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::access_type: core::option::Option<awaken_protocol_managed::types::user_profile::AccessType>
 pub awaken_protocol_managed::types::user_profile::UserProfileCreateParams::external_id: core::option::Option<alloc::string::String>
@@ -1147,6 +1181,7 @@ pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::trust
 pub mod awaken_protocol_managed::types::vault
 pub enum awaken_protocol_managed::types::vault::CredentialAuth
 pub awaken_protocol_managed::types::vault::CredentialAuth::EnvironmentVariable
+pub awaken_protocol_managed::types::vault::CredentialAuth::EnvironmentVariable::injection_location: awaken_protocol_managed::types::vault::CredentialInjectionLocation
 pub awaken_protocol_managed::types::vault::CredentialAuth::EnvironmentVariable::networking: awaken_protocol_managed::types::vault::CredentialNetworking
 pub awaken_protocol_managed::types::vault::CredentialAuth::EnvironmentVariable::secret_name: alloc::string::String
 pub awaken_protocol_managed::types::vault::CredentialAuth::McpOauth
@@ -1158,6 +1193,7 @@ pub awaken_protocol_managed::types::vault::CredentialAuth::StaticBearer::mcp_ser
 pub enum awaken_protocol_managed::types::vault::CredentialCreateParams
 pub awaken_protocol_managed::types::vault::CredentialCreateParams::EnvironmentVariable
 pub awaken_protocol_managed::types::vault::CredentialCreateParams::EnvironmentVariable::display_name: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::vault::CredentialCreateParams::EnvironmentVariable::injection_location: core::option::Option<awaken_protocol_managed::types::vault::CredentialInjectionLocationParams>
 pub awaken_protocol_managed::types::vault::CredentialCreateParams::EnvironmentVariable::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::vault::CredentialCreateParams::EnvironmentVariable::networking: awaken_protocol_managed::types::vault::CredentialNetworking
 pub awaken_protocol_managed::types::vault::CredentialCreateParams::EnvironmentVariable::secret_name: alloc::string::String
@@ -1188,6 +1224,7 @@ pub awaken_protocol_managed::types::vault::CredentialNetworking::Limited::allowe
 pub awaken_protocol_managed::types::vault::CredentialNetworking::Unrestricted
 pub enum awaken_protocol_managed::types::vault::CredentialUpdateAuth
 pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::EnvironmentVariable
+pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::EnvironmentVariable::injection_location: core::option::Option<awaken_protocol_managed::types::vault::CredentialInjectionLocationParams>
 pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::EnvironmentVariable::networking: core::option::Option<awaken_protocol_managed::types::vault::CredentialNetworking>
 pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::EnvironmentVariable::secret_value: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::vault::CredentialUpdateAuth::McpOauth
@@ -1226,6 +1263,12 @@ pub awaken_protocol_managed::types::vault::Credential::metadata: alloc::collecti
 pub awaken_protocol_managed::types::vault::Credential::object_type: &'static str
 pub awaken_protocol_managed::types::vault::Credential::updated_at: alloc::string::String
 pub awaken_protocol_managed::types::vault::Credential::vault_id: alloc::string::String
+pub struct awaken_protocol_managed::types::vault::CredentialInjectionLocation
+pub awaken_protocol_managed::types::vault::CredentialInjectionLocation::body: bool
+pub awaken_protocol_managed::types::vault::CredentialInjectionLocation::header: bool
+pub struct awaken_protocol_managed::types::vault::CredentialInjectionLocationParams
+pub awaken_protocol_managed::types::vault::CredentialInjectionLocationParams::body: core::option::Option<bool>
+pub awaken_protocol_managed::types::vault::CredentialInjectionLocationParams::header: core::option::Option<bool>
 pub struct awaken_protocol_managed::types::vault::CredentialUpdateParams
 pub awaken_protocol_managed::types::vault::CredentialUpdateParams::auth: core::option::Option<awaken_protocol_managed::types::vault::CredentialUpdateAuth>
 pub awaken_protocol_managed::types::vault::CredentialUpdateParams::display_name: core::option::Option<core::option::Option<alloc::string::String>>
@@ -1438,7 +1481,7 @@ pub awaken_protocol_managed::types::OutboundKind::SessionUpdated
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::agent: core::option::Option<awaken_protocol_managed::types::SessionAgent>
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::title: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::title: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::OutboundKind::SessionUsage
 pub awaken_protocol_managed::types::OutboundKind::SessionUsage::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::OutboundKind::SessionUsage::usage: awaken_protocol_managed::types::Usage
@@ -2002,4 +2045,6 @@ pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::
 pub fn awaken_protocol_managed::tunnels_router(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_protocol_managed::vault_router(alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> axum::routing::Router
+pub fn awaken_protocol_managed::with_managed_response_context(axum::routing::Router) -> axum::routing::Router
+pub fn awaken_protocol_managed::with_managed_workspace_header(axum_core::response::Response, &str) -> axum_core::response::Response
 pub async fn awaken_protocol_managed::work_session_guard(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedWorkSessionAccess>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

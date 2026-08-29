@@ -933,6 +933,10 @@ pub fn awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_curs
 pub mod awaken_agent_contract::thread::read::recovery
 pub enum awaken_agent_contract::thread::read::recovery::RecoveryError
 pub awaken_agent_contract::thread::read::recovery::RecoveryError::Rejected(alloc::string::String)
+pub enum awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError
+pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::Decode(serde_json::error::Error)
+pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::RunMismatch
+pub awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError::ThreadMismatch
 pub struct awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::claimed_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::events: alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
@@ -953,6 +957,9 @@ pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::ticket: awak
 pub trait awaken_agent_contract::thread::read::recovery::RunRecoverySource: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::recovery_snapshot_in_session<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::thread::Id, &'life3 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_agent_contract::thread::read::recovery::decode_resume_ticket_json_for_owner(&str, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError>
+pub fn awaken_agent_contract::thread::read::recovery::decode_resume_ticket_value_for_owner(serde_json::value::Value, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError>
+pub fn awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<(), awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError>
 pub mod awaken_agent_contract::thread::read::transcript
 pub enum awaken_agent_contract::thread::read::transcript::TranscriptError
 pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange
