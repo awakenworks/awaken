@@ -293,6 +293,8 @@ pub trait RepositoryRealizer: Send + Sync {
 #[serde(deny_unknown_fields)]
 pub struct SandboxHandle {
     pub sandbox_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restoration: Option<SandboxRestorationEvidence>,
     payload: SandboxHandlePayload,
 }
 
@@ -370,10 +372,22 @@ pub struct ContainerSandboxHandleV1 {
         std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
+mod restore_wire;
+pub use restore_wire::{HostBindRestorationHandle, SandboxRestorationEvidence};
+
+/// Runtime-owned incarnation evidence carried through Worker adoption.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContainerContinuationHandle {
     KubernetesContinuation { claim_uid: String },
+    HostBindRestoration(HostBindRestorationHandle),
+}
+
+impl ContainerContinuationHandle {
+    #[must_use]
+    pub const fn is_host_bind_restoration(&self) -> bool {
+        matches!(self, Self::HostBindRestoration(_))
+    }
 }
 
 impl SandboxHandle {
@@ -382,6 +396,7 @@ impl SandboxHandle {
     pub fn new(provider_kind: impl Into<String>, sandbox_id: impl Into<String>) -> Self {
         Self {
             sandbox_id: sandbox_id.into(),
+            restoration: None,
             payload: SandboxHandlePayload::Unmanaged {
                 provider_kind: provider_kind.into(),
             },
@@ -392,6 +407,7 @@ impl SandboxHandle {
     pub fn local(sandbox_id: impl Into<String>, payload: LocalSandboxHandleV1) -> Self {
         Self {
             sandbox_id: sandbox_id.into(),
+            restoration: None,
             payload: SandboxHandlePayload::LocalV1(payload),
         }
     }
@@ -404,6 +420,7 @@ impl SandboxHandle {
     ) -> Self {
         Self {
             sandbox_id: sandbox_id.into(),
+            restoration: None,
             payload: match provider {
                 NamespaceProviderKind::Bubblewrap => SandboxHandlePayload::BubblewrapV1(payload),
                 NamespaceProviderKind::Seatbelt => SandboxHandlePayload::SeatbeltV1(payload),
@@ -415,8 +432,14 @@ impl SandboxHandle {
     pub fn container(sandbox_id: impl Into<String>, payload: ContainerSandboxHandleV1) -> Self {
         Self {
             sandbox_id: sandbox_id.into(),
+            restoration: None,
             payload: SandboxHandlePayload::ContainerV1(payload),
         }
+    }
+
+    #[must_use]
+    pub const fn restoration(&self) -> Option<&SandboxRestorationEvidence> {
+        self.restoration.as_ref()
     }
 
     pub fn local_payload(&self) -> Result<&LocalSandboxHandleV1, SandboxError> {
@@ -464,6 +487,9 @@ impl SandboxHandle {
         ))
     }
 }
+
+#[cfg(test)]
+mod restore_wire_tests;
 
 /// The lifecycle state of a sandbox, queryable idempotently (survives reconnect).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1261,64 +1287,6 @@ mod tests {
             package_provisioning: false,
             control_services: Default::default(),
         }
-    }
-
-    #[test]
-    fn sandbox_control_incarnation_is_typed_and_legacy_handle_compatible() {
-        /* Incarnation wire cause/effect table:
-         * C1=legacy ContainerV1 handle omits control evidence; C2=valid Pod
-         * UID; C3=empty/line-injected UID; C4=unknown incarnation kind.
-         * E1=decode as None and omit on re-encode; E2=lossless typed roundtrip;
-         * E3=reject before adoption. Rules: I1 C1=>E1; I2 C2=>E2;
-         * I3 C3|C4=>E3.
-         */
-        let legacy = serde_json::json!({
-            "sandbox_id": "sandbox-a",
-            "payload": {
-                "schema": "container_v1",
-                "container_id": "pod-a",
-                "outputs_path": "/outputs",
-                "base_env": [],
-                "live_input_projection": false,
-                "continuation_excluded_paths": []
-            }
-        });
-        let decoded: SandboxHandle = serde_json::from_value(legacy).expect("I1/E1");
-        let SandboxHandlePayload::ContainerV1(payload) = &decoded.payload else {
-            panic!("I1 container payload")
-        };
-        assert!(payload.sandbox_control_incarnation.is_none(), "I1/E1");
-        assert!(payload.control_services.is_empty(), "I1/E1");
-        assert!(
-            ["sandbox_control_incarnation", "control_services"]
-                .into_iter()
-                .all(|field| !serde_json::to_string(&decoded).unwrap().contains(field)),
-            "I1/E1 empty evidence omitted"
-        );
-
-        let incarnation = SandboxControlIncarnation::kubernetes_pod("pod-uid-a").unwrap();
-        let encoded = serde_json::to_value(&incarnation).unwrap();
-        assert_eq!(
-            serde_json::from_value::<SandboxControlIncarnation>(encoded).unwrap(),
-            incarnation,
-            "I2/E2"
-        );
-        assert!(
-            SandboxControlIncarnation::kubernetes_pod("").is_err(),
-            "I3/E3"
-        );
-        assert!(
-            SandboxControlIncarnation::kubernetes_pod("uid\nother").is_err(),
-            "I3/E3"
-        );
-        assert!(
-            serde_json::from_value::<SandboxControlIncarnation>(serde_json::json!({
-                "kind": "opaque",
-                "uid": "pod-uid-a"
-            }))
-            .is_err(),
-            "I3/E3 closed kind"
-        );
     }
 
     #[test]

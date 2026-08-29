@@ -563,3 +563,36 @@ This keeps the existing Session aggregate, WorkQueue, Run dispatch, and retry
 budget as the only authorities. A terminal Session therefore retires its
 current Run instead of entering an unbounded claim/relinquish loop, while a new
 business attempt may create a new Session without deleting the failed history.
+
+## 2026-08-30 amendment: restore-handle readers precede the sole writer
+
+Exact physical-restore evidence rolls out in two deployment phases; the wire
+reader and writer are not activated in one release. Phase A adds one optional,
+defaulted and omitted-when-absent `SandboxHandle.restoration` value plus a
+reader-only host-bind continuation locator. Every existing handle constructor
+continues to emit the byte-compatible absent form. Local, Namespace and
+Container adoption wrappers preserve a complete future value unchanged when
+they re-encode the same adopted handle, but they neither acquire nor restore a
+physical target. The host-bind locator's typed value has no public constructor;
+an ordinary provider that reads it rejects before runtime inspection, process
+spawn, status, removal or deletion. Docker and Podman share the fail-closed
+default removal boundary, while Kubernetes accepts only its existing exact PVC
+UID locator.
+
+Phase A must reach the whole reader fleet and become the minimum rollback floor
+before Phase B is enabled. The activation barrier additionally requires the
+durable Session authority to report zero `Restoring` operations. Phase B then
+allows only the deployment composition that owns the existing portable v3
+checkpoint implementation to write restoration evidence and the host-bind
+locator; the open provider contract does not add an archive, checkpoint byte
+format, database, queue or process-local restore journal. Existing Hibernated
+v3 checkpoint bytes are not migrated by either phase.
+
+Before the Phase-B writer is enabled, rollback to a pre-Phase-A binary is safe
+only because no path can emit the new values. After writer activation, rollback
+below the Phase-A reader floor is prohibited. Disabling Phase B may return to
+reader-only Phase A only after its in-flight durable `Restoring` operations are
+settled; it cannot make an old deny-unknown reader safe. This fail-forward rule
+keeps the Session aggregate's `(effect_id, generation, checkpoint)` tuple and
+root CAS as the sole operation authority while provider evidence remains only a
+physical-handle projection.

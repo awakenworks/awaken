@@ -57,15 +57,16 @@ pub use prepare::{
 };
 pub use sandbox::{
     BlobSource, CheckpointObjectMetadata, ContainerContinuationHandle, ContainerSandboxHandleV1,
-    ExitStatus, IsolationClass, IsolationPolicy, KubernetesPodUid, LocalSandboxHandleV1,
-    MemoryMount, MemoryMounter, NamespaceProviderKind, NamespaceSandboxHandleV1, OnUnmet,
-    PolicySelection, ProcessHandle, RepositoryHttpBasicCredential,
-    RepositoryPublicationExpectation, RepositoryPublicationReceipt, RepositoryRealizationPlan,
-    RepositoryRealizer, Sandbox, SandboxCapabilities, SandboxCheckpointRef,
-    SandboxCheckpointRequest, SandboxCheckpointStore, SandboxControlIncarnation, SandboxError,
-    SandboxHandle, SandboxProvider, SandboxRequirements, SandboxStatus, SecretBroker,
-    SelectionError, Signal, StoredCheckpointObject, capability_requirements_satisfied,
-    select_provider, select_provider_with_policy,
+    ExitStatus, HostBindRestorationHandle, IsolationClass, IsolationPolicy, KubernetesPodUid,
+    LocalSandboxHandleV1, MemoryMount, MemoryMounter, NamespaceProviderKind,
+    NamespaceSandboxHandleV1, OnUnmet, PolicySelection, ProcessHandle,
+    RepositoryHttpBasicCredential, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
+    RepositoryRealizationPlan, RepositoryRealizer, Sandbox, SandboxCapabilities,
+    SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
+    SandboxControlIncarnation, SandboxError, SandboxHandle, SandboxProvider, SandboxRequirements,
+    SandboxRestorationEvidence, SandboxStatus, SecretBroker, SelectionError, Signal,
+    StoredCheckpointObject, capability_requirements_satisfied, select_provider,
+    select_provider_with_policy,
 };
 pub use spec::{
     Command, EnvironmentKind, FilesystemContinuity, MaterializedCommand, MaterializedEnvValue,

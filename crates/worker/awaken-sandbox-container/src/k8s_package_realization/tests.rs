@@ -63,21 +63,19 @@ impl Fixture {
 }
 
 fn test_builder() -> K8sPackageImageProvisioner {
+    test_builder_with_pull_secrets(vec!["registry-auth".into()])
+}
+
+fn test_builder_with_pull_secrets(image_pull_secrets: Vec<String>) -> K8sPackageImageProvisioner {
     crate::k8s::install_rustls_crypto_provider();
     let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
     let client = kube::Client::try_from(config).unwrap();
-    K8sPackageImageProvisioner::new(
-        client,
-        NAMESPACE,
-        REGISTRY,
-        vec!["registry-auth".into()],
-        true,
-    )
-    .unwrap()
-    .with_forward_proxy(crate::ForwardProxy {
-        url: "http://proxy.internal:8080".into(),
-    })
-    .unwrap()
+    K8sPackageImageProvisioner::new(client, NAMESPACE, REGISTRY, image_pull_secrets, true)
+        .unwrap()
+        .with_forward_proxy(crate::ForwardProxy {
+            url: "http://proxy.internal:8080".into(),
+        })
+        .unwrap()
 }
 
 fn package_requirements() -> awaken_provisioning_contract::PackageRequirements {
@@ -111,6 +109,7 @@ fn default_no_execute_toleration(key: &str) -> Toleration {
 
 fn apply_api_job_template_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec) {
     for container in &mut pod.containers {
+        container.resources = Some(Default::default());
         container.termination_message_path = Some("/dev/termination-log".into());
         container.termination_message_policy = Some("File".into());
     }
@@ -131,6 +130,7 @@ fn apply_api_job_template_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec
     pod.service_account_name = Some("default".into());
     pod.termination_grace_period_seconds = Some(30);
     pod.preemption_policy = Some("PreemptLowerPriority".into());
+    pod.security_context = Some(PodSecurityContext::default());
 }
 
 fn apply_api_pod_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec) {
@@ -142,7 +142,6 @@ fn apply_api_pod_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec) {
     pod.host_network = Some(false);
     pod.host_pid = Some(false);
     pod.host_ipc = Some(false);
-    pod.security_context = Some(PodSecurityContext::default());
     pod.node_name = Some("worker-a".into());
     pod.tolerations = Some(vec![
         default_no_execute_toleration("node.kubernetes.io/not-ready"),
@@ -355,7 +354,8 @@ async fn fresh_and_recovered_realizations_return_one_secret_free_typed_proof() {
 async fn exact_reuse_accepts_only_api_defaults_and_rejects_copied_digests() {
     /* 409 decision table:
      * C1 same realization+projection with only UID/resourceVersion/controller
-     * defaults, including the version-gated Job pod replacement default;
+     * defaults, including the version-gated Job pod replacement default,
+     * empty resource/security values, and an omitted empty pull-secret list;
      * C2 same name and copied annotations but changed ConfigMap data;
      * C3 copied annotations but changed Job executable spec; C4 changed generic
      * realization digest; C5 an ownerRef changes direct-object lifecycle; C6 a
@@ -363,7 +363,7 @@ async fn exact_reuse_accepts_only_api_defaults_and_rejects_copied_digests() {
      * Effects: E1 reuse the exact API object; E2 reject the 409 without
      * deleting/replacing it. R1=C1=>E1; R2=C2|C3|C4|C5|C6=>E2.
      */
-    let builder = test_builder();
+    let builder = test_builder_with_pull_secrets(Vec::new());
     let (desired_config, mut desired_job, destination) = builder
         .build_objects("registry.local/base@sha256:exact", &package_requirements())
         .unwrap();
@@ -409,6 +409,7 @@ async fn exact_reuse_accepts_only_api_defaults_and_rejects_copied_digests() {
     job_spec.manual_selector = Some(false);
     job_spec.suspend = Some(false);
     job_spec.pod_replacement_policy = Some("TerminatingOrFailed".into());
+    job_spec.template.spec.as_mut().unwrap().image_pull_secrets = None;
     let selector_labels = BTreeMap::from([("controller-uid".into(), "build-job-uid".into())]);
     job_spec.selector = Some(LabelSelector {
         match_labels: Some(selector_labels.clone()),
