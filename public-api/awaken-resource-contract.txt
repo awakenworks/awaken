@@ -67,6 +67,7 @@ pub enum awaken_resource_contract::RepositoryTransport
 pub awaken_resource_contract::RepositoryTransport::Direct
 pub awaken_resource_contract::RepositoryTransport::GatewayMediated
 pub awaken_resource_contract::RepositoryTransport::GatewayMediated::capability: awaken_resource_contract::RepositoryGatewayCapability
+pub awaken_resource_contract::RepositoryTransport::GatewayMediated::expires_at_unix_ms: core::option::Option<awaken_resource_contract::RepositoryGatewayCapabilityExpiry>
 pub awaken_resource_contract::RepositoryTransport::GatewayMediated::remote_url: alloc::string::String
 impl core::fmt::Debug for awaken_resource_contract::RepositoryTransport
 pub fn awaken_resource_contract::RepositoryTransport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -378,6 +379,13 @@ impl core::fmt::Debug for awaken_resource_contract::RepositoryGatewayCapability
 pub fn awaken_resource_contract::RepositoryGatewayCapability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for awaken_resource_contract::RepositoryGatewayCapability
 pub fn awaken_resource_contract::RepositoryGatewayCapability::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct awaken_resource_contract::RepositoryGatewayCapabilityExpiry(_)
+impl awaken_resource_contract::RepositoryGatewayCapabilityExpiry
+pub const fn awaken_resource_contract::RepositoryGatewayCapabilityExpiry::is_live_at(self, u64) -> bool
+pub fn awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new(u64) -> core::result::Result<Self, awaken_resource_contract::RepositoryBindingVerifierError>
+pub const fn awaken_resource_contract::RepositoryGatewayCapabilityExpiry::unix_ms(self) -> u64
+impl<'de> serde_core::de::Deserialize<'de> for awaken_resource_contract::RepositoryGatewayCapabilityExpiry
+pub fn awaken_resource_contract::RepositoryGatewayCapabilityExpiry::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_resource_contract::RepositoryId(_)
 impl awaken_resource_contract::RepositoryId
 pub fn awaken_resource_contract::RepositoryId::as_str(&self) -> &str

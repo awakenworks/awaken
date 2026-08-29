@@ -89,6 +89,11 @@ pub enum RepositoryTransport {
     GatewayMediated {
         remote_url: String,
         capability: RepositoryGatewayCapability,
+        /// Exact issuer-owned expiry. Older one-shot host-operation consumers
+        /// may omit it; long-lived workload consumers must require it at their
+        /// own boundary and fail closed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at_unix_ms: Option<RepositoryGatewayCapabilityExpiry>,
     },
 }
 
@@ -124,6 +129,46 @@ impl RepositoryGatewayCapability {
     #[must_use]
     pub fn expose(&self) -> &str {
         &self.0
+    }
+}
+
+/// Issuer-reported wall-clock expiry of one Gateway capability.
+///
+/// Zero is rejected at construction and deserialization. Dynamic liveness and
+/// the current claim/lease upper bound are enforced by the Worker authority
+/// boundary because only that boundary owns the current clock and fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(transparent)]
+pub struct RepositoryGatewayCapabilityExpiry(u64);
+
+impl RepositoryGatewayCapabilityExpiry {
+    pub fn new(value: u64) -> Result<Self, RepositoryBindingVerifierError> {
+        if value == 0 {
+            return Err(RepositoryBindingVerifierError::new(
+                "Gateway capability expiry must be positive",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn unix_ms(self) -> u64 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_live_at(self, now_unix_ms: u64) -> bool {
+        self.0 > now_unix_ms
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RepositoryGatewayCapabilityExpiry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u64 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -425,5 +470,42 @@ mod tests {
                 "R2"
             );
         }
+    }
+
+    #[test]
+    fn repository_gateway_expiry_wire_is_additive_and_strongly_validated() {
+        /* Gateway expiry wire decision table:
+         * C1=legacy Gateway wire omits expiry; C2=new wire supplies a positive
+         * issuer expiry; C3=expiry is zero. E1=decode legacy as None and omit it
+         * again; E2=lossless typed round-trip; E3=reject invalid evidence.
+         * Rules: W1 C1=>E1; W2 C2=>E2; W3 C3=>E3. Liveness and authority upper
+         * bounds remain the Worker boundary's dynamic responsibility.
+         */
+        let legacy = r#"{"type":"gateway_mediated","remote_url":"https://gateway.invalid/git/repository","capability":"cap"}"#;
+        let transport: RepositoryTransport = serde_json::from_str(legacy).expect("W1/E1");
+        assert!(matches!(
+            transport,
+            RepositoryTransport::GatewayMediated {
+                expires_at_unix_ms: None,
+                ..
+            }
+        ));
+        assert!(
+            !serde_json::to_string(&transport)
+                .unwrap()
+                .contains("expires_at_unix_ms")
+        );
+
+        let expiry = RepositoryGatewayCapabilityExpiry::new(123).expect("W2/E2");
+        let current = RepositoryTransport::GatewayMediated {
+            remote_url: "https://gateway.invalid/git/repository".into(),
+            capability: RepositoryGatewayCapability::new("cap").unwrap(),
+            expires_at_unix_ms: Some(expiry),
+        };
+        let decoded: RepositoryTransport =
+            serde_json::from_str(&serde_json::to_string(&current).unwrap()).expect("W2/E2");
+        assert_eq!(decoded, current);
+        assert!(RepositoryGatewayCapabilityExpiry::new(0).is_err(), "W3/E3");
+        assert!(serde_json::from_str::<RepositoryGatewayCapabilityExpiry>("0").is_err());
     }
 }
