@@ -73,11 +73,7 @@ impl SqliteWorkQueue {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
-        let bundle = work_bundle().map_err(|e| e.to_string())?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|e| e.to_string())?
-            .run_bundle(&conn, &bundle)
-            .map_err(|e| e.to_string())?;
+        apply_sqlite_migrations(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             book: LeaseBook::default(),
@@ -678,12 +674,7 @@ impl PostgresWorkQueue {
 
     /// Build from an existing pool: apply the work-queue migrations.
     pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
-        let bundle = work_bundle().map_err(|e| e.to_string())?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|e| e.to_string())?
-            .run_bundle(&bundle)
-            .await
-            .map_err(|e| e.to_string())?;
+        apply_postgres_migrations(&pool).await?;
         Ok(Self {
             pool,
             book: LeaseBook::default(),
@@ -692,12 +683,7 @@ impl PostgresWorkQueue {
 
     pub async fn connect_existing(url: &str) -> Result<Self, String> {
         let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
-        let bundle = work_bundle().map_err(|e| e.to_string())?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|e| e.to_string())?
-            .verify_bundle(&bundle)
-            .await
-            .map_err(|e| e.to_string())?;
+        verify_postgres_migrations(&pool).await?;
         Ok(Self {
             pool,
             book: LeaseBook::default(),

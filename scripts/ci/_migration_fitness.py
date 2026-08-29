@@ -64,6 +64,16 @@ PUBLISHED_LEGACY_SQL_AUTHORITIES = {
         "crates/control/awaken-admin-config-api/src/schema.rs",
     "crates/resources/awaken-memory-store/src/migrations/expanded/V0001__blob.sql":
         "crates/resources/awaken-memory-store/src/schema.rs",
+    "crates/stores/awaken-work-store/src/migrations/expanded/V0001__work_item.sql":
+        "crates/stores/awaken-work-store/src/schema.rs",
+    "crates/stores/awaken-work-store/src/migrations/expanded/V0002__lease_authority.sql":
+        "crates/stores/awaken-work-store/src/schema.rs",
+    "crates/stores/awaken-work-store/src/migrations/expanded/V0003__lease_refresh.sql":
+        "crates/stores/awaken-work-store/src/schema.rs",
+    "crates/stores/awaken-work-store/src/migrations/expanded/V0004__session_projection.sql":
+        "crates/stores/awaken-work-store/src/schema.rs",
+    "crates/stores/awaken-work-store/src/migrations/expanded/V0005__session_token.sql":
+        "crates/stores/awaken-work-store/src/schema.rs",
     "crates/server/awaken-run-ingress/src/migrations/expanded/V0015__delegation_group.sql":
         "crates/server/awaken-run-ingress/src/dispatch_schema.rs",
     "crates/server/awaken-run-ingress/src/migrations/expanded/V0016__drop_legacy_delegation_group.sql":
@@ -75,6 +85,7 @@ PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS = {
     "crates/resources/awaken-memory-store/src/schema.rs": (1, 0, 0, 0),
     "crates/resources/awaken-skill-store/src/schema/expanded.rs": (2, 0, 0, 0),
     "crates/stores/awaken-session-store/src/schema/expanded.rs": (1, 0, 0, 0),
+    "crates/stores/awaken-work-store/src/schema.rs": (1, 0, 0, 0),
     "crates/server/awaken-run-ingress/src/dispatch_schema.rs": (2, 0, 0, 0),
     "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs": (3, 0, 0, 0),
 }

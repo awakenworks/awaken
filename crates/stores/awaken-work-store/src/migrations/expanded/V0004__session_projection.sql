@@ -1,0 +1,1 @@
+DELETE FROM {prefix}_item WHERE data_type = 'session' AND seq NOT IN (SELECT MIN(seq) FROM {prefix}_item WHERE data_type = 'session' GROUP BY environment_id, data_id); CREATE UNIQUE INDEX {prefix}_session_projection_unique ON {prefix}_item (environment_id, data_type, data_id)
