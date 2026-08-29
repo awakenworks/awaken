@@ -109,12 +109,36 @@ impl ConfigPlaneManagedAgentRepository {
             .await
             .map_err(ManagedAgentError::Storage)?;
         if let Some(current) = current {
-            let visible = current.config.lifecycle() != AgentLifecycle::Published
+            if current.config.lifecycle() != AgentLifecycle::Published
                 || self
                     .publication_for_read(workspace_id, id, current.revision)
                     .await?
-                    .is_some();
-            return Ok(visible.then_some(current));
+                    .is_some()
+            {
+                return Ok(Some(current));
+            }
+
+            // The config plane owns drafts independently from Managed Agent
+            // publications. Saving draft rN must not hide the latest published
+            // rN-1 from SDK clients or promote rN through a read path. Reuse the
+            // immutable publication index as the sole visibility authority.
+            let mut revisions = self
+                .plane
+                .list_revisions(&Self::scope(workspace_id), id)
+                .await
+                .map_err(ManagedAgentError::Storage)?;
+            revisions.sort_by_key(|revision| revision.revision);
+            for revision in revisions.into_iter().rev() {
+                if revision.config.lifecycle() == AgentLifecycle::Published
+                    && self
+                        .publication_for_read(workspace_id, id, revision.revision)
+                        .await?
+                        .is_some()
+                {
+                    return Ok(Some(revision));
+                }
+            }
+            return Ok(None);
         }
         if !self.reserved_visible_in(workspace_id) {
             return Ok(None);
@@ -654,20 +678,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?;
         let mut agents = Vec::with_capacity(configs.len());
         for config in configs {
-            let versioned = self
-                .plane
-                .get_versioned(&scope, &config.id)
-                .await
-                .map_err(ManagedAgentError::Storage)?
-                .ok_or_else(|| ManagedAgentError::Storage("listed Agent disappeared".into()))?;
-            if versioned.config.lifecycle() == AgentLifecycle::Published
-                && self
-                    .publication_for_read(workspace_id, &config.id, versioned.revision)
-                    .await?
-                    .is_none()
-            {
+            let Some(versioned) = self.versioned_for_read(workspace_id, &config.id).await? else {
                 continue;
-            }
+            };
             let agent = self.project_current(workspace_id, versioned).await?;
             if !params.include_archived && agent.archived_at.is_some() {
                 continue;
@@ -889,7 +902,24 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if revisions.is_empty() {
             return Err(ManagedAgentError::NotFound);
         }
-        Ok(revisions.into_iter().map(project).collect())
+        let latest_revision = revisions.iter().map(|revision| revision.revision).max();
+        let mut visible = Vec::with_capacity(revisions.len());
+        for revision in revisions {
+            let terminal_current = Some(revision.revision) == latest_revision
+                && revision.config.lifecycle() != AgentLifecycle::Published;
+            let published = revision.config.lifecycle() == AgentLifecycle::Published
+                && self
+                    .publication_for_read(workspace_id, id, revision.revision)
+                    .await?
+                    .is_some();
+            if terminal_current || published {
+                visible.push(self.project_current(workspace_id, revision).await?);
+            }
+        }
+        if visible.is_empty() {
+            return Err(ManagedAgentError::NotFound);
+        }
+        Ok(visible)
     }
 }
 
@@ -1305,6 +1335,85 @@ mod tests {
             repository.versions("workspace-b", &id).await,
             Err(ManagedAgentError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn managed_reads_never_promote_or_hide_an_unpublished_config_draft() {
+        // Cause/effect matrix for the shared config/publication aggregate:
+        //
+        // | current config | immutable publication | Managed current/list | versions | exact draft |
+        // | r1             | r1                    | r1                   | r1       | n/a         |
+        // | r2 draft       | r1                    | r1                   | r1       | 404         |
+        // | r2             | r1,r2                 | r2                   | r1,r2    | r2          |
+        //
+        // A config save and a publication are deliberately separate commands.
+        // The publication index, not the newest authoring row, therefore owns
+        // every Managed Agent read. This closes current, list, versions, exact
+        // version, and restart through one selection rule.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let (plane, _catalog) = plane_with_catalog(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+        let created = repository
+            .create("workspace-a", create_params("published name"))
+            .await
+            .expect("published r1");
+        let scope = ScopeId::from("workspace-a");
+        let current = plane
+            .get_versioned(&scope, &created.id)
+            .await
+            .unwrap()
+            .expect("r1 config");
+        let mut draft = current.config;
+        draft.name = Some("unpublished draft".into());
+        assert!(matches!(
+            plane
+                .put_if_revision(&scope, &draft, current.revision)
+                .await
+                .unwrap(),
+            ConfigWrite::Applied { revision: 2 }
+        ));
+
+        let read = repository
+            .retrieve("workspace-a", &created.id, None)
+            .await
+            .expect("latest published revision remains readable");
+        assert_eq!((read.version, read.name.as_str()), (1, "published name"));
+        let listed = repository
+            .list("workspace-a", &AgentListParams::default())
+            .await
+            .expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].version, listed[0].name.as_str()), (1, "published name"));
+        let versions = repository
+            .versions("workspace-a", &created.id)
+            .await
+            .expect("versions");
+        assert_eq!(versions.iter().map(|agent| agent.version).collect::<Vec<_>>(), vec![1]);
+        assert!(matches!(
+            repository.retrieve("workspace-a", &created.id, Some(2)).await,
+            Err(ManagedAgentError::NotFound)
+        ));
+
+        plane.publish(&scope, &created.id).await.expect("publish r2");
+        let read = repository
+            .retrieve("workspace-a", &created.id, None)
+            .await
+            .expect("published r2");
+        assert_eq!((read.version, read.name.as_str()), (2, "unpublished draft"));
+        let versions = repository
+            .versions("workspace-a", &created.id)
+            .await
+            .expect("published versions");
+        assert_eq!(versions.iter().map(|agent| agent.version).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            repository
+                .retrieve("workspace-a", &created.id, Some(2))
+                .await
+                .expect("exact published r2")
+                .name,
+            "unpublished draft"
+        );
     }
 
     #[tokio::test]
