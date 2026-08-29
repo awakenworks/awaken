@@ -528,6 +528,278 @@ fn sample_with_credential_source(id: &str, source_id: &str) -> PersistedSession 
 }
 
 #[tokio::test]
+async fn sqlite_original_history_converges_without_a_parallel_session_model() {
+    // Causes: L1 exact original V1..V22 receipts; L2 canonical aggregate bytes
+    // in the nullable published column; L3 valid quarantine/deployment children;
+    // L4 a new command after upgrade. Effects: E1 branch-local V23 plus one
+    // convergence receipt; E2 one envelope aggregate and no retired root columns;
+    // E3 all children preserved under current constraints/indexes; E4 the normal
+    // repository writes a new root without legacy-column defaults. Rule
+    // M1=L1+L2+L3+L4=>E1+E2+E3+E4. Missing/invalid aggregates and orphan children
+    // are negative constraints: migration must roll back before serving.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session-original-upgrade.db");
+    let path = path.to_string_lossy().to_string();
+    let conn = Connection::open(&path).unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .unwrap()
+        .run_bundle(&conn, &original_published_session_bundle().unwrap())
+        .unwrap();
+    let mut legacy = sample("legacy-lineage");
+    legacy.revision = SessionRevision(1);
+    conn.execute(
+        "INSERT INTO managed_session \
+            (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
+         VALUES (?1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,?2)",
+        params![legacy.session_id, serde_json::to_string(&legacy).unwrap()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO managed_session_quarantine(session_id,reason) VALUES(?1,'audit')",
+        params![legacy.session_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO managed_deployment(deployment_id,workspace_id,data,revision) VALUES('dep','legacy-space','{}',0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO managed_deployment_run(run_id,deployment_id,workspace_id,data) VALUES('run','dep','legacy-space','{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO managed_deployment_claim(claim_id,run_id) VALUES('claim','run')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let repo = SqliteManagedSessionRepository::open(&path).expect("M1 migration");
+    assert_eq!(repo.get(&legacy.session_id).await.unwrap(), legacy, "E2");
+    create_fixture(&repo, "legacy-space", sample("post-upgrade"), Vec::new()).await;
+    let conn = repo.conn.lock().unwrap();
+    let ledgers: (i64, i64) = conn
+        .query_row(
+            "SELECT \
+               (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
+               (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(ledgers, (23, 1), "E1");
+    let retired_columns: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retired_columns, 0, "E2");
+    let canonical: String = conn
+        .query_row(
+            "SELECT aggregate_json FROM managed_session WHERE session_id=?1",
+            params![legacy.session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(canonical.contains("\"format\":\"awaken.session.v1\""), "E2");
+    let preserved: (i64, i64) = conn
+        .query_row(
+            "SELECT \
+               (SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id=?1 AND observed_revision=1), \
+               (SELECT COUNT(*) FROM managed_deployment_claim WHERE claim_id='claim')",
+            params![legacy.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(preserved, (1, 1), "E3");
+    let foreign_key_errors: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(foreign_key_errors, 0, "E3");
+}
+
+#[tokio::test]
+async fn postgres_original_history_converges_with_the_same_domain_effects() {
+    // PostgreSQL parity for M1 above: exact original receipts plus valid roots
+    // and children must produce the same canonical aggregate, branch-local V23,
+    // convergence receipt, preserved children, and normal post-upgrade writes.
+    // The dialect-specific effect is in-place constraint/column conversion under
+    // the migration lock; an unreachable test database is an explicit skip.
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+    });
+    let Ok(admin) = PgPool::connect(&url).await else {
+        println!("[skip] no Postgres reachable");
+        return;
+    };
+    let _ = admin
+        .execute("DROP SCHEMA IF EXISTS t_session_original_upgrade CASCADE")
+        .await;
+    admin
+        .execute("CREATE SCHEMA t_session_original_upgrade")
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                connection
+                    .execute("SET search_path = t_session_original_upgrade")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .unwrap()
+        .run_bundle(&original_published_session_bundle().unwrap())
+        .await
+        .unwrap();
+    let mut legacy = sample("legacy-pg-lineage");
+    legacy.revision = SessionRevision(1);
+    sqlx::query(
+        "INSERT INTO managed_session \
+            (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
+         VALUES ($1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,$2)",
+    )
+    .bind(&legacy.session_id)
+    .bind(serde_json::to_string(&legacy).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO managed_session_quarantine(session_id,reason) VALUES($1,'audit')")
+        .bind(&legacy.session_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO managed_deployment(deployment_id,workspace_id,data,revision) VALUES('dep','legacy-space','{}',0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO managed_deployment_run(run_id,deployment_id,workspace_id,data) VALUES('run','dep','legacy-space','{}')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO managed_deployment_claim(claim_id,run_id) VALUES('claim','run')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .expect("M1 postgres migration");
+    assert_eq!(repo.get(&legacy.session_id).await.unwrap(), legacy, "E2");
+    create_fixture(&repo, "legacy-space", sample("post-pg-upgrade"), Vec::new()).await;
+    let ledgers: (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
+           (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ledgers, (23, 1), "E1");
+    let retired_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM information_schema.columns \
+         WHERE table_schema='t_session_original_upgrade' AND table_name='managed_session' \
+           AND column_name IN ('agent_id','metadata_json','runtime_json')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(retired_columns, 0, "E2");
+    let preserved: (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id=$1 AND observed_revision=1), \
+           (SELECT COUNT(*) FROM managed_deployment_claim WHERE claim_id='claim')",
+    )
+    .bind(&legacy.session_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(preserved, (1, 1), "E3");
+    pool.close().await;
+    admin
+        .execute("DROP SCHEMA IF EXISTS t_session_original_upgrade CASCADE")
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[test]
+fn sqlite_legacy_upgrade_rejects_missing_roots_and_orphan_children_atomically() {
+    // Negative rules for the legacy-upgrade cause graph. N1 a published row has
+    // no aggregate -> reject before V23/DDL; N2 a quarantine child has no root ->
+    // V23 transaction fails and rolls back. Effects: E1 legacy ledger remains at
+    // V22; E2 old root shape remains recoverable; E3 no convergence receipt.
+    // These rules prevent silent reconstruction from retired columns and prevent
+    // an inner join from discarding orphan recovery evidence.
+    let dir = tempfile::tempdir().unwrap();
+    let missing_path = dir.path().join("missing-aggregate.db");
+    let missing = Connection::open(&missing_path).unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .unwrap()
+        .run_bundle(&missing, &original_published_session_bundle().unwrap())
+        .unwrap();
+    missing
+        .execute(
+            "INSERT INTO managed_session \
+                (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
+             VALUES ('missing','agent','model',NULL,'{}','env','[]','space',1,NULL)",
+            [],
+        )
+        .unwrap();
+    drop(missing);
+    assert!(
+        SqliteManagedSessionRepository::open(missing_path.to_str().unwrap()).is_err(),
+        "N1"
+    );
+
+    let orphan_path = dir.path().join("orphan-quarantine.db");
+    let orphan = Connection::open(&orphan_path).unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .unwrap()
+        .run_bundle(&orphan, &original_published_session_bundle().unwrap())
+        .unwrap();
+    orphan
+        .execute(
+            "INSERT INTO managed_session_quarantine(session_id,reason) VALUES('orphan','audit')",
+            [],
+        )
+        .unwrap();
+    drop(orphan);
+    assert!(
+        SqliteManagedSessionRepository::open(orphan_path.to_str().unwrap()).is_err(),
+        "N2"
+    );
+
+    for path in [missing_path, orphan_path] {
+        let connection = Connection::open(path).unwrap();
+        let state: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT \
+                   (SELECT MAX(version) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session'), \
+                   (SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id='awaken.managed_session.converged'), \
+                   (SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name='agent_id')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (22, 0, 1), "E1+E2+E3");
+    }
+}
+
+#[tokio::test]
 async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     // V2 startup-backfill cause/effect graph. C1 a published V1 database has a
     // healthy canonical root; C2 another V1 root is corrupt; C3 the corrupt root

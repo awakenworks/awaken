@@ -23,15 +23,90 @@ impl SqliteManagedSessionRepository {
     }
 
     fn from_connection(mut conn: Connection) -> Result<Self, String> {
-        let bundle = session_bundle().map_err(|e| e.to_string())?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|e| e.to_string())?
-            .run_bundle(&conn, &bundle)
-            .map_err(|e| e.to_string())?;
+        let receipts = Self::migration_receipts(&conn)?;
+        let (stream, published) =
+            selected_session_bundle(&receipts).map_err(|error| error.to_string())?;
+        awaken_scoped_migration::plan(
+            &published,
+            &receipts,
+            awaken_scoped_migration::Dialect::Sqlite,
+        )
+        .map_err(|error| error.to_string())?;
+        if stream.is_legacy() {
+            Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
+        }
+        let converged = converged_session_bundle().map_err(|error| error.to_string())?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&conn, &published)
+            .and_then(|_| runner.run_bundle(&conn, &converged))
+            .map_err(|error| error.to_string())?;
+        Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
         Self::rebuild_credential_source_index(&mut conn).map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    fn migration_receipts(conn: &Connection) -> Result<BTreeMap<i64, String>, String> {
+        let ledger_exists = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [format!("{NS}_schema_migrations")],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !ledger_exists {
+            return Ok(BTreeMap::new());
+        }
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT version,checksum FROM {NS}_schema_migrations WHERE bundle_id=?1 ORDER BY version"
+            ))
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map([BUNDLE_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    fn normalize_session_aggregates(conn: &mut Connection) -> Result<(), SessionRepositoryError> {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let rows = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT session_id,aggregate_json,revision FROM managed_session ORDER BY session_id",
+                )
+                .map_err(storage)?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?
+        };
+        for (stored_session_id, aggregate_json, revision) in rows {
+            if let Some(canonical) =
+                normalize_published_row(&stored_session_id, aggregate_json, revision)
+                    .map_err(corrupt)?
+            {
+                tx.execute(
+                    "UPDATE managed_session SET aggregate_json=?2 WHERE session_id=?1",
+                    params![stored_session_id, canonical],
+                )
+                .map_err(storage)?;
+            }
+        }
+        tx.commit().map_err(storage)
     }
 
     fn sync_session_indexes(

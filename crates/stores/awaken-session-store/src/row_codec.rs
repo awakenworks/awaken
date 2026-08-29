@@ -36,6 +36,63 @@ fn invalid(message: impl Into<String>) -> serde_json::Error {
     ))
 }
 
+fn migrate_legacy_baseline(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), serde_json::Error> {
+    let Some(baseline) = object
+        .get_mut("baseline")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Err(invalid("managed Session aggregate has no baseline object"));
+    };
+    let state = baseline
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| invalid("managed Session baseline has no state"))?;
+    if state != "frozen" {
+        return Err(invalid(format!(
+            "unsupported legacy managed Session baseline state `{state}`"
+        )));
+    }
+    // Application contributions were fully consumed into these frozen fields;
+    // the nullable receipt was retired and must not become a second authority.
+    baseline.remove("application");
+    let environment = baseline
+        .get_mut("environment")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| invalid("managed Session baseline has no environment snapshot"))?;
+    environment
+        .entry("self_hosted")
+        .or_insert_with(|| serde_json::json!(false));
+    let runtime_placement = if environment
+        .get("self_hosted")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| invalid("Session self_hosted placement is not boolean"))?
+    {
+        "worker"
+    } else {
+        "local"
+    };
+    environment.entry("idle_retention").or_insert_with(|| {
+        serde_json::to_value(awaken_session_contract::EnvironmentIdleRetentionPolicy::default())
+            .expect("default idle-retention policy serializes")
+    });
+    match baseline
+        .get("runtime_placement")
+        .and_then(serde_json::Value::as_str)
+    {
+        None | Some("legacy_unspecified") => {
+            baseline.insert(
+                "runtime_placement".into(),
+                serde_json::json!(runtime_placement),
+            );
+        }
+        Some("local" | "worker") => {}
+        Some(_) => return Err(invalid("unknown Session runtime placement")),
+    }
+    Ok(())
+}
+
 fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(data)?;
     if value.get("format").is_some() || value.get("aggregate").is_some() {
@@ -57,6 +114,82 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
     let object = value
         .as_object_mut()
         .ok_or_else(|| invalid("managed Session aggregate must be an object"))?;
+    migrate_legacy_baseline(object)?;
+
+    // Published pre-envelope rows used one lifecycle axis plus an optional
+    // archive timestamp. This is the sole historical interpretation; SQL
+    // projection columns never participate in aggregate reconstruction.
+    if !object.contains_key("disposition") {
+        let status = object
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| invalid("legacy managed Session has no status"))?
+            .to_owned();
+        let archived_at = object
+            .remove("archived_at")
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let disposition = match status.as_str() {
+            "deleted" => awaken_session_contract::SessionDisposition::Deleted,
+            "terminated" if archived_at.is_some() => {
+                awaken_session_contract::SessionDisposition::Archived {
+                    archived_at: archived_at.expect("checked above"),
+                }
+            }
+            _ => awaken_session_contract::SessionDisposition::Active,
+        };
+        if status == "deleted" {
+            object.insert("status".into(), serde_json::json!("terminated"));
+        }
+        object.insert(
+            "disposition".into(),
+            serde_json::to_value(disposition).expect("Session disposition serializes"),
+        );
+    }
+
+    // The former nullable opaque binding is a recognized predecessor of the
+    // typed environment phase. If the typed field exists it is authoritative;
+    // carrying both shapes is corruption rather than a merge rule.
+    if !object.contains_key("environment") {
+        let environment = match object.remove("environment_binding") {
+            Some(serde_json::Value::String(binding)) => {
+                awaken_session_contract::SessionEnvironmentState::Resident {
+                    binding,
+                    effect_id: None,
+                    generation: None,
+                    idle_since_unix_ms: None,
+                }
+            }
+            Some(serde_json::Value::Null) | None => {
+                awaken_session_contract::SessionEnvironmentState::Unmaterialized
+            }
+            Some(_) => {
+                return Err(invalid(
+                    "legacy Session environment binding is not a string",
+                ));
+            }
+        };
+        object.insert(
+            "environment".into(),
+            serde_json::to_value(environment).expect("Session environment state serializes"),
+        );
+    } else if object.contains_key("environment_binding") {
+        return Err(invalid(
+            "managed Session carries both typed and legacy environment state",
+        ));
+    }
+
+    if !object.contains_key("activity_epoch") {
+        let epoch = object
+            .remove("activity")
+            .and_then(|activity| activity.get("epoch").and_then(serde_json::Value::as_u64))
+            .unwrap_or_default();
+        object.insert("activity_epoch".into(), serde_json::json!(epoch));
+    } else if object.contains_key("activity") {
+        return Err(invalid(
+            "managed Session carries both scalar and legacy activity state",
+        ));
+    }
+
     match (
         object.contains_key("event_batches"),
         object.contains_key("active_activity_epochs"),
@@ -72,12 +205,48 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
             ));
         }
     }
+
+    object
+        .entry("runtime_active_millis")
+        .or_insert_with(|| serde_json::json!(0));
+    object.entry("budget").or_insert_with(|| {
+        serde_json::to_value(awaken_session_contract::SessionBudgetState::default())
+            .expect("default Session budget serializes")
+    });
+    object.entry("realization_progress").or_insert_with(|| {
+        serde_json::to_value(awaken_session_contract::SessionRealizationProgress::default())
+            .expect("default Session realization progress serializes")
+    });
+    object.entry("terminal_cleanup").or_insert_with(|| {
+        serde_json::to_value(awaken_session_contract::SessionCleanupOperation::default())
+            .expect("default Session cleanup serializes")
+    });
     serde_json::from_value(value)
 }
 
 pub(super) struct EncodedSessionRow {
     pub aggregate_json: String,
     pub revision: i64,
+}
+
+pub(super) fn normalize_published_row(
+    stored_session_id: &str,
+    aggregate_json: Option<String>,
+    revision: i64,
+) -> Result<Option<String>, serde_json::Error> {
+    let aggregate_json = aggregate_json
+        .ok_or_else(|| invalid("published managed Session row has no canonical aggregate"))?;
+    let session = decode(EncodedSessionRow {
+        aggregate_json: aggregate_json.clone(),
+        revision,
+    })?;
+    if session.session_id != stored_session_id {
+        return Err(invalid(
+            "managed Session aggregate id does not match its index",
+        ));
+    }
+    let canonical = encode(&session)?;
+    Ok((canonical != aggregate_json).then_some(canonical))
 }
 
 pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
@@ -160,5 +329,66 @@ mod tests {
             serde_json::from_str(&canonical).expect("canonical envelope JSON");
         unknown["format"] = serde_json::json!("awaken.session.v999");
         assert!(super::decode_aggregate(&unknown.to_string()).is_err(), "F4");
+    }
+
+    #[test]
+    fn published_pre_envelope_shape_migrates_all_retired_fields_once() {
+        // Causes: L1 one-axis lifecycle, L2 nullable environment binding, L3
+        // activity object, L4 absent post-publication defaults. Effects: E1
+        // independent disposition, E2 typed environment, E3 scalar epoch, E4
+        // exact empty/default values. Rule P1=L1+L2+L3+L4=>E1+E2+E3+E4;
+        // P2 typed+legacy duplicate state=>fail closed.
+        let mut legacy = serde_json::to_value(sample("published-shape")).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        for key in [
+            "disposition",
+            "environment",
+            "activity_epoch",
+            "event_batches",
+            "active_activity_epochs",
+            "runtime_active_millis",
+            "budget",
+            "realization_progress",
+            "terminal_cleanup",
+        ] {
+            object.remove(key);
+        }
+        object.insert("archived_at".into(), serde_json::Value::Null);
+        object.insert(
+            "environment_binding".into(),
+            serde_json::json!("legacy-binding"),
+        );
+        object.insert(
+            "activity".into(),
+            serde_json::json!({"epoch": 41, "state": {"phase": "active"}}),
+        );
+
+        let migrated = super::decode_aggregate(&legacy.to_string()).expect("P1");
+        assert!(matches!(
+            migrated.disposition,
+            awaken_session_contract::SessionDisposition::Active
+        ));
+        assert_eq!(migrated.environment.binding(), Some("legacy-binding"));
+        assert_eq!(migrated.activity_epoch, 41);
+        assert!(migrated.event_batches.is_empty());
+        assert!(migrated.active_activity_epochs.is_empty());
+        assert_eq!(migrated.runtime_active_millis, 0);
+        assert!(matches!(
+            migrated.budget,
+            awaken_session_contract::SessionBudgetState::Absent
+        ));
+        assert!(matches!(
+            migrated.terminal_cleanup,
+            awaken_session_contract::SessionCleanupOperation::NotRequested
+        ));
+
+        let mut duplicate = legacy;
+        duplicate["environment"] =
+            serde_json::to_value(awaken_session_contract::SessionEnvironmentState::default())
+                .unwrap();
+        assert!(
+            super::decode_aggregate(&duplicate.to_string()).is_err(),
+            "P2"
+        );
     }
 }
