@@ -19,8 +19,9 @@ use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_runtime_contract::compaction::RunCompactionMarker;
 use awaken_runtime_contract::content_fingerprint;
 use awaken_runtime_contract::plugin::{
-    CapabilityBound, ContextMessages, ContextWindow, Contributions, HookReaction, IdBound,
-    PhaseContext, PhaseHook, PhaseHookPoint, Plugin, PluginConfigError, PluginManifest,
+    CapabilityBound, ContextMessages, ContextWindow, ContextWindowPlan, Contributions,
+    HookReaction, IdBound, PhaseContext, PhaseHook, PhaseHookPoint, Plugin, PluginConfigError,
+    PluginManifest,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolCall, invoke_raw_tool};
 
@@ -287,7 +288,10 @@ impl PhaseHook for CompactHook {
             // adapter projects into the event.
             Some(block) => HookReaction::state(vec![
                 ContextMessages::write(&BTreeMap::from([(COMPACT_PLUGIN_ID.to_string(), block)])),
-                ContextWindow::write(&Some(self.config.keep_last)),
+                ContextWindow::write(&ContextWindowPlan::anchored(
+                    self.config.keep_last,
+                    conversation.len(),
+                )),
                 RunCompactionMarker::command(&ctx.run_id.0),
             ]),
             // No fold this step: record the "evaluated, did not fold" decision (an
@@ -641,7 +645,13 @@ mod tests {
         for command in &reaction.state {
             state.apply(command);
         }
-        assert_eq!(ContextWindow::load(&state).unwrap(), Some(2));
+        let window = ContextWindow::load(&state).unwrap();
+        assert_eq!(window.keep_last_at(10), Some(2));
+        assert_eq!(
+            window.keep_last_at(13),
+            Some(5),
+            "the suffix grows with the transcript so the fold boundary stays fixed"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
