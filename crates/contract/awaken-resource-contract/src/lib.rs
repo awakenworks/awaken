@@ -32,8 +32,8 @@ pub use execution::{
     FileContentSource, FileContentSourceError, FileReadPurpose,
     MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
     RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryGatewayCapability,
-    RepositoryTransport, ResolvedFileContent, UnavailableArtifactPublisher,
-    UnavailableFileContentSource,
+    RepositoryGatewayCapabilityExpiry, RepositoryTransport, ResolvedFileContent,
+    UnavailableArtifactPublisher, UnavailableFileContentSource,
 };
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,

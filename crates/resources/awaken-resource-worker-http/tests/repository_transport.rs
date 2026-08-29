@@ -225,6 +225,14 @@ impl RepositoryTransportAuthorizer for GatewayAuthorizer {
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,
     > {
+        let authority_expiry = match &request.authority {
+            RepositoryTransportAuthority::Run {
+                claim_expires_ms, ..
+            } => *claim_expires_ms,
+            RepositoryTransportAuthority::TerminalPublication { lease, .. } => {
+                lease.expires_at_unix_ms
+            }
+        };
         self.0.lock().unwrap().push(request);
         Ok(
             awaken_resource_contract::RepositoryTransport::GatewayMediated {
@@ -232,6 +240,37 @@ impl RepositoryTransportAuthorizer for GatewayAuthorizer {
                 capability: awaken_resource_contract::RepositoryGatewayCapability::new(
                     "repository-capability",
                 )?,
+                expires_at_unix_ms: Some(
+                    awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new(
+                        authority_expiry.saturating_sub(1),
+                    )?,
+                ),
+            },
+        )
+    }
+}
+
+struct FixedExpiryAuthorizer(Option<u64>);
+
+#[async_trait::async_trait]
+impl RepositoryTransportAuthorizer for FixedExpiryAuthorizer {
+    async fn authorize(
+        &self,
+        _request: RepositoryTransportAuthorization,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        Ok(
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url: "https://gateway.invalid/git/repository-exact".into(),
+                capability: awaken_resource_contract::RepositoryGatewayCapability::new(
+                    "repository-capability",
+                )?,
+                expires_at_unix_ms: self
+                    .0
+                    .map(awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new)
+                    .transpose()?,
             },
         )
     }
@@ -273,6 +312,7 @@ impl RepositoryTransportAuthorizer for CancellingAuthorizer {
                 capability: awaken_resource_contract::RepositoryGatewayCapability::new(
                     "repository-capability",
                 )?,
+                expires_at_unix_ms: None,
             },
         )
     }
@@ -416,6 +456,9 @@ async fn repository_verification_is_scope_claim_manifest_and_incarnation_fenced(
 /// | T2 | pass | returns exact mediated transport | pass the exact claim expiry and return only its rewritten URL and short capability |
 /// | T3 | pass | denies or is unavailable | reject; never return `Direct` as a fallback |
 /// | T4 | claim is cancelled while authorizer awaits | returns transport | final locked recheck rejects it |
+/// | T5 | pass | returns expired actual expiry | reject HTTP 403 before transport leaves authority |
+/// | T6 | pass | expiry exceeds claim | reject HTTP 403 before transport leaves authority |
+/// | T7 | pass | legacy expiry omitted | preserve existing one-shot host-operation wire |
 ///
 /// State-machine coverage: `Claimed -> Authorizing -> Revalidated -> Mediated`
 /// is the only Cloud success path. `Claimed -> CancelRequested` during
@@ -530,6 +573,44 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
         .await
         .expect_err("T4 cancellation during authorization must be rejected");
     assert!(error.to_string().contains("409"), "T4: {error}");
+
+    for (rule, expiry, accepted) in [
+        ("T5", Some(1), false),
+        ("T6", Some(u64::MAX), false),
+        ("T7", None, true),
+    ] {
+        let (directory, identity) =
+            support::ready_worker(&format!("worker-repository-expiry-{rule}")).await;
+        let dispatch = Arc::new(MemoryDispatchStore::new());
+        let claim = claimed_dispatch(&dispatch, &identity.lease_owner()).await;
+        let service = Arc::new(
+            WorkerRepositoryBindingService::new(
+                Arc::new(ExactRepositoryRegistry { active: true }),
+                dispatch,
+                Arc::new(HeaderWorkerAuthenticator),
+            )
+            .with_worker_directory(directory)
+            .with_transport_authorizer(Arc::new(FixedExpiryAuthorizer(expiry))),
+        );
+        let address = support::serve(worker_repository_binding_router(service)).await;
+        let verifier = HttpRepositoryBindingVerifier::new(
+            WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+        );
+        let result = verifier
+            .verify(
+                "workspace-repository",
+                "repository-exact",
+                ConfigVersion::INITIAL,
+                Some(&claim),
+            )
+            .await;
+        if accepted {
+            assert!(result.is_ok(), "{rule}: {result:?}");
+        } else {
+            let error = result.expect_err(rule);
+            assert!(error.to_string().contains("403"), "{rule}: {error}");
+        }
+    }
 }
 
 /// Terminal Repository authority decision table:
@@ -543,6 +624,9 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
 /// | P5 | current | exact | changed | any | reject before Repository transport |
 /// | P6 | current | exact | exact command, foreign request Workspace | any | deny before authorizer; Session owner is authoritative |
 /// | P7 | current | exact | exact | no Session Control | unavailable, never RunClaim fallback |
+/// | P8 | current | exact/live | exact | Gateway expiry expired | HTTP 403; no stale capability leaves the terminal boundary |
+/// | P9 | current | exact/live | exact | Gateway expiry beyond lease | HTTP 403; issuer cannot widen terminal authority |
+/// | P10 | current | exact/live | exact | legacy expiry omitted | preserve the existing one-shot terminal wire |
 #[tokio::test]
 async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
     type PublicationFence = (
@@ -605,7 +689,7 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory.clone())
-        .with_session_control(control)
+        .with_session_control(control.clone())
         .with_transport_authorizer(authorizer.clone()),
     );
     let address = support::serve(worker_repository_binding_router(gateway)).await;
@@ -636,6 +720,44 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
             ),
             "P2"
         );
+    }
+
+    for (rule, expiry, accepted) in [
+        ("P8", Some(1), false),
+        ("P9", Some(u64::MAX), false),
+        ("P10", None, true),
+    ] {
+        let expiry_service = Arc::new(
+            WorkerRepositoryBindingService::new(
+                Arc::new(ExactRepositoryRegistry { active: true }),
+                Arc::new(MemoryDispatchStore::new()),
+                Arc::new(HeaderWorkerAuthenticator),
+            )
+            .with_worker_directory(directory.clone())
+            .with_session_control(control.clone())
+            .with_transport_authorizer(Arc::new(FixedExpiryAuthorizer(expiry))),
+        );
+        let expiry_address = support::serve(worker_repository_binding_router(expiry_service)).await;
+        let expiry_verifier = HttpRepositoryBindingVerifier::new(
+            WorkerUpstream::new(format!("http://{expiry_address}"))
+                .with_worker_identity(identity.clone()),
+        );
+        let result = <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &expiry_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&fence),
+        )
+        .await;
+        if accepted {
+            assert!(result.is_ok(), "{rule}: {result:?}");
+        } else {
+            let error = result.expect_err(rule);
+            assert!(error.to_string().contains("403"), "{rule}: {error}");
+        }
     }
 
     let stale = HttpRepositoryBindingVerifier::new(

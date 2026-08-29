@@ -622,6 +622,7 @@ impl SharedHost {
                     awaken_resource_contract::RepositoryTransport::GatewayMediated {
                         remote_url,
                         capability,
+                        ..
                     } if remote_url == repository.plan.transport_url => {
                         Ok(Some(pc::RepositoryHttpBasicCredential::gateway_capability(
                             capability.expose().to_owned(),

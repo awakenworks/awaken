@@ -651,6 +651,7 @@ impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim>
                 capability: awaken_resource_contract::RepositoryGatewayCapability::new(format!(
                     "repository-capability-{sequence}"
                 ))?,
+                expires_at_unix_ms: None,
             },
         )
     }
@@ -679,6 +680,7 @@ impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim>
                     capability: awaken_resource_contract::RepositoryGatewayCapability::new(
                         "repository-capability-initial",
                     )?,
+                    expires_at_unix_ms: None,
                 },
             )
         } else {
