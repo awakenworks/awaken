@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod codec;
 mod postgres;
 mod schema;
 mod sqlite;

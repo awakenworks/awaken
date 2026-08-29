@@ -7,6 +7,7 @@ use sqlx::types::Json;
 use awaken_store_runtime::StoredU64;
 use awaken_tenancy::ScopeId;
 
+use crate::codec::decode_publication_value;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
@@ -694,13 +695,16 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?;
         let existing = existing
             .into_iter()
-            .map(|row| row.try_get("record").map_err(reject))
-            .collect::<Result<Vec<Json<StoredPublication>>, _>>()?;
+            .map(|row| {
+                let Json(value): Json<serde_json::Value> = row.try_get("record").map_err(reject)?;
+                decode_publication_value(value, scope).map_err(reject)
+            })
+            .collect::<Result<Vec<StoredPublication>, _>>()?;
         let decision = publication_revision_decision(
             publication.execution_workspace.as_str(),
             publication.source_revision,
             publication.fingerprint.as_str(),
-            existing.iter().map(|Json(existing)| {
+            existing.iter().map(|existing| {
                 (
                     existing.execution_workspace.as_str(),
                     existing.source_revision,
@@ -746,9 +750,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?;
         match row {
             Some(row) => {
-                let Json(record): Json<StoredPublication> =
-                    row.try_get("record").map_err(reject)?;
-                Ok(Some(record))
+                let Json(value): Json<serde_json::Value> = row.try_get("record").map_err(reject)?;
+                Ok(Some(
+                    decode_publication_value(value, scope).map_err(reject)?,
+                ))
             }
             None => Ok(None),
         }
@@ -774,8 +779,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            let Json(record): Json<StoredPublication> = row.try_get("record").map_err(reject)?;
-            out.push(record);
+            let Json(value): Json<serde_json::Value> = row.try_get("record").map_err(reject)?;
+            out.push(decode_publication_value(value, scope).map_err(reject)?);
         }
         Ok(out)
     }
