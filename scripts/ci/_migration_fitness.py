@@ -22,6 +22,14 @@ SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
 # a closed compatibility inventory, not a general exemption: one owner must
 # include both frozen bodies and may declare exactly two legacy migrations.
 PUBLISHED_LEGACY_SQL_AUTHORITIES = {
+    "crates/control/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.postgres.sql":
+        "crates/control/awaken-config-store/src/schema/expanded.rs",
+    "crates/control/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.sqlite.sql":
+        "crates/control/awaken-config-store/src/schema/expanded.rs",
+    "crates/control/awaken-config-store/src/migrations/expanded/V0009__agent_revision.postgres.sql":
+        "crates/control/awaken-config-store/src/schema/expanded.rs",
+    "crates/control/awaken-config-store/src/migrations/expanded/V0009__agent_revision.sqlite.sql":
+        "crates/control/awaken-config-store/src/schema/expanded.rs",
     "crates/control/awaken-admin-config-api/src/migrations/expanded/V0001__inference_profile.sql":
         "crates/control/awaken-admin-config-api/src/schema.rs",
     "crates/control/awaken-admin-config-api/src/migrations/expanded/V0002__mcp_server.sql":
@@ -51,10 +59,13 @@ PUBLISHED_LEGACY_SQL_AUTHORITIES = {
     "crates/server/awaken-run-ingress/src/migrations/expanded/V0016__drop_legacy_delegation_group.sql":
         "crates/server/awaken-run-ingress/src/dispatch_schema.rs",
 }
-PUBLISHED_LEGACY_RUST_AUTHORITIES = set(PUBLISHED_LEGACY_SQL_AUTHORITIES.values())
-PUBLISHED_LEGACY_ALIAS_COUNTS = {
-    "crates/control/awaken-admin-config-api/src/schema.rs": 1,
+PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS = {
+    "crates/control/awaken-admin-config-api/src/schema.rs": (1, 1, 0, 0),
+    "crates/control/awaken-config-store/src/schema/expanded.rs": (0, 0, 0, 2),
+    "crates/resources/awaken-memory-store/src/schema.rs": (1, 0, 0, 0),
+    "crates/server/awaken-run-ingress/src/dispatch_schema.rs": (2, 0, 0, 0),
 }
+PUBLISHED_LEGACY_RUST_AUTHORITIES = set(PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS)
 
 CONDITIONAL_MIGRATION_SQL = (
     ("IF NOT EXISTS", re.compile(r"\bIF\s+NOT\s+EXISTS\b", re.IGNORECASE)),
@@ -170,11 +181,14 @@ def check_all(repo_root: Path) -> list[str]:
         if legacy_owner is not None:
             migration_root = path.parents[1]
             include_path = path.relative_to(migration_root).as_posix()
-            include = f'include_str!("migrations/{include_path}")'
+            includes = (
+                f'include_str!("migrations/{include_path}")',
+                f'include_str!("../migrations/{include_path}")',
+            )
             owners = [
                 source_path
                 for source_path, source in rust_sources.items()
-                if include in source
+                if any(include in source for include in includes)
             ]
             expected_owner = repo_root / legacy_owner
             if owners != [expected_owner]:
@@ -260,36 +274,34 @@ def check_all(repo_root: Path) -> list[str]:
                     )
             relative = str(path.relative_to(repo_root))
             if relative in PUBLISHED_LEGACY_RUST_AUTHORITIES:
-                expected = sum(
+                sql_files = sum(
                     owner == relative
                     for owner in PUBLISHED_LEGACY_SQL_AUTHORITIES.values()
                 )
-                actual = migration_source.count("Migration::published_legacy(")
                 inventory = re.search(
                     r"PUBLISHED_LEGACY_MIGRATION_COUNT:\s*usize\s*=\s*([0-9]+)",
                     source,
                 )
-                table_driven = int(inventory.group(1)) if inventory else None
-                aliases = migration_source.count(
-                    "Migration::published_legacy_with_aliases("
-                )
-                unsupported = sum(
+                declared = int(inventory.group(1)) if inventory else sql_files
+                actual = tuple(
                     migration_source.count(constructor)
-                    for constructor in LEGACY_CONSTRUCTORS[2:]
+                    for constructor in LEGACY_CONSTRUCTORS
                 )
-                expected_aliases = PUBLISHED_LEGACY_ALIAS_COUNTS.get(relative, 0)
-                valid_direct = table_driven is None and actual == expected
-                valid_table = (
-                    table_driven == expected and actual == 1 and expected > 1
-                )
+                expected = PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS[relative]
+                valid_inventory = declared > 0 and sql_files > 0
+                if relative.endswith("awaken-admin-config-api/src/schema.rs"):
+                    valid_inventory = valid_inventory and declared == sql_files
+                elif relative.endswith("awaken-config-store/src/schema/expanded.rs"):
+                    valid_inventory = valid_inventory and declared * 2 == sql_files
+                else:
+                    valid_inventory = valid_inventory and declared == sql_files
                 if (
-                    (not valid_direct and not valid_table)
-                    or aliases != expected_aliases
-                    or unsupported != 0
+                    not valid_inventory
+                    or actual != expected
                 ):
                     errors.append(
                         f"{relative}: published legacy inventory must contain exactly "
-                        f"{expected} closed immutable declarations"
+                        f"{declared} closed immutable declarations"
                     )
         for match in registration.finditer(source):
             if match.group("registered") != match.group("included"):

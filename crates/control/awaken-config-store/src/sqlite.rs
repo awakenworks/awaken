@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_tenancy::ScopeId;
 
-use crate::schema::config_bundle;
+use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
@@ -47,11 +47,36 @@ impl SqliteConfigStore {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, StoreError> {
-        let bundle = config_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&conn, &bundle)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let ledger_exists = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [format!("{NS}_schema_migrations")],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let v1_checksum = if ledger_exists {
+            conn.query_row(
+                &format!(
+                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+                ),
+                [BUNDLE_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?
+        } else {
+            None
+        };
+        let published = selected_config_bundle(v1_checksum.as_deref())
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let converged =
+            converged_config_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        runner
+            .run_bundle(&conn, &published)
+            .and_then(|_| runner.run_bundle(&conn, &converged))
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

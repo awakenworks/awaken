@@ -7,7 +7,7 @@ use sqlx::types::Json;
 use awaken_store_runtime::StoredU64;
 use awaken_tenancy::ScopeId;
 
-use crate::schema::config_bundle;
+use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
@@ -60,25 +60,73 @@ impl PostgresConfigStore {
     /// Build from an existing pool: apply the config migrations under the `config`
     /// namespace.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
-        let bundle = config_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&bundle)
+        let (published, converged) = selected_bundles(&pool).await?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        runner
+            .run_bundle(&published)
             .await
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        runner
+            .run_bundle(&converged)
+            .await
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
         Ok(Self { pool })
     }
 
     /// Build from a pool whose config migrations were applied out of process.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
-        let bundle = config_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|err| StoreError::Schema(err.to_string()))?
-            .verify_bundle(&bundle)
+        let (published, converged) = selected_bundles(&pool).await?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|error| StoreError::Schema(error.to_string()))?;
+        runner
+            .verify_bundle(&published)
             .await
-            .map_err(|err| StoreError::Schema(err.to_string()))?;
+            .map_err(|error| StoreError::Schema(error.to_string()))?;
+        runner
+            .verify_bundle(&converged)
+            .await
+            .map_err(|error| StoreError::Schema(error.to_string()))?;
         Ok(Self { pool })
     }
+}
+
+async fn selected_bundles(
+    pool: &PgPool,
+) -> Result<
+    (
+        awaken_scoped_migration::MigrationBundle,
+        awaken_scoped_migration::MigrationBundle,
+    ),
+    StoreError,
+> {
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(pool)
+        .await
+        .map_err(|error| StoreError::Schema(error.to_string()))?;
+    let v1_checksum: Option<String> = if ledger.is_some() {
+        sqlx::query_scalar(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| StoreError::Schema(error.to_string()))?
+    } else {
+        None
+    };
+    Ok((
+        selected_config_bundle(v1_checksum.as_deref())
+            .map_err(|error| StoreError::Schema(error.to_string()))?,
+        converged_config_bundle().map_err(|error| StoreError::Schema(error.to_string()))?,
+    ))
 }
 
 fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
