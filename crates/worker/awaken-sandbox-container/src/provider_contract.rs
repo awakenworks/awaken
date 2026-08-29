@@ -7,7 +7,8 @@ use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_control::SandboxControlServicePublisher;
 
-use crate::RuntimeAgentProcess;
+use crate::EnvironmentOwnedProcess;
+use crate::{ContainerProvider, ContainerRuntime, RuntimeAgentProcess, command_of};
 
 /// Object-safe live container environment owned by one Session.
 #[async_trait]
@@ -53,6 +54,55 @@ pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
 pub struct EnvironmentFile {
     pub path: String,
     pub bytes: Vec<u8>,
+}
+
+/// A running agent exec, handed to the host's ACP-agent channel source together
+/// with the exact environment handle used for reattachment.
+pub struct AgentContainerSession {
+    pub channel: Box<dyn AgentChannel>,
+    pub process: Box<dyn pc::ProcessHandle>,
+    pub handle: pc::SandboxHandle,
+}
+
+/// Object-safe one-shot container seam retained for native ACP callers.
+#[async_trait]
+pub trait AgentContainerProvider: Send + Sync {
+    async fn open_agent(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<AgentContainerSession, pc::SandboxError>;
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider<R> {
+    async fn open_agent(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<AgentContainerSession, pc::SandboxError> {
+        let environment: Arc<dyn ContainerEnvironment> =
+            Arc::new(self.create_container(spec).await?);
+        let argv = command_of(spec);
+        if argv.is_empty() {
+            return Err(pc::SandboxError::new("agent command argv is empty"));
+        }
+        let handle = environment.handle();
+        let RuntimeAgentProcess { process, channel } = environment
+            .spawn_agent_process(pc::Command {
+                argv,
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            })
+            .await?;
+        Ok(AgentContainerSession {
+            channel,
+            process: Box::new(EnvironmentOwnedProcess {
+                inner: process,
+                environment,
+            }),
+            handle,
+        })
+    }
 }
 
 /// Canonical inputs required to reattach one existing container environment.

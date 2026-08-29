@@ -597,6 +597,40 @@ async fn adopt_reconnects_from_a_persisted_handle() {
 }
 
 #[tokio::test]
+async fn adopted_namespace_reader_preserves_future_restoration_exactly() {
+    // Provider reader rule R12: C1 an existing namespace tree and C2 a future
+    // complete Some handle reach Phase A. C1+C2 => E1 no restore is activated
+    // and E2 the adopted wrapper returns the exact durable handle unchanged.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let created = provider.create(&spec("t-reader-adopt")).await.unwrap();
+    let future = common::add_future_restoration(&created.handle());
+    drop(created);
+    drop(provider);
+    let replacement = NamespaceProvider::new(tmp.path());
+    let adopted = replacement.adopt(&future).await.unwrap();
+    assert_eq!(adopted.handle(), future, "R12/E2");
+}
+
+#[tokio::test]
+async fn namespace_provider_rejects_future_host_bind_before_filesystem_effects() {
+    // Unsupported-provider rule R15: C1 a HostBind container locator reaches the
+    // namespace reader. C1 => E1 reject before root discovery or process/status
+    // work and E2 leave the provider root absent.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("namespace-root");
+    let provider = NamespaceProvider::new(&root);
+    assert!(
+        provider
+            .adopt(&common::future_host_bind_handle())
+            .await
+            .is_err(),
+        "R15/E1"
+    );
+    assert!(!root.exists(), "R15/E2");
+}
+
+#[tokio::test]
 async fn file_store_mount_is_realized_as_a_bind() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).await.unwrap());

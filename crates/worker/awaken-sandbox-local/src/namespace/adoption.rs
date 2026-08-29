@@ -75,6 +75,7 @@ impl NamespaceProvider {
             secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
             memory_mounter: self.memory_mounter.clone(),
+            adopted_handle: Some(handle.clone()),
         })
     }
 }
