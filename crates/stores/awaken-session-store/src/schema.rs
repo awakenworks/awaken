@@ -1,12 +1,32 @@
 //! Deterministic current schema authority shared by SQLite and PostgreSQL.
 
+mod expanded;
+
+use std::collections::BTreeMap;
+
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+
+pub(crate) const BUNDLE_ID: &str = "awaken.managed_session";
+pub(crate) const CONVERGED_BUNDLE_ID: &str = "awaken.managed_session.converged";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublishedSessionStream {
+    Compact,
+    Original,
+    Compacted,
+}
+
+impl PublishedSessionStream {
+    pub(crate) const fn is_legacy(self) -> bool {
+        !matches!(self, Self::Compact)
+    }
+}
 
 /// V1 is the published current baseline. Later additions keep its checksum
 /// immutable and advance through the same ledger-owned migration stream.
 pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
-        "awaken.managed_session",
+        BUNDLE_ID,
         vec![
             Migration::new(
                 1,
@@ -103,9 +123,44 @@ pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
     )
 }
 
+pub(crate) fn selected_session_bundle(
+    receipts: &BTreeMap<i64, String>,
+) -> Result<(PublishedSessionStream, MigrationBundle), MigrationError> {
+    let stream = match receipts.get(&1).map(String::as_str) {
+        Some(expanded::V1_CHECKSUM) => match receipts.get(&15).map(String::as_str) {
+            Some(expanded::COMPACTED_V15_CHECKSUM) => PublishedSessionStream::Compacted,
+            _ => PublishedSessionStream::Original,
+        },
+        _ => PublishedSessionStream::Compact,
+    };
+    let bundle = match stream {
+        PublishedSessionStream::Compact => session_bundle(),
+        PublishedSessionStream::Original => expanded::bundle(expanded::ExpandedStream::Original),
+        PublishedSessionStream::Compacted => expanded::bundle(expanded::ExpandedStream::Compacted),
+    }?;
+    Ok((stream, bundle))
+}
+
+pub(crate) fn converged_session_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        CONVERGED_BUNDLE_ID,
+        vec![Migration::new(
+            1,
+            "seal the converged managed Session migration history",
+            "SELECT 1",
+        )?],
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn original_published_session_bundle() -> Result<MigrationBundle, MigrationError> {
+    expanded::published_bundle(expanded::ExpandedStream::Original)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::session_bundle;
+    use super::*;
+    use awaken_scoped_migration::{Dialect, MigrationError, plan};
 
     #[test]
     fn session_schema_preserves_v1_and_adds_one_deterministic_dependency_index() {
@@ -143,5 +198,54 @@ mod tests {
                 .sql_for(awaken_scoped_migration::Dialect::Sqlite)
                 .contains("session_credential_source_reference")
         );
+    }
+
+    #[test]
+    fn all_published_histories_select_exactly_and_converge_once() {
+        // Causes: H1 empty/current compact V1; H2 original V1 with no/old V15;
+        // H3 original V1 plus compacted V15; H4 unknown V1/V15. Effects: E1
+        // compact V1/V2; E2 original V1..V23; E3 compacted V1..V21; E4 ordinary
+        // checksum failure; E5 one shared future append stream.
+        // Rules: H1=>E1+E5; H2=>E2+E5; H3=>E3+E5; H4=>E4.
+        let compact = session_bundle().unwrap();
+        let compact_receipts =
+            BTreeMap::from([(1, compact.migrations()[0].checksum_for(Dialect::Sqlite))]);
+        assert_eq!(
+            selected_session_bundle(&compact_receipts).unwrap().0,
+            PublishedSessionStream::Compact,
+            "H1"
+        );
+        let original_receipts = BTreeMap::from([(1, expanded::V1_CHECKSUM.to_owned())]);
+        let (stream, original) = selected_session_bundle(&original_receipts).unwrap();
+        assert_eq!(stream, PublishedSessionStream::Original, "H2");
+        assert_eq!(original.migrations().last().unwrap().version(), 23, "E2");
+        let compacted_receipts = BTreeMap::from([
+            (1, expanded::V1_CHECKSUM.to_owned()),
+            (15, expanded::COMPACTED_V15_CHECKSUM.to_owned()),
+        ]);
+        let (stream, compacted) = selected_session_bundle(&compacted_receipts).unwrap();
+        assert_eq!(stream, PublishedSessionStream::Compacted, "H3");
+        assert_eq!(compacted.migrations().last().unwrap().version(), 21, "E3");
+        let unknown_v1 = BTreeMap::from([(1, "f".repeat(64))]);
+        assert!(matches!(
+            plan(
+                &selected_session_bundle(&unknown_v1).unwrap().1,
+                &unknown_v1,
+                Dialect::Sqlite,
+            ),
+            Err(MigrationError::ChecksumMismatch { version: 1, .. })
+        ));
+        let unknown_v15 =
+            BTreeMap::from([(1, expanded::V1_CHECKSUM.to_owned()), (15, "f".repeat(64))]);
+        assert!(matches!(
+            plan(
+                &selected_session_bundle(&unknown_v15).unwrap().1,
+                &unknown_v15,
+                Dialect::Sqlite,
+            ),
+            Err(MigrationError::ChecksumMismatch { version: 15, .. })
+        ));
+        awaken_scoped_migration::lint(std::slice::from_ref(&converged_session_bundle().unwrap()))
+            .expect("E5");
     }
 }

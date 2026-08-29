@@ -12,7 +12,7 @@
 //! aggregate"). Secrets never land here — only the wire-echo MCP `{name,type,url}`
 //! values, per the port's contract (G3).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -30,9 +30,11 @@ mod dream;
 mod extraction;
 mod row_codec;
 mod schema;
-use row_codec::{EncodedSessionRow, decode, encode};
+use row_codec::{EncodedSessionRow, decode, encode, normalize_published_row};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use schema::session_bundle;
+use schema::{BUNDLE_ID, converged_session_bundle, selected_session_bundle};
+#[cfg(test)]
+use schema::{original_published_session_bundle, session_bundle};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
