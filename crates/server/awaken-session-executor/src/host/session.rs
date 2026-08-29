@@ -605,7 +605,29 @@ impl SharedHost {
             let cache_matches_attempt = claimed_attempt.as_ref().is_none_or(|attempt| {
                 ctx.runtime_publication_identity.as_ref() == Some(&attempt.identity)
             });
-            if !cache_matches_attempt || (adopted.is_some() && ctx.env.is_none()) {
+            // A reservation preflight may briefly publish an envelope-only
+            // context before its caller evicts it. Under load, the embedded
+            // Worker can reach this lookup during that gap. ACP executors are
+            // bound to a physical Session Environment, so reusing that context
+            // would leave its exact `acp:*` route deliberately unregistered.
+            // Native on-tool-use deferral and A2A remain environment-free.
+            let deferred_acp_context = !force_defer_environment
+                && ctx.env.is_none()
+                && ctx
+                    .config
+                    .resolved_spec
+                    .attempt_candidates(None)
+                    .into_iter()
+                    .any(|candidate| {
+                        awaken_runtime_contract::resolved::Backend::from_ref(
+                            &candidate.binding().backend_ref,
+                        )
+                        .is_acp()
+                    });
+            if !cache_matches_attempt
+                || deferred_acp_context
+                || (adopted.is_some() && ctx.env.is_none())
+            {
                 // A deferred durable context can survive the crash gap after the
                 // dispatch claim bound a Sandbox but before Session persistence;
                 // likewise, a claim carrying different frozen Runtime inputs
