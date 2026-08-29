@@ -647,9 +647,10 @@ mod tests {
     fn worker_transport_credentials_follow_process_ownership() {
         // Cause/effect decision table:
         // R1 Worker + Coordinator enrollment file -> reject cross-owner config.
-        // R2 non-Worker + Worker signing file -> reject secret custody leak.
+        // R2 Coordinator + Worker signing file -> reject secret custody leak.
         // R3 Worker + Worker signing file -> accept the projected boundary path.
-        // R4 AllInOne + enrollment file -> accept the trust boundary path.
+        // R4 AllInOne + paired enrollment/signing views -> accept the composite
+        // boundary. R5 either AllInOne half alone -> reject before startup.
         let resolve = |role, file| {
             ResolvedDeployment::resolve_file(
                 ConfigOverrides {
@@ -676,7 +677,7 @@ mod tests {
         );
         assert!(
             resolve(
-                Role::AllInOne,
+                Role::Coordinator,
                 FileConfig {
                     worker_request_credential_file: Some("/worker.json".into()),
                     ..Default::default()
@@ -701,6 +702,7 @@ mod tests {
             resolve(
                 Role::AllInOne,
                 FileConfig {
+                    worker_request_credential_file: Some("/worker.json".into()),
                     worker_trust_credentials_file: Some("/trust.json".into()),
                     ..Default::default()
                 }
@@ -708,5 +710,22 @@ mod tests {
             .is_ok(),
             "R4"
         );
+        for file in [
+            FileConfig {
+                worker_request_credential_file: Some("/worker.json".into()),
+                ..Default::default()
+            },
+            FileConfig {
+                worker_trust_credentials_file: Some("/trust.json".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                resolve(Role::AllInOne, file)
+                    .unwrap_err()
+                    .contains("requires both"),
+                "R5"
+            );
+        }
     }
 }

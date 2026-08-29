@@ -11,9 +11,15 @@ pub(super) fn validate_credential_file_ownership(
                 .to_owned(),
         );
     }
-    if role != Role::Worker && request_credential_file {
+    if !matches!(role, Role::AllInOne | Role::Worker) && request_credential_file {
         return Err(
             "worker_request_credential_file is owned by Worker, not this process role".to_owned(),
+        );
+    }
+    if role == Role::AllInOne && request_credential_file != trust_credentials_file {
+        return Err(
+            "AllInOne signed Worker transport requires both worker_request_credential_file and worker_trust_credentials_file"
+                .to_owned(),
         );
     }
     Ok(())
@@ -26,10 +32,12 @@ mod tests {
     #[test]
     fn credential_files_follow_process_authority() {
         // Cause/effect decision table: R1 Worker receives only its request signer;
-        // R2 Coordinator/AllInOne may receive the trust directory; R3 Control or
-        // Worker receiving Coordinator trust -> reject; R4 any non-Worker receiving
-        // a request signer -> reject. These rules cover both mutually exclusive
-        // credential projections without granting Control Worker-fleet authority.
+        // R2 Coordinator receives only the trust directory; R3 AllInOne owns the
+        // paired trust and request views for its one embedded Worker; R4 Control
+        // or Worker receiving Coordinator trust -> reject; R5 Coordinator/Control
+        // receiving a request signer -> reject; R6 either half of an AllInOne pair
+        // -> reject before startup. The pair reuses one transport contract without
+        // granting standalone roles another process's authority.
         assert!(
             validate_credential_file_ownership(Role::Worker, true, false).is_ok(),
             "R1"
@@ -39,20 +47,32 @@ mod tests {
             "R2"
         );
         assert!(
-            validate_credential_file_ownership(Role::AllInOne, false, true).is_ok(),
-            "R2"
+            validate_credential_file_ownership(Role::AllInOne, true, true).is_ok(),
+            "R3"
         );
         assert!(
             validate_credential_file_ownership(Role::Control, false, true).is_err(),
-            "R3"
+            "R4"
         );
         assert!(
             validate_credential_file_ownership(Role::Worker, false, true).is_err(),
-            "R3"
+            "R4"
         );
         assert!(
             validate_credential_file_ownership(Role::Coordinator, true, false).is_err(),
-            "R4"
+            "R5"
+        );
+        assert!(
+            validate_credential_file_ownership(Role::Control, true, false).is_err(),
+            "R5"
+        );
+        assert!(
+            validate_credential_file_ownership(Role::AllInOne, true, false).is_err(),
+            "R6 request only"
+        );
+        assert!(
+            validate_credential_file_ownership(Role::AllInOne, false, true).is_err(),
+            "R6 trust only"
         );
     }
 }

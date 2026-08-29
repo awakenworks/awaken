@@ -21,6 +21,7 @@ data:
     run_local_pool = true
     no_browser = true
     identity_mode = "self-managed"
+    worker_request_credential_file = "/etc/awaken-auth/worker-trust.json"
     worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
