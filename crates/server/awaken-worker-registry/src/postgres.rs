@@ -8,8 +8,39 @@ use sqlx::{PgConnection, Row};
 
 use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
 use crate::durable_i64;
-use crate::schema::{NS, registry_bundle};
+use crate::schema::{BUNDLE_ID, NS, converged_registry_bundle, selected_registry_bundle};
 use crate::transition;
+
+async fn selected_bundles(
+    pool: &PgPool,
+) -> Result<
+    (
+        awaken_scoped_migration::MigrationBundle,
+        awaken_scoped_migration::MigrationBundle,
+    ),
+    RegistryError,
+> {
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(pool)
+        .await
+        .map_err(persist)?;
+    let v1_checksum: Option<String> = if ledger.is_some() {
+        sqlx::query_scalar(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(persist)?
+    } else {
+        None
+    };
+    Ok((
+        selected_registry_bundle(v1_checksum.as_deref()).map_err(persist)?,
+        converged_registry_bundle().map_err(persist)?,
+    ))
+}
 
 pub struct PostgresWorkerDirectory {
     pool: PgPool,
@@ -52,23 +83,27 @@ impl PostgresWorkerDirectory {
     }
 
     pub async fn with_pool(pool: PgPool) -> Result<Self, RegistryError> {
-        let bundle = registry_bundle().map_err(persist)?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(persist)?
-            .run_bundle(&bundle)
-            .await
-            .map_err(persist)?;
+        let (published, converged) = selected_bundles(&pool).await?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(persist)?;
+        runner.run_bundle(&published).await.map_err(persist)?;
+        runner.run_bundle(&converged).await.map_err(persist)?;
         Ok(Self { pool })
     }
 
     /// Wrap a shared pool after verifying its externally-owned migration ledger.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, RegistryError> {
-        let bundle = registry_bundle().map_err(persist)?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(persist)?
-            .verify_bundle(&bundle)
-            .await
-            .map_err(persist)?;
+        let (published, converged) = selected_bundles(&pool).await?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(persist)?;
+        runner.verify_bundle(&published).await.map_err(persist)?;
+        runner.verify_bundle(&converged).await.map_err(persist)?;
         Ok(Self { pool })
     }
 

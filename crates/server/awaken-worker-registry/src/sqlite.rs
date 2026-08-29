@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
 use crate::durable_i64;
-use crate::schema::{NS, registry_bundle};
+use crate::schema::{BUNDLE_ID, NS, converged_registry_bundle, selected_registry_bundle};
 use crate::transition;
 
 pub struct SqliteWorkerDirectory {
@@ -28,10 +28,33 @@ impl SqliteWorkerDirectory {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, RegistryError> {
-        let bundle = registry_bundle().map_err(persist)?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        let ledger_exists = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                params![format!("{NS}_schema_migrations")],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(persist)?;
+        let v1_checksum = if ledger_exists {
+            conn.query_row(
+                &format!(
+                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+                ),
+                params![BUNDLE_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
             .map_err(persist)?
-            .run_bundle(&conn, &bundle)
+        } else {
+            None
+        };
+        let published = selected_registry_bundle(v1_checksum.as_deref()).map_err(persist)?;
+        let converged = converged_registry_bundle().map_err(persist)?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(persist)?;
+        runner
+            .run_bundle(&conn, &published)
+            .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(persist)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
