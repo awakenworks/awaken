@@ -384,6 +384,7 @@ async fn create_mints_a_secret_seals_it_and_stores_the_row() {
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(body["id"], "wh1");
     assert_eq!(body["workspace_id"], "ws_a");
+    assert_eq!(body["consecutive_failures"], 0);
     let secret = body["secret"]
         .as_str()
         .expect("plaintext secret returned once");
@@ -732,6 +733,7 @@ async fn get_projects_the_row_without_the_secret() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["url"], "https://old.example/hook");
+    assert_eq!(body["consecutive_failures"], 0);
     assert!(
         body.get("secret").is_none(),
         "the view never leaks the secret"
