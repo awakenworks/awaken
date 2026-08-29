@@ -76,6 +76,7 @@ const CLAUDE: AcpCli = AcpCli {
         flag: "-c",
         key: "model",
     },
+    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: None,
@@ -160,6 +161,9 @@ const CODEX: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_responses"],
     backend_model_interface: BackendModelInterface::SessionConfigOption { config_id: "model" },
+    backend_owned_state_isolation: BackendOwnedStateIsolation::SessionDirectory {
+        env: "CODEX_SQLITE_HOME",
+    },
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
         codec: CredentialArtifactCodec::CodexAuthJson,
@@ -249,6 +253,7 @@ const GEMINI: AcpCli = AcpCli {
     }),
     model_api_dialects: &["gemini"],
     backend_model_interface: BackendModelInterface::Flag { flag: "--model" },
+    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: None,
@@ -323,6 +328,7 @@ const OPENCODE: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::Unsupported,
+    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: Some(ManagedProviderConfigDelivery {
@@ -417,6 +423,7 @@ const HERMES: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::Unsupported,
+    backend_owned_state_isolation: BackendOwnedStateIsolation::SharedHost,
     managed_model_interface: ManagedModelInterface::SessionModel,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     managed_provider_config: None,

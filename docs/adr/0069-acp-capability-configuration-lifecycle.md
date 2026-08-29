@@ -326,11 +326,20 @@ local-mode Worker may advertise both isolated and trusted-host environments:
 | Provisioning | Environment | Credential handling |
 |---|---|---|
 | Provider | configured Namespace or Container | exact managed materialization into isolated HOME |
-| BackendOwned | Workdir | host PATH/HOME allowlist; no materialization |
+| BackendOwned | Workdir | host PATH/HOME login identity; optional catalog-declared non-secret Session state directory; no credential materialization |
 
 This is one Worker, claimer, Session lifecycle and executor. It does not create a
 local-ACP Worker type, second pool or second channel source. Failure to realize
 the required environment is terminal and never degrades to another tier.
+
+Backend-owned mutable-state isolation is adapter catalog data, not another
+identity or credential mode. A row either shares host state or names one
+state-only environment variable that the Runtime Host binds to the existing
+Session config directory. Codex declares `CODEX_SQLITE_HOME`: its app-server
+therefore keeps the host `HOME` for login and user configuration while its
+SQLite files are scoped to, and removed with, the Session Environment. Ambient
+or resolver-projected values cannot replace the exact Session path. No auth file,
+secret store or second lifecycle is introduced.
 
 ### D8 — Launch revalidates all mutable evidence
 
