@@ -437,6 +437,7 @@ fn view(def: &WebhookEndpointDef) -> Value {
         "url": def.url,
         "event_types": def.event_types,
         "disabled": def.disabled,
+        "consecutive_failures": def.consecutive_failures,
     })
 }
 
@@ -588,6 +589,7 @@ async fn put_subscription(
             "url": url,
             "event_types": event_types,
             "disabled": false,
+            "consecutive_failures": 0,
             "secret": secret,
         })),
     )
