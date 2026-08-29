@@ -41,12 +41,37 @@ impl PostgresManagedSessionRepository {
 
     /// Build from an existing pool: apply the session migrations.
     pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
-        let bundle = session_bundle().map_err(|e| e.to_string())?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|e| e.to_string())?
-            .run_bundle(&bundle)
+        let receipts = Self::migration_receipts(&pool).await?;
+        let (stream, published) =
+            selected_session_bundle(&receipts).map_err(|error| error.to_string())?;
+        awaken_scoped_migration::plan(
+            &published,
+            &receipts,
+            awaken_scoped_migration::Dialect::Postgres,
+        )
+        .map_err(|error| error.to_string())?;
+        if stream.is_legacy() {
+            Self::normalize_session_aggregates(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let converged = converged_session_bundle().map_err(|error| error.to_string())?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&published)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&converged)
+            .await
+            .map_err(|error| error.to_string())?;
+        Self::normalize_session_aggregates(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
         Self::rebuild_credential_source_index(&pool)
             .await
             .map_err(|e| e.to_string())?;
@@ -62,12 +87,26 @@ impl PostgresManagedSessionRepository {
             .connect(url)
             .await
             .map_err(|e| e.to_string())?;
-        let bundle = session_bundle().map_err(|e| e.to_string())?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|e| e.to_string())?
-            .verify_bundle(&bundle)
+        let receipts = Self::migration_receipts(&pool).await?;
+        let (_, published) =
+            selected_session_bundle(&receipts).map_err(|error| error.to_string())?;
+        let converged = converged_session_bundle().map_err(|error| error.to_string())?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|error| error.to_string())?;
+        runner
+            .verify_bundle(&published)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
+        runner
+            .verify_bundle(&converged)
+            .await
+            .map_err(|error| error.to_string())?;
+        Self::normalize_session_aggregates(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
         Self::rebuild_credential_source_index(&pool)
             .await
             .map_err(|e| e.to_string())?;
@@ -75,6 +114,58 @@ impl PostgresManagedSessionRepository {
             pool,
             handle: tokio::runtime::Handle::current(),
         })
+    }
+
+    async fn migration_receipts(pool: &PgPool) -> Result<BTreeMap<i64, String>, String> {
+        let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(format!("{NS}_schema_migrations"))
+            .fetch_one(pool)
+            .await
+            .map_err(|error| error.to_string())?;
+        if ledger.is_none() {
+            return Ok(BTreeMap::new());
+        }
+        sqlx::query_as::<_, (i64, String)>(&format!(
+            "SELECT version,checksum FROM {NS}_schema_migrations WHERE bundle_id=$1 ORDER BY version"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_all(pool)
+        .await
+        .map(|rows| rows.into_iter().collect())
+        .map_err(|error| error.to_string())
+    }
+
+    async fn normalize_session_aggregates(pool: &PgPool) -> Result<(), SessionRepositoryError> {
+        let mut tx = pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE managed_session IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let rows = sqlx::query(
+            "SELECT session_id,aggregate_json,revision FROM managed_session ORDER BY session_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        for row in rows {
+            let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
+            let aggregate_json: Option<String> = row.try_get("aggregate_json").map_err(storage)?;
+            if let Some(canonical) = normalize_published_row(
+                &stored_session_id,
+                aggregate_json,
+                row.try_get("revision").map_err(storage)?,
+            )
+            .map_err(corrupt)?
+            {
+                sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
+                    .bind(stored_session_id)
+                    .bind(canonical)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?;
+            }
+        }
+        tx.commit().await.map_err(storage)
     }
 
     async fn sync_session_indexes(

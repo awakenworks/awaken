@@ -74,6 +74,7 @@ PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS = {
     "crates/control/awaken-config-store/src/schema/expanded.rs": (0, 0, 0, 2),
     "crates/resources/awaken-memory-store/src/schema.rs": (1, 0, 0, 0),
     "crates/resources/awaken-skill-store/src/schema/expanded.rs": (2, 0, 0, 0),
+    "crates/stores/awaken-session-store/src/schema/expanded.rs": (1, 0, 0, 0),
     "crates/server/awaken-run-ingress/src/dispatch_schema.rs": (2, 0, 0, 0),
     "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs": (3, 0, 0, 0),
 }
@@ -300,12 +301,17 @@ def check_all(repo_root: Path) -> list[str]:
                     for constructor in LEGACY_CONSTRUCTORS
                 )
                 expected = PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS[relative]
-                valid_inventory = declared > 0 and sql_files > 0
-                if relative.endswith("awaken-admin-config-api/src/schema.rs"):
+                valid_inventory = declared > 0
+                if relative.endswith("awaken-session-store/src/schema/expanded.rs"):
+                    valid_inventory = valid_inventory and declared == 28 and sql_files == 0
+                elif relative.endswith("awaken-admin-config-api/src/schema.rs"):
+                    valid_inventory = valid_inventory and sql_files > 0
                     valid_inventory = valid_inventory and declared == sql_files
                 elif relative.endswith("awaken-config-store/src/schema/expanded.rs"):
+                    valid_inventory = valid_inventory and sql_files > 0
                     valid_inventory = valid_inventory and declared * 2 == sql_files
                 else:
+                    valid_inventory = valid_inventory and sql_files > 0
                     valid_inventory = valid_inventory and declared == sql_files
                 if (
                     not valid_inventory
