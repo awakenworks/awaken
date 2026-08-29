@@ -853,16 +853,11 @@ impl ContainerRuntime for FakeRuntime {
     }
 
     fn sandbox_control_services(&self) -> std::collections::BTreeSet<SandboxControlServiceKind> {
-        self.st
-            .lock()
-            .unwrap()
-            .control_enabled
-            .then(|| {
-                std::collections::BTreeSet::from([
-                    SandboxControlServiceKind::RepositoryGitCredential,
-                ])
-            })
-            .unwrap_or_default()
+        if self.st.lock().unwrap().control_enabled {
+            std::collections::BTreeSet::from([SandboxControlServiceKind::RepositoryGitCredential])
+        } else {
+            std::collections::BTreeSet::new()
+        }
     }
 
     async fn sandbox_control_binding(
@@ -1418,14 +1413,15 @@ async fn control_publication_survives_idle_and_channel_failure_but_stops_before_
     assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B6/E2");
 
     pc::Sandbox::dispose(&sandbox).await.expect("B7 dispose");
-    let state = runtime.st.lock().unwrap();
-    assert_eq!(
-        state.removals,
-        vec![("cid-publication-lifecycle".into(), 4)],
-        "B7/E3 close precedes removal"
-    );
-    assert_eq!(state.control_channel_opens, 4, "B7/E4");
-    drop(state);
+    {
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(
+            state.removals,
+            vec![("cid-publication-lifecycle".into(), 4)],
+            "B7/E3 close precedes removal"
+        );
+        assert_eq!(state.control_channel_opens, 4, "B7/E4");
+    }
     tokio::time::advance(std::time::Duration::from_secs(60)).await;
     tokio::task::yield_now().await;
     assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B7/E4");
