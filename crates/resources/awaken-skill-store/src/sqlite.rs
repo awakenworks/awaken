@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::schema::skill_store_bundle;
+use crate::schema::{BUNDLE_ID, converged_skill_store_bundle, selected_skill_store_bundle};
+#[cfg(test)]
+use crate::schema::{expanded_skill_store_bundle, skill_store_bundle};
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
     decode_aggregate, remove_version_from, validate_create,
@@ -26,11 +28,37 @@ fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
     let guard = conn
         .lock()
         .map_err(|_| StoreError::Migrate("skill_store connection poisoned".into()))?;
-    let bundle = skill_store_bundle().map_err(|e| StoreError::Migrate(e.to_string()))?;
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .map_err(|e| StoreError::Migrate(e.to_string()))?
-        .run_bundle(&guard, &bundle)
-        .map_err(|e| StoreError::Migrate(e.to_string()))?;
+    let ledger_exists = guard
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [format!("{NS}_schema_migrations")],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let v1_checksum = if ledger_exists {
+        guard
+            .query_row(
+                &format!(
+                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+                ),
+                [BUNDLE_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?
+    } else {
+        None
+    };
+    let published = selected_skill_store_bundle(v1_checksum.as_deref())
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let converged =
+        converged_skill_store_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(&guard, &published)
+        .and_then(|_| runner.run_bundle(&guard, &converged))
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())
 }
 
@@ -464,6 +492,45 @@ mod tests {
             .unwrap();
         assert_eq!((active, retired), (1, 0), "S1/E1");
         assert!(runner.run_bundle(&conn, &full).expect("S2").is_empty());
+    }
+
+    #[tokio::test]
+    async fn expanded_history_converges_without_reviving_retired_projection() {
+        // Causes: H1 exact expanded V1/V2 receipts; H2 one legacy projection
+        // row; H3 a new aggregate command after convergence. Effects: E1 add
+        // only the common receipt; E2 preserve but never read/write V1 data;
+        // E3 persist and read the aggregate through the sole SkillStore API.
+        // Decision rule X1=H1+H2+H3 => E1+E2+E3.
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let expanded = expanded_skill_store_bundle().expect("expanded");
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .expect("runner")
+            .run_bundle(&conn, &expanded)
+            .expect("H1");
+        conn.execute(
+            "INSERT INTO skill_store_skill(workspace_id,id,content) VALUES('ws','retired','legacy')",
+            [],
+        )
+        .expect("H2");
+
+        let store = SqliteSkillStore::over(conn);
+        store.ensure_schema().expect("E1");
+        let (definition, version) = aggregate();
+        store.create(definition, version).await.expect("H3/E3");
+        assert!(store.definition("ws", "greet").await.unwrap().is_some());
+
+        let guard = store.conn.lock().unwrap();
+        let counts: (i64, i64, i64) = guard
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM skill_store_schema_migrations WHERE bundle_id='awaken.skill_store'), \
+                   (SELECT COUNT(*) FROM skill_store_schema_migrations WHERE bundle_id='awaken.skill_store.converged'), \
+                   (SELECT COUNT(*) FROM skill_store_skill)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (2, 1, 1), "X1 -> E1+E2");
     }
 
     fn aggregate() -> (SkillDefinition, SkillVersion) {
