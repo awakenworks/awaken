@@ -4,6 +4,7 @@ import asyncio
 import collections.abc
 import datetime
 import enum
+import importlib
 import io
 import inspect
 import itertools
@@ -45,6 +46,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.1.0",
     "1.2.0",
 })
+CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 
 
 def projects_workspace_response_context(version: str) -> bool:
@@ -922,6 +924,7 @@ async def _call_session_create(
     max_retries: int,
     raw: bool = False,
     extra_headers: dict[str, str] | None = None,
+    client_options: dict[str, object] | None = None,
 ) -> object:
     arguments = {"agent": "fixture", "environment_id": "fixture"}
     if extra_headers is not None:
@@ -930,12 +933,16 @@ async def _call_session_create(
         async def async_handler(request: object) -> object:
             return handler(request)
 
-        async with anthropic_module.AsyncAnthropic(
-            api_key="async-transport-contract",  # awaken-allow: secret
-            http_client=transport_module.AsyncClient(
+        options = {
+            "api_key": "async-transport-contract",  # awaken-allow: secret
+            "http_client": transport_module.AsyncClient(
                 transport=transport_module.MockTransport(async_handler)
             ),
-            max_retries=max_retries,
+            "max_retries": max_retries,
+        }
+        options.update(client_options or {})
+        async with anthropic_module.AsyncAnthropic(
+            **options,
         ) as client:
             method = (
                 client.beta.sessions.with_raw_response.create
@@ -944,11 +951,15 @@ async def _call_session_create(
             )
             return await method(**arguments)
 
-    with anthropic_module.Anthropic(
-        api_key="transport-contract",  # awaken-allow: secret
-        http_client=transport_module.Client(transport=transport_module.MockTransport(handler)),
-        max_retries=max_retries,
-    ) as client:
+    options = {
+        "api_key": "transport-contract",  # awaken-allow: secret
+        "http_client": transport_module.Client(
+            transport=transport_module.MockTransport(handler)
+        ),
+        "max_retries": max_retries,
+    }
+    options.update(client_options or {})
+    with anthropic_module.Anthropic(**options) as client:
         method = (
             client.beta.sessions.with_raw_response.create
             if raw
@@ -985,6 +996,7 @@ async def _exercise_error_and_retry_contract_for_mode(
         (401, "authentication_error", "AuthenticationError"),
         (403, "permission_error", "PermissionDeniedError"),
         (404, "not_found_error", "NotFoundError"),
+        (408, "request_timeout", "APIStatusError"),
         (409, "conflict_error", "ConflictError"),
         (413, "request_too_large", "RequestTooLargeError"),
         (422, "invalid_request_error", "UnprocessableEntityError"),
@@ -1179,6 +1191,129 @@ async def _exercise_error_and_retry_contract_for_mode(
     else:
         raise AssertionError("Python SDK accepted a transport timeout")
     assert len(timeout_attempts) == 1
+
+    await _exercise_credential_provider_contract_for_mode(
+        anthropic_module,
+        transport_module,
+        asynchronous=asynchronous,
+    )
+
+
+async def _exercise_credential_provider_contract_for_mode(
+    anthropic_module: Any,
+    transport_module: Any,
+    *,
+    asynchronous: bool,
+) -> None:
+    version = anthropic_module.__version__
+    client_type = (
+        anthropic_module.AsyncAnthropic
+        if asynchronous
+        else anthropic_module.Anthropic
+    )
+    supports_credentials = "credentials" in inspect.signature(client_type).parameters
+    assert supports_credentials is (version in CREDENTIAL_PROVIDER_VERSIONS), (
+        f"{version}: unreviewed credential-provider change point"
+    )
+    if not supports_credentials:
+        return
+
+    # Authentication state machine shared by sync and async official clients:
+    # unresolved provider -> cached stale Bearer -> 401 -> forced refresh ->
+    # fresh Bearer -> 200. Static api_key/auth_token instead short-circuit the
+    # provider. This is deliberately part of the existing transport contract,
+    # not a second credential inventory.
+    credential_module = importlib.import_module("anthropic.lib.credentials")
+    provider_calls = []
+    requests = []
+
+    def credentials(*, force_refresh: bool = False) -> object:
+        provider_calls.append(force_refresh)
+        token = "provider-stale" if len(provider_calls) == 1 else "provider-fresh"  # awaken-allow: secret
+        return credential_module.AccessToken(token=token, expires_at=None)
+
+    def refresh(request: object) -> object:
+        requests.append(request)
+        if len(requests) == 1:
+            return transport_module.Response(
+                401,
+                request=request,
+                json=canonical_error(401, "authentication_error"),
+                headers={"request-id": "req_credential_stale", "retry-after-ms": "0"},
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        refresh,
+        asynchronous=asynchronous,
+        max_retries=1,
+        raw=True,
+        client_options={
+            "api_key": None,
+            "auth_token": None,
+            "credentials": credentials,
+        },
+    )
+    assert response.status_code == 200
+    assert provider_calls == [False, True]
+    assert len(requests) == 2
+    assert [request.headers["authorization"] for request in requests] == [
+        "Bearer provider-stale",
+        "Bearer provider-fresh",
+    ]
+    assert all("x-api-key" not in request.headers for request in requests)
+    assert [request.headers["x-stainless-retry-count"] for request in requests] == [
+        "0",
+        "1",
+    ]
+    for request in requests:
+        assert sorted(
+            item.strip()
+            for item in request.headers["anthropic-beta"].split(",")
+        ) == ["managed-agents-2026-04-01", "oauth-2025-04-20"]
+
+    for static_kind in ("api_key", "auth_token"):
+        shadowed_calls = []
+        static_requests = []
+
+        def shadowed_credentials(*, force_refresh: bool = False) -> object:
+            shadowed_calls.append(force_refresh)
+            return credential_module.AccessToken(
+                token="must-not-be-used",  # awaken-allow: secret
+                expires_at=None,
+            )
+
+        def accept(request: object) -> object:
+            static_requests.append(request)
+            return transport_module.Response(200, request=request, json={})
+
+        static_options = {
+            "api_key": "static-api" if static_kind == "api_key" else None,  # awaken-allow: secret
+            "auth_token": "static-token" if static_kind == "auth_token" else None,  # awaken-allow: secret
+            "credentials": shadowed_credentials,
+        }
+        response = await _call_session_create(
+            anthropic_module,
+            transport_module,
+            accept,
+            asynchronous=asynchronous,
+            max_retries=0,
+            raw=True,
+            client_options=static_options,
+        )
+        assert response.status_code == 200
+        assert shadowed_calls == []
+        assert len(static_requests) == 1
+        request = static_requests[0]
+        if static_kind == "api_key":
+            assert request.headers["x-api-key"] == "static-api"
+            assert "authorization" not in request.headers
+        else:
+            assert request.headers["authorization"] == "Bearer static-token"
+            assert "x-api-key" not in request.headers
+        assert request.headers["anthropic-beta"] == "managed-agents-2026-04-01"
 
 
 def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:

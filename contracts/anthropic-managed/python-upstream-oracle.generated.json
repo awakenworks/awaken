@@ -199,7 +199,7 @@
       ],
       "operation_count": 80,
       "operation_fingerprint": "5643547c0abf4ec4af896a4c3ce50b6193fc052ba878037cb0c6da9078214c27",
-      "reason": "multi-agent, outcome, webhook, and vault-validation surface",
+      "reason": "credential-provider, multi-agent, outcome, webhook, and vault-validation surface",
       "role": "protocol_change_point",
       "runtime_source_count": 6,
       "runtime_source_fingerprint": "fe5d690570e25c8eba3119ecca3ea0ef46e29d75cab77ba9691d268f1d41bf7f",

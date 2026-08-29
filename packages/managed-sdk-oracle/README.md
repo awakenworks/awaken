@@ -49,9 +49,12 @@ evidence from drifting from the external expectation:
   the exact 400/401/403/404/409/413/422/429/500/529 subclasses and headers,
   retry decision table including `x-should-retry`, byte-identical mutation
   identity, opaque cursor traversal, connection-fault recovery, SDK deadline
-  classification, and caller-abort fencing. The Python historical matrix
+  classification, caller-abort fencing, static/dynamic credential precedence,
+  OAuth capability injection, and one forced refresh after a rejected cached
+  token. The Python historical matrix
   projects the same connection-versus-timeout distinction and retry bound
-  through both synchronous and asynchronous transports for every wheel.
+  through both synchronous and asynchronous transports for every wheel, and
+  owns the credential-provider introduction at `0.100.0` in both modes.
 - `e2e/conformance/managed_sdk_auth_context_e2e.mjs` composes those SDK
   projections with a real self-managed IAM process. Every supported TypeScript
   anchor must decode an invalid credential as its exact `AuthenticationError`

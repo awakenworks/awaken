@@ -23,6 +23,7 @@ const errorCases = [
   [401, 'authentication_error', 'AuthenticationError'],
   [403, 'permission_error', 'PermissionDeniedError'],
   [404, 'not_found_error', 'NotFoundError'],
+  [408, 'request_timeout', 'APIError'],
   [409, 'conflict_error', 'ConflictError'],
   [413, 'request_too_large', 'APIError'],
   [422, 'invalid_request_error', 'UnprocessableEntityError'],
@@ -293,5 +294,101 @@ for (const { version, Client } of clients) {
       (error) => error.constructor === Client.APIConnectionTimeoutError,
     );
     assert.equal(timeoutAttempts, 1, 'a disabled timeout retry cannot issue later work');
+  });
+
+  test(`${version}: dynamic credentials preserve precedence, scope, and one forced refresh`, async () => {
+    // Authentication state machine:
+    // S0 provider unresolved -> S1 cached stale Bearer -> 401 -> S2 forced
+    // provider refresh -> S3 fresh Bearer -> 200. An API key instead enters
+    // S4 static auth and must never resolve the provider. Although the current
+    // TypeScript declaration comment says a provider precedes authToken, every
+    // admitted executable package gives both explicit static forms precedence;
+    // this behavioral change point must be reviewed if upstream reconciles it.
+    //
+    // Decision table:
+    // | apiKey | authToken | provider | first result | requests/provider calls |
+    // | absent | absent    | present  | 401 then 200 | 2 / [normal, forced]    |
+    // | present| absent    | present  | 200          | 1 / 0                   |
+    // | absent | present   | present  | 200          | 1 / 0                   |
+    //
+    // The OAuth capability is part of credential transport, while the Managed
+    // capability remains the operation selector; both must survive refresh
+    // exactly once without leaking the shadowed static token.
+    const providerCalls = [];
+    const requests = [];
+    const credentials = async (options) => {
+      providerCalls.push(options ?? null);
+      return {
+        token: providerCalls.length === 1 ? 'provider-stale' : 'provider-fresh',
+        expiresAt: null,
+      };
+    };
+    const refreshing = new Client({
+      apiKey: null,
+      authToken: null,
+      credentials,
+      baseURL,
+      maxRetries: 1,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return requests.length === 1
+          ? json(errorBody('authentication_error', 401), 401, { 'retry-after-ms': '0' })
+          : json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    assert.deepEqual((await refreshing.beta.sessions.list()).data, []);
+    assert.deepEqual(providerCalls, [null, { forceRefresh: true }]);
+    assert.equal(requests.length, 2, 'one rejected token permits one refreshed attempt');
+    assert.deepEqual(
+      requests.map((request) => request.headers.get('authorization')),
+      ['Bearer provider-stale', 'Bearer provider-fresh'],
+    );
+    assert.ok(requests.every((request) => request.headers.get('x-api-key') === null));
+    assert.deepEqual(
+      requests.map((request) => request.headers.get('x-stainless-retry-count')),
+      ['0', '1'],
+    );
+    assert.ok(requests.every((request) => {
+      const betas = request.headers.get('anthropic-beta')?.split(',').map((item) => item.trim()).sort();
+      return JSON.stringify(betas) === JSON.stringify([
+        'managed-agents-2026-04-01',
+        'oauth-2025-04-20',
+      ]);
+    }), 'provider auth composes the Managed and OAuth capabilities exactly');
+
+    for (const staticKind of ['apiKey', 'authToken']) {
+      let shadowedProviderCalls = 0;
+      let staticRequest;
+      const staticClient = new Client({
+        apiKey: staticKind === 'apiKey' ? 'static-api' : null, // awaken-allow: secret
+        authToken: staticKind === 'authToken' ? 'static-token' : null, // awaken-allow: secret
+        credentials: async () => {
+          shadowedProviderCalls += 1;
+          return { token: 'must-not-be-used', expiresAt: null }; // awaken-allow: secret
+        },
+        baseURL,
+        maxRetries: 0,
+        fetch: async (input, init) => {
+          staticRequest = new Request(input, init);
+          return json({ data: [], has_more: false, next_page: null });
+        },
+      });
+      await staticClient.beta.sessions.list();
+      assert.equal(shadowedProviderCalls, 0, `an explicit ${staticKind} never resolves credentials`);
+      assert.equal(
+        staticRequest.headers.get('x-api-key'),
+        staticKind === 'apiKey' ? 'static-api' : null,
+      );
+      assert.equal(
+        staticRequest.headers.get('authorization'),
+        staticKind === 'authToken' ? 'Bearer static-token' : null,
+      );
+      assert.deepEqual(
+        staticRequest.headers.get('anthropic-beta')?.split(',').map((item) => item.trim()),
+        managedBetas,
+        'static auth does not impersonate OAuth transport',
+      );
+    }
   });
 }
