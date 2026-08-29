@@ -8,8 +8,9 @@ trap 'rm -f "$RENDERED"' EXIT
 
 # Internal-product topology cause/effect decision table.
 # Causes: C1 the product overlay renders; C2 the Awaken Service is ClusterIP and
-# no external Kubernetes route exists; C3 state/config/tmp mounts and a bounded
-# startup grace plus readiness/liveness probes are declared; C4 ingress is
+# no external Kubernetes route exists; C3 state/config/tmp mounts, signed Worker
+# trust projected from an externally provisioned Secret, and a bounded startup
+# grace plus readiness/liveness probes are declared; C4 ingress is
 # restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base while
 # BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC including
@@ -28,7 +29,10 @@ kubectl kustomize "$OVERLAY" >"$RENDERED"
 [[ "$(grep -c '^kind: Deployment$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: Service$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: PersistentVolumeClaim$' "$RENDERED")" -eq 1 ]]
-[[ "$(grep -c '^kind: NetworkPolicy$' "$RENDERED")" -eq 1 ]]
+[[ "$(grep -c '^kind: NetworkPolicy$' "$RENDERED")" -eq 3 ]]
+grep -q 'name: awaken-product-ingress' "$RENDERED"
+grep -q 'name: awaken-sandbox-default-deny' "$RENDERED"
+grep -q 'name: awaken-sandbox-open-egress' "$RENDERED"
 [[ "$(grep -c '^kind: ServiceAccount$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: Role$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: RoleBinding$' "$RENDERED")" -eq 1 ]]
@@ -37,6 +41,7 @@ grep -q 'type: ClusterIP' "$RENDERED"
 grep -q 'role = "all-in-one"' "$RENDERED"
 grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
+grep -q 'worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
 grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
 grep -q 'package_image_builder = "k8s"' "$RENDERED"
@@ -52,6 +57,9 @@ grep -q -- '- create' <<<"$PRODUCT_OBJECT_RULE"
 grep -q -- '- update' <<<"$PRODUCT_OBJECT_RULE"
 grep -q -- '- delete' <<<"$PRODUCT_OBJECT_RULE"
 grep -q 'persistentVolumeClaim:' "$RENDERED"
+grep -q 'secretName: awaken-product-worker-auth' "$RENDERED"
+grep -q 'mountPath: /etc/awaken-auth' "$RENDERED"
+[[ "$(grep -c '^kind: Secret$' "$RENDERED")" -eq 0 ]]
 grep -q 'startupProbe:' "$RENDERED"
 grep -q 'failureThreshold: 180' "$RENDERED"
 grep -q 'path: /readyz' "$RENDERED"

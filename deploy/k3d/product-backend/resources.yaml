@@ -21,6 +21,7 @@ data:
     run_local_pool = true
     no_browser = true
     identity_mode = "self-managed"
+    worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"
@@ -174,6 +175,9 @@ spec:
             - name: config
               mountPath: /etc/awaken
               readOnly: true
+            - name: worker-auth
+              mountPath: /etc/awaken-auth
+              readOnly: true
             - name: data
               mountPath: /var/lib/awaken
             - name: tmp
@@ -182,6 +186,9 @@ spec:
         - name: config
           configMap:
             name: awaken-product-config
+        - name: worker-auth
+          secret:
+            secretName: awaken-product-worker-auth
         - name: data
           persistentVolumeClaim:
             claimName: awaken-product-data
