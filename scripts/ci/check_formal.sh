@@ -256,6 +256,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-ext-background-task \
     --harness cancellation_is_monotone_and_terminal_states_are_absorbing
   run_kani awaken-runtime-contract \
+    --harness anchored_context_window_never_moves_past_the_covered_prefix \
+    --harness unanchored_legacy_context_never_hides_transcript_messages \
     --harness terminal_calls_are_never_reentered \
     --harness only_the_matching_approval_ticket_enters_execution \
     --harness every_tool_call_transition_has_the_unique_documented_precondition \
@@ -467,6 +469,12 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/checkpoint-recovery" \
     -config formal/tla/CheckpointRecovery.cfg formal/tla/CheckpointRecovery.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/background-task" \
+    -config formal/tla/BackgroundTask.cfg formal/tla/BackgroundTask.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/eval-evidence" \
+    -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/webhook-outbox" \
     -config formal/tla/WebhookOutbox.cfg formal/tla/WebhookOutbox.tla

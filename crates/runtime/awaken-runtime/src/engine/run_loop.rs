@@ -549,8 +549,9 @@ pub(super) async fn drive(
             .into_values()
             .flatten()
             .collect();
-        let context_window =
-            ContextWindow::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
+        let context_window = ContextWindow::load(&store)
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .keep_last_at(ledger.transcript.len());
 
         // A persisted partial resumes only this drive's first step (see above);
         // it is consumed on the first inference call of that step.
