@@ -1582,6 +1582,12 @@ pub fn awaken_session_contract::SessionResourceState::revise_unattempted_pending
 pub fn awaken_session_contract::SessionResourceState::rollback(&mut self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::start_attempt(&mut self) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub struct awaken_session_contract::SessionRevision(pub u64)
+pub struct awaken_session_contract::SessionRunCommandFingerprint(_)
+impl awaken_session_contract::SessionRunCommandFingerprint
+pub const awaken_session_contract::SessionRunCommandFingerprint::CURRENT_PREFIX: &'static str
+pub fn awaken_session_contract::SessionRunCommandFingerprint::as_str(&self) -> &str
+pub fn awaken_session_contract::SessionRunCommandFingerprint::current(&awaken_session_contract::AdmitSessionRun) -> Self
+pub fn awaken_session_contract::SessionRunCommandFingerprint::is_current(&self) -> bool
 pub struct awaken_session_contract::SessionRunDelivery
 pub awaken_session_contract::SessionRunDelivery::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_session_contract::SessionRunDelivery::session_activity_epoch: u64

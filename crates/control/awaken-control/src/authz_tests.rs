@@ -379,6 +379,7 @@ fn runtime_protocol_adapters_use_the_existing_hosted_run_namespace() {
         "/v1/message:stream",
         "/v1/durable/session-1",
         "/v1/awaken/sessions/session-1/live-inbox",
+        "/v1/awaken/sessions/session-1/runs",
         "/v1/application-access-tokens/token-1",
     ] {
         for method in [Method::GET, Method::HEAD] {

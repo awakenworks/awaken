@@ -41,3 +41,11 @@ Owner: [anthropic-alignment-and-sessions.md](../design/anthropic-alignment-and-s
 - Fact: build the product edge by translating requests, calling runtime/server ports, and projecting committed results before adding broader public API surface.
 - Links: guardrails G10, G13, and G14
 - Verification: contract snapshots and docs review checklist.
+
+## FACT-ALIGN-005: Typed profiled Runs reuse canonical Session admission
+
+- Status: active
+- Owner: [ADR-0075 profiled Run amendment](../adr/0075-unified-managed-session-worker-execution.md#amendment-2026-08-29-profiled-run-submission-is-a-typed-leaf-over-canonical-admission)
+- Fact: the private typed profiled Run leaf lowers into the sole Session admission, durable Run dispatch, and committed Managed projection authorities. Its complete command fingerprint is computed before mutable Runtime projection; it adds no Event fallback, second Run store, lifecycle, or product status.
+- Links: guardrails G1, G10, and G13
+- Verification: route-lowering tests, current/legacy fingerprint decision tables on Memory, SQLite, and PostgreSQL, real ManagedHost phase tests, and committed projection tests.
