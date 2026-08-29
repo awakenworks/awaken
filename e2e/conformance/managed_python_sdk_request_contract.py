@@ -970,7 +970,12 @@ async def _exercise_error_and_retry_contract_for_mode(
     # request only. Retry decision table: C4=status/override selects retry or
     # rejection and C5=max_retries=2; E3=exactly three or one attempts. Mutation
     # relation: C6=one retry with an explicit idempotency key and body; E4=the
-    # complete command identity is byte-stable. This owns Python transport
+    # complete command identity is byte-stable. C8=ConnectError followed by a
+    # valid response and max_retries=1; E5=one retry and a decoded response.
+    # C9=ReadTimeout with max_retries=0; E6=the exact APITimeoutError after one
+    # attempt, distinct from APIConnectionError. C10=ConnectError with
+    # max_retries=0; E7=the exact APIConnectionError and cause after one
+    # attempt. This owns Python transport
     # behavior only; Awaken's production error mapping is owned by deployed/Rust
     # operation cases. C7 projects the same decision graph through sync and
     # async API clients; the transport handler and all expectations remain
@@ -1104,6 +1109,76 @@ async def _exercise_error_and_retry_contract_for_mode(
     first, second = attempts
     assert (first.method, first.url, first.content) == (second.method, second.url, second.content)
     assert first.headers["idempotency-key"] == second.headers["idempotency-key"] == key
+
+    failed_connection_attempts = []
+
+    def disconnect(request: object) -> object:
+        failed_connection_attempts.append(request)
+        raise transport_module.ConnectError(
+            "connection closed",
+            request=request,
+        )
+
+    try:
+        await _call_session_create(
+            anthropic_module,
+            transport_module,
+            disconnect,
+            asynchronous=asynchronous,
+            max_retries=0,
+        )
+    except anthropic_module.APIConnectionError as error:
+        assert error.__class__ is anthropic_module.APIConnectionError
+        assert isinstance(error.__cause__, transport_module.ConnectError)
+    else:
+        raise AssertionError("Python SDK accepted a connection failure")
+    assert len(failed_connection_attempts) == 1
+
+    connection_attempts = []
+
+    def reconnect(request: object) -> object:
+        connection_attempts.append(request)
+        if len(connection_attempts) == 1:
+            raise transport_module.ConnectError(
+                "connection closed",
+                request=request,
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        reconnect,
+        asynchronous=asynchronous,
+        max_retries=1,
+        raw=True,
+    )
+    assert response.status_code == 200
+    assert len(connection_attempts) == 2
+
+    timeout_attempts = []
+
+    def time_out(request: object) -> object:
+        timeout_attempts.append(request)
+        raise transport_module.ReadTimeout(
+            "SDK deadline elapsed",
+            request=request,
+        )
+
+    try:
+        await _call_session_create(
+            anthropic_module,
+            transport_module,
+            time_out,
+            asynchronous=asynchronous,
+            max_retries=0,
+        )
+    except anthropic_module.APITimeoutError as error:
+        assert error.__class__ is anthropic_module.APITimeoutError
+        assert isinstance(error.__cause__, transport_module.ReadTimeout)
+    else:
+        raise AssertionError("Python SDK accepted a transport timeout")
+    assert len(timeout_attempts) == 1
 
 
 def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:

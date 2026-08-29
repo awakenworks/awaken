@@ -226,4 +226,72 @@ for (const { version, Client } of clients) {
     );
     assert.equal(attempts, 1);
   });
+
+  test(`${version}: connection faults and SDK timeouts retain distinct retry semantics`, async () => {
+    // Cause/effect graph:
+    // C1 fetch rejects with a connection fault before any HTTP response;
+    // C2 maxRetries=0 or 1; C3 the retry's second attempt returns a valid
+    // Managed page; C4 the SDK deadline aborts an otherwise pending fetch.
+    // Effects: C1+C2(0) -> exact APIConnectionError after one attempt;
+    // C1+C2(1)+C3 -> exactly two attempts and one decoded page; C4+C2(0) ->
+    // exact APIConnectionTimeoutError after one attempt. A caller
+    // abort remains separately owned above and must never be normalized into
+    // either transport outcome.
+    //
+    // Decision table:
+    // | cause                 | retries | terminal result                  |
+    // | connection            | 0       | APIConnectionError, once         |
+    // | connection, then 200  | 1       | decoded page, two attempts       |
+    // | SDK deadline          | 0       | APIConnectionTimeoutError, once  |
+    // | caller abort          | any     | APIUserAbortError, once (above)  |
+    let failedConnectionAttempts = 0;
+    const disconnected = new Client({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL,
+      maxRetries: 0,
+      fetch: async () => {
+        failedConnectionAttempts += 1;
+        throw new TypeError('connection closed');
+      },
+    });
+    await assert.rejects(
+      () => disconnected.beta.sessions.list(),
+      (error) => error.constructor === Client.APIConnectionError
+        && error.cause?.constructor === TypeError,
+    );
+    assert.equal(failedConnectionAttempts, 1, 'a disabled connection retry issues one attempt');
+
+    let connectionAttempts = 0;
+    const reconnecting = new Client({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL,
+      maxRetries: 1,
+      fetch: async () => {
+        connectionAttempts += 1;
+        if (connectionAttempts === 1) throw new TypeError('connection closed');
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    const page = await reconnecting.beta.sessions.list();
+    assert.deepEqual(page.data, [], 'connection retry decodes the eventual response');
+    assert.equal(connectionAttempts, 2, 'connection retry uses the exact configured bound');
+
+    let timeoutAttempts = 0;
+    const timingOut = new Client({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL,
+      maxRetries: 0,
+      fetch: async (_input, init) => new Promise((_resolve, reject) => {
+        timeoutAttempts += 1;
+        const fail = () => reject(new DOMException('SDK deadline elapsed', 'AbortError'));
+        if (init?.signal?.aborted) fail();
+        else init?.signal?.addEventListener('abort', fail, { once: true });
+      }),
+    });
+    await assert.rejects(
+      () => timingOut.beta.sessions.list({}, { timeout: 20 }),
+      (error) => error.constructor === Client.APIConnectionTimeoutError,
+    );
+    assert.equal(timeoutAttempts, 1, 'a disabled timeout retry cannot issue later work');
+  });
 }
