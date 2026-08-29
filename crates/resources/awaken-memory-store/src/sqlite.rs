@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use awaken_store_runtime::StoredU64;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::schema::memory_store_bundle;
+use crate::schema::{BUNDLE_ID, converged_memory_store_bundle, selected_memory_store_bundle};
 
 const NS: &str = "memory_store";
 
@@ -21,11 +21,36 @@ pub enum StoreError {
 /// Apply the `memory_store` scoped migration bundle to `conn` (idempotent).
 /// Shared by both SQLite stores, since they live under one scope.
 fn migrate_conn(conn: &Connection) -> Result<(), StoreError> {
-    let bundle = memory_store_bundle().map_err(|e| StoreError::Migrate(e.to_string()))?;
-    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-        .map_err(|e| StoreError::Migrate(e.to_string()))?
-        .run_bundle(conn, &bundle)
-        .map_err(|e| StoreError::Migrate(e.to_string()))?;
+    let ledger_exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [format!("{NS}_schema_migrations")],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let v1_checksum = if ledger_exists {
+        conn.query_row(
+            &format!(
+                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+            ),
+            [BUNDLE_ID],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| StoreError::Migrate(error.to_string()))?
+    } else {
+        None
+    };
+    let published = selected_memory_store_bundle(v1_checksum.as_deref())
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let converged =
+        converged_memory_store_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(conn, &published)
+        .and_then(|_| runner.run_bundle(conn, &converged))
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())
 }
 
@@ -931,6 +956,7 @@ impl MemoryRepository for SqliteMemoryRepository {
 #[cfg(test)]
 mod migration_seam_tests {
     use super::*;
+    use crate::schema::memory_store_bundle;
 
     #[test]
     fn current_baseline_exposes_only_the_memory_aggregate() {

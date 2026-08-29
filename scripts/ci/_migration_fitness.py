@@ -22,6 +22,8 @@ SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
 # a closed compatibility inventory, not a general exemption: one owner must
 # include both frozen bodies and may declare exactly two legacy migrations.
 PUBLISHED_LEGACY_SQL_AUTHORITIES = {
+    "crates/resources/awaken-memory-store/src/migrations/expanded/V0001__blob.sql":
+        "crates/resources/awaken-memory-store/src/schema.rs",
     "crates/server/awaken-run-ingress/src/migrations/expanded/V0015__delegation_group.sql":
         "crates/server/awaken-run-ingress/src/dispatch_schema.rs",
     "crates/server/awaken-run-ingress/src/migrations/expanded/V0016__drop_legacy_delegation_group.sql":

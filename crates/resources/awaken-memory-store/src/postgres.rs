@@ -5,7 +5,7 @@ use awaken_store_runtime::StoredU64;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
-use crate::schema::memory_store_bundle;
+use crate::schema::{BUNDLE_ID, converged_memory_store_bundle, selected_memory_store_bundle};
 
 const NS: &str = "memory_store";
 
@@ -21,24 +21,69 @@ pub enum PgStoreError {
 /// Apply the `memory_store` scoped migration bundle to `pool` (idempotent).
 /// Shared by both Postgres stores, since they live under one scope.
 async fn run_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
-    let bundle = memory_store_bundle().map_err(|e| PgStoreError::Migrate(e.to_string()))?;
-    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-        .map_err(|e| PgStoreError::Migrate(e.to_string()))?
-        .run_bundle(&bundle)
+    let (published, converged) = selected_bundles(pool).await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(&published)
         .await
-        .map_err(|e| PgStoreError::Migrate(e.to_string()))?;
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(&converged)
+        .await
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
     Ok(())
 }
 
 /// Verify the externally-owned `memory_store` bundle without executing DDL.
 async fn verify_migrations(pool: &PgPool) -> Result<(), PgStoreError> {
-    let bundle = memory_store_bundle().map_err(|e| PgStoreError::Migrate(e.to_string()))?;
-    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-        .map_err(|e| PgStoreError::Migrate(e.to_string()))?
-        .verify_bundle(&bundle)
+    let (published, converged) = selected_bundles(pool).await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    runner
+        .verify_bundle(&published)
         .await
-        .map_err(|e| PgStoreError::Migrate(e.to_string()))?;
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    runner
+        .verify_bundle(&converged)
+        .await
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
     Ok(())
+}
+
+async fn selected_bundles(
+    pool: &PgPool,
+) -> Result<
+    (
+        awaken_scoped_migration::MigrationBundle,
+        awaken_scoped_migration::MigrationBundle,
+    ),
+    PgStoreError,
+> {
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(pool)
+        .await
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    let v1_checksum: Option<String> = if ledger.is_some() {
+        sqlx::query_scalar(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?
+    } else {
+        None
+    };
+    Ok((
+        selected_memory_store_bundle(v1_checksum.as_deref())
+            .map_err(|error| PgStoreError::Migrate(error.to_string()))?,
+        converged_memory_store_bundle()
+            .map_err(|error| PgStoreError::Migrate(error.to_string()))?,
+    ))
 }
 
 use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
