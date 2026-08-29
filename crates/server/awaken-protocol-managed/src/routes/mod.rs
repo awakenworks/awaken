@@ -29,7 +29,7 @@ pub use dreams::dreams_router;
 pub(crate) use extractors::{ManagedJson, ManagedMultipart, ManagedQuery};
 pub use sessions::{
     create_profiled_session, enforce_managed_beta, release_profiled_session,
-    replace_resource_manifest, router,
+    replace_resource_manifest, router, submit_profiled_session_run,
 };
 pub use tunnels::tunnels_router;
 

@@ -99,6 +99,7 @@ fn hosted_runtime_routes_are_projected_from_the_authorization_table() {
         "/v1/durable/threads/thread_1/dispatches",
         "/v1/models",
         "/v1/awaken/sessions/session_1/live-inbox",
+        "/v1/awaken/sessions/session_1/runs",
     ] {
         assert!(super::action_for(&Method::GET, runtime_path).is_some());
     }

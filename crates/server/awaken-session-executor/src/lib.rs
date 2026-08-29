@@ -1031,6 +1031,11 @@ impl SessionRuntime for ManagedHost {
                 "Session Run reservation is incomplete",
             ));
         }
+        // Freeze the Session application's complete immutable command before
+        // Skill expansion or any current Agent/model/Resource/placement
+        // projection can change the delivery payload reconstructed by a retry.
+        let command_fingerprint =
+            awaken_session_contract::SessionRunCommandFingerprint::current(&command);
         let input = command.messages.clone();
         self.validate_thread_resource_bindings(&command.session_id)
             .await?;
@@ -1070,6 +1075,7 @@ impl SessionRuntime for ManagedHost {
                 .host
                 .resolved_dispatch_with_traceparent(activation, command.traceparent)
                 .map_err(to_run_error)?
+                .with_session_command_fingerprint(command_fingerprint)
                 .with_session_run_replacement(command.replacement);
             if !command
                 .execution_requirements

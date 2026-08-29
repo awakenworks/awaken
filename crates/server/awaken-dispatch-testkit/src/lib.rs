@@ -35,6 +35,9 @@ use awaken_runtime_contract::{
     CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
     InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
+use awaken_session_contract::{
+    AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,
+};
 
 const LEASE_MS: u64 = 1_000;
 

@@ -57,6 +57,9 @@ fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Rout
     let extensions = awaken_protocol_awaken::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
+    .merge(awaken_protocol_awaken::profiled_session_run_router(
+        awaken_protocol_managed::submit_profiled_session_run,
+    ))
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
@@ -144,6 +147,19 @@ struct AcceptingFake {
     published: std::sync::Arc<
         std::sync::Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
     >,
+    reserved_runs: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, awaken_session_contract::AdmitSessionRun>,
+        >,
+    >,
+    activated_runs: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, awaken_session_contract::SessionRunDelivery>,
+        >,
+    >,
+    fail_next_reservation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_next_activation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_next_activation_internal: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct AgentWithResources;
@@ -1653,6 +1669,68 @@ impl SessionRuntime for AcceptingFake {
             self.prepared.lock().unwrap().push(init);
         }
         Ok(())
+    }
+
+    async fn reserve_session_run(
+        &self,
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
+        if self
+            .fail_next_reservation_unavailable
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable(
+                "injected Session Run reservation outage",
+            ));
+        }
+        let mut reserved = self.reserved_runs.lock().unwrap();
+        if let Some(existing) = reserved.get(&command.run_id.0) {
+            if existing != &command {
+                return Err(RunError::bad_request(
+                    "Session Run reservation conflicts with its durable identity",
+                ));
+            }
+            return Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved);
+        }
+        reserved.insert(command.run_id.0.clone(), command);
+        Ok(awaken_session_contract::SessionRunReservation::Reserved)
+    }
+
+    async fn activate_session_run(
+        &self,
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+        if self
+            .fail_next_activation_unavailable
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::unavailable(
+                "injected Session Run activation outage",
+            ));
+        }
+        if self
+            .fail_next_activation_internal
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RunError::internal(
+                "injected Session Run activation failure",
+            ));
+        }
+        let mut activated = self.activated_runs.lock().unwrap();
+        if let Some(existing) = activated.get(&delivery.run_id.0) {
+            if existing != &delivery {
+                return Err(RunError::internal(
+                    "Session Run activation changed its durable delivery",
+                ));
+            }
+            return Ok(
+                awaken_session_contract::SessionRunActivation::AlreadyActivated {
+                    session_activity_epoch: delivery.session_activity_epoch,
+                },
+            );
+        }
+        activated.insert(delivery.run_id.0.clone(), delivery);
+        Ok(awaken_session_contract::SessionRunActivation::Activated)
     }
 
     async fn execute_terminal_cleanup(
@@ -4815,4 +4893,472 @@ async fn profiled_release_projects_one_durable_repository_publication() {
         1,
         "all no-op rules"
     );
+}
+
+fn profiled_run_body(operation_id: &str, run_id: &str, narrowing: &str) -> Value {
+    json!({
+        "agent_id": "coder",
+        "operation_id": operation_id,
+        "run_id": run_id,
+        "messages": [
+            {
+                "id": format!("flow-execution-envelope:{operation_id}"),
+                "role": "System",
+                "content": [{"type": "text", "text": "exact execution envelope"}]
+            },
+            {
+                "id": format!("flow-system:{operation_id}"),
+                "role": "System",
+                "content": [{"type": "text", "text": "Return the required output"}]
+            },
+            {
+                "id": format!("flow-task:{operation_id}"),
+                "role": "User",
+                "content": [{"type": "text", "text": "Implement the accepted Issue"}]
+            }
+        ],
+        "execution_requirements": {
+            "tool_capability_narrowing": narrowing,
+            "required_worker_capabilities": ["awaken.flow.coding.v1"]
+        }
+    })
+}
+
+#[tokio::test]
+async fn profiled_run_submission_preserves_one_canonical_command_across_replay_and_repair() {
+    // Causes: C1 exact existing profiled Session/owner and Primary command; C2
+    // exact replay after activation/HTTP response loss; C3 same Run with a
+    // changed Agent, operation, Message, requirements, or Session; C4 a distinct
+    // OutputRepair command; C5 the Flow Worker capability is later evaluated by
+    // canonical placement. Effects: E1 C1 reserves/activates every exact field;
+    // E2 C2 returns the same receipt without duplicate effects; E3 C3 is 400 and
+    // cannot overwrite the first command; E4 C4 preserves Session/Agent, uses
+    // DenyAll and PreservePrior; E5 C5 remains frozen in durable admission.
+    // Rules R1=C1=>E1, R2=C2=>E2, R3=C3=>E3, R4=C4=>E4, R9=C5=>E5. Runtime Host
+    // and RunIngress conformance tests own capability selection/claim behavior;
+    // this adapter test owns only exact delivery into that existing authority.
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions)
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state, "default");
+    for session_id in ["profiled-run-command", "profiled-run-other"] {
+        let (status, created) = call(
+            &app,
+            "POST",
+            "/v1/awaken/sessions",
+            Some(json!({
+                "session_id": session_id,
+                "mode": "work_unit",
+                "agent_id": "coder"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "seed {session_id}: {created}");
+    }
+
+    let primary = profiled_run_body("work-unit-42", "work-unit-42", "configured");
+    let run_uri = "/v1/awaken/sessions/profiled-run-command/runs";
+    let (status, first) = call(&app, "POST", run_uri, Some(primary.clone())).await;
+    assert_eq!(status, StatusCode::OK, "R1: {first}");
+    assert_eq!(
+        first,
+        json!({"session_id": "profiled-run-command", "run_id": "work-unit-42"}),
+        "R1/E1 exact receipt"
+    );
+    let primary_command = runtime
+        .reserved_runs
+        .lock()
+        .unwrap()
+        .get("work-unit-42")
+        .cloned()
+        .expect("R1 durable reservation");
+    assert_eq!(primary_command.session_id, "profiled-run-command", "R1");
+    assert_eq!(primary_command.agent_id, "coder", "R1");
+    assert_eq!(primary_command.operation_id, "work-unit-42", "R1");
+    assert_eq!(primary_command.run_id.0, "work-unit-42", "R1");
+    assert_eq!(
+        primary_command
+            .messages
+            .iter()
+            .map(|message| (message.id.0.as_str(), message.role, message.text_content()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "flow-execution-envelope:work-unit-42",
+                awaken_agent_contract::agent::message::Role::System,
+                "exact execution envelope".into(),
+            ),
+            (
+                "flow-system:work-unit-42",
+                awaken_agent_contract::agent::message::Role::System,
+                "Return the required output".into(),
+            ),
+            (
+                "flow-task:work-unit-42",
+                awaken_agent_contract::agent::message::Role::User,
+                "Implement the accepted Issue".into(),
+            ),
+        ],
+        "R1 exact Message identity, role, and content"
+    );
+    assert!(primary_command.data_subject_id.is_none(), "R1");
+    assert!(primary_command.traceparent.is_none(), "R1");
+    assert_eq!(
+        primary_command
+            .execution_requirements
+            .tool_capability_narrowing,
+        awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+        "R1"
+    );
+    assert_eq!(
+        primary_command
+            .execution_requirements
+            .required_worker_capabilities,
+        ["awaken.flow.coding.v1".to_string()].into_iter().collect(),
+        "R9/E5"
+    );
+    assert_eq!(
+        primary_command.replacement,
+        awaken_session_contract::SessionRunReplacement::PreservePrior,
+        "R1"
+    );
+
+    let (status, replay) = call(&app, "POST", run_uri, Some(primary.clone())).await;
+    assert_eq!(status, StatusCode::OK, "R2: {replay}");
+    assert_eq!(replay, first, "R2/E2 stable receipt");
+    assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 1, "R2/E2");
+    assert_eq!(runtime.activated_runs.lock().unwrap().len(), 1, "R2/E2");
+
+    let mut changed_requirements = primary.clone();
+    changed_requirements["execution_requirements"]["tool_capability_narrowing"] = json!("deny_all");
+    let (status, _) = call(&app, "POST", run_uri, Some(changed_requirements)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 requirements");
+    let mut changed_agent = primary.clone();
+    changed_agent["agent_id"] = json!("other-agent");
+    let (status, _) = call(&app, "POST", run_uri, Some(changed_agent)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 Agent");
+    let mut changed_operation = primary.clone();
+    changed_operation["operation_id"] = json!("another-operation");
+    let (status, _) = call(&app, "POST", run_uri, Some(changed_operation)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 operation");
+    let mut changed_message = primary.clone();
+    changed_message["messages"][2]["content"][0]["text"] = json!("different task");
+    let (status, _) = call(&app, "POST", run_uri, Some(changed_message)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 Message");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-run-other/runs",
+        Some(primary),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R3 Session");
+    assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 1, "R3/E3");
+
+    let repair = profiled_run_body(
+        "work-unit-42-output-repair-1",
+        "work-unit-42-output-repair-1",
+        "deny_all",
+    );
+    let (status, repair_receipt) = call(&app, "POST", run_uri, Some(repair)).await;
+    assert_eq!(status, StatusCode::OK, "R4: {repair_receipt}");
+    let repair_command = runtime
+        .reserved_runs
+        .lock()
+        .unwrap()
+        .get("work-unit-42-output-repair-1")
+        .cloned()
+        .expect("R4 distinct repair reservation");
+    assert_eq!(repair_command.session_id, primary_command.session_id, "R4");
+    assert_eq!(repair_command.agent_id, primary_command.agent_id, "R4");
+    assert_eq!(
+        repair_command
+            .execution_requirements
+            .tool_capability_narrowing,
+        awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+        "R4"
+    );
+    assert_eq!(
+        repair_command.replacement,
+        awaken_session_contract::SessionRunReplacement::PreservePrior,
+        "R4"
+    );
+    assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 2, "R4/E4");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn profiled_run_commits_into_the_existing_managed_read_projection() {
+    // Causes: C1 an exact profiled Run is admitted while its canonical
+    // activation is held after the Session activity receipt; C2 Runtime then
+    // commits the Run lifecycle, output, and usage facts; C3 the application
+    // settles that exact activity; C4 the product retries after completion.
+    // Effects: E1 ordinary Managed GET projects Running during C1; E2 the same
+    // GET projects Idle after C2+C3; E3 ordinary Managed SSE backfills Running,
+    // output, usage, then terminal truth in commit order; E4 C4 returns the same
+    // receipt without another activity. Decision rules R10a=C1=>E1,
+    // R10b=C1+C2+C3=>E2+E3, and R2c=C4=>E4. The shared Runtime fake implements
+    // the existing SessionRuntime commit ports; this route adds no Event
+    // fallback, projector, transcript, or status owner.
+    let runtime = CoordinatedRuntimeFake::default();
+    runtime.hold_next_user_run_activation();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions)
+            .with_resource_registry(resource_registry()),
+    );
+    let app = router(state.clone()).merge(profiled_router(state.clone(), "default"));
+    let session_id = "profiled-run-projection";
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(json!({
+            "session_id": session_id,
+            "mode": "work_unit",
+            "agent_id": "coder"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R10 seed: {created}");
+
+    let run_uri = format!("/v1/awaken/sessions/{session_id}/runs");
+    let request = profiled_run_body("work-unit-45", "work-unit-45", "configured");
+    let run_app = app.clone();
+    let run_uri_for_task = run_uri.clone();
+    let request_for_task = request.clone();
+    let submission = tokio::spawn(async move {
+        call(&run_app, "POST", &run_uri_for_task, Some(request_for_task)).await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.wait_for_user_run_activation(),
+    )
+    .await
+    .expect("R10a canonical activation was not reached");
+
+    let (status, running) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "R10a/E1: {running}");
+    assert_eq!(running["status"], "running", "R10a/E1");
+
+    runtime.release_user_run_activation();
+    let (status, receipt) = submission.await.expect("R10 Run submission task");
+    assert_eq!(status, StatusCode::OK, "R10b receipt: {receipt}");
+    assert_eq!(
+        receipt,
+        json!({"session_id": session_id, "run_id": "work-unit-45"}),
+        "R10b exact receipt"
+    );
+    let application = state.session_application();
+    settle_coordinated_user_run_activity(&application, session_id, "R10b/C3").await;
+
+    let (status, idle) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "R10b/E2: {idle}");
+    assert_eq!(idle["status"], "idle", "R10b/E2");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/sessions/{session_id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "R10b/E3");
+    let sse = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        response.into_body().collect(),
+    )
+    .await
+    .expect("R10b terminal SSE did not close")
+    .unwrap()
+    .to_bytes();
+    let sse = String::from_utf8(sse.to_vec()).unwrap();
+    let running_at = sse
+        .find("event: session.status_running")
+        .expect("R10b Running");
+    let output_at = sse.find("event: agent.message").expect("R10b output");
+    let usage_at = sse.find("event: session.usage").expect("R10b usage");
+    let idle_at = sse
+        .find("event: session.status_idle")
+        .expect("R10b terminal");
+    assert!(
+        running_at < output_at && output_at < usage_at && usage_at < idle_at,
+        "R10b/E3 committed order:\n{sse}"
+    );
+
+    let (status, replay) = call(&app, "POST", &run_uri, Some(request)).await;
+    assert_eq!(status, StatusCode::OK, "R2c/E4: {replay}");
+    assert_eq!(replay, receipt, "R2c/E4 stable completed receipt");
+    assert!(
+        application
+            .session(session_id)
+            .await
+            .expect("R2c durable Session")
+            .active_activity_epochs
+            .is_empty(),
+        "R2c/E4 completed replay starts no activity"
+    );
+}
+
+#[tokio::test]
+async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
+    // Causes: C1 target missing/foreign/ordinary Managed; C2
+    // reservation or activation unavailable; C3 unknown field or missing
+    // Workspace; C4 activation invariant failure; C5 exact retry after the
+    // post-reservation failure. Effects: E1 C1=>404/no implicit create; E2
+    // C2=>503; E3 malformed=>400 and internal=>500; E4 C5 converges on one
+    // reservation/activation and the same receipt. Rules R5=C1=>E1,
+    // R6=C2=>E2, R7=C3|C4=>E3, R2=C5=>E4. No Event or background fallback is
+    // mounted in this harness.
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state.clone(), "default");
+    for session_id in [
+        "profiled-run-errors",
+        "profiled-run-reservation-unavailable",
+        "profiled-run-activation-unavailable",
+    ] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/v1/awaken/sessions",
+            Some(json!({
+                "session_id": session_id,
+                "mode": "work_unit",
+                "agent_id": "coder"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "seed {session_id}: {body}");
+    }
+
+    let request = profiled_run_body("work-unit-43", "work-unit-43", "configured");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-run-missing/runs",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "R5 missing");
+    assert!(
+        matches!(
+            sessions.get("profiled-run-missing").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "R5 no implicit create"
+    );
+
+    let foreign = profiled_router(state.clone(), "other-workspace");
+    let (status, _) = call(
+        &foreign,
+        "POST",
+        "/v1/awaken/sessions/profiled-run-errors/runs",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "R5 foreign");
+
+    let managed_app = router(state.clone());
+    let (status, managed) = call(
+        &managed_app,
+        "POST",
+        "/v1/sessions",
+        Some(with_session_environment(json!({"agent": "coder"}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed Managed target: {managed}");
+    let managed_id = managed["id"].as_str().expect("Managed Session id");
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/awaken/sessions/{managed_id}/runs"),
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "R5 Managed target");
+
+    runtime
+        .fail_next_reservation_unavailable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-run-reservation-unavailable/runs",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R6 reservation");
+
+    let activation_request = profiled_run_body("work-unit-44", "work-unit-44", "configured");
+    runtime
+        .fail_next_activation_unavailable
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let activation_uri = "/v1/awaken/sessions/profiled-run-activation-unavailable/runs";
+    let (status, _) = call(
+        &app,
+        "POST",
+        activation_uri,
+        Some(activation_request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R6 activation");
+    let (status, recovered) = call(&app, "POST", activation_uri, Some(activation_request)).await;
+    assert_eq!(status, StatusCode::OK, "R2 retry unavailable activation");
+    assert_eq!(recovered["run_id"], "work-unit-44", "R2");
+
+    let mut unknown = request.clone();
+    unknown["fallback_to_events"] = json!(true);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-run-errors/runs",
+        Some(unknown),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R7 unknown field");
+
+    let unscoped = awaken_protocol_awaken::profiled_session_run_router(
+        awaken_protocol_managed::submit_profiled_session_run,
+    )
+    .with_state(state);
+    let (status, _) = call(
+        &unscoped,
+        "POST",
+        "/v1/awaken/sessions/profiled-run-errors/runs",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R7 missing Workspace");
+
+    runtime
+        .fail_next_activation_internal
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error_uri = "/v1/awaken/sessions/profiled-run-errors/runs";
+    let (status, _) = call(&app, "POST", error_uri, Some(request.clone())).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R7 internal");
+    let (status, recovered) = call(&app, "POST", error_uri, Some(request)).await;
+    assert_eq!(status, StatusCode::OK, "R2 internal response-loss retry");
+    assert_eq!(recovered["run_id"], "work-unit-43", "R2");
+    assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 2, "R2/R6");
+    assert_eq!(runtime.activated_runs.lock().unwrap().len(), 2, "R2/R6");
 }

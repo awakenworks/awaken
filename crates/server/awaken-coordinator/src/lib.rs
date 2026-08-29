@@ -1240,6 +1240,9 @@ fn mount_with_managed_over_and_models(
     let profiled_sessions = awaken_protocol_awaken::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
+    .merge(awaken_protocol_awaken::profiled_session_run_router(
+        awaken_protocol_managed::submit_profiled_session_run,
+    ))
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
