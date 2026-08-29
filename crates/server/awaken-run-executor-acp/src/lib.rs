@@ -1722,11 +1722,12 @@ mod discovery_spec;
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
-    AcpAcquisition, AcpCli, AcpImageRequirement, BackendModelInterface, CredentialArtifactCodec,
-    CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery,
-    ManagedModelInterface, ManagedProviderConfigCodec, ManagedProviderConfigDelivery,
-    ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence,
-    acp_cli, image_runtime_contract_json, known_acp_clis, known_acp_publication_capabilities,
+    AcpAcquisition, AcpCli, AcpImageRequirement, BackendModelInterface, BackendOwnedStateIsolation,
+    CredentialArtifactCodec, CredentialArtifactRequirement, CredentialArtifactSpec,
+    ManagedCredentialDelivery, ManagedModelInterface, ManagedProviderConfigCodec,
+    ManagedProviderConfigDelivery, ModelDelivery, ProcessSecretRequirement, ResolvedModel,
+    SessionKey, SessionPersistence, acp_cli, image_runtime_contract_json, known_acp_clis,
+    known_acp_publication_capabilities,
 };
 pub use awaken_runtime_contract::resolved::{
     AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
