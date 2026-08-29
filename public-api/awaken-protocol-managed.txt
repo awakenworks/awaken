@@ -2047,4 +2047,5 @@ pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_dat
 pub fn awaken_protocol_managed::vault_router(alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::with_managed_response_context(axum::routing::Router) -> axum::routing::Router
 pub fn awaken_protocol_managed::with_managed_workspace_header(axum_core::response::Response, &str) -> axum_core::response::Response
+pub fn awaken_protocol_managed::with_unscoped_managed_response_context(axum_core::response::Response) -> axum_core::response::Response
 pub async fn awaken_protocol_managed::work_session_guard(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedWorkSessionAccess>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
