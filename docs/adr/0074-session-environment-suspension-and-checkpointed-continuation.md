@@ -596,3 +596,53 @@ settled; it cannot make an old deny-unknown reader safe. This fail-forward rule
 keeps the Session aggregate's `(effect_id, generation, checkpoint)` tuple and
 root CAS as the sole operation authority while provider evidence remains only a
 physical-handle projection.
+
+## 2026-08-30 amendment: continuation Phase A to Phase B has one rollout barrier
+
+Continuation rollout reuses the existing Coordinator drain gate, canonical
+Session repository, lifecycle supervisor, and Event-batch cutover projection.
+It does not add a deployment-owned Session scan, restore registry, phase index,
+admin route, or JSON decoder.
+
+Static ownership is fixed as follows. `DrainController` is the one public
+request-admission and in-flight-count owner. Its public-router middleware
+linearizes admission against drain: a request admitted first retains its body
+guard and may complete, while every request or HTTP/2 stream admitted after the
+drain edge returns `503` before entering a business handler. The separate
+private Worker router remains available for registry, claim, heartbeat, and
+settlement traffic so already accepted work can converge. Readiness and the
+active-stream metric remain projections of this same controller.
+
+`ManagedSessionRepository` adds one typed global Environment-phase count over
+every live `managed_session` aggregate. SQLite and PostgreSQL read one complete
+statement snapshot and reuse the canonical aggregate decoder. The query is not
+the 256-row reconciliation batch and does not infer a phase from SQL JSON. An
+unavailable store, undecodable root, mismatched root identity, or count overflow
+fails closed. `SessionEnvironmentState` remains the only phase authority.
+
+The existing
+`GET /admin/session-event-batch-cutover-validation` snapshot adds only the
+secret-free `restoring_sessions` count. One lifecycle-supervisor cycle
+publishes its next process-local generation only after both the final canonical
+recovery scan and the global `Restoring` count succeed. Either failure preserves
+the preceding snapshot and generation exactly.
+
+The Phase A to Phase B sequence is therefore:
+
+```text
+drain each exact old Coordinator candidate
+  -> reject all later public requests, including retained-connection requests
+  -> allow admitted public responses and private Worker settlement to finish
+  -> observe that candidate's existing active-stream count reach zero
+  -> stop the old writer and record each Phase B candidate snapshot baseline
+  -> require a strictly newer snapshot generation from every candidate
+  -> require the existing repair counts and restoring_sessions all equal zero
+  -> enable Phase B and reopen public admission
+```
+
+A missing candidate, a stale or absent generation, a failed/corrupt global
+count, a nonzero `Restoring` count, or a nonzero existing repair count is
+diagnostic no-proof and keeps the rollout closed. A concurrent root transition
+is observed wholly before or after the repository count statement; after drain
+and in-flight completion no new public driving event may create another restore.
+The private convergence channel never becomes an alternate public ingress.

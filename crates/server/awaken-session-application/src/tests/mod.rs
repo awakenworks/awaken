@@ -1380,6 +1380,8 @@ struct FaultingSessionRepository {
     tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
     fail_recovery_scan_once: AtomicBool,
+    fail_environment_phase_count_once: AtomicBool,
+    corrupt_environment_phase_count_once: AtomicBool,
     recovery_scan_count: AtomicUsize,
 }
 
@@ -1411,6 +1413,8 @@ impl FaultingSessionRepository {
             tombstone_after_operation_once: Mutex::new(None),
             get_not_found_once: AtomicBool::new(false),
             fail_recovery_scan_once: AtomicBool::new(false),
+            fail_environment_phase_count_once: AtomicBool::new(false),
+            corrupt_environment_phase_count_once: AtomicBool::new(false),
             recovery_scan_count: AtomicUsize::new(0),
         }
     }
@@ -1441,6 +1445,16 @@ impl FaultingSessionRepository {
 
     fn fail_recovery_scan_once(&self) {
         self.fail_recovery_scan_once.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_environment_phase_count_once(&self) {
+        self.fail_environment_phase_count_once
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn corrupt_environment_phase_count_once(&self) {
+        self.corrupt_environment_phase_count_once
+            .store(true, Ordering::SeqCst);
     }
 
     fn recovery_scan_count(&self) -> usize {
@@ -1683,6 +1697,31 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             );
         }
         self.inner.reconcilable_sessions().await
+    }
+
+    async fn count_environment_phase(
+        &self,
+        phase: awaken_session_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
+        if self
+            .corrupt_environment_phase_count_once
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
+                "injected corrupt Session root during Environment phase count".into(),
+            ));
+        }
+        if self
+            .fail_environment_phase_count_once
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "injected Environment phase count outage".into(),
+                ),
+            );
+        }
+        self.inner.count_environment_phase(phase).await
     }
 
     async fn sessions_referencing_credential_source(

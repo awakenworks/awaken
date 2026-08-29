@@ -316,6 +316,7 @@ impl SessionApplication {
                         snapshot.terminal_with_incomplete_event_batches,
                     event_batch_failures = snapshot.event_batch_failures,
                     quarantined_sessions = snapshot.quarantined,
+                    restoring_sessions = snapshot.restoring_sessions,
                     "Session Event-batch cutover validation scan completed"
                 );
                 0
