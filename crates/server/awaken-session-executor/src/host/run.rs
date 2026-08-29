@@ -21,6 +21,16 @@ enum RunIngressScope {
     ThreadExtension,
 }
 
+struct RunDeliveryRequest<'a> {
+    agent: Option<&'a str>,
+    thread: &'a str,
+    input: Vec<Message>,
+    supersede: bool,
+    sink: Option<Arc<dyn StreamSink>>,
+    data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
+    ingress_scope: RunIngressScope,
+}
+
 impl SharedHost {
     pub(crate) async fn session_budget_resume_tickets(
         &self,
@@ -378,15 +388,15 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(
+        self.deliver_run(RunDeliveryRequest {
             agent,
             thread,
             input,
-            false,
-            None,
-            None,
-            RunIngressScope::HostCommand,
-        )
+            supersede: false,
+            sink: None,
+            data_subject_id: None,
+            ingress_scope: RunIngressScope::HostCommand,
+        })
         .await
     }
 
@@ -398,15 +408,15 @@ impl SharedHost {
         input: Vec<Message>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(
+        self.deliver_run(RunDeliveryRequest {
             agent,
             thread,
             input,
-            false,
-            None,
+            supersede: false,
+            sink: None,
             data_subject_id,
-            RunIngressScope::HostCommand,
-        )
+            ingress_scope: RunIngressScope::HostCommand,
+        })
         .await
     }
 
@@ -420,15 +430,15 @@ impl SharedHost {
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(
+        self.deliver_run(RunDeliveryRequest {
             agent,
             thread,
             input,
-            false,
-            Some(sink),
-            None,
-            RunIngressScope::HostCommand,
-        )
+            supersede: false,
+            sink: Some(sink),
+            data_subject_id: None,
+            ingress_scope: RunIngressScope::HostCommand,
+        })
         .await
     }
 
@@ -441,15 +451,15 @@ impl SharedHost {
         sink: Arc<dyn StreamSink>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(
+        self.deliver_run(RunDeliveryRequest {
             agent,
             thread,
             input,
-            false,
-            Some(sink),
+            supersede: false,
+            sink: Some(sink),
             data_subject_id,
-            RunIngressScope::HostCommand,
-        )
+            ingress_scope: RunIngressScope::HostCommand,
+        })
         .await
     }
 
@@ -464,15 +474,15 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(
+        self.deliver_run(RunDeliveryRequest {
             agent,
             thread,
             input,
-            true,
-            None,
-            None,
-            RunIngressScope::HostCommand,
-        )
+            supersede: true,
+            sink: None,
+            data_subject_id: None,
+            ingress_scope: RunIngressScope::HostCommand,
+        })
         .await
     }
 
@@ -487,28 +497,31 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(
+        self.deliver_run(RunDeliveryRequest {
             agent,
             thread,
             input,
-            false,
-            None,
-            None,
-            RunIngressScope::ThreadExtension,
-        )
+            supersede: false,
+            sink: None,
+            data_subject_id: None,
+            ingress_scope: RunIngressScope::ThreadExtension,
+        })
         .await
     }
 
     async fn deliver_run(
         &self,
-        agent: Option<&str>,
-        thread: &str,
-        input: Vec<Message>,
-        supersede: bool,
-        sink: Option<Arc<dyn StreamSink>>,
-        data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-        ingress_scope: RunIngressScope,
+        request: RunDeliveryRequest<'_>,
     ) -> Result<CommittedStepReceipt, HostError> {
+        let RunDeliveryRequest {
+            agent,
+            thread,
+            input,
+            supersede,
+            sink,
+            data_subject_id,
+            ingress_scope,
+        } = request;
         if ingress_scope == RunIngressScope::HostCommand
             && self
                 .session_slots
