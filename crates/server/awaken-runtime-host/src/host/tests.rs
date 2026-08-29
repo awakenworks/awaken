@@ -1931,6 +1931,53 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
 }
 
 #[tokio::test]
+async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
+    // Test design: acp_execution_rebuilds_an_envelope_only_reservation_context
+    // Cause/effect graph: C1 an ACP publication; C2 reservation preflight leaves
+    // an envelope-only cached context; C3 execution wins the race before the
+    // reservation caller evicts it. Effects: E1 execution replaces that context;
+    // E2 the replacement owns a physical Environment, which is the prerequisite
+    // for registering the exact ACP executor. Decision table: ACP+C1-C3=>E1+E2;
+    // Native on-tool-use/A2A contexts remain eligible for environment-free reuse.
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
+        .resolved_model(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new("", "", "acp:opencode"),
+            ),
+        )
+        .build();
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+        .expect("one exact ACP publication");
+    let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+        awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]),
+    ));
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_agent_publications(Arc::new(publications))
+        .with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
+            source,
+        )));
+
+    let reserved = host
+        .ctx_for_session_reservation("acp-reservation-race", Some("assistant"))
+        .await
+        .expect("reservation preflight");
+    assert!(reserved.env.is_none(), "C1+C2: reservation is effect-free");
+
+    let executable = host
+        .ctx_for("acp-reservation-race", Some("assistant"))
+        .await
+        .expect("C3 execution rebuild");
+    assert!(
+        !Arc::ptr_eq(&reserved, &executable),
+        "E1: execution cannot reuse the envelope-only ACP context"
+    );
+    assert!(
+        executable.env.is_some(),
+        "E2: exact ACP routing is paired with its Session Environment"
+    );
+}
+
+#[tokio::test]
 async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environment() {
     use awaken_run_ingress::{DispatchQueue as _, RunDispatch};
 
