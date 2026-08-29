@@ -254,7 +254,7 @@ mod tests {
             "thread",
             "effect",
             artifact_evidence,
-            bundle_fingerprints.iter().copied().collect::<Vec<_>>(),
+            bundle_fingerprints.to_vec(),
         ));
         json!({
             "session_id": "session",
