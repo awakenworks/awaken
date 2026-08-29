@@ -6,7 +6,18 @@ import { waitForSessionEventReceipt } from '../harness.mjs';
 // and requires_action edge are read from the exact User receipt delta.
 export async function startAcpPermissionAwait(client, betas) {
   const session = await client.beta.sessions.create({
-    agent: 'acp-agent',
+    agent: {
+      id: 'acp-agent',
+      type: 'agent_with_overrides',
+      tools: [{
+        type: 'agent_toolset_20260401',
+        configs: [{
+          name: 'bash',
+          enabled: true,
+          permission_policy: { type: 'always_ask' },
+        }],
+      }],
+    },
     environment_id: 'env_local',
     betas,
   });

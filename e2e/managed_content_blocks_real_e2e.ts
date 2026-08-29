@@ -13,9 +13,9 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import { FILES_BETA, pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {

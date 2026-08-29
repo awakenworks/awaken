@@ -37,9 +37,9 @@ pub(crate) fn decide_run_identity(
 ) -> Result<RunIdentityDecision, DispatchError> {
     let replay = match stored {
         StoredRunIdentity::Absent => return Ok(RunIdentityDecision::New),
-        StoredRunIdentity::Live(existing) => existing.same_canonical_dispatch(incoming),
+        StoredRunIdentity::Live(existing) => existing.same_admission_dispatch(incoming),
         StoredRunIdentity::Completed(Some(existing)) => {
-            existing == incoming.canonical_fingerprint()
+            existing == incoming.admission_fingerprint()
         }
         StoredRunIdentity::Completed(None) => false,
     };
@@ -92,9 +92,9 @@ pub(crate) fn classify_completed_session_run_reservation(
 /// coordinate that the later activation/repair transition owns.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn validate_session_run_reservation_request(
-    request: &RunDispatch,
+    request: RunDispatch,
     reservation_ttl_ms: u64,
-) -> Result<u64, DispatchError> {
+) -> Result<(RunDispatch, u64), DispatchError> {
     if request.admission_shape() != DispatchAdmissionShape::SessionRootAwaitingActivity {
         return Err(DispatchError::Rejected(
             "Session Run reservation requires self-affinity and no activity epoch".to_string(),
@@ -106,7 +106,7 @@ pub(crate) fn validate_session_run_reservation_request(
             "Session Run reservation TTL must be nonzero".to_string(),
         ));
     }
-    Ok(reservation_ttl_ms)
+    Ok((request.with_session_command_identity(), reservation_ttl_ms))
 }
 
 /// A Session replacement may cross only an already-settled Awaiting boundary.

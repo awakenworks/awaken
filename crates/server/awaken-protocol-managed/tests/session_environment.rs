@@ -10,7 +10,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
-    OutcomeDrive, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;
@@ -29,17 +29,11 @@ impl SessionRuntime for AcceptingFake {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        if let Some(init) = awaken_protocol_managed::test_support::complete_session_projection_init(
+        let _ = awaken_protocol_managed::test_support::complete_session_projection_init(
             thread,
             &projection,
             &mode,
-        )? {
-            self.prepare_session(thread, init).await?;
-        }
-        Ok(())
-    }
-
-    async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+        )?;
         Ok(())
     }
     async fn run(

@@ -170,6 +170,17 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
+        // Generic durable-operation fixtures need the production Config plane to
+        // publish explicit Agent policy while a deterministic probe model drives
+        // the tool call. This reuses AllInOne; it owns no parallel Host/store.
+        Ok("management-probe") => {
+            awaken_cli::build_all_in_one_router_with_scenario_model(
+                std::sync::Arc::new(awaken_scenario_host::ProbeModel),
+                "management-probe".to_string(),
+                awaken_cli::ManagedServiceAdapters::default(),
+            )
+            .await
+        }
         // Deterministic paid Web provider selected before AllInOne assembly, so
         // Control publication and Host dispatch consume one registry instance.
         Ok("management-web") => awaken_scenario_host::build_management_web_router().await,
@@ -194,7 +205,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
         Ok("oauth-resolved") => awaken_scenario_host::build_oauth_resolved_router().await,
         Ok("schedule") => awaken_scenario_host::build_schedule_router(),
-        Ok("skills") => awaken_scenario_host::build_skills_router(),
+        Ok("skills") => awaken_scenario_host::build_skills_router().await,
         Ok("skills-durable") => awaken_scenario_host::build_skills_durable_router().await,
         Ok("delegate-remote") => awaken_scenario_host::build_remote_delegation_router(),
         Ok("vision") => awaken_scenario_host::build_vision_router(),
@@ -276,6 +287,7 @@ fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
             "management"
                 | "management-rate-limit"
                 | "management-agents"
+                | "management-probe"
                 | "management-web"
                 | "management-providers"
                 | "management-skills"
@@ -414,6 +426,7 @@ mod dispatch_tests {
             "management",
             "management-rate-limit",
             "management-agents",
+            "management-probe",
             "management-web",
             "management-providers",
             "management-skills",
@@ -456,7 +469,7 @@ mod dispatch_tests {
             ("statemachine", sh::build_statemachine_router()),
             ("statemachine-rich", sh::build_statemachine_rich_router()),
             ("schedule", sh::build_schedule_router()),
-            ("skills", sh::build_skills_router()),
+            ("skills", sh::build_skills_router().await),
             ("skills-durable", sh::build_skills_durable_router().await),
             ("vision", sh::build_vision_router()),
             ("model-route", sh::build_model_route_router()),

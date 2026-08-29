@@ -8,18 +8,23 @@
 // the outbox to the awaiting run's pending input and wakes it — the run resumes,
 // reads back, and completes. This exercises the outbox stage → relay → wake path.
 //
-// Run: (from e2e/)  node managed_crossthread_e2e.mjs
+// Run: (from e2e/)  node durable_crossthread_e2e.mjs
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  spawnServer,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38180);
 const BASE = `http://127.0.0.1:${PORT}`;
-const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-xthread-e2e-${process.pid}`;
-const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
+const THREAD = 'durable-crossthread-e2e';
+const AGENT = 'durable-crossthread-agent';
 
 const post = (path, body) =>
   fetch(`${BASE}${path}`, {
@@ -33,19 +38,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
-  const upstream = await startUpstream('probe');
-  const srv = spawnServer('real', PORT, {
+  const srv = spawnServer('management-probe', PORT, {
     SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_DISPATCH_DAEMON: '1',
-    ...realServerEnv('probe', upstream),
   });
   await waitForPort(PORT);
   try {
-    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-
-    // Background-submit: the daemon drains it and the probe's write tool awaits.
-    const sub = await post(`/v1/durable/threads/${session.id}/submit_background`, { text: 'XTHREAD' });
+    await publishAlwaysAskManagementProbeAgent(BASE, AGENT);
+    // Ownership decision row X1: generic durable ingress owns this ordinary
+    // Runtime Thread; Managed Session roots are excluded and use Session-owned
+    // reservations. One published fixture Agent explicitly sets write=AlwaysAsk;
+    // the daemon therefore drains this Run to an awaiting permission boundary.
+    const sub = await post(`/v1/durable/threads/${THREAD}/submit_background`, {
+      agent: AGENT,
+      text: 'XTHREAD',
+    });
     assert.equal(sub.status, 200, 'background submit accepted');
     pass('run background-submitted; daemon will drain it to an awaiting tool');
 
@@ -53,7 +61,7 @@ async function main() {
     // daemon relays it from the outbox and wakes the run.
     let staged = false;
     for (let i = 0; i < 100; i++) {
-      const res = await post(`/v1/durable/threads/${session.id}/deliver`, { allow: true });
+      const res = await post(`/v1/durable/threads/${THREAD}/deliver`, { allow: true });
       if (res.status === 200) {
         staged = true;
         break;
@@ -66,7 +74,7 @@ async function main() {
     // The daemon relays the staged delivery and the run resumes to completion.
     let done = false;
     for (let i = 0; i < 100; i++) {
-      const { messages } = await committed(session.id);
+      const { messages } = await committed(THREAD);
       if (messages.some((m) => m.role === 'Assistant' && m.text.includes('done'))) {
         done = true;
         break;
@@ -79,7 +87,6 @@ async function main() {
     console.log('E2E PASS: durable outbox cross-thread delivery relayed by the daemon (ADR-0017).');
   } finally {
     await stopServer(srv.server);
-    upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }
 }

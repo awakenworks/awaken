@@ -11,6 +11,7 @@ import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import {
+  FILES_BETA,
   cleanupFixtureTree,
   managedFileUploadForm,
   managedWorkspaceClient,
@@ -29,7 +30,6 @@ const MODEL = `resource-pg-model-${process.pid}`;
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const SKILLS_BETA = 'skills-2025-10-02';
-const FILES_BETA = 'files-api-2025-04-14';
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function docker(...args: string[]): string {

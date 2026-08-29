@@ -343,6 +343,7 @@ impl HostWorkerResolver {
         );
         awaken_session_contract::drive_session_realization(
             session_id,
+            claim.map(|claim| claim.run_id.clone()),
             control,
             &WorkerProjectionSynchronizer {
                 host,

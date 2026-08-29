@@ -10,26 +10,18 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { waitForSessionEventReceipt, withRealServer } from './harness.mjs';
+import {
+  managedAgentWithAlwaysAskTools,
+  waitForSessionEventReceipt,
+  withRealServer,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38102);
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function newSession(client) {
   return client.beta.sessions.create({
-    agent: {
-      id: 'assistant',
-      type: 'agent_with_overrides',
-      tools: [{
-        type: 'agent_toolset_20260401',
-        configs: [{
-          name: 'write',
-          type: 'write',
-          enabled: true,
-          permission_policy: { type: 'always_ask' },
-        }],
-      }],
-    },
+    agent: managedAgentWithAlwaysAskTools(['write']),
     environment_id: 'env_local',
     betas: BETAS,
   });

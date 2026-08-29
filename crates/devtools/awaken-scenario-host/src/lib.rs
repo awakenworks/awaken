@@ -690,10 +690,12 @@ pub async fn build_resolved_real_router() -> Router {
     )
     .await
     .expect("enter credential");
+    let (direct_policy, direct_holder) = attempt_credential::direct_provider_execution();
     let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
-    );
+    )
+    .with_direct_provider_credential_execution(direct_policy, direct_holder);
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
         &awaken_tenancy::ScopeId::from("ws"),
@@ -817,10 +819,12 @@ pub async fn build_oauth_resolved_router() -> Router {
         .put(source)
         .await
         .expect("persist OAuth credential");
+    let (direct_policy, direct_holder) = attempt_credential::direct_provider_execution();
     let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
-    );
+    )
+    .with_direct_provider_credential_execution(direct_policy, direct_holder);
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
         &awaken_tenancy::ScopeId::from("ws"),
@@ -1273,11 +1277,11 @@ impl LlmExecutor for SkillDrivingModel {
 /// A router offering skills on every thread (ADR-0036), driven by a model that
 /// discovers, activates, and uses one. The whole skill set is fronted by the single
 /// `Skill` tool plus `list_skills`; activation returns the skill's instructions.
-pub fn build_skills_router() -> Router {
+pub async fn build_skills_router() -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let review = SkillSpec::new("review", "Review", "review code", "REVIEW-BODY");
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills");
-    build_router_with_skills(model, model_ref, vec![greet, review])
+    build_router_with_managed_skills(model, model_ref, vec![greet, review]).await
 }
 
 /// A router whose delivered skills come from a DURABLE catalog (`/v1/skills`) instead

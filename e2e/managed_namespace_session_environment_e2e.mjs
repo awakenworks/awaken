@@ -13,8 +13,11 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
+  FILES_BETA,
   cleanupFixtureTree,
   onlyChildDirectory,
+  SKILLS_BETA,
+  SKILLS_BETAS,
   spawnServer,
   stopServer,
   waitForPort,
@@ -24,9 +27,9 @@ import {
 import { requireOrSkipBwrap } from './bwrap_capability.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
-const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
-const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
+const SKILL_HEADERS = { 'anthropic-beta': SKILLS_BETA };
 const TMP = path.join(os.tmpdir(), `awaken-namespace-session-e2e-${process.pid}`);
 const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
 const AGENT = 'namespace-agent';
@@ -238,6 +241,7 @@ async function main() {
       files: [await toFile(Buffer.from(
         '---\nname: delivered-namespace\ndescription: namespace skill\nenvironment: filesystem\n---\nNAMESPACE-SKILL-OK',
       ), 'SKILL.md')],
+      betas: SKILLS_BETAS,
     });
     assert.ok(createdSkill.id.startsWith('skill_'));
     const listedSkills = await client.get('/v1/skills', { headers: SKILL_HEADERS });

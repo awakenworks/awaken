@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { withServer, pass } from './harness.mjs';
+import { pass, publishAlwaysAskManagementProbeAgent, withServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38606);
 
@@ -59,7 +59,8 @@ const taskText = (task) =>
   (task?.status?.message?.parts ?? []).filter((p) => p.kind === 'text').map((p) => p.text).join('');
 
 async function main() {
-  await withServer('probe', PORT, async (base) => {
+  await withServer('management-probe', PORT, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     // Decision table: D1 explicit true -> allow+complete; D2 explicit false ->
     // deny+complete; D3 tasks/cancel -> canceled; D4 plain text -> JSON-RPC
     // invalid-params and the awaiting task remains pending.

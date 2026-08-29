@@ -459,7 +459,11 @@ async function main() {
       'M1 durable history anchors the exact command to its failed Run terminal',
     );
     const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
-    assert.equal(secureErrors.length, 1, 'M1 permanent custody failure projects exactly one error');
+    assert.equal(
+      secureErrors.length,
+      1,
+      `M1 permanent custody failure projects exactly one error: ${JSON.stringify(secureErrors)}`,
+    );
     assert.ok(
       typeof secureErrors[0].error?.message === 'string' && secureErrors[0].error.message.length > 0,
       'M1 error retains a nonempty failure cause',

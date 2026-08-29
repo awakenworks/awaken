@@ -294,9 +294,13 @@ operation/source/wheel delta, then run the same `test` and `check` commands.
 PyPI digest and extracted evidence, and applies the repository's common
 minimum-release-age policy to newer registry releases.
 
-The `check` command regenerates in memory and compares byte-for-byte. CI and the
-contract generation script both call it, while `test` type-checks all compile
-fixtures, so stale or unowned compatibility claims fail closed.
+The offline `check` command validates the generated oracle's internal
+fingerprints and reviewed anchor policy. `check:python:online` additionally
+re-downloads and re-extracts the exact current wheel, so stale or
+non-deterministic generated evidence fails closed without hiding a network
+dependency inside the offline gate. CI and the contract generation script call
+the appropriate gate, while `test` exercises the extractor and type-checks all
+compile fixtures.
 
 ## Qualifying a newer candidate
 

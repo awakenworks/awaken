@@ -16,9 +16,15 @@
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { withServer, pass } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  withServer,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38603);
+const AGENT = 'assistant';
 
 // Drain an SSE body into { text, events } (events = parsed data frames).
 async function drain(res) {
@@ -44,34 +50,43 @@ async function drain(res) {
 }
 
 async function main() {
-  await withServer('probe', PORT, async (base) => {
-    const thread = `xhitl-${randomBytes(4).toString('hex')}`;
+  await withServer('management-probe', PORT, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, AGENT, ['write'], ['read']);
+    const { threadId: thread, headers: applicationHeaders } =
+      await createCrossProtocolApplicationThread(base, AGENT);
 
     // --- Turn 1 on AI-SDK: the mutating write awaits for approval ------------
     const r1 = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...applicationHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({
         threadId: thread,
         messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'please record this note' }] }],
       }),
     });
-    assert.equal(r1.status, 200, 'ai-sdk turn accepted');
+    assert.equal(
+      r1.status,
+      200,
+      `ai-sdk turn accepted: ${await r1.clone().text()}`,
+    );
     const s1 = await drain(r1);
     // The awaiting tool surfaces with a toolCallId (state input-available on the tail).
     const awaiting = s1.events.find((e) => e.toolCallId && (e.state === 'input-available' || e.type?.startsWith('tool-input')));
     assert.ok(awaiting, `ai-sdk turn awaiting on a tool (events: ${s1.events.map((e) => e.type).join(',')})`);
     const toolCallId = awaiting.toolCallId;
-    assert.ok(!s1.text.includes('done'), 'run did NOT complete on the AI-SDK wire (it awaiting)');
+    assert.ok(
+      !s1.text.includes('done'),
+      `run did NOT complete on the AI-SDK wire (it awaiting): ${JSON.stringify(s1.text)}`,
+    );
     pass(`turn awaiting on AI-SDK awaiting approval (toolCallId=${toolCallId})`);
 
     // Sanity: the runtime reports a pending decision for this thread.
     // (Observed indirectly — the resume below fails closed if there is none.)
 
     // --- Approve + resume on AG-UI, SAME thread ----------------------------
-    const r2 = await fetch(`${base}/v1/ag-ui/agents/assistant`, {
+    const r2 = await fetch(`${base}/v1/ag-ui/agents/${AGENT}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...applicationHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({
         threadId: thread,
         runId: `run-${randomBytes(3).toString('hex')}`,
@@ -89,7 +104,9 @@ async function main() {
     pass('AG-UI accepted the resume for the AI-SDK-awaiting run');
 
     // --- The run completed: `done` is now in the committed transcript ------
-    const hist = await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`);
+    const hist = await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`, {
+      headers: applicationHeaders,
+    });
     assert.equal(hist.status, 200, 'history read ok');
     const body = await hist.json();
     const raw = JSON.stringify(body.items);

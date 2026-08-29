@@ -9,18 +9,16 @@
 // unknown run id cannot be cancelled, and a wake with no live subscriber is a hard
 // error (G5) — durable-only operations never silently succeed.
 //
-// Run: (from e2e/)  node managed_livecontrol_e2e.mjs
+// Run: (from e2e/)  node durable_livecontrol_e2e.mjs
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38182);
 const BASE = `http://127.0.0.1:${PORT}`;
-const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-livectl-e2e-${process.pid}`;
-const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
+const THREAD = 'durable-livecontrol-e2e';
 
 const post = async (path, body) => {
   const res = await fetch(`${BASE}${path}`, {
@@ -45,8 +43,10 @@ async function main() {
   });
   await waitForPort(PORT);
   try {
-    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    const T = session.id;
+    // Ownership decision row L1: operational live control exercises one ordinary
+    // Runtime Thread admitted by generic durable ingress. Managed Session roots
+    // are deliberately absent because Session reservation owns their Run ingress.
+    const T = THREAD;
 
     const sub = await post(`/v1/durable/threads/${T}/submit_background`, { text: 'CANCEL-ME' });
     assert.equal(sub.status, 200, 'background submit accepted');

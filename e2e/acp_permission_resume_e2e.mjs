@@ -46,8 +46,9 @@ function transcriptContains(observed, marker) {
 }
 
 async function main() {
-  // Test design (allow/deny arms). Causes: C1=ACP parks on one qualified
-  // agent.tool_use; C2=the client confirms allow; C3=the client confirms deny.
+  // Test design (allow/deny arms). Causes: C0=the Session override explicitly
+  // freezes bash=always_ask; C1=ACP parks on one qualified agent.tool_use;
+  // C2=the client confirms allow; C3=the client confirms deny.
   // Effects: E1=requires_action names exactly that public Event; E2=C2 resumes
   // the same call and commits ALLOWED; E3=C3 selects rejection and commits
   // DENIED; both arms terminate at end_turn. Constraints/invariant: the raw ACP

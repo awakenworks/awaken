@@ -27,11 +27,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
-import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  nativeProviderCandidateFixture,
+  providerCredentialTargetFixture,
+} from './fixtures/provider_candidate_fixture.mjs';
+import { ordinaryRunDispatchFixture } from './fixtures/run_dispatch_fixture.mjs';
 import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
+import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38813);
@@ -74,28 +79,10 @@ async function registerReadyWorker(workerId: string): Promise<any> {
       registration: {
         worker_id: workerId,
         incarnation_id: incarnationId,
-        manifest: {
-          manifest_version: 1,
-          build_digest: 'secretless-gateway-e2e',
-          capabilities: ['host-executor/v1', 'native-runtime'],
-          zone: null,
-          architecture: process.arch,
-          sandbox: {
-            isolation: 'workdir',
-            tool_transparent: false,
-            path_fidelity: false,
-            enforced_readonly: false,
-            network_isolation: false,
-            secret_egress_substitution: false,
-            resource_limits: false,
-            custom_rootfs: false,
-          },
-          sandbox_backends: [],
-          dispatch_contract: { min: 1, max: 1 },
-          runtime_protocol: { min: 1, max: 1 },
-          checkpoint_formats: ['stream-v1'],
-          capacity: { max_concurrent: 1, resources: {} },
-        },
+        manifest: workdirWorkerManifestFixture({
+          buildDigest: 'secretless-gateway-e2e',
+          capabilities: ['host-executor/v1', 'native-runtime', 'session-resources/v1'],
+        }),
       },
     },
     workerId,
@@ -184,14 +171,11 @@ async function main(): Promise<void> {
       await post('/v1/worker/dispatch/claim', { identity: seedIdentity }, 'seed-worker')
     ).claimed;
     assert.ok(seed, 'seed worker claimed the server-created activation');
-    const request = structuredClone(seed.request);
     const gatewayRunId = `${seed.request.activation.run_id}-gateway`;
-    request.activation.run_id = gatewayRunId;
-    request.activation.thread_id = THREAD;
+    const request = ordinaryRunDispatchFixture(seed.request, gatewayRunId, THREAD);
     // This hand-built dispatch is deliberately an ordinary Run. A non-null
     // session_thread_id is a claimed Session-control contract, not a history
     // grouping alias; activation.thread_id already owns committed history.
-    request.session_thread_id = null;
     // Raw Provider prerequisite: C-1 all required route coordinates, including
     // the opaque fixture dialect, are explicit -> E-1 typed ingress admits this
     // ordinary Run. Constraint/K: the shared fixture supplies no defaults or
@@ -208,6 +192,7 @@ async function main(): Promise<void> {
         credential: {
           credential: { id: GRANT, revision: GRANT_REVISION },
           material_source: 'worker_reference',
+          target: providerCredentialTargetFixture('fixture-provider'),
           usage: { type: 'provider_adapter' },
           policy: {
             allowed_plaintext_holders: [
@@ -310,7 +295,6 @@ async function main(): Promise<void> {
     const rejected = structuredClone(request);
     rejected.activation.run_id = `${request.activation.run_id}-revalidation`;
     rejected.activation.thread_id = REVALIDATION_THREAD;
-    rejected.session_thread_id = null;
     await post('/v1/worker/dispatch/enqueue', { request: rejected }, 'seed-worker');
     await waitForOutput(
       () => workerOutput,

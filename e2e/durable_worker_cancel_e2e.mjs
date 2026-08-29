@@ -16,6 +16,7 @@ import {
   waitForSessionEventReceipt,
   waitForValue,
   pass,
+  publishAlwaysAskManagementProbeAgent,
   startUpstream,
   realServerEnv,
 } from './harness.mjs';
@@ -31,6 +32,7 @@ const PORT = Number(process.env.E2E_PORT ?? 39723);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
 const THREAD = 'durable-cancel-1';
+const AWAITING_AGENT = 'durable-cancel-awaiting-agent';
 const STORE = `/tmp/awaken-durable-cancel-${process.pid}`;
 const INTENT_STORE = `${STORE}-intent`;
 const TERMINAL_STORE = `${STORE}-terminal`;
@@ -79,11 +81,22 @@ async function managedSession(srv) {
   return { client, session };
 }
 
-async function submitManagedRun(sessionId, text, rule) {
-  const submitted = await post(`/v1/durable/threads/${sessionId}/submit_background`, { text });
-  assert.equal(submitted.status, 200, `${rule} submit: ${JSON.stringify(submitted.body)}`);
-  assert.ok(submitted.body.run_id && submitted.body.queued === true, `${rule} queued one run`);
-  return submitted.body.run_id;
+async function submitManagedRun(client, sessionId, text, rule) {
+  // Managed-ingress cause/effect row I1: an official SDK User event targets an
+  // active Session root. Effect: Session/ThreadCommit reserves exactly one Run
+  // and publishes its dispatch; generic durable submit is not a second ingress.
+  const submitted = await client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: BETAS,
+  });
+  assert.equal(typeof submitted.data[0]?.id, 'string', `${rule} Session event batch accepted`);
+  const dispatch = await waitForValue(
+    async () => (await get(`/v1/durable/threads/${sessionId}/dispatches`)).body.dispatches?.[0],
+    (row) => typeof row?.run_id === 'string',
+    `${rule} Session-owned Run dispatch publication`,
+    { timeoutMs: 10_000, pollMs: 20 },
+  );
+  return dispatch.run_id;
 }
 
 async function interruptManagedRun(client, sessionId, rule) {
@@ -168,6 +181,7 @@ async function crashAfterManagedInterruptIntent() {
     // |---|---|---|---|---|---|---|
     // | R1 | T | T | T | T | T | E1 + E2 + E3 |
     const runId = await submitManagedRun(
+      client,
       session.id,
       'cancel this queued Managed Session run before any Worker can claim it',
       'R1',
@@ -243,6 +257,7 @@ async function recoverCommittedCancellationAfterSettleCrash() {
     // | R2 | T | T | T | F | F | F | E1 |
     // | R3 | T | T | removed | T | T | T | E2 + E3 |
     const runId = await submitManagedRun(
+      client,
       session.id,
       'hold this Managed Session run in inference until it is interrupted',
       'R2',
@@ -354,10 +369,13 @@ async function recoverCommittedCancellationAfterSettleCrash() {
 async function cancelAwaitingDurableRun() {
   fs.rmSync(STORE, { recursive: true, force: true });
   fs.mkdirSync(STORE, { recursive: true });
-  const upstream = await startUpstream('probe');
-  const srv = spawnDurable(STORE, upstream, 'probe');
+  const srv = spawnServer('management-probe', PORT, {
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
+  });
   await waitForPort(PORT);
   try {
+    await publishAlwaysAskManagementProbeAgent(BASE, AWAITING_AGENT);
     // Awaiting-cancel cause/effect graph:
     // C1=a canonical Worker has committed one Awaiting approval boundary;
     // C2=the durable operations API cancels its exact run id; C3=reconcile and
@@ -373,7 +391,10 @@ async function cancelAwaitingDurableRun() {
     // | R0b | any | any | any | F | E3 |
     // A background run awaits on the write tool — the probe model asks for approval,
     // so submit_background returns after the run awaiting (never resumed).
-    const submit = await post(`/v1/durable/threads/${THREAD}/submit_background`, { text: MARK });
+    const submit = await post(`/v1/durable/threads/${THREAD}/submit_background`, {
+      agent: AWAITING_AGENT,
+      text: MARK,
+    });
     assert.equal(submit.status, 200, 'submit_background accepted');
     const runId = submit.body.run_id;
     assert.ok(runId && submit.body.queued === true, `queued a durable run (${runId})`);
@@ -438,7 +459,6 @@ async function cancelAwaitingDurableRun() {
 
   } finally {
     await stopServer(srv.server);
-    await upstream.close();
     fs.rmSync(STORE, { recursive: true, force: true });
   }
 }

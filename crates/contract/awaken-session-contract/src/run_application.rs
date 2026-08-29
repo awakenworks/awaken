@@ -111,6 +111,7 @@ pub trait SessionRunBackgroundApplication: Send + Sync {
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
+        traceparent: Option<String>,
     ) -> Result<RunId, RunApplicationError>;
 }
 

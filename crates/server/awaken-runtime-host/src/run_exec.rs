@@ -69,6 +69,7 @@ impl awaken_runtime_contract::CredentialRealizationRecorder for LocalAttemptAuth
 
 struct ActivationOptions {
     supersede: bool,
+    associate_prepared_session: bool,
     sink: Option<Arc<dyn StreamSink>>,
     cancellation_mirror:
         Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
@@ -253,6 +254,7 @@ pub(crate) struct BoundRunExecutor<'a> {
     cancellation_mirror:
         Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
     release_active_on_return: bool,
+    associate_prepared_session: bool,
 }
 
 impl<'a> BoundRunExecutor<'a> {
@@ -264,7 +266,16 @@ impl<'a> BoundRunExecutor<'a> {
             sink: None,
             cancellation_mirror: None,
             release_active_on_return: true,
+            associate_prepared_session: true,
         }
+    }
+
+    /// Keep an extension-owned ordinary Run on its shared Thread without
+    /// manufacturing a second Session-root admission. Frozen execution inputs
+    /// still flow through the one dispatch decorator.
+    pub(crate) fn for_thread_extension(mut self) -> Self {
+        self.associate_prepared_session = false;
+        self
     }
 
     pub(crate) fn with_supersede(mut self, supersede: bool) -> Self {
@@ -319,6 +330,7 @@ impl RunExecutor for BoundRunExecutor<'_> {
                 activation,
                 ActivationOptions {
                     supersede: self.supersede,
+                    associate_prepared_session: self.associate_prepared_session,
                     sink: self.sink.clone(),
                     cancellation_mirror: self.cancellation_mirror.clone(),
                 },
@@ -538,14 +550,26 @@ impl SharedHost {
         if options.supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
             // let the process pool drive it on this session's worker (O2).
-            self.submit_durable_foreground(ctx, activation, true, options.sink)
-                .await
+            self.submit_durable_foreground(
+                ctx,
+                activation,
+                true,
+                options.sink,
+                options.associate_prepared_session,
+            )
+            .await
         } else if ctx.durable {
             // Durable: enqueue and await the pool driving it to a settled state. The
             // session's own worker must not claim (it would grab foreign threads'
             // runs on the shared queue); the pool is the sole claimer.
-            self.submit_durable_foreground(ctx, activation, false, options.sink)
-                .await
+            self.submit_durable_foreground(
+                ctx,
+                activation,
+                false,
+                options.sink,
+                options.associate_prepared_session,
+            )
+            .await
         } else {
             // Native direct Run: the only path whose engine drains a live
             // inbox in-process, so it is the only path that opens one. The

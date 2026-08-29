@@ -9,7 +9,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  managedAgentWithAlwaysAskTools,
+  withServer,
+  pass,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -116,7 +121,7 @@ async function main() {
 
       // Selection still holds: a native session on the same server runs the model.
       const native = await client.beta.sessions.create({
-        agent: 'assistant',
+        agent: managedAgentWithAlwaysAskTools(['bash']),
         environment_id: 'env_local',
         betas: BETAS,
       });

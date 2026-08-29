@@ -546,6 +546,130 @@ impl ManagedHost {
         Ok(())
     }
 
+    /// Decide whether a complete projection needs execution preparation before
+    /// any projection field is mutated. The caller holds the Session lifecycle
+    /// mutex across this preflight, projection installation, and completion.
+    fn session_preparation_needed(&self, thread: &str) -> Result<bool, RunError> {
+        let active_projection = self
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                (
+                    slot.runtime.as_ref().and_then(|context| {
+                        context
+                            .active_run
+                            .lock()
+                            .expect("active run mutex poisoned")
+                            .clone()
+                    }),
+                    slot.baseline.is_some() || slot.session_dispatch,
+                )
+            })
+            .unwrap_or((None, false));
+        match active_projection {
+            (Some(_), true) => Ok(false),
+            (Some(_), false) => Err(RunError::internal(
+                "cannot install a frozen Session projection while its Runtime is active",
+            )),
+            (None, _) => Ok(true),
+        }
+    }
+
+    /// Publish only the execution-preparation effects that are not already part
+    /// of a complete frozen projection. Projection coordinates and Resources
+    /// have been installed exactly once in the same lifecycle critical section.
+    fn complete_session_preparation(
+        &self,
+        thread: &str,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+    ) {
+        self.host.session_slots.update(thread, |slot| {
+            slot.runtime = None;
+            slot.session_dispatch = true;
+        });
+        if environment.sandbox_provisioning
+            == awaken_session_contract::SandboxProvisioning::OnToolUse
+        {
+            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+                Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
+                    Arc::downgrade(&self.host),
+                    thread,
+                ));
+            self.host
+                .session_slots
+                .update(thread, |slot| slot.deferred_executor = Some(executor));
+        }
+    }
+
+    /// Install the complete immutable projection facts selected by one typed
+    /// mode. Callers that materialize execution hold the lifecycle mutex; lease
+    /// only realization uses the same projection owner without preparation.
+    async fn install_projection_facts(
+        &self,
+        thread: &str,
+        projection: &awaken_session_contract::FrozenSessionProjection,
+        mode: &awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        let realization_lease = mode.realization_lease().cloned();
+        match mode {
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch => {
+                self.host
+                    .install_dispatch_frozen_session_projection(thread, projection.clone())
+                    .await
+            }
+            awaken_session_contract::SessionProjectionInstallMode::Realization { .. } => {
+                self.host
+                    .install_frozen_session_projection(
+                        thread,
+                        projection.clone(),
+                        None,
+                        true,
+                        realization_lease,
+                    )
+                    .await
+            }
+        }
+        .map_err(to_run_error)
+    }
+
+    /// Unit-test fixture for low-level Runtime behavior that does not construct
+    /// a persisted Session aggregate. Production Managed paths must use the
+    /// complete projection port above.
+    #[cfg(test)]
+    async fn install_test_session_init(
+        &self,
+        thread: &str,
+        init: awaken_session_contract::SessionInit,
+    ) -> Result<(), RunError> {
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        let preparation_needed = self.session_preparation_needed(thread)?;
+        if !preparation_needed {
+            return Ok(());
+        }
+        let resource_projection = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.resource_projection.clone());
+        let _resource_projection = resource_projection.lock().await;
+        self.host
+            .project_session_init(thread, &init)
+            .map_err(to_run_error)?;
+        self.stage_resource_manifest(
+            thread,
+            &init.workspace_id,
+            init.resource_revision,
+            &init.resources,
+            None,
+        )
+        .await?;
+        self.complete_session_preparation(thread, &init.environment);
+        Ok(())
+    }
+
     async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
         use crate::provisioning::ResourceBindingCheck;
 
@@ -649,7 +773,10 @@ impl ManagedHost {
         self
     }
 
-    async fn apply_session_inputs_with_context(
+    /// Apply one Resource generation while the slot's `resource_projection`
+    /// mutex is held. Dispatch and the public SessionRuntime port acquire that
+    /// same lock; this inner operation remains the sole transition algorithm.
+    async fn apply_session_inputs_under_resource_lock(
         &self,
         thread: &str,
         workspace_id: &str,
@@ -657,15 +784,6 @@ impl ManagedHost {
         inputs: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), RunError> {
-        // Reuse the Session slot's canonical realization mutex. Cold active-active
-        // requests may concurrently replay the same durable generation; only one
-        // may compare, realize, and publish its process-local projection at a time.
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
-        self.host.register_thread_workspace(thread, workspace_id);
         let desired_manifest = awaken_session_contract::SessionResourceManifest::at_revision(
             workspace_id,
             resource_revision,
@@ -830,6 +948,11 @@ impl ManagedHost {
                 }
             }
         }
+        // Workspace is part of the logical generation. Publish it only after
+        // every fallible validation and physical projection effect succeeds;
+        // failed preparation may leave an empty coordination slot, never a
+        // workspace/manifest split-brain projection.
+        self.host.register_thread_workspace(thread, workspace_id);
         self.install_effective_inputs(thread, workspace_id, resource_revision, inputs, compiled)
             .await?;
         if let Some(update) = projection_update {
@@ -851,19 +974,24 @@ impl SessionRuntime for ManagedHost {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        let realization_lease = mode.realization_lease().cloned();
-        self.host
-            .install_frozen_session_projection(
-                thread,
-                projection.clone(),
-                None,
-                true,
-                realization_lease,
-            )
-            .await
-            .map_err(to_run_error)?;
         if mode.prepares_session() {
-            self.prepare_session(thread, projection.session_init())
+            // Cause/effect rule P2: an unprotected active Runtime rejects before
+            // any frozen coordinate is published. The same lifecycle mutex also
+            // prevents a peer from observing installed facts before the Managed
+            // execution marker and deferred executor are complete.
+            let lifecycle = self
+                .host
+                .session_slots
+                .update(thread, |slot| slot.lifecycle.clone());
+            let _lifecycle = lifecycle.lock().await;
+            let preparation_needed = self.session_preparation_needed(thread)?;
+            self.install_projection_facts(thread, &projection, &mode)
+                .await?;
+            if preparation_needed {
+                self.complete_session_preparation(thread, &projection.baseline.environment);
+            }
+        } else {
+            self.install_projection_facts(thread, &projection, &mode)
                 .await?;
         }
         if mode.adopts_resident_environment()
@@ -1538,7 +1666,12 @@ impl SessionRuntime for ManagedHost {
         resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
-        self.apply_session_inputs_with_context(
+        let resource_projection = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.resource_projection.clone());
+        let _resource_projection = resource_projection.lock().await;
+        self.apply_session_inputs_under_resource_lock(
             thread,
             workspace_id,
             resource_revision,
@@ -1546,91 +1679,6 @@ impl SessionRuntime for ManagedHost {
             None,
         )
         .await
-    }
-
-    async fn prepare_session(
-        &self,
-        thread: &str,
-        init: awaken_session_contract::SessionInit,
-    ) -> Result<(), RunError> {
-        // Session preparation and durable Resource reconciliation publish one
-        // process-local projection. Serialize both through the existing slot
-        // lifecycle so a peer request cannot observe Environment installed while
-        // the exact frozen Resource manifest is still absent.
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
-        // A process may have opened this durable thread before its Control-frozen
-        // projection arrived (for example a peer/recovery read racing Session
-        // rehydration). That context was necessarily built from host defaults.
-        // Projection installation is the authority transition: discard only the
-        // rebuildable context while retaining any independently-owned Environment.
-        // A live run cannot be rebound underneath its already-created activation.
-        let active_projection = self
-            .host
-            .session_slots
-            .read(thread, |slot| {
-                (
-                    slot.runtime.as_ref().and_then(|context| {
-                        context
-                            .active_run
-                            .lock()
-                            .expect("active run mutex poisoned")
-                            .clone()
-                    }),
-                    slot.baseline.is_some() || slot.session_dispatch,
-                )
-            })
-            .unwrap_or((None, false));
-        if active_projection.0.is_some() && active_projection.1 {
-            // The Session application has already installed this durable
-            // dispatch projection (or a claimed Worker installed the complete
-            // immutable baseline), and the live context was necessarily built
-            // after that authority transition. A successor event may be admitted
-            // while the preceding Run is finishing; its execution mutex provides
-            // ordering, so keep the exact resident projection instead of rebinding.
-            return Ok(());
-        }
-        if active_projection.0.is_some() {
-            return Err(RunError::internal(
-                "cannot install a frozen Session projection while its Runtime is active",
-            ));
-        }
-        self.host.session_slots.update(thread, |slot| {
-            slot.runtime = None;
-            slot.session_dispatch = true;
-        });
-        // This is the one projection lowering path shared with claimed Worker
-        // replay. In particular, workspace/Agent/backend cannot drift between
-        // Coordinator dispatch construction and Worker execution.
-        self.host
-            .project_session_init(thread, &init)
-            .map_err(to_run_error)?;
-        if init.environment.sandbox_provisioning
-            == awaken_session_contract::SandboxProvisioning::OnToolUse
-        {
-            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
-                Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-                    Arc::downgrade(&self.host),
-                    thread,
-                ));
-            self.host.session_slots.update(thread, |slot| {
-                slot.deferred_executor = Some(executor);
-            });
-        }
-        // Stage only the already-resolved manifest. Runtime never reads the Agent
-        // binding repository or configures defaults again.
-        self.stage_resource_manifest(
-            thread,
-            &init.workspace_id,
-            init.resource_revision,
-            &init.resources,
-            None,
-        )
-        .await?;
-        Ok(())
     }
 
     async fn replace_session_tools(

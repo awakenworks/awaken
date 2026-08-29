@@ -25,11 +25,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  nativeProviderCandidateFixture,
+  providerCredentialTargetFixture,
+} from './fixtures/provider_candidate_fixture.mjs';
+import { ordinaryRunDispatchFixture } from './fixtures/run_dispatch_fixture.mjs';
 import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
+import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
@@ -137,23 +142,10 @@ async function seedIdentity() {
     registration: {
       worker_id: id,
       incarnation_id: `${id}-${process.pid}`,
-      manifest: {
-        manifest_version: 1,
-        build_digest: id,
-        capabilities: ['host-executor/v1', 'native-runtime'],
-        zone: null,
-        architecture: process.arch,
-        sandbox: {
-          isolation: 'workdir', tool_transparent: false, path_fidelity: false,
-          enforced_readonly: false, network_isolation: false,
-          secret_egress_substitution: false, resource_limits: false, custom_rootfs: false,
-        },
-        sandbox_backends: [],
-        dispatch_contract: { min: 1, max: 1 },
-        runtime_protocol: { min: 1, max: 1 },
-        checkpoint_formats: ['stream-v1'],
-        capacity: { max_concurrent: 1, resources: {} },
-      },
+      manifest: workdirWorkerManifestFixture({
+        buildDigest: id,
+        capabilities: ['host-executor/v1', 'native-runtime', 'session-resources/v1'],
+      }),
     },
   }, id);
   assert.equal(registered.status, 200, registered.text);
@@ -242,13 +234,19 @@ async function main() {
     const claimed = claim.json.claimed;
     assert.ok(claimed, 'seed activation claimed');
 
-    const dispatch = structuredClone(claimed.request);
-    dispatch.activation.run_id = `${claimed.request.activation.run_id}-materialized`;
-    dispatch.activation.thread_id = THREAD;
+    const dispatch = ordinaryRunDispatchFixture(
+      claimed.request,
+      `${claimed.request.activation.run_id}-materialized`,
+      THREAD,
+    );
+    // The seed selected `echo-model`; this scenario replaces the complete
+    // publication candidate with `fake-worker-model`. Keeping the old override
+    // would correctly select outside the frozen candidate set and fail before
+    // credential materialization. No override => use the new primary exactly.
+    dispatch.activation.model_ref_override = null;
     // This fixture exercises an ordinary durable Run, not a Managed Session.
     // Its activation thread remains the commit/history boundary; inventing a
     // Session pointer would correctly require a corresponding Control record.
-    dispatch.session_thread_id = null;
     // Raw Provider prerequisite: C-1 every required route coordinate is explicit
     // and the Anthropic dialect agrees with its adapter -> E-1 typed ingress can
     // enqueue the candidate for the materialization decision table below.
@@ -278,6 +276,7 @@ async function main() {
           recipient: 'awaken.worker',
           expires_at_unix_ms: Date.now() + 120_000,
         },
+        target: providerCredentialTargetFixture('anthropic'),
         usage: { type: 'provider_adapter' },
         policy: {
           allowed_plaintext_holders: [
@@ -395,7 +394,6 @@ async function main() {
       const thread = `${THREAD}-invalid-${index}`;
       invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
       invalid.activation.thread_id = thread;
-      invalid.session_thread_id = null;
       invalid.activation.snapshot.resolved_spec.model_binding = candidate;
       const invalidEnqueue = await request(
         'POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id,

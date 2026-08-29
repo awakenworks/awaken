@@ -812,6 +812,9 @@ async fn build_all_in_one_router_with_model_supply(
 }
 
 /// [`build_all_in_one_router_with_model`] plus explicit test-only process inputs.
+/// `deployment` is the caller's one typed runtime configuration; this seam must
+/// not rediscover or replace storage, sandbox, or topology state while composing
+/// the managed plane.
 /// `web_search_providers` is selected before Control and Host are assembled, so
 /// publication, capability discovery, and dispatch all receive the same registry.
 /// `customize_host` remains the last-mile seam for a runtime backend the standard
@@ -822,11 +825,13 @@ async fn build_all_in_one_router_with_model_supply(
 pub async fn build_all_in_one_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
+    deployment: awaken_runtime_host::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     let stores = in_memory_process_stores();
     let mut options = exact_host_model::local_test_process_options(&stores);
+    options.deployment = Some(deployment);
     options.web_search_providers = web_search_providers;
     prepare_runtime_routers(
         stores,

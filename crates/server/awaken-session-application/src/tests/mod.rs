@@ -63,11 +63,6 @@ async fn install_complete_test_projection<R: SessionRuntime + ?Sized>(
             &projection.resources,
         )
         .await?;
-    if mode.prepares_session() {
-        runtime
-            .prepare_session(thread, projection.session_init())
-            .await?;
-    }
     if mode.adopts_resident_environment()
         && let Some(binding) = projection.environment.binding()
     {

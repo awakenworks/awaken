@@ -77,7 +77,6 @@ pub(super) async fn prepare_deferred_session(
     host: Arc<SharedHost>,
     thread: &str,
 ) -> crate::ManagedHost {
-    use awaken_session_contract::SessionRuntime;
     let managed = crate::ManagedHost::new(host.clone());
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_contract::SessionAgentCoordination>,
@@ -89,7 +88,7 @@ pub(super) async fn prepare_deferred_session(
         .install_agent_coordination_application(Arc::downgrade(application))
         .expect("install one test Session application authority");
     managed
-        .prepare_session(
+        .install_test_session_init(
             thread,
             awaken_session_contract::SessionInit {
                 workspace_id: host.local_workspace().into(),

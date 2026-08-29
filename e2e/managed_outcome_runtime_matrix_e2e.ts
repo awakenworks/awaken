@@ -27,9 +27,9 @@ import type {
   BetaManagedAgentsUserDefineOutcomeEventParams,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { pass, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
+import { FILES_BETA, pass, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 
 type OutcomeRubric = BetaManagedAgentsTextRubricParams | BetaManagedAgentsFileRubricParams;
 type RuntimeKind = 'native' | 'acp';

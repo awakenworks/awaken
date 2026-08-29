@@ -26,7 +26,6 @@ import fs from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import Anthropic from '@anthropic-ai/sdk';
 import {
   spawnServer,
   stopServer,
@@ -43,7 +42,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // An unusual free port, away from the 383xx / 397xx ranges other suites bind.
 const PORT = Number(process.env.E2E_PORT ?? 39642);
 const BASE = `http://127.0.0.1:${PORT}`;
-const BETAS = ['managed-agents-2026-04-01'];
 const FILE = `/tmp/awaken-durable-trace-prop-${process.pid}.jsonl`;
 
 // A fixed inbound W3C trace context: the SUBMITTER continues THIS upstream trace,
@@ -87,14 +85,11 @@ async function main() {
   try {
     await waitForPort(PORT);
 
-    // A durable thread to submit into.
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
-    const session = await client.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: 'env_local',
-      betas: BETAS,
-    });
-    pass(`created durable thread ${session.id}`);
+    // Generic durable ingress owns this ordinary Runtime Thread. A Managed
+    // Session root is intentionally absent because its reservation is the sole
+    // Run ingress for that aggregate.
+    const thread = `durable-trace-propagation-${process.pid}`;
+    pass(`selected ordinary durable thread ${thread}`);
 
     // Cause/effect graph: C1=the background Run is admitted with a valid inbound
     // traceparent; C2=the durable daemon later claims and drives it. E1=the Run is
@@ -109,7 +104,7 @@ async function main() {
     // Submit a BACKGROUND Run carrying an explicit inbound trace context. It is
     // admitted here and drained later by the dispatch daemon (out of band), so
     // this is the true durable-queue boundary — not the synchronous Run path.
-    const res = await fetch(`${BASE}/v1/durable/threads/${session.id}/submit_background`, {
+    const res = await fetch(`${BASE}/v1/durable/threads/${thread}/submit_background`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -124,7 +119,7 @@ async function main() {
 
     // Let the daemon claim + drive the run to a committed reply.
     const assistants = await waitForValue(
-      () => messages(session.id),
+      () => messages(thread),
       (items) => items.some((message) =>
         message.role === 'Assistant' && (message.text ?? '').length > 0),
       'the durable daemon to commit an Assistant reply',

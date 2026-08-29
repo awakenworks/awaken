@@ -8,7 +8,7 @@ pub mod awaken_eval::admin_authoring
 pub enum awaken_eval::admin_authoring::AdminCriterion
 pub awaken_eval::admin_authoring::AdminCriterion::CompactHasInstructions
 pub awaken_eval::admin_authoring::AdminCriterion::CompactInstructionsAreProse
-pub awaken_eval::admin_authoring::AdminCriterion::CompactTriggerRatioSet
+pub awaken_eval::admin_authoring::AdminCriterion::CompactionWindowSet
 pub awaken_eval::admin_authoring::AdminCriterion::HasPlugin
 pub awaken_eval::admin_authoring::AdminCriterion::HasPlugin::plugin_id: alloc::string::String
 pub awaken_eval::admin_authoring::AdminCriterion::HasTool

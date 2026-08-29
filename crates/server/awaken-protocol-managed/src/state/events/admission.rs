@@ -426,10 +426,25 @@ impl ManagedState {
         traceparent: Option<String>,
         idempotency_key: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
-        // Recover the session from durable truth if its in-memory record was lost
-        // (a process restart) before resolving the agent — so a resume continues
-        // the awaiting run instead of failing closed (ADR-0039).
-        self.ensure_session(session_id).await?;
+        // Cold-admission cause/effect table: C1=every non-empty command is an
+        // Interrupt; C2=the frozen Agent publication remains available. E1=C1
+        // rebuilds only the disposable frozen-control projection and addresses
+        // existing work; E2=!C1+C2 uses interactive recovery; E3=!C1+!C2 fails
+        // closed. Constraint: a mixed batch may start/resume work and can never
+        // inherit the control-only bypass. Rules A1=C1=>E1; A2=!C1+C2=>E2;
+        // A3=!C1+!C2=>E3.
+        let interruption_only = !req.events.is_empty()
+            && req
+                .events
+                .iter()
+                .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
+        if interruption_only {
+            self.ensure_session_for_frozen_control(session_id).await?;
+        } else {
+            // Recover before resolving the agent so a normal resume continues
+            // the awaiting run instead of creating a second execution (ADR-0039).
+            self.ensure_session(session_id).await?;
+        }
         let request_fingerprint = idempotency_key
             .as_ref()
             .map(|_| awaken_session_contract::stable_fingerprint(&(&req, &data_subject_id)));

@@ -485,7 +485,7 @@ pub struct SessionRealizationTarget {
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum SessionRealizationAction {
     /// Realize the frozen Environment/Resources and stage every exact MCP
-    /// request. `prepare_session` is the exact Environment/Resource work bit;
+    /// request. `prepare_session` is the exact execution-materialization bit;
     /// MCP-only hot updates must not recreate an already-live environment.
     Stage {
         prepare_session: bool,
@@ -552,6 +552,13 @@ pub struct SessionRealizationProgress {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// The exact claimed Run whose realization effect produced `last_error`.
+    /// `None` preserves create/recovery failures that have no Run owner and
+    /// keeps historical rows readable. Public projections use this identity to
+    /// prefer the more precise committed Run lifecycle over a second Session
+    /// realization error for the same cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_source_run_id: Option<Box<awaken_agent_contract::agent::run::Id>>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -591,6 +598,9 @@ pub struct FailSessionRealization {
     /// enter the existing terminal failure path.
     #[serde(default)]
     pub retryable: bool,
+    /// Exact claimed Run that drove the failed effect, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<awaken_agent_contract::agent::run::Id>,
     pub reason: String,
 }
 
@@ -762,9 +772,9 @@ pub trait SessionRealizationControl: Send + Sync {
 }
 
 /// Topology-specific projection installation used by the one realization
-/// driver. Local Managed execution lowers the frozen projection to
-/// `SessionRuntime::prepare_session`; a remote Worker installs the same frozen
-/// facts into its Host. It owns no lifecycle transition or desired state.
+/// driver. Local Managed execution and a remote Worker both install the same
+/// complete frozen projection through `SessionRuntime`; this port selects only
+/// topology-specific effects and owns no lifecycle transition or desired state.
 #[async_trait]
 pub trait SessionProjectionSynchronizer: Send + Sync {
     async fn synchronize_session_projection(
@@ -825,6 +835,7 @@ async fn drain_mcp_projection(
 
 pub async fn drive_session_realization(
     session_id: &str,
+    source_run_id: Option<awaken_agent_contract::agent::run::Id>,
     control: &dyn SessionRealizationControl,
     synchronizer: &dyn SessionProjectionSynchronizer,
     mcp: &dyn McpAttachmentRealizer,
@@ -853,6 +864,7 @@ pub async fn drive_session_realization(
                     prepared_resource_revision: prepare_session
                         .then_some(directive.projection.resource_revision),
                     retryable: error.kind == crate::RunErrorKind::Unavailable,
+                    source_run_id: source_run_id.clone(),
                     reason: error.to_string(),
                 })
                 .await;
@@ -889,6 +901,7 @@ pub async fn drive_session_realization(
                             prepared_resource_revision: prepare_session
                                 .then_some(directive.projection.resource_revision),
                             retryable: error.kind == crate::RunErrorKind::Unavailable,
+                            source_run_id: source_run_id.clone(),
                             reason: error.to_string(),
                         })
                         .await;
@@ -931,6 +944,7 @@ pub async fn drive_session_realization(
                             lease: directive.lease,
                             prepared_resource_revision: None,
                             retryable: error.kind == crate::RunErrorKind::Unavailable,
+                            source_run_id: source_run_id.clone(),
                             reason: error.to_string(),
                         })
                         .await;

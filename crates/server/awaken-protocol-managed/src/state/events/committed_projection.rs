@@ -30,8 +30,28 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         persisted: &awaken_session_contract::PersistedSession,
+        lifecycle_events: &[RunLifecycleEvent],
     ) -> Result<(), StateError> {
         if persisted.execution != awaken_session_contract::SessionExecutionState::ActivationFailed {
+            return Ok(());
+        }
+        if persisted
+            .realization_progress
+            .failure_source_run_id
+            .as_deref()
+            .is_some_and(|source_run_id| {
+                lifecycle_events.iter().any(|event| {
+                    event.thread_id.0 == persisted.session_id
+                        && &event.run_id == source_run_id
+                        && matches!(
+                            event.state,
+                            awaken_agent_contract::agent::run::RunState::Ended(
+                                awaken_agent_contract::agent::run::EndCause::Error(_)
+                            )
+                        )
+                })
+            })
+        {
             return Ok(());
         }
         let message = persisted
@@ -1815,7 +1835,11 @@ impl ManagedState {
         // derived child lifecycle. Keeping this at the end of the sole warm/cold
         // projector preserves child output/lifecycle ordering, closes each child
         // stream, then closes only the aggregate primary stream.
-        self.append_activation_failure_error_projection(record, &persisted)?;
+        self.append_activation_failure_error_projection(
+            record,
+            &persisted,
+            &all_accepted_lifecycle,
+        )?;
         if persisted.execution == awaken_session_contract::SessionExecutionState::ActivationFailed
             || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {

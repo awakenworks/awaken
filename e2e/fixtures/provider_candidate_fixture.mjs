@@ -3,6 +3,16 @@
 // decoding: this helper only removes repeated JSON assembly and deliberately
 // supplies no defaults, inference, compatibility decisions, or validation.
 
+// Raw Provider credential target shared by E2Es that intentionally construct
+// the durable wire form. Audience remains caller-owned and explicit; Rust
+// CredentialAccess admission is the only target/usage validity authority.
+export function providerCredentialTargetFixture(audience) {
+  return {
+    purpose: { type: 'provider_adapter' },
+    audience,
+  };
+}
+
 /**
  * @param {{
  *   binding: Record<string, unknown>,

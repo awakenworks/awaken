@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-08-12
 - Amended: 2026-08-28 — terminal Repository publication uses the same Worker realization owner
+- Amended: 2026-08-29 — pre-realization cancellation does not fabricate a Runtime interval
+- Amended: 2026-08-29 — unattempted Dispatch projection amendment is Coordinator-owned
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -128,6 +130,15 @@ Session Control endpoint. It may stage, activate, publish, acknowledge, renew,
 or fail physical effects under `SessionRealizationLease`. It must fail closed if
 Control has no frozen Session or if the claimed Resource projection differs.
 
+The Coordinator's `Dispatch` projection is not a Worker realization receipt.
+Before any external attempt observes a pending Resource generation, the Session
+aggregate may revise that generation in place; the Coordinator may therefore
+replace its own same-revision, unclaimed projection with the complete revised
+manifest. `Realization` mode never receives this authority: a claimed Worker may
+install an identical projection idempotently or a strictly newer generation,
+but same-revision different content fails closed. This is one explicit install
+mode decision, not a content comparison fallback or a second Resource state.
+
 There is no late-input command, contribution receipt, provisioner, special MCP
 origin, public creation flag, or contribution-specific Worker endpoint.
 
@@ -216,6 +227,11 @@ Failure and retry rules:
   Work mutation when the persisted lease epoch has advanced;
 - response loss replays the same Work id, root revision, realization lease, and
   generation receipts;
+- if an externally realized Session admits an activity while `Preparing` or
+  `Activating` and that Run is cancelled before a customer-visible `Running`
+  interval opens, settlement consumes the exact activity epoch without
+  fabricating a Runtime interval; every other Run boundary must still belong to
+  the active interval;
 - a physical effect failure records the existing realization failure state and
   is retried only through the same phase driver;
 - archive/delete/termination remains the sole terminal Session path, retires
@@ -336,6 +352,7 @@ Tests attach their cause/effect tables to the owning cases. Required rules are:
 | U8 | yes | yes | restart before settle | yes | deregistration releases predecessor immediately |
 | U9 | yes | stopped | claimed successor | yes | wake once and acquire; renewal stays unowned |
 | U10 | child affinity | yes | child exact | yes | parent Work is renewed and retained until root settlement |
+| U11 | unattempted same-revision manifest amendment | yes | no external claim | yes | Coordinator replaces only its Dispatch projection; Worker replacement is rejected |
 
 ## Consequences
 

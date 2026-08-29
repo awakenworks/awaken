@@ -484,7 +484,21 @@ impl SessionApplication {
                         .iter()
                         .any(|existing| existing == &observation)
                 });
-                if !exact_replay && !session.observe_runtime_interval(observation) {
+                // An externally realized Session may admit and activate a Run
+                // while its stronger Preparing/Activating phase is still
+                // authoritative. If cancellation commits before realization,
+                // no customer-visible Running interval ever opened; settle the
+                // admitted epoch without fabricating one or attaching the Run
+                // boundary to a nonexistent interval.
+                let settles_before_runtime_interval = session.running_interval.is_none()
+                    && matches!(
+                        session.execution,
+                        SessionExecutionState::Preparing | SessionExecutionState::Activating
+                    );
+                if !exact_replay
+                    && !settles_before_runtime_interval
+                    && !session.observe_runtime_interval(observation)
+                {
                     return Err(SessionActivityError::Unavailable(
                         "Runtime boundary does not belong to the active Session interval".into(),
                     ));

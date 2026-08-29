@@ -41,9 +41,12 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
+  FILES_BETA,
   cleanupFixtureTree,
   pass,
   realServerEnv,
+  SKILLS_BETA,
+  SKILLS_BETAS,
   spawnServer,
   startUpstream,
   stopServer,
@@ -52,10 +55,9 @@ import {
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38221);
-const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
-const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
-const SKILL_BETAS = ['skills-2025-10-02'];
+const SKILL_HEADERS = { 'anthropic-beta': SKILLS_BETA };
 const TMP = path.join(os.tmpdir(), `awaken-fullchain-e2e-${process.pid}`);
 const STORE_DIR = `${TMP}/storage`;
 const README = 'SEED_README_FULLCHAIN';
@@ -196,7 +198,7 @@ async function main() {
           'SKILL.md',
         ),
       ],
-      betas: SKILL_BETAS,
+      betas: SKILLS_BETAS,
     });
     assert.ok(greet.id.startsWith('skill_'));
     const mem = await c.post('/v1/memory_stores', {

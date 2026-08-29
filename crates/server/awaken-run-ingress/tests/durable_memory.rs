@@ -33,8 +33,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
-    FP, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime, text_runtime,
-    tool_runtime,
+    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime,
+    text_runtime, text_runtime_with_metrics, tool_runtime,
 };
 
 fn send_request(target: &str, content: &str, operation_id: &str) -> MessageSendRequest {
@@ -294,6 +294,141 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
             .all(|(dispatch_run, claim_run, state, cancelled)| {
                 dispatch_run == claim_run && matches!(state, RunState::Ended(_)) && !cancelled
             })
+    );
+}
+
+#[tokio::test]
+async fn stale_coordinated_settlement_uses_the_canonical_fenced_metric_exit() {
+    // Cause/effect graph: C1=the Run is Session-coordinated; C2=attempt A owns
+    // epoch 1; C3=its lease expires and attempt B owns epoch 2; C4=B commits and
+    // settles; C5=A reaches the coordinated pre-observer ownership check late;
+    // C6=an attempt instead loses ownership at an executor boundary before any
+    // terminal commit is readable. Effects: E1=B alone invokes the observer and
+    // applies settlement; E2=A does not invoke the observer; E3=both late paths
+    // are classified by the same canonical fenced metrics exit; E4=in-flight
+    // returns to zero; E5=the uncommitted row remains recoverable.
+    //
+    // | Rule | C1 | C3 | Current attempt | Observer | Settlement metric |
+    // |---|---|---|---|---|---|
+    // | F1 | T | F | A | once | applied=1, fenced=0 |
+    // | F2 | T | T | B | once | applied=1, fenced=0 |
+    // | F3 | T | T | stale A | never | applied=1, fenced=1 |
+    // | F4 | T | T/C6 | stale pre-commit A | never | applied=0, fenced=1 |
+    //
+    // Constraint: the pre-observer check must prevent stale Session effects,
+    // but it must not create a second unmetered terminal path. F2+F3 exercises
+    // the replacement-after-terminal race; F4 covers the pre-terminal executor
+    // error partition. Ordinary F1 is covered by the existing terminal-drive
+    // metrics test.
+    let metrics = Arc::new(RecordingMetrics::default());
+    let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
+    let store = Arc::new(MemoryDispatchStore::new());
+    let observer = Arc::new(RecordingSettlementObserver::new(0));
+    let worker = DispatchWorker::new(
+        runtime,
+        store.clone(),
+        Arc::new(MemoryCommitCoordinator::new()),
+        "coordinated-driver",
+    )
+    .with_settlement_observer(observer.clone());
+
+    store
+        .enqueue_session_child(
+            RunDispatch::new(activation("coordinated-fenced"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(9),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("admit coordinated child");
+    let stale = store
+        .claim("attempt-a", 10, 0, &Default::default())
+        .await
+        .expect("claim attempt A")
+        .expect("attempt A");
+    let current = store
+        .claim("attempt-b", 10, 11, &Default::default())
+        .await
+        .expect("reclaim attempt B")
+        .expect("attempt B");
+
+    worker
+        .drive_claimed(current, harness::clock(11))
+        .await
+        .expect("drive current attempt")
+        .expect("current attempt applied");
+    assert!(
+        worker
+            .drive_claimed(stale, harness::clock(11))
+            .await
+            .expect("classify stale attempt")
+            .is_none(),
+        "stale coordinated settlement is fenced"
+    );
+
+    assert_eq!(observer.observed.lock().unwrap().len(), 1, "F2/E1+F3/E2");
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1, "F2/E1");
+    assert_eq!(metrics.fenced.load(Ordering::SeqCst), 1, "F3/E3");
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "F3/E4");
+
+    let precommit_metrics = Arc::new(RecordingMetrics::default());
+    let precommit_store = Arc::new(MemoryDispatchStore::new());
+    let precommit_observer = Arc::new(RecordingSettlementObserver::new(0));
+    let precommit_clock = Arc::new(ManualClock::new(0));
+    let expiring = Arc::new(ExpiringOwnershipAttemptExecutor {
+        clock: precommit_clock.clone(),
+        effects: AtomicUsize::new(0),
+    });
+    let precommit_worker = DispatchWorker::new(
+        text_runtime_with_metrics(precommit_metrics.clone() as Arc<_>),
+        precommit_store.clone(),
+        Arc::new(MemoryCommitCoordinator::new()),
+        "precommit-driver",
+    )
+    .with_settlement_observer(precommit_observer.clone());
+    precommit_worker.install_attempt_executor(expiring.clone());
+    precommit_store
+        .enqueue_session_child(
+            RunDispatch::new(activation("coordinated-precommit-fenced"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(10),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("admit pre-commit coordinated child");
+
+    assert!(
+        precommit_worker
+            .tick(precommit_clock)
+            .await
+            .expect("stale pre-commit attempt is classified")
+            .is_none(),
+        "F4 abandons the stale attempt"
+    );
+    assert_eq!(
+        expiring.effects.load(Ordering::SeqCst),
+        0,
+        "F4 pre-effect fence"
+    );
+    assert!(
+        precommit_observer.observed.lock().unwrap().is_empty(),
+        "F4/E2"
+    );
+    assert_eq!(
+        precommit_metrics.commits_applied.load(Ordering::SeqCst),
+        0,
+        "F4/E5"
+    );
+    assert_eq!(precommit_metrics.fenced.load(Ordering::SeqCst), 1, "F4/E3");
+    assert_eq!(
+        precommit_metrics.in_flight.load(Ordering::SeqCst),
+        0,
+        "F4/E4"
+    );
+    assert_eq!(
+        precommit_store.list_dispatches().await.unwrap().len(),
+        1,
+        "F4/E5"
     );
 }
 
@@ -640,9 +775,13 @@ async fn claimed_attempt_receives_live_exact_ownership_authority() {
 async fn advancing_the_drive_clock_expires_ownership_before_any_effect() {
     // Causes: CA2 claims at time zero, then the executor advances the exact Clock
     // past lease expiry. Effects: the claim-bound verifier rejects and the
-    // external-effect count remains zero. Constraint/Invariant: verification and
-    // claim share one Clock authority. Decision rule: execute complementary CA2
-    // from the adjacent clock table and require fail-closed pre-effect behavior.
+    // external-effect count remains zero; the ordinary execution error is
+    // preserved while the one fenced-settlement metric records lost authority.
+    // Constraint/Invariant: verification and claim share one Clock authority,
+    // and metrics do not turn an ordinary execution fault into success. Decision
+    // rule: execute complementary CA2 from the adjacent clock table and require
+    // fail-closed pre-effect behavior plus the complete metric vector.
+    let metrics = Arc::new(RecordingMetrics::default());
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let clock = Arc::new(ManualClock::new(0));
@@ -650,7 +789,12 @@ async fn advancing_the_drive_clock_expires_ownership_before_any_effect() {
         clock: clock.clone(),
         effects: AtomicUsize::new(0),
     });
-    let worker = DispatchWorker::new(text_runtime(), store.clone(), commit, "worker");
+    let worker = DispatchWorker::new(
+        text_runtime_with_metrics(metrics.clone() as Arc<_>),
+        store.clone(),
+        commit,
+        "worker",
+    );
     worker.install_attempt_executor(selected.clone());
     store
         .enqueue(RunDispatch::new(activation("expired-ownership-run")))
@@ -668,6 +812,9 @@ async fn advancing_the_drive_clock_expires_ownership_before_any_effect() {
         "CA2/E3: {error}"
     );
     assert_eq!(selected.effects.load(Ordering::SeqCst), 0, "CA2/E3");
+    assert_eq!(metrics.fenced.load(Ordering::SeqCst), 1, "CA2/E3");
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 0, "CA2/E3");
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "CA2/E3");
 }
 
 #[tokio::test]

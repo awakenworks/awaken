@@ -514,6 +514,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         lease: first.lease,
         prepared_resource_revision: None,
         retryable: true,
+        source_run_id: None,
         reason: "worker unavailable".into(),
     })
     .await
@@ -553,6 +554,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         lease: second.lease,
         prepared_resource_revision: None,
         retryable: true,
+        source_run_id: None,
         reason: "worker unavailable again".into(),
     })
     .await
@@ -2384,6 +2386,9 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
             lease,
             prepared_resource_revision: None,
             retryable: false,
+            source_run_id: Some(awaken_agent_contract::agent::run::Id(
+                "running-realization-run".into(),
+            )),
             reason: "permanent realization failure".into(),
         })
         .await
@@ -2393,6 +2398,16 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         failed_truth.execution,
         SessionExecutionState::ActivationFailed,
         "R4/E4"
+    );
+    assert_eq!(
+        failed_truth
+            .realization_progress
+            .failure_source_run_id
+            .as_deref(),
+        Some(&awaken_agent_contract::agent::run::Id(
+            "running-realization-run".into()
+        )),
+        "R4/E4 retains the exact Run failure owner"
     );
     assert!(failed_truth.running_interval.is_none(), "R4/E4");
     assert!(failed_truth.runtime_active_millis > 0, "R4/E4");

@@ -116,7 +116,7 @@ const groups = [
     id: 'manual-and-scheduled-deployment',
     native: evidence('e2e/management_deployment_schedule_e2e.mjs', 'manual runs'),
     ...acpPartitions('crates/server/awaken-protocol-managed/tests/session_resources.rs', 'acp:claude'),
-    a2a: evidence('e2e/remote_attempt_lifecycle_e2e.ts', 'durable remote cancel accepted'),
+    a2a: evidence('e2e/remote_attempt_lifecycle_e2e.ts', 'Managed-cancel rule'),
     negative: evidence('e2e/management_deployment_schedule_e2e.mjs', 'auto-pauses'),
   },
   {

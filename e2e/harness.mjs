@@ -32,6 +32,18 @@ export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url
 // scenarios still own their cause/effect assertions, but must not fork the wire
 // version string from the protocol contract.
 export const USER_PROFILES_BETA = 'user-profiles-2026-03-24';
+// One test-side owner for the Skills beta vocabulary. SDK 0.122 makes this
+// caller-supplied on every `beta.skills` operation, so a copied literal can
+// silently select the GA route or fail beta admission after an SDK upgrade.
+export const SKILLS_BETA = 'skills-2025-10-02';
+export const SKILLS_BETAS = [SKILLS_BETA];
+// One test-side owner for the Files beta vocabulary. SDK 0.122 requires the
+// caller to opt in on every `beta.files` operation. Causes: an SDK upgrade or
+// a copied/stale selector; effects: beta admission succeeds or fails before the
+// File aggregate is reached. Decision rule: every beta Files caller composes
+// this selector; GA Files callers deliberately omit it and test that route.
+export const FILES_BETA = 'files-api-2025-04-14';
+export const FILES_BETAS = [FILES_BETA];
 // Canonical secret-free evidence for a test driver that stands in for the
 // installed Native provider adapter while it claims (but never executes) a
 // production-authored seed dispatch. Keep the wire encoding here so fixtures do
@@ -400,6 +412,150 @@ export function assertPendingReceiptHasNoRuntimeEffects({
     );
   }
   return added;
+}
+
+// Test-authoring factory for scenarios whose causal boundary is an explicit
+// confirmation on an official Agent tool. Production defaults stay
+// always-allow; a caller names only the tools its decision table needs to gate,
+// and the Session override is the sole source of that narrower policy.
+export function managedAgentWithAlwaysAskTools(toolNames, agentId = 'assistant') {
+  if (!Array.isArray(toolNames) || toolNames.length === 0) {
+    throw new Error('managedAgentWithAlwaysAskTools requires at least one tool name');
+  }
+  if (new Set(toolNames).size !== toolNames.length) {
+    throw new Error('managedAgentWithAlwaysAskTools rejects duplicate tool names');
+  }
+  return {
+    id: agentId,
+    type: 'agent_with_overrides',
+    tools: [{
+      type: 'agent_toolset_20260401',
+      configs: toolNames.map((name) => ({
+        name,
+        enabled: true,
+        permission_policy: { type: 'always_ask' },
+      })),
+    }],
+  };
+}
+
+// One configuration-authoring fixture for ordinary durable Thread scenarios
+// that need a deterministic permission boundary. Causes: C1 Agent id and a
+// unique nonempty AlwaysAsk set plus a disjoint optional AlwaysAllow set; C2
+// config write succeeds; C3 publication succeeds.
+// Effect: E1 the pinned management-probe publication explicitly owns
+// the exact permission for each listed tool. Invalid C1 or either failed HTTP
+// effect is terminal; callers never fall back to a process default policy.
+export async function publishAlwaysAskManagementProbeAgent(
+  baseUrl,
+  agentId,
+  toolNames = ['write'],
+  alwaysAllowToolNames = [],
+) {
+  if (typeof agentId !== 'string' || agentId.length === 0) {
+    throw new Error('publishAlwaysAskManagementProbeAgent requires an Agent id');
+  }
+  if (!Array.isArray(toolNames) || toolNames.length === 0
+      || !Array.isArray(alwaysAllowToolNames)
+      || new Set([...toolNames, ...alwaysAllowToolNames]).size
+        !== toolNames.length + alwaysAllowToolNames.length) {
+    throw new Error('publishAlwaysAskManagementProbeAgent requires unique tool names');
+  }
+  const request = async (method, route, body) => {
+    const response = await fetch(`${baseUrl}${route}`, {
+      method,
+      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json().catch(() => ({})) };
+  };
+  const stored = await request('PUT', `/v1/config/agents/${agentId}`, {
+    name: `AlwaysAsk fixture ${agentId}`,
+    model: {
+      mode: 'pinned',
+      provider_identity_ref: 'default',
+      model_ref: 'management-probe',
+      backend_ref: 'default',
+    },
+    tools: [{
+      type: 'agent_toolset_20260401',
+      configs: [
+        ...toolNames.map((name) => ({
+          name,
+          enabled: true,
+          permission_policy: { type: 'always_ask' },
+        })),
+        ...alwaysAllowToolNames.map((name) => ({
+          name,
+          enabled: true,
+          permission_policy: { type: 'always_allow' },
+        })),
+      ],
+    }],
+  });
+  if (stored.status !== 200) {
+    throw new Error(`store fixture Agent failed: ${JSON.stringify(stored.body)}`);
+  }
+  const published = await request('POST', `/v1/config/agents/${agentId}/publish`);
+  if (published.status !== 200) {
+    throw new Error(`publish fixture Agent failed: ${JSON.stringify(published.body)}`);
+  }
+}
+
+// One application-edge fixture for cross-protocol scenarios that use the real
+// AllInOne Config/Agent authority. Causes: C1 no-login management authoring is
+// selected by the scenario host; C2 the published Agent can freeze one Managed
+// Session; C3 one application token binds the Session's own id on both guarded
+// browser protocols. Effects: E1 AI-SDK and AG-UI enter the same Session through
+// the production application guard; E2 A2A can address that same canonical id;
+// E3 neither the production guard nor Config composition gains a test bypass.
+//
+// | Rule | C1 | C2 | C3 | Effect |
+// | XPA1 | T  | T  | T  | E1 + E2 + E3 |
+//
+// Authentication-negative combinations remain owned by application_auth_e2e;
+// this helper owns only the successful deterministic scenario boundary.
+export async function createCrossProtocolApplicationThread(
+  baseUrl,
+  agentId = 'assistant',
+) {
+  const request = async (route, body) => {
+    const response = await fetch(`${baseUrl}${route}`, {
+      method: 'POST',
+      headers: {
+        'anthropic-beta': 'managed-agents-2026-04-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const responseBody = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`${route} failed (${response.status}): ${JSON.stringify(responseBody)}`);
+    }
+    return responseBody;
+  };
+  const session = await request('/v1/sessions', {
+    agent: agentId,
+    environment_id: 'env_local',
+    title: 'cross-protocol application fixture',
+  });
+  const capability = await request('/v1/application-access-tokens', {
+    protocols: ['ai-sdk', 'ag-ui'],
+    operations: ['thread.run', 'thread.messages.read'],
+    thread_bindings: [{
+      external_thread_id: session.id,
+      managed_session_id: session.id,
+    }],
+    expires_in_seconds: 300,
+  });
+  if (typeof capability.access_token !== 'string' || !capability.access_token.startsWith('aat_')) {
+    throw new Error('application access issuer returned no aat_ capability');
+  }
+  return {
+    threadId: session.id,
+    accessToken: capability.access_token,
+    headers: { authorization: `Bearer ${capability.access_token}` },
+  };
 }
 
 // Canonical driver for deterministic scenarios whose built-in tools cross one

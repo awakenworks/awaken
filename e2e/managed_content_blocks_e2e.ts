@@ -34,9 +34,9 @@ import type {
   BetaManagedAgentsUserCustomToolResultEventParams,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { RED_PNG_B64, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
+import { FILES_BETA, RED_PNG_B64, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const PORT = Number(process.env.E2E_PORT ?? 38248);
 
 type Shape = {

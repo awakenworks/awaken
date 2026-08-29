@@ -38,7 +38,8 @@ impl SessionRuntime for EndSessionRecorder {
         if let Some(init) =
             crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
         {
-            self.prepare_session(thread, init).await?;
+            let _ = init;
+            self.prepared.lock().unwrap().push(thread.to_string());
         }
         Ok(())
     }
@@ -83,10 +84,6 @@ impl SessionRuntime for EndSessionRecorder {
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         unreachable!()
-    }
-    async fn prepare_session(&self, thread: &str, _init: SessionInit) -> Result<(), RunError> {
-        self.prepared.lock().unwrap().push(thread.to_string());
-        Ok(())
     }
     async fn define_outcome(
         &self,

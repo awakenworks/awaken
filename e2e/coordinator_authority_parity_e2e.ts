@@ -3,7 +3,7 @@
 // Cause graph:
 //   C1 = the Coordinator co-locates an execution pool
 //   C2 = the Coordinator disables its pool and a registered Worker claims remotely
-//   C3 = the Run ingress thread identity is the Managed Session identity
+//   C3 = the Managed Session event command owns the Run reservation and thread identity
 //   C4 = the Session root mutation reaches idle
 //   C5 = the operation commit produces exactly one assistant fact
 //   C6 = dispatch settlement removes the live delivery row
@@ -18,8 +18,8 @@
 //   R5     *  *  1  1  0  *  * | no fabricated assistant result
 //   R6     *  *  1  1  1  0  * | delivery remains live and the test fails
 //   R7     *  *  1  1  1  1  0 | durability is not claimed
-// R1/R2 are exercised here; identity wiring is explicit so the test cannot use
-// an unrelated durable thread as evidence for a Managed Session. Rust claim/CAS
+// R1/R2 are exercised here; Session-owned ingress is explicit so the test cannot
+// use generic durable ingress or an unrelated Thread as Managed evidence. Rust claim/CAS
 // conformance owns the fail-closed R3-R7
 // causes. The two successful rows must normalize to the same terminal facts.
 
@@ -53,6 +53,21 @@ async function waitForAssistant(base: string, threadId: string): Promise<any[]> 
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`committed assistant fact did not appear for ${threadId}`);
+}
+
+async function waitForSessionIdle(client: Anthropic, sessionId: string, label: string): Promise<any> {
+  // Cause/effect rule C4: the Thread assistant commit and Session root terminal
+  // CAS are distinct durable boundaries. A committed assistant fact may appear
+  // first; polling the authoritative Session read must eventually observe idle,
+  // while any other terminal/nonterminal value at the deadline fails the row.
+  const deadline = Date.now() + 30_000;
+  let last: any;
+  while (Date.now() <= deadline) {
+    last = await client.beta.sessions.retrieve(sessionId, { betas: BETAS }).withResponse();
+    if (last.data.status === 'idle') return last;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${label}: Session root did not reach idle; last status=${last?.data?.status}`);
 }
 
 function terminalFacts(assistant: any[], status: string): TerminalFacts {
@@ -109,14 +124,20 @@ async function runTopology(remoteWorker: boolean, preferredPort: number): Promis
       betas: BETAS,
     });
     const threadId = session.id;
-    const submitted = await fetch(`${base}/v1/durable/threads/${threadId}/submit_background`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'authority parity' }),
+    const submitted = await client.beta.sessions.events.send(threadId, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'authority parity' }],
+      }],
+      betas: BETAS,
     });
-    assert.equal(submitted.status, 200, `${label}: Coordinator accepts run intent: ${await submitted.text()}`);
+    assert.equal(
+      typeof submitted.data[0]?.id,
+      'string',
+      `${label}: Coordinator accepts the Session-owned event batch`,
+    );
     const assistant = await waitForAssistant(base, threadId);
-    const retrieved = await client.beta.sessions.retrieve(session.id, { betas: BETAS }).withResponse();
+    const retrieved = await waitForSessionIdle(client, session.id, label);
     assert.equal(retrieved.data.status, 'idle', `${label}: Session root reaches idle`);
     const etag = retrieved.response.headers.get('etag');
     assert.ok(etag && Number.isSafeInteger(Number(etag.replaceAll('"', ''))), `${label}: numeric root revision`);

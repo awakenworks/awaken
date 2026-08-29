@@ -23,6 +23,7 @@ import {
   requirePrebuiltExecutable,
   scenarioHandCompanionPath,
 } from './cargo_binary.mjs';
+import { snapshotExecutable } from './executable_snapshot.mjs';
 
 const E2E_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(E2E_ROOT, '..');
@@ -175,13 +176,6 @@ export function validPrebuiltManifest(
     && manifest.binaries?.scenarioHost === fileDigest(scenarioHost)
     && manifest.binaries?.handCompanion === fileDigest(handCompanion)
     && manifest.binaries?.worker === fileDigest(worker);
-}
-
-function snapshotExecutable(source, destination) {
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.copyFileSync(source, destination);
-  fs.chmodSync(destination, 0o755);
-  return destination;
 }
 
 // Remove only provider API-key variables rejected by the production process.

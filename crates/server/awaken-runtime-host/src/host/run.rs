@@ -5,6 +5,7 @@ use super::types::VerifiedStepProjection;
 use super::*;
 
 mod projection;
+mod quiescence;
 mod step_verification;
 
 pub(super) use projection::session_thread_reply_result;
@@ -13,6 +14,12 @@ use projection::{
     project_delegated_runs, recovery_ticket,
 };
 use step_verification::{message_prefix_before_exact_inputs, verify_committed_step};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunIngressScope {
+    HostCommand,
+    ThreadExtension,
+}
 
 impl SharedHost {
     pub(crate) async fn session_budget_resume_tickets(
@@ -159,169 +166,6 @@ impl SharedHost {
     /// Fence the parent Runtime at its durable dispatch authority, wait for any
     /// foreground projection to observe settlement, and only then read the child
     /// registry plus its committed-state watermark.
-    pub async fn quiesce_terminal_delegations(
-        &self,
-        thread: &str,
-    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
-        // Terminal control is deliberately Environment-free. A cold projection
-        // must never materialize the sandbox, MCP connections, or current Agent
-        // configuration merely to tear the Session down.
-        let resident = self
-            .session_slots
-            .read(thread, |slot| slot.runtime.clone())
-            .flatten();
-        let mut coordinated_thread_ids = std::collections::HashSet::new();
-        if let Ok(store) = self.dispatch_store() {
-            let thread_id = ThreadId(thread.to_string());
-            // Cause/effect decision table: P1 root dispatch and P2 every row
-            // whose trusted parent affinity names this Session are the complete
-            // execution set; C1 before the resident-run fence and C2 after it
-            // close the last-admission race. Each pass records logical child ids
-            // before cancellation; no process-local child registry participates.
-            for pass in 0..2 {
-                let dispatches = store
-                    .list_dispatches()
-                    .await
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                for dispatch in dispatches.iter().filter(|dispatch| {
-                    dispatch.thread_id == thread_id
-                        || dispatch.session_thread_id.as_ref() == Some(&thread_id)
-                }) {
-                    if dispatch.session_thread_id.as_ref() == Some(&thread_id)
-                        && dispatch.thread_id != thread_id
-                    {
-                        coordinated_thread_ids.insert(dispatch.thread_id.clone());
-                    }
-                }
-                for dispatch in dispatches.into_iter().filter(|dispatch| {
-                    (dispatch.thread_id == thread_id
-                        || dispatch.session_thread_id.as_ref() == Some(&thread_id))
-                        && matches!(
-                            dispatch.state,
-                            awaken_run_ingress_contract::DispatchState::Reserved
-                                | awaken_run_ingress_contract::DispatchState::ReservationLeased
-                                | awaken_run_ingress_contract::DispatchState::Pending
-                                | awaken_run_ingress_contract::DispatchState::Leased
-                                | awaken_run_ingress_contract::DispatchState::Awaiting
-                                | awaken_run_ingress_contract::DispatchState::DeadLetter
-                        )
-                }) {
-                    // The root's resident attempt receives the same post-intent
-                    // accelerator as an explicit interrupt. Child/cold/remote
-                    // attempts retain the durable claim path without a second
-                    // process-local registry.
-                    let live_runtime = resident
-                        .as_ref()
-                        .filter(|_| dispatch.thread_id == thread_id)
-                        .map(|ctx| ctx.runtime.as_ref());
-                    self.persist_dispatch_cancellation(&dispatch.run_id, live_runtime)
-                        .await?;
-                }
-
-                // Direct ACP and Outcome attempts may own only the foreground
-                // token. Any durable rows have crossed the intent boundary above,
-                // so this legacy-compatible nudge cannot precede durable truth.
-                if pass == 0
-                    && let Some(ctx) = &resident
-                    && let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref()
-                {
-                    token.cancel();
-                }
-                if pass == 0
-                    && let Some(ctx) = &resident
-                {
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-                    loop {
-                        if ctx
-                            .active_run
-                            .lock()
-                            .expect("active run mutex poisoned")
-                            .is_none()
-                        {
-                            break;
-                        }
-                        if tokio::time::Instant::now() >= deadline {
-                            return Err(HostError::internal(format!(
-                                "terminal quiescence timed out for Thread `{thread}`"
-                            )));
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                }
-                // Cancellation is complete only after every local or remote
-                // Worker settles all root/parent-affined runnable rows. A local
-                // root join does not cover recovered child Workers.
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    let still_active = store
-                        .list_dispatches()
-                        .await
-                        .map_err(|error| HostError::internal(error.to_string()))?
-                        .into_iter()
-                        .any(|dispatch| {
-                            (dispatch.thread_id == thread_id
-                                || dispatch.session_thread_id.as_ref() == Some(&thread_id))
-                                && matches!(
-                                    dispatch.state,
-                                    awaken_run_ingress_contract::DispatchState::Reserved
-                                        | awaken_run_ingress_contract::DispatchState::ReservationLeased
-                                        | awaken_run_ingress_contract::DispatchState::Pending
-                                        | awaken_run_ingress_contract::DispatchState::Leased
-                                        | awaken_run_ingress_contract::DispatchState::Awaiting
-                                )
-                        });
-                    if !still_active {
-                        break;
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        return Err(HostError::internal(format!(
-                            "terminal dispatch quiescence timed out for Session `{thread}`"
-                        )));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            }
-        } else if let Some(ctx) = resident {
-            // A direct/non-dispatch attempt has no durable cancellation intent
-            // to order before this legacy foreground signal.
-            if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
-                token.cancel();
-            }
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                if ctx
-                    .active_run
-                    .lock()
-                    .expect("active run mutex poisoned")
-                    .is_none()
-                {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(HostError::internal(format!(
-                        "terminal quiescence timed out for Thread `{thread}`"
-                    )));
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        }
-        // Rebuild committed links only after the dispatch fence. Cold or
-        // malformed projection data may make enrichment fail, but it can never
-        // prevent cancellation of already-admitted Session children.
-        coordinated_thread_ids.extend(
-            self.coordinated_threads(thread)
-                .await?
-                .into_iter()
-                .map(|link| link.thread_id),
-        );
-        let mut snapshot = self.delegated_run_snapshot(thread).await?;
-        snapshot.coordinated_thread_ids = coordinated_thread_ids.into_iter().collect();
-        snapshot
-            .coordinated_thread_ids
-            .sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(snapshot)
-    }
-
     /// Durable committed-truth lifecycle feed for the partition containing
     /// `thread`. A database-less Worker has only a non-authoritative recovery
     /// projection and therefore cannot expose this Control-side feed.
@@ -534,8 +378,16 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(agent, thread, input, false, None, None)
-            .await
+        self.deliver_run(
+            agent,
+            thread,
+            input,
+            false,
+            None,
+            None,
+            RunIngressScope::HostCommand,
+        )
+        .await
     }
 
     /// Run one request with its neutral, request-grained content owner.
@@ -546,8 +398,16 @@ impl SharedHost {
         input: Vec<Message>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(agent, thread, input, false, None, data_subject_id)
-            .await
+        self.deliver_run(
+            agent,
+            thread,
+            input,
+            false,
+            None,
+            data_subject_id,
+            RunIngressScope::HostCommand,
+        )
+        .await
     }
 
     /// Like [`SharedHost::run`] but forwards the engine's best-effort live
@@ -560,8 +420,16 @@ impl SharedHost {
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(agent, thread, input, false, Some(sink), None)
-            .await
+        self.deliver_run(
+            agent,
+            thread,
+            input,
+            false,
+            Some(sink),
+            None,
+            RunIngressScope::HostCommand,
+        )
+        .await
     }
 
     /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
@@ -573,8 +441,16 @@ impl SharedHost {
         sink: Arc<dyn StreamSink>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(agent, thread, input, false, Some(sink), data_subject_id)
-            .await
+        self.deliver_run(
+            agent,
+            thread,
+            input,
+            false,
+            Some(sink),
+            data_subject_id,
+            RunIngressScope::HostCommand,
+        )
+        .await
     }
 
     /// Submit a Run that *supersedes* the Thread's prior pending/awaiting work
@@ -588,8 +464,39 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(agent, thread, input, true, None, None)
-            .await
+        self.deliver_run(
+            agent,
+            thread,
+            input,
+            true,
+            None,
+            None,
+            RunIngressScope::HostCommand,
+        )
+        .await
+    }
+
+    /// Test-only projection seam for Host behavior whose precondition is an
+    /// already-admitted Session. It reuses the complete ordinary delivery
+    /// implementation while withholding Session affinity; Session admission,
+    /// activity, and Worker settlement are tested by their owning contexts.
+    #[cfg(test)]
+    pub(super) async fn run_thread_extension_after_admission(
+        &self,
+        agent: Option<&str>,
+        thread: &str,
+        input: Vec<Message>,
+    ) -> Result<CommittedStepReceipt, HostError> {
+        self.deliver_run(
+            agent,
+            thread,
+            input,
+            false,
+            None,
+            None,
+            RunIngressScope::ThreadExtension,
+        )
+        .await
     }
 
     async fn deliver_run(
@@ -600,7 +507,18 @@ impl SharedHost {
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
+        ingress_scope: RunIngressScope,
     ) -> Result<CommittedStepReceipt, HostError> {
+        if ingress_scope == RunIngressScope::HostCommand
+            && self
+                .session_slots
+                .read(thread, |slot| slot.session_dispatch)
+                .unwrap_or(false)
+        {
+            return Err(HostError::bad_request(
+                "Managed Session roots must use Session-owned Run ingress",
+            ));
+        }
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
         let st = ctx.state.lock().await;
@@ -656,6 +574,11 @@ impl SharedHost {
             .with_supersede(supersede)
             .with_stream_sink(sink)
             .retain_active_until_settled();
+        let executor = if ingress_scope == RunIngressScope::ThreadExtension {
+            executor.for_thread_extension()
+        } else {
+            executor
+        };
         let state = match awaken_runtime_contract::execution::RunExecutor::execute(
             &executor,
             activation,

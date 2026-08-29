@@ -23,8 +23,31 @@ import {
   WORKER_BIN_ENV,
   scenarioHandCompanionPath,
 } from './cargo_binary.mjs';
+import { snapshotExecutable } from './executable_snapshot.mjs';
 
 const E2E_ROOT_FOR_TEST = path.dirname(fileURLToPath(import.meta.url));
+
+// Executable snapshot cause/effect table: C1 source and destination may be on
+// different filesystems; C2 source is not executable; C3 source may later be
+// rebuilt. Effects: E1 snapshot succeeds without hard-link assumptions; E2 it
+// is executable; E3 bytes are independent. Rule S1 C1+C2+C3 => E1+E2+E3.
+// A content copy plus post-copy source mutation is the smallest deterministic
+// oracle for all three effects and remains valid on single-filesystem CI hosts.
+test('snapshots an independent executable without filesystem-link assumptions', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-executable-snapshot-'));
+  try {
+    const source = path.join(directory, 'source');
+    const destination = path.join(directory, 'nested', 'snapshot');
+    fs.writeFileSync(source, 'first');
+    assert.equal(snapshotExecutable(source, destination), destination);
+    assert.equal(fs.readFileSync(destination, 'utf8'), 'first');
+    assert.equal(fs.statSync(destination).mode & 0o777, 0o755);
+    fs.writeFileSync(source, 'second');
+    assert.equal(fs.readFileSync(destination, 'utf8'), 'first');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 // Cause/effect decision table:
 // C1 nested suite, C2 npm pretest hook, C3 cycle; E1 ordered leaf commands,

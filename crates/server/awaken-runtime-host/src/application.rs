@@ -1198,6 +1198,41 @@ impl crate::SharedHost {
         synchronize_resources: bool,
         realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
+        self.install_frozen_session_projection_with_resource_authority(
+            thread,
+            projection,
+            claim,
+            synchronize_resources,
+            false,
+            realization_lease,
+        )
+        .await
+    }
+
+    /// Install the Coordinator's complete frozen dispatch projection. This is
+    /// the sole caller authorized to amend an unattempted same-revision Resource
+    /// generation; Worker and local realization callers use the fenced method
+    /// above.
+    pub(crate) async fn install_dispatch_frozen_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+    ) -> Result<(), crate::HostError> {
+        self.install_frozen_session_projection_with_resource_authority(
+            thread, projection, None, true, true, None,
+        )
+        .await
+    }
+
+    async fn install_frozen_session_projection_with_resource_authority(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        claim: Option<&RunClaim>,
+        synchronize_resources: bool,
+        authority_amends_unattempted_resources: bool,
+        realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
+    ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
                 "frozen Session baseline fingerprint must not be empty",
@@ -1276,7 +1311,7 @@ impl crate::SharedHost {
             )));
         }
 
-        if let Some(existing) = self
+        let baseline_to_install = if let Some(existing) = self
             .session_slots
             .read(thread, |slot| slot.baseline.clone())
             .flatten()
@@ -1286,73 +1321,60 @@ impl crate::SharedHost {
                     "thread {thread} is already bound to a different frozen Session baseline"
                 )));
             }
-            // The baseline is immutable, but a remote Resource verification is
-            // authorized by the current dispatch claim. Re-stage the exact
-            // manifest on every claimed replay so Repository checks never retain
-            // a prior lease epoch. `install_dispatched_resources` owns generation
-            // equality/fencing and does not realize an existing environment.
-            if synchronize_resources && projection.resource_revision > 0 {
-                let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
-                    projection.workspace_id.clone(),
-                    projection.resource_revision,
-                    projection.resources.clone(),
-                );
-                self.install_dispatched_resources(thread, &manifest, claim)
-                    .await
-                    .map_err(|error| crate::HostError::internal(error.to_string()))?;
-            }
-            self.install_expected_environment_binding(
-                thread,
-                expected_environment_binding.clone(),
-            )?;
-            self.project_session_init(thread, &init)?;
-            self.install_session_request_context(thread, projection.request_context.clone());
-            self.session_slots.update(thread, |slot| {
-                slot.has_mcp_projection = has_mcp_projection;
-                if let Some(publication) = &projection.agent_publication {
-                    slot.published_snapshot = Some(publication.clone());
-                }
+            None
+        } else {
+            let occupied = self.session_slots.read(thread, |slot| {
+                (
+                    slot.runtime.is_some() || slot.environment.is_some(),
+                    slot.resources.mounts.clone(),
+                )
             });
-            if let Some(lease) = realization_lease {
-                self.install_session_realization_lease(thread, lease);
+            let (is_realized, built_in_mounts) = occupied.unwrap_or_else(|| (false, Vec::new()));
+            if is_realized {
+                return Err(crate::HostError::internal(format!(
+                    "thread {thread} was realized before its frozen Session baseline"
+                )));
             }
-            return Ok(());
-        }
+            validate_baseline_projection(&baseline, &built_in_mounts)?;
+            Some(baseline)
+        };
 
-        let occupied = self.session_slots.read(thread, |slot| {
-            (
-                slot.runtime.is_some() || slot.environment.is_some(),
-                slot.resources.mounts.clone(),
-            )
-        });
-        let (is_realized, built_in_mounts) = occupied.unwrap_or_else(|| (false, Vec::new()));
-        if is_realized {
-            return Err(crate::HostError::internal(format!(
-                "thread {thread} was realized before its frozen Session baseline"
-            )));
-        }
-
-        validate_baseline_projection(&baseline, &built_in_mounts)?;
-        if !synchronize_resources && projection.resource_revision > 0 {
+        if baseline_to_install.is_some()
+            && !synchronize_resources
+            && projection.resource_revision > 0
+        {
             return Err(crate::HostError::internal(format!(
                 "thread {thread} cannot cold-materialize frozen Session Resources during lease-only renewal"
             )));
         }
+        // The baseline is immutable, but a remote Resource verification is
+        // authorized by the current dispatch claim. Re-stage the exact
+        // manifest on every claimed replay so Repository checks never retain a
+        // prior lease epoch. Resource installation owns generation equality and
+        // fencing; every cold/replay case then joins the one projection publish
+        // sequence below.
         if synchronize_resources && projection.resource_revision > 0 {
             let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                 projection.workspace_id.clone(),
                 projection.resource_revision,
-                projection.resources,
+                projection.resources.clone(),
             );
-            self.install_dispatched_resources(thread, &manifest, claim)
-                .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            let installed = if authority_amends_unattempted_resources {
+                self.amend_unattempted_dispatched_resources(thread, &manifest)
+                    .await
+            } else {
+                self.install_dispatched_resources(thread, &manifest, claim)
+                    .await
+            };
+            installed.map_err(|error| crate::HostError::internal(error.to_string()))?;
         }
         self.install_expected_environment_binding(thread, expected_environment_binding)?;
         self.project_session_init(thread, &init)?;
         self.install_session_request_context(thread, projection.request_context.clone());
         self.session_slots.update(thread, |slot| {
-            slot.baseline = Some(baseline);
+            if let Some(baseline) = baseline_to_install {
+                slot.baseline = Some(baseline);
+            }
             slot.has_mcp_projection = has_mcp_projection;
             if let Some(publication) = projection.agent_publication {
                 slot.published_snapshot = Some(publication);

@@ -23,11 +23,15 @@ import {
   stopServer,
   waitForPort,
 } from './harness.mjs';
-import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  nativeProviderCandidateFixture,
+  providerCredentialTargetFixture,
+} from './fixtures/provider_candidate_fixture.mjs';
 import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
+import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38812);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -129,28 +133,19 @@ async function registerReadyWorker() {
     registration: {
       worker_id: WORKER,
       incarnation_id: `${WORKER}-${process.pid}`,
-      manifest: {
-        manifest_version: 1,
-        build_digest: 'worker-transport-e2e',
+      manifest: workdirWorkerManifestFixture({
+        buildDigest: 'worker-transport-e2e',
         capabilities: [
           'credential-source/v1',
           'host-executor/v1',
           'native-runtime',
+          // This fixture claims a Session-owned root. The placement contract
+          // therefore requires the Worker to realize its frozen Resources;
+          // omitting this capability must yield no claim, not a local bypass.
+          'session-resources/v1',
           WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
         ],
-        zone: null,
-        architecture: process.arch,
-        sandbox: {
-          isolation: 'workdir', tool_transparent: false, path_fidelity: false,
-          enforced_readonly: false, network_isolation: false,
-          secret_egress_substitution: false, resource_limits: false, custom_rootfs: false,
-        },
-        sandbox_backends: [],
-        dispatch_contract: { min: 1, max: 1 },
-        runtime_protocol: { min: 1, max: 1 },
-        checkpoint_formats: ['stream-v1'],
-        capacity: { max_concurrent: 1, resources: {} },
-      },
+      }),
     },
   });
   assert.equal(registration.status, 200, `worker registered: ${registration.text}`);
@@ -269,7 +264,14 @@ async function main() {
     });
     assert.equal(claim.status, 200, `dispatch claim endpoint live: ${claim.text}`);
     const claimed = claim.json?.claimed;
-    assert.ok(claimed, `claim returns the queued run: ${claim.text}`);
+    const dispatches = claimed
+      ? null
+      : await fetch(`${BASE}/v1/durable/threads/${dispatchThread}/dispatches`)
+        .then(async (response) => ({ status: response.status, body: await response.text() }));
+    assert.ok(
+      claimed,
+      `claim returns the queued run: ${claim.text}; dispatches=${JSON.stringify(dispatches)}`,
+    );
     const leaseOwner = `${workerIdentity.worker_id}:${workerIdentity.generation}:${workerIdentity.incarnation_id}`;
     assert.equal(claimed.lease.owner, leaseOwner, 'claim owner comes from authenticated incarnation');
     assert.ok(claimed.lease.epoch >= 1, `claim carries a fencing epoch: ${claim.text}`);
@@ -299,16 +301,21 @@ async function main() {
     granted.activation.run_id = `${claimed.request.activation.run_id}-grant`;
     granted.activation.thread_id = `${claimed.request.activation.thread_id}-grant`;
     granted.session_thread_id = granted.activation.thread_id;
-    granted.execution_scope = 'scope-ts-17';
+    // The seed is now a Session-owned Run. Its Workspace execution scope and
+    // frozen resource manifest are one invariant, so a credential-transport
+    // fixture may preserve that coordinate but must not rewrite either side.
+    const frozenExecutionScope = structuredClone(granted.execution_scope);
+    assert.ok(frozenExecutionScope, 'Session-owned seed carries its frozen execution scope');
     const pinnedCandidate = nativeProviderCandidateFixture({
       binding: granted.activation.snapshot.resolved_spec.model_binding,
       providerRef: 'fixture-provider@1',
       routeRef: 'fixture-route@1',
       accessKind: 'direct',
-      scopeId: 'scope-ts-17',
+      scopeId: frozenExecutionScope,
       credential: {
         credential: { id: 'grant-ts-17', revision: 3 },
         material_source: 'control_plane_reference',
+        target: providerCredentialTargetFixture('fixture-provider'),
         usage: { type: 'provider_adapter' },
         policy: {
           allowed_plaintext_holders: [
@@ -400,9 +407,9 @@ async function main() {
       pinnedCandidate,
       'the complete published candidate survives enqueue → durable store → authenticated claim unchanged',
     );
-    assert.equal(
+    assert.deepEqual(
       grant?.request?.execution_scope,
-      'scope-ts-17',
+      frozenExecutionScope,
       'verified execution scope survives the durable worker boundary as an opaque coordinate',
     );
     assert.ok(!JSON.stringify(grant).includes('provider-key'), 'claim contains no provider credential');

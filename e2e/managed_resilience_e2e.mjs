@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  managedAgentWithAlwaysAskTools,
   spawnServer,
   stopServer,
   waitForPort,
@@ -39,8 +40,8 @@ async function statusOf(promise, what) {
 
 const isClientError = (s) => s >= 400 && s < 500;
 
-const newSession = (c) =>
-  c.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+const newSession = (c, agent = 'assistant') =>
+  c.beta.sessions.create({ agent, environment_id: 'env_local', betas: BETAS });
 
 async function resilientPaths(echoUp) {
   const a = spawnServer('real', PORT, { ...realServerEnv('echo', echoUp) });
@@ -108,8 +109,9 @@ async function duplicateConfirmation(probeUp) {
   try {
     await waitForPort(PORT + 1);
     const c = client(a.baseUrl);
-    const s = await newSession(c);
-    // R2: C1=exact task receipt reaches requires_action; C2=exact allow receipt
+    const s = await newSession(c, managedAgentWithAlwaysAskTools(['write']));
+    // R2: C0=the Session owns write=always_ask; C1=exact task receipt reaches
+    // requires_action; C2=exact allow receipt
     // reaches end_turn. E1=duplicate C2 is then rejected. Constraint: each phase
     // is scoped after its own receipt. C1&&!C2=>awaiting; C1+C2=>E1.
     const task = await c.beta.sessions.events.send(s.id, {

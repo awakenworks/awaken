@@ -43,7 +43,7 @@ function definition(delegate: string, server: string, url: string): Record<strin
     name: 'Typed coordinator',
     system: 'Coordinate only through the published roster.',
     model: { id: 'fake-haiku' },
-    tools: [],
+    tools: [{ type: 'mcp_toolset', mcp_server_name: server }],
     mcp_servers: [{
       name: server,
       url,

@@ -188,7 +188,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-run-executor-acp \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
-    --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation \
+    --harness session_resource_replacement_requires_newer_or_authority_amended_generation \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
@@ -216,7 +216,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness organization_bucket_refill_clamp_preserves_capacity_invariant \
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
-    --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup \
+    --harness missing_agent_publication_is_available_only_to_noninteractive_projection \
     --harness rollout_update_revision_is_monotonic_and_covers_event \
     --harness user_profile_capability_and_field_projection_is_total_exclusive_and_exact \
     --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \

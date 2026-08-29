@@ -5,7 +5,13 @@
 
 import assert from 'node:assert/strict';
 import { A2AClient, ClientFactory } from '@a2a-js/sdk/client';
-import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
+import {
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  RED_PNG_B64,
+  withRealServer,
+  withScenarioServer,
+} from './harness.mjs';
 
 function replyText(res) {
   // `message/send` returns a Task; the agent's turn is its status message.
@@ -149,7 +155,8 @@ async function main() {
   // --- HITL: a tool needing approval awaits the task (input-required); a follow-up
   // message on the same context carries an explicit structured approval and the
   // task completes; plain text is never interpreted as authorization ---
-  await withRealServer('probe', 38153, async (base) => {
+  await withScenarioServer('management-probe', 'probe', 38153, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const awaiting = await client.sendMessage({
       message: {
@@ -180,7 +187,7 @@ async function main() {
   });
 
   // Causal graph (official client task-control surface):
-  // send -> durable input-required task -> get / subscribe / push-config owner
+  // published AlwaysAsk -> durable input-required task -> get / subscribe / push-config owner
   //                                  |-> cancel -> runtime denial -> canceled event
   //                                  `-> config CRUD -> redacted reads -> deletion
   // Decision table:
@@ -191,7 +198,8 @@ async function main() {
   // | yes         | any      | push set/get/list| one config; credentials never echo   |
   // | yes         | any      | push delete      | config absent on the next read       |
   // | no          | -        | get/cancel       | stable SDK task-not-found failure    |
-  await withRealServer('probe', 38154, async (base) => {
+  await withScenarioServer('management-probe', 'probe', 38154, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const awaiting = await client.sendMessage({
       message: {

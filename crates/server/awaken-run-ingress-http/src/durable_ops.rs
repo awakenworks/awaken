@@ -137,6 +137,7 @@ async fn submit_background(
                             &thread,
                             agent.map(str::to_string),
                             vec![message],
+                            awaken_observability::current_traceparent(),
                         )
                         .await
                         .map_err(map_run_error)?

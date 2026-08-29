@@ -8,7 +8,7 @@
 //   W2 handleItem(explicit)-> no second claim; same per-item effects
 //   W3 handleItem(env)     -> ANTHROPIC_* fallback has the same effects
 //   W4 missing field       -> AnthropicError before any network side effect
-//   W5 pinned Skill        -> exact version download and cleanup
+//   W5 pinned Skill + SDK default beta -> exact version download and cleanup
 //   W6 abort               -> in-flight helper unwinds and force-stops
 //   W7 stop failure        -> completed helper result survives; lease stays retryable
 //   W8 memory + secret     -> download, local edit, final sync, directory cleanup
@@ -32,6 +32,8 @@ import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
 import * as z from 'zod';
 import {
   pass,
+  SKILLS_BETA,
+  SKILLS_BETAS,
   spawnServer,
   stopServer,
   waitForPort,
@@ -288,14 +290,24 @@ async function main() {
       const management = spawnServer('management', PORT + 1);
       try {
         await waitForPort(PORT + 1, 900_000, management.server);
-        const managementClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: management.baseUrl });
+        // EnvironmentWorker clones this client for the per-item credential and
+        // setupSkills performs its own nested request. A client default is the
+        // SDK-owned propagation seam for that request; body-level `betas` only
+        // configures the direct calls below and cannot reach the cloned helper.
+        const managementClient = new Anthropic({
+          apiKey: 'e2e-dummy',
+          baseURL: management.baseUrl,
+          defaultHeaders: { 'anthropic-beta': SKILLS_BETA },
+        });
         const skillV1 = '---\nname: worker-greeter\ndescription: worker v1\n---\nPINNED_WORKER_SKILL_V1';
         const skillV2 = '---\nname: worker-greeter\ndescription: worker v2\n---\nLATEST_WORKER_SKILL_V2';
         const skill = await managementClient.beta.skills.create({
           files: [await toFile(Buffer.from(skillV1), 'SKILL.md')],
+          betas: SKILLS_BETAS,
         });
         await managementClient.beta.skills.versions.create(skill.id, {
           files: [await toFile(Buffer.from(skillV2), 'SKILL.md')],
+          betas: SKILLS_BETAS,
         });
         const agent = await managementClient.beta.agents.create({
           name: `worker-skill-${Date.now()}`,

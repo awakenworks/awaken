@@ -15,6 +15,7 @@ import {
   claimedCommitRequestFixture,
   terminalThreadCommitFixture,
 } from './fixtures/thread_commit_fixture.mjs';
+import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 
 const DATABASE_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
 const POSTGRES_CONTAINER = process.env.AWAKEN_E2E_POSTGRES_CONTAINER;
@@ -82,23 +83,14 @@ async function registerReadyWorker(worker: string): Promise<void> {
     registration: {
       worker_id: worker,
       incarnation_id: `${worker}-${process.pid}`,
-      manifest: {
-        manifest_version: 1,
-        build_digest: 'postgres-claimed-commit-guard-e2e',
-        capabilities: ['host-executor/v1', 'native-runtime'],
-        zone: null,
-        architecture: process.arch,
-        sandbox: {
-          isolation: 'workdir', tool_transparent: false, path_fidelity: false,
-          enforced_readonly: false, network_isolation: false,
-          secret_egress_substitution: false, resource_limits: false, custom_rootfs: false,
-        },
-        sandbox_backends: [],
-        dispatch_contract: { min: 1, max: 1 },
-        runtime_protocol: { min: 1, max: 1 },
-        checkpoint_formats: ['stream-v1'],
-        capacity: { max_concurrent: 1, resources: {} },
-      },
+      manifest: workdirWorkerManifestFixture({
+        buildDigest: 'postgres-claimed-commit-guard-e2e',
+        // The public background route now admits one Session-owned root. Both
+        // contenders must be able to realize its frozen Resource generation;
+        // otherwise placement correctly yields no claim before this test ever
+        // reaches the Postgres commit-fence decision table.
+        capabilities: ['host-executor/v1', 'native-runtime', 'session-resources/v1'],
+      }),
     },
   }, worker);
   assert.equal(registration.status, 200, registration.text);

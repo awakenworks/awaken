@@ -14,6 +14,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  managedAgentWithAlwaysAskTools,
   spawnServer,
   stopServer,
   waitForPort,
@@ -75,11 +76,12 @@ async function main() {
     //    resolve the real pending tool.
     {
       const session = await client.beta.sessions.create({
-        agent: 'assistant',
+        agent: managedAgentWithAlwaysAskTools(['write']),
         environment_id: 'env_local',
         betas: BETAS,
       });
-      // Awaiting-boundary rule A1: C1=the exact User receipt commits and C2=its
+      // Awaiting-boundary rule A1: C0=the Session owns write=always_ask;
+      // C1=the exact User receipt commits and C2=its
       // tool_use plus requires_action idle follow it; E1=use that tool id for the
       // wrong-id rejection oracle. Constraint: older tool history is ineligible.
       // Decision: C1&&!C2=>observe again; C1+C2=>E1; wrong id=>synchronous 4xx.

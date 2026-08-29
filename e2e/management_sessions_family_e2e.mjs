@@ -86,13 +86,14 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
+  FILES_BETA,
   withScenarioServer,
   pass,
   waitForSessionEventReceipt,
   waitForValue,
 } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 
 async function drain(pagePromise) {
   const items = [];

@@ -16,8 +16,8 @@ impl DispatchQueue for PostgresDispatchStore {
         request: RunDispatch,
         reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        let reservation_ttl_ms =
-            validate_session_run_reservation_request(&request, reservation_ttl_ms)?;
+        let (request, reservation_ttl_ms) =
+            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
@@ -1148,7 +1148,7 @@ impl DispatchQueue for PostgresDispatchStore {
             return Ok(SettleOutcome::Fenced);
         };
         let Json(request): Json<RunDispatch> = authority.try_get("request").map_err(reject)?;
-        let request_fingerprint = request.canonical_fingerprint();
+        let request_fingerprint = request.admission_fingerprint();
         let claim = RunClaim {
             run_id: run_id.clone(),
             owner,

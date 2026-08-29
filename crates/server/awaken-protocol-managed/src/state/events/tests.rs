@@ -1155,6 +1155,122 @@ fn lifecycle(
     }
 }
 
+#[tokio::test]
+async fn activation_failure_projects_only_the_exact_unowned_error() {
+    // Cause/effect graph: C1 the Session is durably ActivationFailed; C2 its
+    // realization failure has no Run source, the same root Run source, or a
+    // different root Run source; C3 a committed root lifecycle failure is
+    // absent/present; C4 the disposable projector is warm or rebuilt cold.
+    // Effects: E1 an ownerless create/recovery failure projects the Session
+    // realization error; E2 an exact same-Run lifecycle failure replaces that
+    // broader error instead of duplicating it; E3 a different historical Run
+    // retains its own error plus the later realization error; E4 warm/cold ids
+    // and payloads are identical. Exact typed Run identity is the constraint:
+    // messages and error codes never participate in ownership selection.
+    //
+    // | Rule | Failure source | Root lifecycle | Effect |
+    // |---|---|---|---|
+    // | AF1 | none | absent | E1 |
+    // | AF2 | exact Run | failed exact Run | E2+E4 |
+    // | AF3 | other Run | failed historical Run | E3 |
+    async fn project(
+        session_id: &str,
+        source_run_id: Option<RunId>,
+        lifecycle_run_id: Option<RunId>,
+    ) -> Vec<(String, String)> {
+        let repository = Arc::new(ephemeral_session_repo());
+        let mut persisted = crate::state::tests::sample_persisted(session_id);
+        persisted.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
+        persisted.realization_progress.last_error =
+            Some("broader Session realization failure".into());
+        persisted.realization_progress.failure_source_run_id = source_run_id.map(Box::new);
+        crate::state::test_support::create_session_fixture(
+            repository.as_ref(),
+            DEFAULT_SCOPE,
+            persisted,
+        )
+        .await;
+        let runtime = RehydrateFake::default();
+        if let Some(run_id) = lifecycle_run_id {
+            runtime.lifecycle.lock().unwrap().extend([
+                lifecycle(
+                    1,
+                    session_id,
+                    &run_id,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ),
+                lifecycle(
+                    2,
+                    session_id,
+                    &run_id,
+                    RunLifecycleEventKind::Failed,
+                    RunState::Ended(EndCause::Error(
+                        awaken_agent_contract::agent::run::Failure::Inference {
+                            code: "realization_failed".into(),
+                            message: "precise Run lifecycle failure".into(),
+                        },
+                    )),
+                ),
+            ]);
+        }
+        let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+        warm.refresh_committed_events(session_id).await.unwrap();
+        let observe = |state: &ManagedState| {
+            state
+                .list_events(session_id, None, None, false)
+                .unwrap()
+                .data
+                .into_iter()
+                .filter_map(|event| match event.kind {
+                    OutboundKind::SessionError { error } => Some((event.id, error.message)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let projected = observe(&warm);
+        let cold = ManagedState::new(runtime).with_session_repo(repository);
+        cold.refresh_committed_events(session_id).await.unwrap();
+        assert_eq!(observe(&cold), projected, "E4 warm/cold parity");
+        projected
+    }
+
+    assert_eq!(
+        project("activation-ownerless", None, None).await[0].1,
+        "broader Session realization failure",
+        "AF1/E1"
+    );
+    let exact_run = RunId("activation-exact-run".into());
+    let exact = project("activation-exact", Some(exact_run.clone()), Some(exact_run)).await;
+    assert_eq!(
+        exact
+            .iter()
+            .map(|(_, message)| message.as_str())
+            .collect::<Vec<_>>(),
+        vec!["precise Run lifecycle failure"],
+        "AF2/E2"
+    );
+    let distinct = project(
+        "activation-distinct",
+        Some(RunId("activation-later-run".into())),
+        Some(RunId("activation-historical-run".into())),
+    )
+    .await;
+    assert_eq!(distinct.len(), 2, "AF3/E3");
+    assert!(
+        distinct
+            .iter()
+            .any(|(_, message)| message == "broader Session realization failure"),
+        "AF3/E3 current realization failure"
+    );
+    assert!(
+        distinct
+            .iter()
+            .any(|(_, message)| message == "precise Run lifecycle failure"),
+        "AF3/E3 historical Run failure"
+    );
+}
+
 #[test]
 fn tool_reply_freezes_the_latest_awaiting_commit_inside_its_recovery_fence() {
     // Cause/effect graph: C1 lifecycle contains older/current/future Awaiting

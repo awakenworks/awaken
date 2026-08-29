@@ -90,8 +90,10 @@ pub enum SessionResourceInstallDecision {
     Reject,
 }
 
-/// Decide whether an incoming durable generation is a first/exact staging, a
-/// strictly newer replacement, or a stale/cross-Workspace rejection.
+/// Decide whether an incoming durable generation is a first/exact staging, an
+/// authorized replacement, or a stale/cross-Workspace rejection. Only the
+/// Session authority may amend an unattempted dispatch projection in place;
+/// claimed Workers remain fenced from changing same-revision content.
 #[must_use]
 pub const fn session_resource_install_decision(
     previous_exists: bool,
@@ -99,11 +101,15 @@ pub const fn session_resource_install_decision(
     workspace_matches: bool,
     previous_revision: u64,
     incoming_revision: u64,
+    authority_amends_unattempted: bool,
 ) -> SessionResourceInstallDecision {
     if !previous_exists || exact_replay {
         return SessionResourceInstallDecision::Stage;
     }
-    if workspace_matches && incoming_revision > previous_revision {
+    if workspace_matches
+        && (incoming_revision > previous_revision
+            || (authority_amends_unattempted && incoming_revision == previous_revision))
+    {
         SessionResourceInstallDecision::Replace
     } else {
         SessionResourceInstallDecision::Reject
@@ -174,12 +180,13 @@ mod kani_proofs {
     use super::{SessionResourceInstallDecision, session_resource_install_decision};
 
     #[kani::proof]
-    fn session_resource_replacement_requires_exactly_a_newer_same_workspace_generation() {
+    fn session_resource_replacement_requires_newer_or_authority_amended_generation() {
         let previous_exists: bool = kani::any();
         let exact_replay: bool = kani::any();
         let workspace_matches: bool = kani::any();
         let previous_revision: u64 = kani::any();
         let incoming_revision: u64 = kani::any();
+        let authority_amends_unattempted: bool = kani::any();
 
         let decision = session_resource_install_decision(
             previous_exists,
@@ -187,20 +194,41 @@ mod kani_proofs {
             workspace_matches,
             previous_revision,
             incoming_revision,
+            authority_amends_unattempted,
         );
         assert_eq!(
             decision == SessionResourceInstallDecision::Replace,
             previous_exists
                 && !exact_replay
                 && workspace_matches
-                && incoming_revision > previous_revision
+                && (incoming_revision > previous_revision
+                    || (authority_amends_unattempted && incoming_revision == previous_revision))
         );
         assert_eq!(
             decision == SessionResourceInstallDecision::Reject,
             previous_exists
                 && !exact_replay
-                && (!workspace_matches || incoming_revision <= previous_revision)
+                && (!workspace_matches
+                    || incoming_revision < previous_revision
+                    || (incoming_revision == previous_revision && !authority_amends_unattempted))
         );
+    }
+}
+
+/// Which admission command owns replay identity for one persisted dispatch.
+/// The default preserves the historical full-dispatch rule. The dedicated
+/// Session reservation port marks only its own rows as Session commands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchIdentityScope {
+    #[default]
+    FullDispatch,
+    SessionCommand,
+}
+
+impl DispatchIdentityScope {
+    fn is_full_dispatch(scope: &Self) -> bool {
+        matches!(scope, Self::FullDispatch)
     }
 }
 
@@ -210,6 +238,14 @@ mod kani_proofs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunDispatch {
     pub activation: RunActivation,
+    /// Port-owned replay semantics persisted with the request. This prevents a
+    /// self-affine continuation and a pre-activity Session reservation from
+    /// being guessed apart later from the same routing shape.
+    #[serde(
+        default,
+        skip_serializing_if = "DispatchIdentityScope::is_full_dispatch"
+    )]
+    pub identity_scope: DispatchIdentityScope,
     /// Session whose runtime capabilities and commit/history boundary must drive
     /// this Run after recovery. Ordinary Runs omit it and route by their own
     /// thread. A child Run names its parent's session while retaining its own
@@ -329,9 +365,29 @@ impl RunDispatch {
             .expect("RunDispatch's serializable contract has no fallible value")
     }
 
+    /// Stable identity of the Session-owned command that created a root Run
+    /// reservation. The Session application owns the operation and input; the
+    /// first accepted dispatch owns every resolved execution projection. A cold
+    /// retry may therefore reconstruct different current Agent, model-routing,
+    /// Resource, Runtime, Environment, or placement projections, but it must
+    /// neither conflict with nor overwrite the frozen request already stored.
+    fn session_reservation_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&(
+            &self.activation.run_id,
+            &self.activation.thread_id,
+            &self.activation.input,
+            &self.activation.delegation_origin,
+            &self.activation.data_subject_id,
+            &self.activation.tool_capability_narrowing,
+            &self.session_thread_id,
+        ))
+        .expect("Session reservation identity has no fallible serializable value")
+    }
+
     pub fn new(activation: RunActivation) -> Self {
         Self {
             activation,
+            identity_scope: DispatchIdentityScope::FullDispatch,
             session_thread_id: None,
             session_activity_epoch: None,
             session_run_replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
@@ -361,6 +417,74 @@ impl RunDispatch {
     #[must_use]
     pub fn same_canonical_dispatch(&self, other: &Self) -> bool {
         self.canonical_bytes() == other.canonical_bytes()
+    }
+
+    /// Compare only the immutable Session command identity. This method is for
+    /// the dedicated root-reservation port; ordinary and child Run admissions
+    /// continue to use [`Self::same_canonical_dispatch`].
+    #[must_use]
+    pub fn same_session_reservation(&self, other: &Self) -> bool {
+        self.session_reservation_bytes() == other.session_reservation_bytes()
+    }
+
+    /// Compact identity retained after a Session root dispatch settles. It is
+    /// the tombstone twin of [`Self::same_session_reservation`].
+    #[must_use]
+    pub fn session_reservation_fingerprint(&self) -> String {
+        let fingerprint = awaken_runtime_contract::content_fingerprint(&(
+            &self.activation.run_id,
+            &self.activation.thread_id,
+            &self.activation.input,
+            &self.activation.delegation_origin,
+            &self.activation.data_subject_id,
+            &self.activation.tool_capability_narrowing,
+            &self.session_thread_id,
+        ))
+        .expect("Session reservation identity has no fallible serializable value");
+        format!("sha256:{fingerprint}")
+    }
+
+    /// Compare an incoming retry using the identity relation persisted by this
+    /// stored dispatch. A Session reservation remains recognizable through the
+    /// ordinary repair-claim surfaces even though their retry value does not
+    /// author the stored scope; a generic stored dispatch never acquires relaxed
+    /// identity from an incoming Session-shaped value.
+    #[must_use]
+    pub fn same_admission_dispatch(&self, other: &Self) -> bool {
+        match self.identity_scope {
+            DispatchIdentityScope::SessionCommand
+                if matches!(
+                    other.admission_shape(),
+                    DispatchAdmissionShape::SessionRootAwaitingActivity
+                        | DispatchAdmissionShape::SessionRootWithActivity
+                ) =>
+            {
+                self.same_session_reservation(other)
+            }
+            DispatchIdentityScope::SessionCommand | DispatchIdentityScope::FullDispatch => {
+                self.same_canonical_dispatch(other)
+            }
+        }
+    }
+
+    /// Tombstone twin of [`Self::same_admission_dispatch`]. Live and completed
+    /// replay can therefore never disagree about the accepted Run identity.
+    #[must_use]
+    pub fn admission_fingerprint(&self) -> String {
+        match self.identity_scope {
+            DispatchIdentityScope::SessionCommand => self.session_reservation_fingerprint(),
+            DispatchIdentityScope::FullDispatch => self.canonical_fingerprint(),
+        }
+    }
+
+    /// Mark the request as owned by the dedicated Session reservation port.
+    /// Storage adapters call this through their one shared validation function;
+    /// generic enqueue/continuation callers cannot acquire the relaxed identity
+    /// merely by constructing a self-affine routing shape.
+    #[must_use]
+    pub fn with_session_command_identity(mut self) -> Self {
+        self.identity_scope = DispatchIdentityScope::SessionCommand;
+        self
     }
 
     /// Route execution through an existing session without changing the Run's
@@ -516,15 +640,30 @@ mod tests {
     fn session_resource_install_decision_follows_the_complete_table() {
         use SessionResourceInstallDecision::{Reject, Replace, Stage};
 
+        // Cause/effect graph: C1 previous manifest exists; C2 exact replay;
+        // C3 Workspace matches; C4 incoming revision is newer/equal/older; C5
+        // the Session authority proves an unattempted in-place amendment.
+        // Effects are Stage, Replace, or Reject. Claimed Workers always have
+        // !C5, so same-revision content replacement remains impossible.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | I1 | F | any | any | any | any | Stage |
+        // | I2 | T | T | any | any | any | Stage |
+        // | I3 | T | F | T | newer | any | Replace |
+        // | I4 | T | F | T | equal | T | Replace |
+        // | I5 | T | F | T | equal | F | Reject |
+        // | I6 | T | F | T | older | any | Reject |
+        // | I7 | T | F | F | any | any | Reject |
         let rules = [
-            (false, false, false, 9, 0, Stage),
-            (true, true, false, 9, 0, Stage),
-            (true, false, true, 9, 10, Replace),
-            (true, false, true, 9, 9, Reject),
-            (true, false, true, 9, 8, Reject),
-            (true, false, false, 9, 10, Reject),
+            (false, false, false, 9, 0, false, Stage),
+            (true, true, false, 9, 0, false, Stage),
+            (true, false, true, 9, 10, false, Replace),
+            (true, false, true, 9, 9, true, Replace),
+            (true, false, true, 9, 9, false, Reject),
+            (true, false, true, 9, 8, true, Reject),
+            (true, false, false, 9, 10, true, Reject),
         ];
-        for (previous, replay, workspace, old, incoming, expected) in rules {
+        for (previous, replay, workspace, old, incoming, amendment, expected) in rules {
             assert_eq!(
                 session_resource_install_decision(
                     previous,
@@ -532,6 +671,7 @@ mod tests {
                     workspace,
                     old,
                     incoming,
+                    amendment,
                 ),
                 expected
             );
@@ -714,6 +854,82 @@ mod tests {
             negative_zero.canonical_fingerprint(),
             retraced.canonical_fingerprint(),
             "I2/E3"
+        );
+    }
+
+    #[test]
+    fn session_reservation_identity_separates_command_from_resolved_execution() {
+        // Cause/effect graph: C1 immutable Session command fields are exact or
+        // changed; C2 current execution projections are exact or changed; C3
+        // the dispatch is a self-affine Session root or ordinary root. Effects:
+        // E1 C1 exact+C2 changed replays the reservation and retains one compact
+        // identity; E2 C1 changed conflicts; E3 ordinary completion identity
+        // remains the full canonical dispatch. Constraint: comparison never
+        // overwrites the first accepted request. Decision rules:
+        // R1=exact command+changed projection+Session=>E1;
+        // R2=changed command+any projection+Session=>E2;
+        // R3=changed projection+ordinary=>E3.
+        let session = ThreadId("thrd-1".into());
+        let original = RunDispatch::new(activation())
+            .for_session(session.clone())
+            .with_session_command_identity();
+
+        let mut reprojected = original.clone();
+        reprojected.activation.snapshot.resolved_spec.instructions = "current publication".into();
+        reprojected.activation.model_ref_override = Some("current-route".into());
+        reprojected.execution_scope = Some(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
+            "current-workspace",
+        )));
+        reprojected.session_resources = Some(SessionResourceEnvelope::at_revision(
+            "current-workspace",
+            9,
+            r#"{"inputs":[]}"#,
+        ));
+        reprojected.placement = PlacementRequirements::remote_required();
+        assert!(original.same_session_reservation(&reprojected), "R1/E1");
+        assert_eq!(
+            original.session_reservation_fingerprint(),
+            reprojected.session_reservation_fingerprint(),
+            "R1/E1"
+        );
+        assert_ne!(
+            original.canonical_fingerprint(),
+            reprojected.canonical_fingerprint(),
+            "R1 precondition"
+        );
+
+        let mut changed_command = reprojected.clone();
+        changed_command.activation.input = vec![Message::text(
+            MessageId("u1".into()),
+            Role::User,
+            "different command",
+        )];
+        assert!(
+            !original.same_session_reservation(&changed_command),
+            "R2/E2"
+        );
+        assert_ne!(
+            original.session_reservation_fingerprint(),
+            changed_command.session_reservation_fingerprint(),
+            "R2/E2"
+        );
+
+        let ordinary = RunDispatch::new(activation());
+        let mut ordinary_reprojected = ordinary.clone();
+        ordinary_reprojected
+            .activation
+            .snapshot
+            .resolved_spec
+            .instructions = "changed".into();
+        assert_ne!(
+            ordinary.admission_fingerprint(),
+            ordinary_reprojected.admission_fingerprint(),
+            "R3/E3"
+        );
+        assert_eq!(
+            original.admission_fingerprint(),
+            original.session_reservation_fingerprint(),
+            "R1/E1"
         );
     }
 

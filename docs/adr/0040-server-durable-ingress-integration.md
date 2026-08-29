@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-03
+- Amended: 2026-08-29 — Managed Session roots use only Session-owned Run reservations
 - Depends on: ADR-0009, ADR-0011, ADR-0015, ADR-0020, ADR-0022, ADR-0039
 
 ## Context
@@ -67,7 +68,7 @@ the server**, each with its own e2e:
 
 | ADR | Server feature | e2e |
 | --- | --- | --- |
-| ADR-0022 | `POST /v1/durable/threads/:t/supersede` — a newest-wins Run (`SharedHost::supersede_run` → `DurableRunIngress::submit_superseding`); `superseded` is observable | `managed_supersede_e2e` — an awaiting Run is superseded end to end |
+| ADR-0022 | `POST /v1/durable/threads/:t/supersede` — a newest-wins ordinary Runtime Run (`SharedHost::supersede_run` → `DurableRunIngress::submit_superseding`); `superseded` is observable | `durable_supersede_e2e` — an ordinary awaiting Run is superseded end to end |
 | ADR-0020 | the `schedule` server mode: a gate defers tool calls as `ScheduledAction`s; the durable worker performs them out of band | `managed_scheduled_e2e` — write→read performed autonomously, no confirmation |
 | ADR-0011 | `POST /v1/durable/threads/:t/reconcile` — reclaim runnable work | `managed_durable_ops_e2e` — verb wired + fails closed off-durable |
 | ADR-0015 | `POST …/quarantine-retry-exhausted`, `GET …/dead-letters`, `POST …/dead-letters/purge` | `managed_durable_ops_e2e` — manual quarantine verbs wired + fail closed |
@@ -100,3 +101,43 @@ operator call.
 - Exposing operational verbs / an autonomous reconciler daemon is a scoped
   follow-up, to be taken only alongside a feature that emits scheduled actions or
   requires out-of-band GC/supersession.
+
+## 2026-08-29 amendment: durable operations do not form a second Managed Session ingress
+
+ADR-0075 and the Session Run reservation contract make a Managed Session root's
+admission sequence authoritative: Session input is committed to the Session root,
+one self-affine Run reservation is created, and only the resulting activity
+receipt activates its dispatch. The generic durable operations API owns ordinary
+Runtime Threads only. It may observe a Managed Session's dispatch rows, but
+`run`, `submit_background`, and `supersede` must not manufacture a second root Run
+outside the Session aggregate.
+
+`SharedHost` therefore rejects ordinary and superseding Host Run ingress before
+realization whenever the Thread is a Managed Session root. The ADR-0022 E2E uses
+an ordinary durable Thread with a client-tool Awaiting boundary. Managed HITL,
+restart, interruption, and recovery remain covered through the Managed Session
+event API and its one Run reservation path. This amendment removes the overlap;
+it does not change `RunDispatch` supersession semantics or the read-only durable
+operations projections.
+
+The dedicated reservation port also persists `SessionCommand` as the dispatch's
+identity scope. A retry compares the immutable Session command coordinates
+(Run, root Thread, input, delegation/data-subject/tool narrowing, and Session
+affinity), while the first accepted row retains the complete resolved execution
+projection. Current Agent publication, model route, Resource/Runtime projection,
+placement, or realization state may therefore differ during cold repair without
+rewriting the admitted Run or producing a false conflict. A changed command still
+conflicts. Generic enqueue persists the default `FullDispatch` scope and continues
+to compare the entire canonical dispatch; a self-affine shape alone never grants
+Session replay semantics. Live rows and completion tombstones use this same
+persisted admission identity, so retry classification cannot diverge after
+settlement.
+
+Cold control does not reopen execution configuration. An interrupt-only Event
+batch rebuilds the same frozen-control projection used by terminal cleanup and
+addresses the existing Session/dispatch state without resolving the current
+Agent publication, model, credentials, Resources, or sandbox. A mixed batch can
+start or resume work, so it remains interactive and fails closed when its exact
+publication is unavailable. This keeps cold A2A/Native cancellation on the one
+Session ingress while preserving the rule that cancellation uses the pinned
+attempt state rather than a replacement execution plan.

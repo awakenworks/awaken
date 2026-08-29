@@ -2,7 +2,7 @@
 // stale-input drop (awaken-run-ingress `worker.rs`: input for a superseded ticket
 // is never delivered, and a superseded dispatch is never woken again).
 //
-// The sibling `managed_supersede_e2e.mjs` proves newest-wins: an awaiting run is
+// The sibling `durable_supersede_e2e.mjs` proves newest-wins: an awaiting run is
 // marked superseded and the new run drives. This proves the OTHER half — that the
 // superseded (stale) run is genuinely DROPPED, not merely re-labelled:
 //   * reconcile does NOT reclaim/re-drive the superseded run (it is not runnable),
@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  managedAgentWithAlwaysAskTools,
   spawnServer,
   stopServer,
   waitForPort,
@@ -59,19 +60,7 @@ async function main() {
     // A first turn awaits on a tool confirmation — its dispatch sits `Awaiting` on
     // ticket T in the thread's queue.
     const session = await client.beta.sessions.create({
-      agent: {
-        id: 'assistant',
-        type: 'agent_with_overrides',
-        tools: [{
-          type: 'agent_toolset_20260401',
-          configs: [{
-            name: 'write',
-            type: 'write',
-            enabled: true,
-            permission_policy: { type: 'always_ask' },
-          }],
-        }],
-      },
+      agent: managedAgentWithAlwaysAskTools(['write']),
       environment_id: 'env_local',
       betas: BETAS,
     });

@@ -975,6 +975,7 @@ impl SessionRunApplication {
         thread: &str,
         requested_agent: Option<&str>,
         messages: Vec<Message>,
+        traceparent: Option<String>,
         replacement: awaken_session_contract::SessionRunReplacement,
     ) -> Result<AdmitSessionRun, RunApplicationError> {
         if operation_id.trim().is_empty() {
@@ -994,7 +995,7 @@ impl SessionRunApplication {
             run_id: awaken_session_contract::session_run_id(thread, operation_id),
             messages,
             data_subject_id: None,
-            traceparent: None,
+            traceparent,
             execution_requirements: Default::default(),
             replacement,
         })
@@ -1014,6 +1015,7 @@ impl SessionRunApplication {
             thread,
             requested_agent.as_deref(),
             messages,
+            None,
             replacement,
         )?;
         let owner_scope = (self.workspace)(thread);
@@ -1132,12 +1134,14 @@ impl awaken_session_contract::SessionRunBackgroundApplication for SessionRunAppl
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
+        traceparent: Option<String>,
     ) -> Result<awaken_agent_contract::agent::run::Id, RunApplicationError> {
         let command = self.admission_command(
             operation_id,
             thread,
             agent.as_deref(),
             messages,
+            traceparent,
             awaken_session_contract::SessionRunReplacement::PreservePrior,
         )?;
         let run_id = command.run_id.clone();

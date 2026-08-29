@@ -29,7 +29,9 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  FILES_BETA,
   allowManagedToolBoundaries,
+  managedAgentWithAlwaysAskTools,
   spawnServer,
   stopServer,
   waitForPort,
@@ -39,7 +41,7 @@ import {
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38217);
-const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
+const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const TMP = path.join(os.tmpdir(), `awaken-gitrepo-e2e-${process.pid}`);
 const README = 'SEED_README_CONTENT_7742';
 const FEATURE_README = 'FEATURE_BRANCH_CONTENT_5521';
@@ -110,7 +112,7 @@ async function driveRepoSession(bare, checkout) {
   const repo = { type: 'github_repository', url: bare, mount_path: '/workspace/repo' };
   if (checkout) repo.checkout = checkout;
   const session = await client.beta.sessions.create({
-    agent: 'assistant',
+    agent: managedAgentWithAlwaysAskTools(['write', 'bash']),
     environment_id: 'env_local',
     resources: [repo],
     betas: BETAS,
@@ -118,7 +120,8 @@ async function driveRepoSession(bare, checkout) {
   const projected = session.resources.find((resource) => resource.type === 'github_repository');
   assert.ok(projected?.id, 'Repository projection is addressable');
   assert.deepEqual(projected.checkout ?? null, checkout ?? null, 'wire projection preserves checkout');
-  // G0 lifecycle rule: C1=exact task receipt; C2=requires_action with exact
+  // G0 lifecycle rule: C0=the Session explicitly gates write/bash; C1=exact
+  // task receipt; C2=requires_action with exact
   // unapproved tool ids; C3=exact allow batch; C4=canonical ordering may
   // replay an older requires_action after C3; C5=end_turn. Effects: E1=approve
   // each tool id once; E2=ignore C4; E3=terminal repository work. Constraint:

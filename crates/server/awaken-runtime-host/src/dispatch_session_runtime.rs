@@ -89,8 +89,18 @@ impl DispatchSessionRuntime {
         thread: &str,
         manifest: &awaken_session_contract::SessionResourceManifest,
         claim: Option<&awaken_run_ingress::RunClaim>,
+        authority_amends_unattempted: bool,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
+        // Resource generation is the innermost Session transition. A complete
+        // projection may already hold `lifecycle`, while claimed realization
+        // also holds `realization`; this dedicated suffix lock avoids re-entry
+        // and keeps compare/realize/publish atomic for every caller.
+        let resource_projection = managed
+            .host
+            .session_slots
+            .update(thread, |slot| slot.resource_projection.clone());
+        let _resource_projection = resource_projection.lock().await;
         let previous = managed.host.thread_resource_manifest(thread);
         let decision = match &previous {
             Some(previous) => session_resource_install_decision(
@@ -99,8 +109,16 @@ impl DispatchSessionRuntime {
                 previous.workspace_id == manifest.workspace_id,
                 previous.revision,
                 manifest.revision,
+                authority_amends_unattempted,
             ),
-            None => session_resource_install_decision(false, false, false, 0, manifest.revision),
+            None => session_resource_install_decision(
+                false,
+                false,
+                false,
+                0,
+                manifest.revision,
+                authority_amends_unattempted,
+            ),
         };
         match decision {
             SessionResourceInstallDecision::Reject => Err(RunError::bad_request(
@@ -111,7 +129,7 @@ impl DispatchSessionRuntime {
             // authority-side reference graph.
             SessionResourceInstallDecision::Replace => {
                 managed
-                    .apply_session_inputs_with_context(
+                    .apply_session_inputs_under_resource_lock(
                         thread,
                         &manifest.workspace_id,
                         manifest.revision,
@@ -246,15 +264,23 @@ impl SharedHost {
         manifest: &awaken_session_contract::SessionResourceManifest,
         claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), RunError> {
-        let preparer = self
-            .dispatch_session_runtime
-            .read()
-            .expect("dispatch Session Runtime lock poisoned")
-            .clone()
-            .ok_or_else(|| {
-                RunError::internal("durable resource dispatch has no Session Runtime")
-            })?;
-        preparer.install(thread, manifest, claim).await
+        self.dispatch_session_runtime()?
+            .install(thread, manifest, claim, false)
+            .await
+    }
+
+    /// Replace only the Coordinator's unclaimed dispatch projection after the
+    /// Session aggregate amends a generation that no external attempt observed.
+    /// Claimed Worker installation uses [`Self::install_dispatched_resources`]
+    /// and therefore cannot cross this authority-only rule.
+    pub(crate) async fn amend_unattempted_dispatched_resources(
+        &self,
+        thread: &str,
+        manifest: &awaken_session_contract::SessionResourceManifest,
+    ) -> Result<(), RunError> {
+        self.dispatch_session_runtime()?
+            .install(thread, manifest, None, true)
+            .await
     }
 
     pub(crate) async fn compile_dispatched_memory_binding(

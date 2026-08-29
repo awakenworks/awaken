@@ -1300,7 +1300,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<SettleOutcome, Error> {
         let run_id = claimed.request.run_id();
         let claim = RunClaim::from(&claimed.lease);
-        if claimed.request.session_activity_epoch.is_some()
+        let coordinated_claim_is_stale = if claimed.request.session_activity_epoch.is_some()
             && let Some(expected) = expected_committed_state
         {
             let committed = self.reader.run_state(run_id).ok_or_else(|| {
@@ -1316,55 +1316,50 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 ))));
             }
             if !self.store.claim_is_current(&claim, clock.now_ms()).await? {
-                return Ok(SettleOutcome::Fenced);
-            }
-            let observer = self.settlement_observer.as_ref().ok_or_else(|| {
-                Error::Dispatch(crate::DispatchError::Rejected(
-                    "coordinated child settlement observer is not installed".to_string(),
-                ))
-            })?;
-            observer
-                .before_settle(
-                    &claimed.request,
-                    &claim,
-                    &committed,
-                    claimed.cancellation_requested,
-                )
-                .await
-                .map_err(|error| {
-                    Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                true
+            } else {
+                let observer = self.settlement_observer.as_ref().ok_or_else(|| {
+                    Error::Dispatch(crate::DispatchError::Rejected(
+                        "coordinated child settlement observer is not installed".to_string(),
+                    ))
                 })?;
+                observer
+                    .before_settle(
+                        &claimed.request,
+                        &claim,
+                        &committed,
+                        claimed.cancellation_requested,
+                    )
+                    .await
+                    .map_err(|error| {
+                        Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                    })?;
+                false
+            }
         } else if claimed.request.session_activity_epoch.is_some()
             && outcome != DispatchOutcome::Awaiting
         {
             return Err(Error::Dispatch(crate::DispatchError::Rejected(
                 "coordinated child settlement has no committed boundary".to_string(),
             )));
-        }
+        } else {
+            false
+        };
         let label = match outcome {
             DispatchOutcome::Done => "done",
             DispatchOutcome::Awaiting => "awaiting",
         };
         let started = std::time::Instant::now();
-        match self
-            .store
-            .settle(run_id, claimed.lease.epoch, outcome, consumed)
-            .await
-        {
+        let settlement = if coordinated_claim_is_stale {
+            Ok(SettleOutcome::Fenced)
+        } else {
+            self.store
+                .settle(run_id, claimed.lease.epoch, outcome, consumed)
+                .await
+        };
+        match settlement {
             Ok(result) => {
-                let commit_outcome = match result {
-                    SettleOutcome::Applied => {
-                        self.runtime.metrics().record_dispatch_settled(label);
-                        "applied"
-                    }
-                    SettleOutcome::Fenced => {
-                        self.runtime.metrics().record_dispatch_fenced();
-                        "fenced"
-                    }
-                };
-                self.runtime
-                    .metrics()
-                    .record_dispatch_commit(commit_outcome, started.elapsed());
+                self.record_settlement_outcome(result, label, started.elapsed());
                 Ok(result)
             }
             Err(error) => {
@@ -1374,6 +1369,32 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 Err(error.into())
             }
         }
+    }
+
+    /// Record one authoritative settlement decision. Queue CAS fencing and the
+    /// coordinated pre-observer ownership fence both converge here, preventing
+    /// transport/topology-specific metric paths from drifting or double-counting.
+    fn record_settlement_outcome(
+        &self,
+        result: SettleOutcome,
+        applied_label: &str,
+        duration: std::time::Duration,
+    ) {
+        let commit_outcome = match result {
+            SettleOutcome::Applied => {
+                self.runtime
+                    .metrics()
+                    .record_dispatch_settled(applied_label);
+                "applied"
+            }
+            SettleOutcome::Fenced => {
+                self.runtime.metrics().record_dispatch_fenced();
+                "fenced"
+            }
+        };
+        self.runtime
+            .metrics()
+            .record_dispatch_commit(commit_outcome, duration);
     }
 
     /// Convert a runtime-drive failure into a benign already-done when committed
@@ -1400,6 +1421,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let run_id = claimed.request.run_id();
         let thread_id = claimed.request.thread_id();
+        let err = err.into();
         self.refresh_local_recovery_projection(thread_id, run_id)
             .await?;
         match self.reader.run_state(run_id) {
@@ -1420,7 +1442,28 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .applied()
                     .then_some((run_id.clone(), state)))
             }
-            _ => Err(err.into()),
+            _ => {
+                // A stale attempt can lose ownership before replacement
+                // terminal truth is readable in this Worker's projection. The
+                // queue already rejected its authority, so meter that exact
+                // decision through the same choke as a stale settlement CAS.
+                // Ordinary Runs retain their original execution error; a
+                // coordinated Run quietly yields to its replacement because it
+                // must not manufacture an Error boundary for the parent Session.
+                let started = std::time::Instant::now();
+                let claim = RunClaim::from(&claimed.lease);
+                if !self.store.claim_is_current(&claim, clock.now_ms()).await? {
+                    self.record_settlement_outcome(
+                        SettleOutcome::Fenced,
+                        "done",
+                        started.elapsed(),
+                    );
+                    if claimed.request.session_activity_epoch.is_some() {
+                        return Ok(None);
+                    }
+                }
+                Err(err)
+            }
         }
     }
 

@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
   existsSync,
-  linkSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -22,6 +21,7 @@ import {
   cargoExecutable,
   cargoScenarioHostBundle,
 } from '../cargo_binary.mjs';
+import { snapshotExecutable } from '../executable_snapshot.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import {
   auditRequestTypesFromPackageRoot,
@@ -302,14 +302,13 @@ let receiptCount = 0;
 const ownerFailures = [];
 const executableDirectory = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-binaries-'));
 try {
-  const snapshotExecutable = (source) => {
+  const snapshotNamedExecutable = (source) => {
     const destination = resolve(executableDirectory, path.basename(source));
-    linkSync(source, destination);
-    return destination;
+    return snapshotExecutable(source, destination);
   };
-  const scenarioHostSnapshot = snapshotExecutable(scenarioHost);
-  snapshotExecutable(handCompanion);
-  const productionAwakenSnapshot = snapshotExecutable(productionAwaken);
+  const scenarioHostSnapshot = snapshotNamedExecutable(scenarioHost);
+  snapshotNamedExecutable(handCompanion);
+  const productionAwakenSnapshot = snapshotNamedExecutable(productionAwaken);
   const ownerEnvironment = {
     ...BASE_OWNER_PROCESS_ENVIRONMENT,
     [AWAKEN_BIN_ENV]: productionAwakenSnapshot,

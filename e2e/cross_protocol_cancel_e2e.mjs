@@ -13,7 +13,12 @@
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { withServer, pass } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  withServer,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38607);
 
@@ -49,10 +54,10 @@ async function rpc(base, method, params, { allowError = false } = {}) {
 }
 
 // Await a probe `write` on an AI-SDK thread carrying `note`; return the toolCallId.
-async function awaitOnAiSdk(base, thread, note) {
+async function awaitOnAiSdk(base, thread, note, applicationHeaders) {
   const r = await fetch(`${base}/v1/ai-sdk/threads/${thread}/runs`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { ...applicationHeaders, 'content-type': 'application/json' },
     body: JSON.stringify({ threadId: thread, messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: note }] }] }),
   });
   assert.equal(r.status, 200);
@@ -63,8 +68,10 @@ async function awaitOnAiSdk(base, thread, note) {
 }
 
 // Count how many times `note` appears in the committed AI-SDK history JSON.
-async function noteOccurrences(base, thread, note) {
-  const hist = await (await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`)).json();
+async function noteOccurrences(base, thread, note, applicationHeaders) {
+  const hist = await (await fetch(`${base}/v1/ai-sdk/threads/${thread}/messages`, {
+    headers: applicationHeaders,
+  })).json();
   return JSON.stringify(hist.items).split(note).length - 1;
 }
 
@@ -77,11 +84,13 @@ const approvalPart = (note) => ({
 });
 
 async function main() {
-  await withServer('probe', PORT, async (base) => {
+  await withServer('management-probe', PORT, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
     // --- The DENY thread: await on AI-SDK, cancel via A2A -------------------
-    const denyThread = `xcancel-deny-${randomBytes(4).toString('hex')}`;
+    const { threadId: denyThread, headers: denyHeaders } =
+      await createCrossProtocolApplicationThread(base);
     const denyNote = `DENY-${randomBytes(4).toString('hex')}`;
-    await awaitOnAiSdk(base, denyThread, denyNote);
+    await awaitOnAiSdk(base, denyThread, denyNote, denyHeaders);
     pass('awaiting on AI-SDK (deny thread)');
 
     // A neutral thread id is not authority to manufacture an A2A task id. The
@@ -109,9 +118,10 @@ async function main() {
     assert.equal(resumed?.status?.state, 'completed', 'the awaiting run remained resumable');
 
     // --- The ALLOW baseline: await on AI-SDK, approve via A2A message/send --
-    const allowThread = `xcancel-allow-${randomBytes(4).toString('hex')}`;
+    const { threadId: allowThread, headers: allowHeaders } =
+      await createCrossProtocolApplicationThread(base);
     const allowNote = `ALLOW-${randomBytes(4).toString('hex')}`;
-    await awaitOnAiSdk(base, allowThread, allowNote);
+    await awaitOnAiSdk(base, allowThread, allowNote, allowHeaders);
     const approved = await rpc(base, 'message/send', {
       message: {
         messageId: `m-${randomBytes(4).toString('hex')}`,
@@ -126,8 +136,8 @@ async function main() {
 
     // Both writes execute only after an explicit supported resume. The guessed
     // cancellation neither performs nor suppresses either write.
-    const denyN = await noteOccurrences(base, denyThread, denyNote);
-    const allowN = await noteOccurrences(base, allowThread, allowNote);
+    const denyN = await noteOccurrences(base, denyThread, denyNote, denyHeaders);
+    const allowN = await noteOccurrences(base, allowThread, allowNote, allowHeaders);
     assert.ok(denyN > 2, `first write executed only after supported resume (got ${denyN})`);
     assert.ok(allowN > 2, `allow baseline executed the write (got ${allowN})`);
     pass('guessed cancellation was side-effect free; both explicit resumes completed');

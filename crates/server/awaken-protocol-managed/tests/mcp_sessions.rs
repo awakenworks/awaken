@@ -29,7 +29,7 @@ use tower::ServiceExt;
 
 use support::{ScheduledConflictRepository, replace_session_fixture};
 
-/// A fake runtime that records every `prepare_session` init (and optionally
+/// A fake runtime that records every materialized complete projection (and optionally
 /// fails it), so a test can assert exactly what a session create provisions.
 struct PreparingFake {
     captured: Arc<Mutex<Vec<SessionInit>>>,
@@ -99,29 +99,27 @@ impl SessionRuntime for PreparingFake {
                     ..
                 }
         ) {
-            self.prepare_session(thread, projection.session_init())
-                .await
+            if let Some(repo) = &self.repo {
+                match repo.get(thread).await {
+                    Ok(session) => self.observed_durable.lock().unwrap().push(session),
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
+                    Err(error) => return Err(RunError::internal(error.to_string())),
+                }
+            }
+            self.captured
+                .lock()
+                .unwrap()
+                .push(projection.session_init());
+            match self.fail_with {
+                Some(RunErrorKind::BadRequest) => Err(RunError::bad_request("prepare refused")),
+                Some(RunErrorKind::Internal) => Err(RunError::internal("prepare blew up")),
+                Some(RunErrorKind::Unavailable) => {
+                    Err(RunError::unavailable("environment image is not ready"))
+                }
+                None => Ok(()),
+            }
         } else {
             Ok(())
-        }
-    }
-
-    async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
-        if let Some(repo) = &self.repo {
-            match repo.get(thread).await {
-                Ok(session) => self.observed_durable.lock().unwrap().push(session),
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
-                Err(error) => return Err(RunError::internal(error.to_string())),
-            }
-        }
-        self.captured.lock().unwrap().push(init);
-        match self.fail_with {
-            Some(RunErrorKind::BadRequest) => Err(RunError::bad_request("prepare refused")),
-            Some(RunErrorKind::Internal) => Err(RunError::internal("prepare blew up")),
-            Some(RunErrorKind::Unavailable) => {
-                Err(RunError::unavailable("environment image is not ready"))
-            }
-            None => Ok(()),
         }
     }
     async fn run(
@@ -252,17 +250,11 @@ impl SessionRuntime for HotRuntime {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        if let Some(init) = awaken_protocol_managed::test_support::complete_session_projection_init(
+        let _ = awaken_protocol_managed::test_support::complete_session_projection_init(
             thread,
             &projection,
             &mode,
-        )? {
-            self.prepare_session(thread, init).await?;
-        }
-        Ok(())
-    }
-
-    async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
+        )?;
         Ok(())
     }
 
@@ -1068,7 +1060,7 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
     );
     assert!(
         h.captured.lock().unwrap().is_empty(),
-        "prepare_session must never run for a refused create"
+        "the complete projection port must never run for a refused create"
     );
     let (s, _) = call(&h.app, "GET", "/v1/sessions/sesn_0", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "no session record was created");
@@ -1106,7 +1098,7 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
 }
 
 #[tokio::test]
-async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
+async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope() {
     // Cause/effect decision table: R1 permanent internal preparation failure
     // maps to 500/api_error; R2 caller-invalid preparation maps to
     // 400/invalid_request_error; R3 transient Environment image readiness maps
