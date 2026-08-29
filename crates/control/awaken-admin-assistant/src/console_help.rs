@@ -96,7 +96,7 @@ const TOPICS: &[Topic] = &[
     Topic {
         key: "resources",
         title: "Session resources and artifacts",
-        what: "A session's mounted resources (the memory stores / files / repos it was given) and its output artifacts (files it wrote under outputs/).",
+        what: "A session's mounted resources (the memory stores / files / repos it was given) and its output artifacts (files it wrote under the runtime-owned /mnt/session/outputs/ directory).",
         why: "It's how you see what an agent had access to and what it produced.",
         location: "A Session detail page ▸ Inputs / Artifacts, plus the Workspace Files and Artifacts projections.",
         how: "Open a Session → inspect Inputs for mounted files and Artifacts for outputs → use Trace for execution evidence.",
