@@ -23,10 +23,13 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{
     ToolError, ToolExecutor, ToolOperationContext, with_tool_operation_context,
 };
-use awaken_sandbox_container::k8s::K8sRuntime;
+use awaken_sandbox_container::k8s::{
+    DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sRuntime, K8sSandboxControlForwarder,
+};
 use awaken_sandbox_container::{
     ContainerEnvironment, ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime,
-    ContainerSandbox, ContainerState, ResidentHandConfig, WarmContainerPool, command_of,
+    ContainerSandbox, ContainerState, ResidentHandConfig, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher, WarmContainerPool, command_of,
 };
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
@@ -107,6 +110,7 @@ fn spec(scope: &str, image: String) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 
@@ -148,6 +152,7 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 
@@ -176,6 +181,7 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 
@@ -207,6 +213,7 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 
@@ -298,6 +305,7 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 
@@ -334,6 +342,7 @@ fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 
@@ -362,6 +371,131 @@ fn cleanup_credential_pod(pod: &str) {
         "--ignore-not-found",
         "--wait=true",
     ]);
+}
+
+struct LiveRepositoryCredential;
+
+#[async_trait]
+impl SandboxControlService for LiveRepositoryCredential {
+    async fn handle(
+        &self,
+        _request: awaken_sandbox_control::SandboxControlRequest,
+    ) -> awaken_sandbox_control::SandboxControlResponse {
+        let expires = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .saturating_add(60_000);
+        awaken_sandbox_control::SandboxControlResponse::RepositoryGitCredential {
+            username: awaken_sandbox_control::SandboxControlSecret::new("git-user").unwrap(),
+            password: awaken_sandbox_control::SandboxControlSecret::new("live-capability").unwrap(),
+            expires_at_unix_ms: awaken_sandbox_control::CapabilityExpiresAtUnixMs(
+                u64::try_from(expires).unwrap(),
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
+    /* Live control-path cause/effect table:
+     * C1=explicit control E2E gate, reachable cluster, and digest-pinned image
+     * containing the trusted awaken-sandbox binary; C2=Pod reaches Ready only
+     * after the marker exec probe; C3=the first real helper connects through
+     * the read-only logical Unix endpoint and authenticated Pod port-forward.
+     * E1=create returns an incarnation-bound environment; E2=helper prints the
+     * exact fresh credential; E3=close/dispose removes the Pod. Rule GKC1
+     * C1+C2+C3=>E1+E2+E3. When C1 is absent this expensive test alone skips.
+     */
+    if std::env::var("AWAKEN_K8S_CONTROL_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_CONTROL_E2E=1 for the control roundtrip");
+        return;
+    }
+    assert_eq!(
+        std::env::var("AWAKEN_K8S_E2E").as_deref(),
+        Ok("1"),
+        "the control gate also requires the ordinary live-cluster gate"
+    );
+    assert!(require_live_cluster(), "GKC1 reachable cluster");
+    let image = std::env::var("AWAKEN_K8S_CONTROL_IMAGE")
+        .expect("AWAKEN_K8S_CONTROL_E2E=1 requires a digest-pinned operator image");
+    let executable = std::env::var("AWAKEN_K8S_CONTROL_EXECUTABLE")
+        .unwrap_or_else(|_| "/usr/local/bin/awaken-sandbox".into());
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to Kubernetes")
+        .with_sandbox_control_forwarder(
+            K8sSandboxControlForwarder::new(
+                image.clone(),
+                executable.clone(),
+                DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
+            )
+            .expect("GKC1 digest-pinned forwarder"),
+        );
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
+    let scope = format!("k8s-control-{}", std::process::id());
+    let mut demanded = spec(&scope, image);
+    demanded
+        .control_services
+        .insert(SandboxControlServiceKind::RepositoryGitCredential);
+    let sandbox = provider
+        .create_container(&demanded)
+        .await
+        .expect("GKC1/E1 marker-ready Pod");
+    let pod = pod_of(&sandbox);
+    let lease = SandboxControlServicePublisher::publish_sandbox_control_service(
+        &sandbox,
+        SandboxControlServiceKind::RepositoryGitCredential,
+        Arc::new(LiveRepositoryCredential),
+    )
+    .await
+    .expect("GKC1 first authenticated port-forward");
+
+    let process = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                executable,
+                "git-credential".into(),
+                "--socket".into(),
+                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+                "get".into(),
+            ],
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("GKC1 exec real helper");
+    let mut channel = process.channel;
+    channel
+        .write_all(b"protocol=https\nhost=gateway.test\npath=git/repository\n\n")
+        .await
+        .unwrap();
+    let mut output = Vec::new();
+    tokio::time::timeout(Duration::from_secs(30), channel.read_to_end(&mut output))
+        .await
+        .expect("GKC1 helper response deadline")
+        .unwrap();
+    assert_eq!(
+        output, b"username=git-user\npassword=live-capability\n\n",
+        "GKC1/E2"
+    );
+    assert_eq!(
+        process.process.wait().await.unwrap().code,
+        Some(0),
+        "GKC1/E2"
+    );
+    lease.close().await;
+    pc::Sandbox::dispose(&sandbox).await.expect("GKC1/E3");
+    assert!(
+        String::from_utf8_lossy(
+            &kubectl(&["-n", &namespace, "get", "pod", &pod, "--ignore-not-found",]).stdout,
+        )
+        .trim()
+        .is_empty(),
+        "GKC1/E3"
+    );
 }
 
 /// Kubernetes warm-capacity cause/effect design:

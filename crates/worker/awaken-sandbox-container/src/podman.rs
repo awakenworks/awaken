@@ -1014,6 +1014,7 @@ mod tests {
             image: "img:latest".into(),
             command: vec!["/agent".into()],
             env: vec![],
+            control_services: Default::default(),
             packages: Default::default(),
             binds: vec![],
             outputs_volume: "/out".into(),

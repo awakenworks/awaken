@@ -173,6 +173,7 @@ mod tests {
             image: "agent:1".into(),
             command: vec!["claude".into(), "--acp".into()],
             env: Vec::new(),
+            control_services: Default::default(),
             packages: Default::default(),
             binds: vec![crate::BindPlan {
                 source_ref: String::new(),

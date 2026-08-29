@@ -998,3 +998,21 @@ targetless legacy compatibility surface rather than a bypass around the exact
 access compiler. The narrow application-MCP migration converts its exact legacy
 provider row to one descriptor in the same expected-revision WAL/CAS while
 rotating material; ordinary rotations still reject dual provider authority.
+
+## 2026-08-29 boundary note: Sandbox control transport is not credential activation
+
+ADR-0041's provider-neutral Sandbox control publisher and fixed
+`/run/awaken/control/repository-git-credential.sock` coordinate establish only a
+dormant last-mile transport. The publisher and its Namespace/Kubernetes
+forwarders neither select nor authorize a Credential, holder, exposure policy,
+claim, binding verifier, or Repository; they do not open Vault material,
+persist plaintext, or generate a Git helper configuration. A short-lived
+response can exist only after an already-authorized caller supplies the typed
+service to that publisher.
+
+Consequently this mechanism is not evidence that self-hosted Worker or Workload
+Repository credential activation is implemented. The Repository execution pin
+remains `Forbidden`, and a later Session authority must project any Agent and
+Native/Resident-Hand Git configuration from the frozen pre-create environment
+in one place. It may reuse the fixed endpoint but must not infer holder,
+exposure, claim, verifier, or material authority from transport availability.

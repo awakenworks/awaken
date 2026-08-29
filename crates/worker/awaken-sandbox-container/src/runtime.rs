@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_control::SandboxControlServiceKind;
 
 use crate::ContainerPlan;
 
@@ -21,6 +22,7 @@ pub(crate) fn container_capabilities(
     network_isolation: bool,
     enforced_network_allowlist: bool,
     package_provisioning: bool,
+    control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
 ) -> pc::SandboxCapabilities {
     pc::SandboxCapabilities {
         isolation: pc::IsolationClass::Container,
@@ -33,6 +35,7 @@ pub(crate) fn container_capabilities(
         resource_limits: true,
         custom_rootfs: true,
         package_provisioning,
+        control_services,
     }
 }
 
@@ -91,6 +94,30 @@ pub enum ContainerState {
     Provisioning,
     Running,
     Gone,
+}
+
+/// Whether a provider is binding a newly realized runtime object or proving an
+/// adopted object against durable incarnation evidence. The two states are
+/// deliberately distinct so adoption can never mint trust from a same-name
+/// ambient object.
+#[derive(Debug, Clone, Copy)]
+pub enum SandboxControlBindingRequest<'a> {
+    New {
+        required: &'a std::collections::BTreeSet<SandboxControlServiceKind>,
+    },
+    Adopt {
+        required: &'a std::collections::BTreeSet<SandboxControlServiceKind>,
+        expected: Option<&'a pc::SandboxControlIncarnation>,
+    },
+}
+
+impl SandboxControlBindingRequest<'_> {
+    #[must_use]
+    pub fn required(&self) -> &std::collections::BTreeSet<SandboxControlServiceKind> {
+        match self {
+            Self::New { required } | Self::Adopt { required, .. } => required,
+        }
+    }
 }
 
 /// One opaque agent process started inside an already-running container.
@@ -172,6 +199,37 @@ pub trait ContainerRuntime: Send + Sync {
 
     fn supports_secret_writeback(&self) -> bool {
         true
+    }
+
+    /// Closed provider capability set. An empty default makes Docker, Podman,
+    /// and out-of-tree runtimes fail admission without a compatibility fallback.
+    fn sandbox_control_services(&self) -> std::collections::BTreeSet<SandboxControlServiceKind> {
+        std::collections::BTreeSet::new()
+    }
+
+    async fn sandbox_control_binding(
+        &self,
+        _container_id: &str,
+        request: SandboxControlBindingRequest<'_>,
+    ) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+        if request.required().is_empty() {
+            Ok(None)
+        } else {
+            Err(RuntimeError::Backend(
+                "container runtime cannot bind a Sandbox control service incarnation".into(),
+            ))
+        }
+    }
+
+    async fn open_sandbox_control_channel(
+        &self,
+        _container_id: &str,
+        _binding: &pc::SandboxControlIncarnation,
+        _kind: SandboxControlServiceKind,
+    ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not publish the requested Sandbox control service".into(),
+        ))
     }
 
     fn uses_host_live_input_bind(&self) -> bool {

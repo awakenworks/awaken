@@ -11,6 +11,50 @@ use super::names::{cfg_owner_label, configmap_name, credential_secret_name};
 use crate::writable::{WritableRootTopology, writable_root_topology};
 use crate::{BindPlan, ContainerPlan};
 
+pub(super) fn build_pod(
+    id: &str,
+    plan: &ContainerPlan,
+    owner: &Option<OwnerReference>,
+    rendezvous: Option<&str>,
+    image_pull_secrets: &[String],
+) -> k8s_openapi::api::core::v1::Pod {
+    super::build_pod_with_continuation(id, plan, owner, rendezvous, image_pull_secrets, None, None)
+}
+
+/// Render the ordinary Pod shape. A demanded control service must use the
+/// explicit operator-forwarder projection instead of silently omitting it.
+#[must_use]
+pub fn pod_for_plan(id: &str, plan: &ContainerPlan) -> k8s_openapi::api::core::v1::Pod {
+    assert!(
+        plan.control_services.is_empty(),
+        "pod_for_plan cannot omit a demanded Sandbox control forwarder"
+    );
+    build_pod(id, plan, &None, None, &[])
+}
+
+impl super::K8sRuntime {
+    pub(super) fn pod(&self, id: &str, plan: &ContainerPlan) -> k8s_openapi::api::core::v1::Pod {
+        let rendezvous = self.rendezvous.map(|address| address.to_string());
+        let claim = super::continuation::claim_name(id, plan, self.continuation_volume.is_some());
+        let mut pod = super::build_pod_with_continuation(
+            id,
+            plan,
+            &self.owner,
+            rendezvous.as_deref(),
+            &self.image_pull_secrets,
+            claim.as_deref(),
+            self.sandbox_control_forwarder.as_ref(),
+        );
+        let labels = pod.metadata.labels.get_or_insert_with(Default::default);
+        labels.insert(crate::MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
+        labels.insert(
+            crate::RUNTIME_OWNER_LABEL.to_string(),
+            self.owner_id.clone(),
+        );
+        pod
+    }
+}
+
 pub(super) const CONFIGMAP_KEY: &str = "content";
 pub(super) const CONTINUATION_VOLUME: &str = "continuation-state";
 
@@ -201,6 +245,7 @@ mod tests {
             image: "agent:1".into(),
             command: vec!["sleep".into(), "30".into()],
             env: Vec::new(),
+            control_services: Default::default(),
             packages: Default::default(),
             binds: vec![crate::BindPlan {
                 source_ref: format!("{}build-cache-v7", crate::cache_volume::PVC_BIND_REF_PREFIX),

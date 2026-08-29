@@ -1697,6 +1697,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-sandbox-control",
  "serde",
  "serde_json",
  "thiserror",
@@ -2079,6 +2080,7 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-control",
  "awaken-sandbox-local",
  "awaken-tool-relay",
  "futures",
@@ -2086,6 +2088,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -2099,6 +2102,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-control",
  "awaken-sandbox-memoryd",
  "awaken-tool-relay",
  "base64 0.22.1",
@@ -2114,6 +2118,19 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "awaken-sandbox-control"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -2129,6 +2146,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-control",
  "awaken-sandbox-memoryd",
  "awaken-session-contract",
  "blake3",
@@ -2138,6 +2156,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "url",
 ]
 

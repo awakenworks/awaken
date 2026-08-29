@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::spec::{Command, SandboxSpec};
 use crate::vocab::{Artifact, MountAccess, MountRequirement, Realization, RealizedMount};
 
+mod control_incarnation;
+pub use control_incarnation::{KubernetesPodUid, SandboxControlIncarnation};
+
 /// Provisioning failure. String-carried at the boundary (like the runtime's other
 /// neutral errors); a backend maps its own error into this.
 #[derive(Debug, thiserror::Error)]
@@ -317,6 +320,11 @@ pub struct NamespaceSandboxHandleV1 {
     pub outputs_path: String,
     pub base_env: Vec<crate::EnvVar>,
     pub network: crate::NetworkPolicy,
+    /// Exact provider control topology realized when this handle was created.
+    /// It is recovery evidence, not a replacement demand authority.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub control_services:
+        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,6 +357,17 @@ pub struct ContainerSandboxHandleV1 {
     pub continuation_excluded_paths: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_handle: Option<ContainerContinuationHandle>,
+    /// Exact provider runtime incarnation which owned any published Sandbox
+    /// control service. Older handles omit it; adoption of a newly demanded
+    /// service then fails closed instead of trusting an ambient same-name
+    /// runtime object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_control_incarnation: Option<SandboxControlIncarnation>,
+    /// Exact provider control topology realized alongside the incarnation.
+    /// Empty legacy handles remain ordinary; adoption never infers a demand.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub control_services:
+        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +515,9 @@ pub struct SandboxRequirements {
     pub custom_rootfs: bool,
     #[serde(default)]
     pub package_provisioning: bool,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub control_services:
+        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
 impl SandboxRequirements {
@@ -524,6 +546,7 @@ impl SandboxRequirements {
             resource_limits: spec.limits.is_set(),
             custom_rootfs,
             package_provisioning: !spec.packages.is_empty(),
+            control_services: spec.control_services.clone(),
         }
     }
 }
@@ -559,6 +582,11 @@ pub struct SandboxCapabilities {
     /// preserve them across adoption of the same sandbox handle.
     #[serde(default)]
     pub package_provisioning: bool,
+    /// Closed control services this concrete provider can actually publish.
+    /// The empty default keeps older Workers fail-closed for new demands.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub control_services:
+        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
 impl SandboxCapabilities {
@@ -579,6 +607,7 @@ impl SandboxCapabilities {
             && (!required.enforced_network_allowlist || self.enforced_network_allowlist)
             && (!required.custom_rootfs || self.custom_rootfs)
             && (!required.package_provisioning || self.package_provisioning)
+            && required.control_services.is_subset(&self.control_services)
     }
 
     /// Whether this provider can keep a real secret outside an arbitrary
@@ -1181,6 +1210,7 @@ mod tests {
                 resource_limits: false,
                 custom_rootfs: false,
                 package_provisioning: false,
+                control_services: Default::default(),
             }
         }
         async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
@@ -1210,6 +1240,7 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: Some(60),
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,
@@ -1228,7 +1259,66 @@ mod tests {
             resource_limits: true,
             custom_rootfs: false,
             package_provisioning: false,
+            control_services: Default::default(),
         }
+    }
+
+    #[test]
+    fn sandbox_control_incarnation_is_typed_and_legacy_handle_compatible() {
+        /* Incarnation wire cause/effect table:
+         * C1=legacy ContainerV1 handle omits control evidence; C2=valid Pod
+         * UID; C3=empty/line-injected UID; C4=unknown incarnation kind.
+         * E1=decode as None and omit on re-encode; E2=lossless typed roundtrip;
+         * E3=reject before adoption. Rules: I1 C1=>E1; I2 C2=>E2;
+         * I3 C3|C4=>E3.
+         */
+        let legacy = serde_json::json!({
+            "sandbox_id": "sandbox-a",
+            "payload": {
+                "schema": "container_v1",
+                "container_id": "pod-a",
+                "outputs_path": "/outputs",
+                "base_env": [],
+                "live_input_projection": false,
+                "continuation_excluded_paths": []
+            }
+        });
+        let decoded: SandboxHandle = serde_json::from_value(legacy).expect("I1/E1");
+        let SandboxHandlePayload::ContainerV1(payload) = &decoded.payload else {
+            panic!("I1 container payload")
+        };
+        assert!(payload.sandbox_control_incarnation.is_none(), "I1/E1");
+        assert!(payload.control_services.is_empty(), "I1/E1");
+        assert!(
+            ["sandbox_control_incarnation", "control_services"]
+                .into_iter()
+                .all(|field| !serde_json::to_string(&decoded).unwrap().contains(field)),
+            "I1/E1 empty evidence omitted"
+        );
+
+        let incarnation = SandboxControlIncarnation::kubernetes_pod("pod-uid-a").unwrap();
+        let encoded = serde_json::to_value(&incarnation).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SandboxControlIncarnation>(encoded).unwrap(),
+            incarnation,
+            "I2/E2"
+        );
+        assert!(
+            SandboxControlIncarnation::kubernetes_pod("").is_err(),
+            "I3/E3"
+        );
+        assert!(
+            SandboxControlIncarnation::kubernetes_pod("uid\nother").is_err(),
+            "I3/E3"
+        );
+        assert!(
+            serde_json::from_value::<SandboxControlIncarnation>(serde_json::json!({
+                "kind": "opaque",
+                "uid": "pod-uid-a"
+            }))
+            .is_err(),
+            "I3/E3 closed kind"
+        );
     }
 
     #[test]
@@ -1236,15 +1326,15 @@ mod tests {
         // Cause/effect graph:
         // C1=opaque child; C2=requested isolation; C3=read-only mount;
         // C4=restricted/allowlisted network; C5=limits; C6=custom rootfs;
-        // C7=packages. Effects: E1=minimum monotonic requirement vector;
+        // C7=packages; C8=Sandbox control-service set. Effects: E1=minimum monotonic requirement vector;
         // E2=one capability predicate accepts every axis; E3=missing any required
         // axis rejects. Constraints: opaque raises isolation to Namespace and
         // requires transparent paths; Allowlist implies network isolation.
         //
         // Decision table:
-        // R1 !C1&&!C2..C7 -> Workdir requirement, basic provider accepts.
+        // R1 !C1&&!C2..C8 -> Workdir requirement, basic provider accepts.
         // R2 C1 -> Namespace+transparent+path-fidelity.
-        // R3 C2..C7 -> every declared enforcement bit is required.
+        // R3 C2..C8 -> every declared enforcement bit/set is required.
         // R4 R3 and one missing capability -> reject; full vector -> accept.
         let bare = spec();
         let r1 = SandboxRequirements::from_spec(&bare, false);
@@ -1278,6 +1368,9 @@ mod tests {
         demanding.environment = Some(crate::EnvironmentKind::Image {
             reference: "image@sha256:1".into(),
         });
+        demanding
+            .control_services
+            .insert(awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential);
         let r3 = SandboxRequirements::from_spec(&demanding, true);
         assert_eq!(r3.isolation, IsolationClass::Container, "R3 isolation");
         assert!(
@@ -1288,13 +1381,15 @@ mod tests {
                 && r3.enforced_network_allowlist
                 && r3.resource_limits
                 && r3.custom_rootfs
-                && r3.package_provisioning,
+                && r3.package_provisioning
+                && r3.control_services == demanding.control_services,
             "R3 vector: {r3:?}"
         );
 
         let mut full = caps(IsolationClass::Container, true);
         full.custom_rootfs = true;
         full.package_provisioning = true;
+        full.control_services = demanding.control_services.clone();
         assert!(full.satisfies_requirements(&r3), "R4 full");
         for missing in [
             "tool_transparent",
@@ -1305,6 +1400,7 @@ mod tests {
             "resource_limits",
             "custom_rootfs",
             "package_provisioning",
+            "control_services",
         ] {
             let mut weak = full.clone();
             match missing {
@@ -1316,6 +1412,7 @@ mod tests {
                 "resource_limits" => weak.resource_limits = false,
                 "custom_rootfs" => weak.custom_rootfs = false,
                 "package_provisioning" => weak.package_provisioning = false,
+                "control_services" => weak.control_services.clear(),
                 _ => unreachable!(),
             }
             assert!(!weak.satisfies_requirements(&r3), "R4 missing {missing}");

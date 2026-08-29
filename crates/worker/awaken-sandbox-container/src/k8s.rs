@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_control::SandboxControlServiceKind;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
     LocalObjectReference, PersistentVolumeClaim, Pod, PodSecurityContext, PodSpec, Secret,
@@ -30,12 +31,13 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference}
 use kube::Api;
 #[cfg(test)]
 use kube::Client;
-use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
+use kube::api::{AttachParams, DeleteParams, ListParams};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::TcpAgentTransport;
 use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
+    SandboxControlBindingRequest,
 };
 
 mod channel;
@@ -52,20 +54,24 @@ mod pod_projection;
 mod pod_security;
 mod process;
 mod realization;
+mod sandbox_control;
 use client::K8sClients;
 pub(crate) use client::install_rustls_crypto_provider;
 use error::api_not_found;
 pub(crate) use error::backend;
 use names::{configmap_name, continuation_claim_name, credential_secret_name};
 pub(crate) use names::{k8s_runtime_id, pod_name};
+#[cfg(test)]
+use pod_projection::build_pod;
+pub use pod_projection::pod_for_plan;
 use pod_projection::{
     CONFIGMAP_KEY, append_writable_and_cache_volumes, build_configmap, build_credential_secret,
     content_binds, credential_binds, credential_key,
 };
-pub(crate) use pod_security::sandbox_network_labels;
 use pod_security::{
     admit_network, egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
 };
+pub(crate) use pod_security::{has_forbidden_sandbox_namespace_shape, sandbox_network_labels};
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
@@ -74,6 +80,10 @@ use realization::{
     reap_terminal_pod, stamp_pod_realization,
 };
 pub(crate) use realization::{create_or_verify_with_status_exact, stamp_realization};
+pub use sandbox_control::{
+    DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sSandboxControlForwarder,
+    pod_for_plan_with_control_forwarder,
+};
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 
@@ -100,6 +110,7 @@ pub struct K8sRuntime {
     /// Private resident-process port reached only through the authenticated Pod
     /// port-forward subresource. `None` preserves the legacy channel topology.
     pod_channel_port: Option<u16>,
+    sandbox_control_forwarder: Option<K8sSandboxControlForwarder>,
     continuation_volume: Option<crate::K8sContinuationVolume>,
 }
 
@@ -124,6 +135,7 @@ impl K8sRuntime {
             image_pull_secrets: Vec::new(),
             network_policy_attestation: network_policy::Attestation::new(),
             pod_channel_port: None,
+            sandbox_control_forwarder: None,
             continuation_volume: None,
         };
         runtime
@@ -167,6 +179,12 @@ impl K8sRuntime {
         self
     }
 
+    #[must_use]
+    pub fn with_sandbox_control_forwarder(mut self, forwarder: K8sSandboxControlForwarder) -> Self {
+        self.sandbox_control_forwarder = Some(forwarder);
+        self
+    }
+
     /// Persist every canonical writable root on one PVC which is deliberately
     /// not owned by the Pod or Worker. Terminal-Pod rebuild reuses it; explicit
     /// Environment disposal removes it.
@@ -192,6 +210,7 @@ impl K8sRuntime {
             image_pull_secrets: Vec::new(),
             network_policy_attestation: network_policy::Attestation::new(),
             pod_channel_port: None,
+            sandbox_control_forwarder: None,
             continuation_volume: None,
         }
     }
@@ -298,49 +317,6 @@ impl K8sRuntime {
         }
         Ok(())
     }
-
-    /// Probe the apiserver (for tests / health checks): `Ok` iff it responds.
-    pub async fn ping(&self) -> Result<(), RuntimeError> {
-        self.pods()
-            .list(&ListParams::default().limit(1))
-            .await
-            .map(|_| ())
-            .map_err(backend)
-    }
-
-    fn pod(&self, id: &str, plan: &ContainerPlan) -> Pod {
-        let rendezvous = self.rendezvous.map(|a| a.to_string());
-        let claim = continuation::claim_name(id, plan, self.continuation_volume.is_some());
-        let mut pod = build_pod_with_continuation(
-            id,
-            plan,
-            &self.owner,
-            rendezvous.as_deref(),
-            &self.image_pull_secrets,
-            claim.as_deref(),
-        );
-        let labels = pod.metadata.labels.get_or_insert_with(Default::default);
-        labels.insert(crate::MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
-        labels.insert(
-            crate::RUNTIME_OWNER_LABEL.to_string(),
-            self.owner_id.clone(),
-        );
-        pod
-    }
-}
-
-/// Build the Pod object from a plan (pure — no client/cluster), so the multi-container
-/// sidecar/volume shape and resource limits are unit-testable without a cluster.
-/// `rendezvous`, when set, is injected as `AWAKEN_ACP_RENDEZVOUS` so the in-pod agent
-/// dials the host out (reverse-dial) instead of listening for an inbound connection.
-fn build_pod(
-    id: &str,
-    plan: &ContainerPlan,
-    owner: &Option<OwnerReference>,
-    rendezvous: Option<&str>,
-    image_pull_secrets: &[String],
-) -> Pod {
-    build_pod_with_continuation(id, plan, owner, rendezvous, image_pull_secrets, None)
 }
 
 fn build_pod_with_continuation(
@@ -350,7 +326,12 @@ fn build_pod_with_continuation(
     rendezvous: Option<&str>,
     image_pull_secrets: &[String],
     continuation_claim: Option<&str>,
+    sandbox_control_forwarder: Option<&K8sSandboxControlForwarder>,
 ) -> Pod {
+    assert!(
+        plan.control_services.is_empty() || sandbox_control_forwarder.is_some(),
+        "a demanded Sandbox control service requires an installed trusted forwarder"
+    );
     {
         let mut agent_env: Vec<EnvVar> = plan
             .env
@@ -417,6 +398,16 @@ fn build_pod_with_continuation(
         );
         continuation::append_init_container(plan, &continuation_subpaths, &mut init_containers);
         live_inputs::append_projection(plan, &mut volumes, &mut agent_mounts, &mut sidecars);
+        if plan
+            .control_services
+            .contains(&SandboxControlServiceKind::RepositoryGitCredential)
+            && let Some(forwarder) = sandbox_control_forwarder
+        {
+            let (volume, agent_mount, forwarder_container) = sandbox_control::projection(forwarder);
+            volumes.push(volume);
+            agent_mounts.push(agent_mount);
+            sidecars.push(forwarder_container);
+        }
 
         // Inline content has no host path a Pod can bind, so every item is backed by
         // a ConfigMap created alongside the Pod, except Managed Files whose initial
@@ -579,28 +570,6 @@ fn build_pod_with_continuation(
     }
 }
 
-/// Render the exact Kubernetes Pod shape used by [`K8sRuntime`] from an already
-/// normalized container plan, without contacting an apiserver. This is the
-/// canonical deployment-proof seam for callers that need to validate generated
-/// Pod contracts; live creation still adds runtime ownership labels in
-/// [`K8sRuntime::pod`] before submitting the same Pod.
-#[must_use]
-pub fn pod_for_plan(id: &str, plan: &ContainerPlan) -> Pod {
-    build_pod(id, plan, &None, None, &[])
-}
-
-/// Host side of the reverse-dial: bind the rendezvous and accept the Pod's outbound
-/// connection, returning it as the agent channel. Extracted so it is testable with a
-/// stand-in dialer (no cluster).
-async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-    use awaken_connection::ListenSide;
-    let listen = crate::net::ReverseListen::bind(addr)
-        .await
-        .map_err(backend)?;
-    let chan = listen.accept().await.map_err(backend)?;
-    Ok(Box::new(chan))
-}
-
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
     fn enforces_network_none(&self) -> bool {
@@ -619,6 +588,27 @@ impl ContainerRuntime for K8sRuntime {
 
     fn has_native_memory_mounts(&self) -> bool {
         true
+    }
+
+    fn sandbox_control_services(&self) -> std::collections::BTreeSet<SandboxControlServiceKind> {
+        sandbox_control::services(self)
+    }
+
+    async fn sandbox_control_binding(
+        &self,
+        container_id: &str,
+        request: SandboxControlBindingRequest<'_>,
+    ) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+        sandbox_control::bind(self, container_id, request).await
+    }
+
+    async fn open_sandbox_control_channel(
+        &self,
+        container_id: &str,
+        binding: &pc::SandboxControlIncarnation,
+        kind: SandboxControlServiceKind,
+    ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        sandbox_control::open_channel(self, container_id, binding, kind).await
     }
 
     fn uses_persistent_volume_claims(&self) -> bool {
@@ -793,7 +783,7 @@ impl ContainerRuntime for K8sRuntime {
         }
         match self.rendezvous {
             // Reverse-dial: the host listens, the egress-fenced Pod dials out to us.
-            Some(addr) => accept_reverse(addr).await,
+            Some(addr) => channel::accept_reverse(addr).await,
             // Direct-dial the agent's stdio over its published Service.
             None => TcpAgentTransport::new(self.agent_addr)
                 .open_channel()
@@ -1554,6 +1544,7 @@ mod tests {
             image: "agent:1".into(),
             command: vec!["claude".into(), "--acp".into()],
             env: vec![("TZ".into(), "UTC".into())],
+            control_services: Default::default(),
             packages: Default::default(),
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
@@ -1922,7 +1913,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener); // free the port for accept_reverse to bind
 
-        let host = tokio::spawn(async move { accept_reverse(addr).await });
+        let host = tokio::spawn(async move { channel::accept_reverse(addr).await });
         // Give the host a moment to bind, then dial like an egress-fenced pod would.
         let mut pod = loop {
             match tokio::net::TcpStream::connect(addr).await {

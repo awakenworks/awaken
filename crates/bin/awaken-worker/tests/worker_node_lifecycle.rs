@@ -156,6 +156,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
             resource_limits: true,
             custom_rootfs: true,
             package_provisioning: false,
+            control_services: Default::default(),
         }
     }
 

@@ -456,6 +456,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         resource_limits: true,
         custom_rootfs: true,
         package_provisioning: false,
+        control_services: Default::default(),
     };
     let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "https://control.test",

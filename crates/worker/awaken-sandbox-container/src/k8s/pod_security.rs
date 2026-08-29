@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use awaken_provisioning_contract as pc;
-use k8s_openapi::api::core::v1::{Capabilities, ResourceRequirements, SecurityContext};
+use k8s_openapi::api::core::v1::{Capabilities, PodSpec, ResourceRequirements, SecurityContext};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 
 /// The egress-posture label value an external platform policy may select on. The
@@ -26,6 +26,20 @@ pub(crate) fn sandbox_network_labels(posture: Option<&str>) -> BTreeMap<String, 
         labels.insert("awaken-egress".to_owned(), posture.to_owned());
     }
     labels
+}
+
+/// One shared predicate for Pod namespace shapes that invalidate a private
+/// Sandbox boundary. `None`, explicit `false`, and an explicit empty ephemeral
+/// container list are equivalent Kubernetes API-default representations.
+pub(crate) fn has_forbidden_sandbox_namespace_shape(spec: &PodSpec) -> bool {
+    spec.host_network == Some(true)
+        || spec.host_pid == Some(true)
+        || spec.host_ipc == Some(true)
+        || spec.share_process_namespace == Some(true)
+        || spec
+            .ephemeral_containers
+            .as_ref()
+            .is_some_and(|containers| !containers.is_empty())
 }
 
 /// Admit the posture only when the Kubernetes composition has supplied exact
@@ -125,5 +139,53 @@ mod tests {
         assert!(admit_network(&crate::NetworkMode::None, true).is_ok(), "N3");
         let error = admit_network(&crate::NetworkMode::None, false).expect_err("N4");
         assert!(error.to_string().contains("cannot prove"), "N4: {error}");
+    }
+
+    #[test]
+    fn sandbox_namespace_predicate_rejects_only_boundary_weakening_shapes() {
+        /* Namespace-shape decision table: C1=host network/PID/IPC requested;
+         * C2=process namespace shared; C3=one ephemeral container injected;
+         * C4=fields absent, explicitly false, and ephemeral list empty.
+         * E1=C1|C2|C3 rejects the private Sandbox shape; E2=C4 remains
+         * compatible with Kubernetes defaulting. Rules PS1 C1=>E1;
+         * PS2 C2=>E1; PS3 C3=>E1; PS4 C4=>E2.
+         */
+        let mut compatible = PodSpec {
+            containers: Vec::new(),
+            host_network: Some(false),
+            host_pid: Some(false),
+            host_ipc: Some(false),
+            share_process_namespace: Some(false),
+            ephemeral_containers: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(
+            !has_forbidden_sandbox_namespace_shape(&compatible),
+            "PS4/E2"
+        );
+
+        let mutations: [(&str, fn(&mut PodSpec)); 5] = [
+            ("host network", |spec| spec.host_network = Some(true)),
+            ("host PID", |spec| spec.host_pid = Some(true)),
+            ("host IPC", |spec| spec.host_ipc = Some(true)),
+            ("shared process namespace", |spec| {
+                spec.share_process_namespace = Some(true)
+            }),
+            ("ephemeral container", |spec| {
+                spec.ephemeral_containers = Some(vec![Default::default()])
+            }),
+        ];
+        for (cause, mutate) in mutations {
+            mutate(&mut compatible);
+            assert!(
+                has_forbidden_sandbox_namespace_shape(&compatible),
+                "PS1-3/E1 {cause}"
+            );
+            compatible.host_network = Some(false);
+            compatible.host_pid = Some(false);
+            compatible.host_ipc = Some(false);
+            compatible.share_process_namespace = Some(false);
+            compatible.ephemeral_containers = Some(Vec::new());
+        }
     }
 }

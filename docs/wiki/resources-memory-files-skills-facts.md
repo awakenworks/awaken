@@ -113,3 +113,11 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 - Fact: an explicit release freezes one active writable Repository input and its exact branch/full commit in the Session cleanup operation. Delegated children settle first, the existing Repository realizer returns one canonical publication receipt, the Session root persists it, and only then may root cleanup dispose the working tree. Omitted intent keeps the v1 no-publication path; credentials and mediated capabilities remain effect-local.
 - Links: guardrail G48; [ADR-0063 publication amendment](../adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md#amendment-explicit-terminal-repository-publication-2026-08-28); [ADR-0075 Worker amendment](../adr/0075-unified-managed-session-worker-execution.md#amendment-2026-08-28-terminal-repository-publication-stays-on-the-unified-worker-path)
 - Verification: legacy wire/fingerprint compatibility, child/publication/root ordering, exact receipt replay, stale-lease transport rejection, and absent/exact/conflicting remote-ref tests.
+
+## FACT-RES-014: Repository credential endpoint is fixed but dormant
+
+- Status: active provider capability; Session Repository activation is not implemented
+- Owner: [Dormant Repository credential endpoint](../design/resources-memory-files-skills.md#dormant-repository-credential-endpoint)
+- Fact: demanded Namespace and Kubernetes sandboxes project one pre-create-known `/run/awaken/control/repository-git-credential.sock` coordinate, persist exact realized topology for adoption, and close the publisher before provider removal. No provider path generates Git configuration or decides the Repository binding; later Session activation must reuse the existing pin, verifier, and material resolver.
+- Links: [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport); [credential boundary fact](credentials-and-vaults-facts.md#fact-cred-011-sandbox-control-transport-does-not-authorize-credentials)
+- Verification: exact-demand/adoption matrix, Namespace generation/inode races, K8s UID/marker/security projection, port-forward error, idle/retry/dispose, helper protocol/deadline/zeroize tests, and static no-activation checks.

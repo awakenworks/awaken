@@ -338,14 +338,17 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
-            } => provider.adopt_sandbox(handle).await.map(|sandbox| {
-                SessionEnvironment::namespace(
-                    sandbox,
-                    hand_factory.clone(),
-                    hand_bin,
-                    *hand_idle_after,
-                )
-            }),
+            } => provider
+                .adopt_sandbox_with_control_services(handle, &spec.control_services)
+                .await
+                .map(|sandbox| {
+                    SessionEnvironment::namespace(
+                        sandbox,
+                        hand_factory.clone(),
+                        hand_bin,
+                        *hand_idle_after,
+                    )
+                }),
             Self::Container {
                 provider,
                 hand_factory,
