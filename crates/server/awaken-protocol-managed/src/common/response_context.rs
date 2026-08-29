@@ -11,6 +11,9 @@ use uuid::Uuid;
 const REQUEST_ID_HEADER: &str = "request-id";
 const WORKSPACE_ID_HEADER: &str = "anthropic-workspace-id";
 
+#[derive(Clone, Copy)]
+struct HideManagedWorkspace;
+
 fn generated_request_id() -> HeaderValue {
     let value = format!("req_{}", Uuid::now_v7().simple());
     match HeaderValue::from_str(&value) {
@@ -44,6 +47,24 @@ pub fn with_managed_workspace_header(mut response: Response, workspace: &str) ->
     response
 }
 
+/// Complete an unauthenticated Managed response without disclosing a Workspace.
+///
+/// Process composition may seed a local [`WorkspaceScope`] for persistence and
+/// execution before authentication runs. Authentication failures must retain a
+/// request id without turning that internal ownership context into a public
+/// tenant-discovery channel. A response extension carries this decision across
+/// nested Axum layers without adding a private wire header.
+pub fn with_unscoped_managed_response_context(mut response: Response) -> Response {
+    if !response.headers().contains_key(REQUEST_ID_HEADER) {
+        response
+            .headers_mut()
+            .insert(REQUEST_ID_HEADER, generated_request_id());
+    }
+    response.headers_mut().remove(WORKSPACE_ID_HEADER);
+    response.extensions_mut().insert(HideManagedWorkspace);
+    response
+}
+
 async fn project_response_context(request: Request, next: Next) -> Response {
     let workspace = request
         .extensions()
@@ -51,11 +72,17 @@ async fn project_response_context(request: Request, next: Next) -> Response {
         .and_then(WorkspaceScope::non_empty)
         .and_then(workspace_header_value);
     let mut response = next.run(request).await;
+    let hide_workspace = response
+        .extensions()
+        .get::<HideManagedWorkspace>()
+        .is_some();
     let headers = response.headers_mut();
     if !headers.contains_key(REQUEST_ID_HEADER) {
         headers.insert(REQUEST_ID_HEADER, generated_request_id());
     }
-    if !headers.contains_key(WORKSPACE_ID_HEADER)
+    if hide_workspace {
+        headers.remove(WORKSPACE_ID_HEADER);
+    } else if !headers.contains_key(WORKSPACE_ID_HEADER)
         && let Some(workspace) = workspace
     {
         headers.insert(WORKSPACE_ID_HEADER, workspace);
@@ -88,6 +115,14 @@ mod tests {
         with_managed_workspace_header(response, "workspace_downstream")
     }
 
+    async fn response_with_hidden_workspace() -> Response {
+        with_unscoped_managed_response_context(response_with_owned_headers().await)
+    }
+
+    async fn unscoped_response() -> Response {
+        with_unscoped_managed_response_context(StatusCode::UNAUTHORIZED.into_response())
+    }
+
     fn assert_generated_request_id(value: &HeaderValue) {
         let value = value.to_str().unwrap();
         assert_eq!(value.len(), 36);
@@ -108,16 +143,19 @@ mod tests {
     // | absent  | absent            | fresh id + no workspace        |
     // | any     | present           | preserve downstream authority  |
     // | any     | caller x-request-id | never trust it as response id |
+    // | present | disclosure hidden | request id + no workspace      |
     //
     // The assertions also prove generated ids are non-empty and distinct, so
     // two requests cannot accidentally share debugging/correlation identity.
     #[tokio::test]
     async fn managed_response_context_is_total_scoped_and_non_overwriting() {
-        let app = with_managed_response_context(
+        let app = with_managed_response_context(with_managed_response_context(
             Router::new()
                 .route("/generated", get(|| async { StatusCode::NO_CONTENT }))
-                .route("/owned", get(response_with_owned_headers)),
-        );
+                .route("/owned", get(response_with_owned_headers))
+                .route("/hidden", get(response_with_hidden_workspace))
+                .route("/unscoped", get(unscoped_response)),
+        ));
 
         let scoped = || {
             let mut request = Request::builder()
@@ -168,6 +206,7 @@ mod tests {
         assert!(!second.headers().contains_key(WORKSPACE_ID_HEADER));
 
         let owned = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/owned")
@@ -178,6 +217,29 @@ mod tests {
             .unwrap();
         assert_eq!(owned.headers()[REQUEST_ID_HEADER], "req_downstream");
         assert_eq!(owned.headers()[WORKSPACE_ID_HEADER], "workspace_downstream");
+
+        let mut hidden_request = Request::builder()
+            .uri("/hidden")
+            .body(Body::empty())
+            .unwrap();
+        hidden_request
+            .extensions_mut()
+            .insert(WorkspaceScope("workspace_internal".into()));
+        let hidden = app.clone().oneshot(hidden_request).await.unwrap();
+        assert_eq!(hidden.headers()[REQUEST_ID_HEADER], "req_downstream");
+        assert!(!hidden.headers().contains_key(WORKSPACE_ID_HEADER));
+        assert!(hidden.extensions().get::<HideManagedWorkspace>().is_some());
+
+        let mut unscoped_request = Request::builder()
+            .uri("/unscoped")
+            .body(Body::empty())
+            .unwrap();
+        unscoped_request
+            .extensions_mut()
+            .insert(WorkspaceScope("workspace_internal".into()));
+        let unscoped = app.oneshot(unscoped_request).await.unwrap();
+        assert_generated_request_id(&unscoped.headers()[REQUEST_ID_HEADER]);
+        assert!(!unscoped.headers().contains_key(WORKSPACE_ID_HEADER));
 
         for unusable in ["", "  \t", "workspace\ninvalid"] {
             let response = with_managed_workspace_header(StatusCode::OK.into_response(), unusable);

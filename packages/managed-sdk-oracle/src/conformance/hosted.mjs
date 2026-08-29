@@ -13,7 +13,10 @@ import {
   qualifiedClient,
 } from './clients.mjs';
 import { officialBetaResourceProjection } from './resource-projection.mjs';
-import { exerciseDeployedOperationSweep } from './deployed-sweep.mjs';
+import {
+  assertManagedResponseContext,
+  exerciseDeployedOperationSweep,
+} from './deployed-sweep.mjs';
 import { exerciseUserProfileChangePoint } from './user-profile-change-point.mjs';
 import {
   compareManagedSessionResponseKeyShapes,
@@ -85,14 +88,26 @@ function ingressRequest(path, headerPairs) {
   });
 }
 
-async function assertIngressResponse(path, headerPairs, expectedStatus, label = path) {
+async function assertIngressResponse(
+  seenRequestIDs,
+  path,
+  headerPairs,
+  expectedStatus,
+  label = path,
+) {
   const response = await ingressRequest(path, headerPairs);
   assert.equal(response.status, expectedStatus, label);
-  assert.ok(response.requestID, `${label}: public ingress preserves request-id`);
-  assert.ok(response.workspaceID, `${label}: public ingress preserves anthropic-workspace-id`);
+  assertManagedResponseContext({
+    requestID: response.requestID,
+    workspaceID: response.workspaceID,
+    expectedWorkspaceID: workspaceId,
+    seenRequestIDs,
+    label,
+  });
 }
 
-async function exerciseIngressHeaderFidelity() {
+async function exerciseIngressHeaderFidelity(seenRequestIDs) {
+  const assertResponse = (...arguments_) => assertIngressResponse(seenRequestIDs, ...arguments_);
   const identity = [
     ['x-api-key', apiKey],
     ['anthropic-version', '2023-06-01'],
@@ -100,15 +115,15 @@ async function exerciseIngressHeaderFidelity() {
   const direct = '/v1/memory_stores?beta=true';
   const scoped = `/v1/workspaces/${encodeURIComponent(workspaceId)}/memory_stores?beta=true`;
   for (const path of [direct, scoped]) {
-    await assertIngressResponse(path, identity, 400, `${path}: missing beta`);
-    await assertIngressResponse(
+    await assertResponse(path, identity, 400, `${path}: missing beta`);
+    await assertResponse(
       path,
       [...identity, ['anthropic-beta', 'agent-memory-2026-07-22']],
       200,
     );
-    await assertIngressResponse(path, [...identity, ['anthropic-beta', BETAS[0]]], 200);
+    await assertResponse(path, [...identity, ['anthropic-beta', BETAS[0]]], 200);
   }
-  await assertIngressResponse(direct, [
+  await assertResponse(direct, [
     ...identity,
     ['anthropic-beta', 'agent-memory-2026-07-22'],
     ['anthropic-beta', 'agent-memory-2026-07-22'],
@@ -117,16 +132,16 @@ async function exerciseIngressHeaderFidelity() {
     [BETAS[0], 'agent-memory-2026-07-22'],
     ['agent-memory-2026-07-22', BETAS[0]],
   ]) {
-    await assertIngressResponse(direct, [
+    await assertResponse(direct, [
       ...identity,
       ...values.map((value) => ['anthropic-beta', value]),
     ], 400, 'public ingress cannot hide ambiguous capability order');
   }
-  await assertIngressResponse(direct, [
+  await assertResponse(direct, [
     ...identity,
     ['anthropic-beta', '  agent-memory-2026-07-22, agent-memory-2026-07-22  '],
   ], 200, 'comma joining and optional whitespace preserve the Memory selector');
-  await assertIngressResponse(direct, [
+  await assertResponse(direct, [
     ...identity,
     ['anthropic-beta', 'future-memory-beta'],
   ], 400, 'unknown-only beta remains rejected after public ingress');
@@ -701,7 +716,8 @@ for (const releaseClient of releaseClients) {
     currentClient: new releaseClient.Client({ apiKey, baseURL }),
   });
 }
-await exerciseIngressHeaderFidelity();
+const targetSeenRequestIDs = new Set();
+await exerciseIngressHeaderFidelity(targetSeenRequestIDs);
 if (reference && !hostedArguments.referenceLifecycles) {
   for (const releaseClient of releaseClients) {
     await exercisePositiveSessionShapeDifferential(
@@ -723,7 +739,8 @@ for (const releaseClient of releaseClients) {
 }
 if (!hostedArguments.referenceLifecycles) {
   await exerciseDeployedOperationSweep({
-    actual: { name: 'awaken', baseURL, apiKey, tunnelAccessToken },
+    actual: { name: 'awaken', baseURL, apiKey, tunnelAccessToken, workspaceId },
+    actualSeenRequestIDs: targetSeenRequestIDs,
     reference: reference ? {
       name: 'anthropic',
       ...reference,
