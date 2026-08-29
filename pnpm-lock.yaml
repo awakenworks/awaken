@@ -14,6 +14,9 @@ importers:
 
   packages/managed-sdk-oracle:
     dependencies:
+      '@anthropic-ai/sdk-beta-resources-legacy':
+        specifier: npm:@anthropic-ai/sdk@0.121.0
+        version: '@anthropic-ai/sdk@0.121.0(zod@4.4.3)'
       '@anthropic-ai/sdk-candidate':
         specifier: npm:@anthropic-ai/sdk@0.122.0
         version: '@anthropic-ai/sdk@0.122.0(zod@4.4.3)'

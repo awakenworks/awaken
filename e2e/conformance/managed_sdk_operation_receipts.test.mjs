@@ -337,10 +337,10 @@ test('page ownership requires at least one observed official item shape', () => 
   );
 });
 
-test('historical execution is bounded by the canonical additive wire contract', () => {
+test('an identical historical request projection is bounded by the current additive wire contract', () => {
   // Version-axis graph: C1 the old package owns request generation and its media
-  // class; C2 the beta header selects one current wire projection for every
-  // client. E1 a reviewed canonical addition is accepted, E2 an arbitrary
+  // class; C2 identical request coordinates select one current wire projection.
+  // E1 a reviewed canonical addition is accepted, E2 an arbitrary
   // addition is still rejected, and E3 a JSON/binary/stream change fails before
   // shape validation. This preserves the no-User-Agent-versioning invariant.
   const operation = {

@@ -6,7 +6,7 @@ import {
   latestCandidateQualification,
   latestCanaryPlan,
 } from './sdk_latest_canary_lib.mjs';
-import { requestContractInternals } from './managed_sdk_request_contract_e2e.mjs';
+import { requestContractInternals } from './managed_sdk_request_contract.mjs';
 
 const candidateQualification = Object.freeze({
   baseline_version: '0.120.0',

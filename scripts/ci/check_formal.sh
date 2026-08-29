@@ -218,6 +218,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
     --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup \
     --harness rollout_update_revision_is_monotonic_and_covers_event \
+    --harness user_profile_capability_and_field_projection_is_total_exclusive_and_exact \
     --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \
     --harness idempotency_key_length_and_summary_policy_is_exact \
     --harness idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte

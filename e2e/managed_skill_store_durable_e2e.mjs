@@ -1,4 +1,5 @@
 // Durable delivered-skill catalog across a real process restart (ADR-0036).
+// Test design: skill_store_survives_process_replacement
 //
 // Skills offered on a thread must be able to come from a DURABLE store, not just
 // static in-process config: a skill uploaded through `/v1/skills` has to still be
