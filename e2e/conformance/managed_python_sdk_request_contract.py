@@ -1423,11 +1423,18 @@ async def _exercise_credential_provider_contract_for_mode(
     )
     if asynchronous and supports_poller:
         # Helper composition graph: API-key parent -> public WorkPoller ->
-        # scoped with_options client -> one claimed poll and acknowledgement.
-        # The helper credential must replace the parent API key while routing/transport defaults and
-        # helper telemetry survive. One claimed item drives poll -> ack; the
-        # consumer then breaks with auto_stop=False, proving the scoped request
-        # chain without introducing a synthetic stop owner.
+        # scoped with_options client -> poll -> optional acknowledgement. The
+        # helper credential must replace the parent API key while routing,
+        # transport defaults, and helper telemetry survive. One claimed item
+        # drives poll -> ack; the consumer then breaks with auto_stop=False,
+        # proving the scoped request chain without introducing a synthetic stop
+        # owner. A fatal authentication response exercises the other branch:
+        # exact typed failure after one poll and no retry/ack side effect.
+        #
+        # Decision table:
+        # | helper result | poll | ack | auth source    | terminal result      |
+        # | claimed work  | one  | one | environment key| yielded typed work   |
+        # | HTTP 401      | one  | zero| environment key| AuthenticationError  |
         helper_requests = []
         helper_work = {
             "id": "work_wire",
@@ -1493,6 +1500,46 @@ async def _exercise_credential_provider_contract_for_mode(
             request.url.params["parent_query"] == "preserved"
             for request in helper_requests
         )
+
+        denied_helper_requests = []
+
+        async def deny_helper(request: object) -> object:
+            denied_helper_requests.append(request)
+            return transport_module.Response(
+                401,
+                request=request,
+                json=canonical_error(401, "authentication_error"),
+                headers={"request-id": "req_helper_denied"},
+            )
+
+        async with transport_module.AsyncClient(
+            transport=transport_module.MockTransport(deny_helper)
+        ) as http_client:
+            async with anthropic_module.AsyncAnthropic(
+                api_key="parent-must-not-leak",  # awaken-allow: secret
+                http_client=http_client,
+                max_retries=0,
+            ) as denied_parent:
+                try:
+                    async for _ in denied_parent.beta.environments.work.poller(
+                        environment_id="environment_wire",
+                        environment_key="invalid-environment-helper",  # awaken-allow: secret
+                        worker_id="worker-helper",
+                        drain=True,
+                        block_ms=None,
+                    ):
+                        raise AssertionError("denied helper yielded work")
+                except anthropic_module.AuthenticationError as error:
+                    assert error.__class__ is anthropic_module.AuthenticationError
+                    assert error.status_code == 401
+                    assert error.request_id == "req_helper_denied"
+                else:
+                    raise AssertionError("denied helper did not surface AuthenticationError")
+        assert len(denied_helper_requests) == 1
+        denied_request = denied_helper_requests[0]
+        assert denied_request.headers["authorization"] == "Bearer invalid-environment-helper"
+        assert "x-api-key" not in denied_request.headers
+        assert denied_request.headers["x-stainless-helper"] == "environments-work-poller"
 
 
 async def _exercise_middleware_contract_for_mode(

@@ -190,8 +190,10 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
   // iterator without ack/stop side effects.
   //
   // Decision table:
-  // | parent auth | helper auth     | queue | requests | terminal result |
-  // | X-Api-Key   | environment key | empty | one poll | clean drain     |
+  // | parent auth | helper auth      | state       | requests | result       |
+  // | X-Api-Key   | environment key  | empty       | one      | clean drain  |
+  // | X-Api-Key   | invalid env key  | server 401  | one      | exact error  |
+  // | X-Api-Key   | environment key  | pre-aborted | zero     | clean return |
   let observedRequest;
   const wireClient = new Anthropic({
     apiKey: 'parent-must-not-leak', // awaken-allow: secret
@@ -238,6 +240,58 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
     query: 'preserved',
     cache: 'no-store',
   }, `${label}: helper owns auth while preserving parent transport defaults`);
+
+  let deniedRequests = 0;
+  const deniedClient = new Anthropic({
+    apiKey: 'parent-must-not-leak', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    maxRetries: 0,
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    fetch: async () => {
+      deniedRequests += 1;
+      return new Response(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'invalid environment key' },
+      }), {
+        status: 401,
+        headers: { 'content-type': 'application/json', 'request-id': 'request-helper-denied' },
+      });
+    },
+  });
+  const deniedPoller = new module.WorkPoller({
+    client: deniedClient,
+    environmentId: 'environment_wire',
+    environmentKey: 'invalid-environment-helper', // awaken-allow: secret
+    workerId: 'worker-helper',
+    drain: true,
+    blockMs: null,
+  });
+  await assert.rejects(async () => {
+    for await (const _ of deniedPoller) {}
+  }, (error) => error.constructor === Anthropic.AuthenticationError
+    && error.status === 401
+    && error.requestID === 'request-helper-denied');
+  assert.equal(deniedRequests, 1, `${label}: fatal helper auth is never retried`);
+
+  let cancelledRequests = 0;
+  const cancelledClient = new Anthropic({
+    apiKey: 'parent-must-not-leak', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    fetch: async () => {
+      cancelledRequests += 1;
+      return new Response('null', { headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const controller = new AbortController();
+  controller.abort();
+  const cancelledPoller = new module.WorkPoller({
+    client: cancelledClient,
+    environmentId: 'environment_wire',
+    environmentKey: 'environment-helper',
+    signal: controller.signal,
+  });
+  for await (const _ of cancelledPoller) {}
+  assert.equal(cancelledRequests, 0, `${label}: pre-aborted helper performs no work`);
 }
 
 function assertAccumulator(module, label) {
