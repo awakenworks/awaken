@@ -945,7 +945,8 @@ async fn begin_session_realization(
             .as_ref()
             .map(|snapshot| snapshot.expires_at_ms)
             .unwrap_or(u64::MAX);
-        let target = &request.command.target;
+        let mut command = request.command;
+        let target = &command.target;
         if !target.renew_existing_lease
             || target.reassign_existing_lease
             || target.owner != request.identity.worker_id
@@ -954,16 +955,21 @@ async fn begin_session_realization(
                 target.lease_expires_at_unix_ms,
                 authority.now_ms,
             )
-            || target.lease_expires_at_unix_ms > registry_expiry
         {
             return Err(RealizationHttpError::from(HostError::bad_request(
-                "Session realization renewal exceeds authenticated Worker authority",
+                "Session realization renewal does not match authenticated Worker authority",
             )));
         }
+        // The registry is the authority boundary, while the Worker request is a
+        // desired retention window. Network/SQLite delay between an independent
+        // heartbeat and renewal must not turn a live Worker into a false loss of
+        // authority. Preserve shorter requests and cap only their upper bound.
+        command.target.lease_expires_at_unix_ms =
+            command.target.lease_expires_at_unix_ms.min(registry_expiry);
         use awaken_session_contract::work_queue::SessionWorkOwnership;
         match session_work_ownership(
             &service,
-            &request.command.session_id,
+            &command.session_id,
             &request.identity.lease_owner(),
             authority.now_ms,
             awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
@@ -992,7 +998,7 @@ async fn begin_session_realization(
         }
         let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
-            .begin_session_realization(request.command)
+            .begin_session_realization(command)
             .await
             .map_err(RealizationHttpError::from)?;
         Ok(json!({ "realization": realization }))

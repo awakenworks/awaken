@@ -775,7 +775,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T9 | exact/live | Session lease exact | - | failure reaches Control |
     // | T10 | exact/live | explicit renewal within registry lease | - | begin reaches Control |
     // | T11 | exact/live | implicit/non-renew begin | - | reject before Control |
-    // | T12 | exact/live | renewal beyond registry lease | - | reject before Control |
+    // | T12 | exact/live | desired renewal beyond registry lease | - | cap to registry expiry; begin reaches Control |
     // | T13 | exact/live | exact/live | wrong Session | reject resume before Control |
     // | T14 | exact/live | exact/live | frozen Session | mark claim-authorized reassignment |
     // | T15 | exact/live | renew+reassign | - | reject contradictory authority |
@@ -1263,17 +1263,26 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     let mut excessive = renewal;
     excessive.target.lease_expires_at_unix_ms = u64::MAX;
-    assert!(
-        client
-            .begin_session_realization(&registered.snapshot.identity, excessive.clone())
-            .await
-            .is_err(),
-        "T12"
-    );
+    client
+        .begin_session_realization(&registered.snapshot.identity, excessive.clone())
+        .await
+        .expect("T12 bounded renewal");
     assert_eq!(
         session_control.begins.lock().unwrap().len(),
-        3,
+        4,
         "T11/T12/T16"
+    );
+    assert_eq!(
+        session_control
+            .begins
+            .lock()
+            .unwrap()
+            .last()
+            .expect("T12 reaches Control")
+            .target
+            .lease_expires_at_unix_ms,
+        registered.snapshot.expires_at_ms,
+        "T12 never exceeds the authenticated registry lease"
     );
     let mut contradictory = excessive;
     contradictory.target.lease_expires_at_unix_ms = realization_lease.expires_at_unix_ms;
@@ -1285,7 +1294,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T15"
     );
-    assert_eq!(session_control.begins.lock().unwrap().len(), 3, "T15/T16");
+    assert_eq!(session_control.begins.lock().unwrap().len(), 4, "T15/T16");
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     assert!(
         client
