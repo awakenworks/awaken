@@ -777,7 +777,7 @@ async fn list_memories(
             continue;
         }
         // `basic` elides content (metadata only); `full` fetches the head content.
-        let content = view.includes_content().then(|| entry.content).flatten();
+        let content = view.includes_content().then_some(entry.content).flatten();
         let Some(memory_version_id) = current_version_id(&versions, &entry.id) else {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
