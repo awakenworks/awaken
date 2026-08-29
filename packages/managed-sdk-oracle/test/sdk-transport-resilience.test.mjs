@@ -491,4 +491,89 @@ for (const { version, Client } of clients) {
       );
     }
   });
+
+  test(`${version}: withOptions shares unresolved auth but isolates an explicit override`, async () => {
+    // Causal graph:
+    // parent provider -> shared unresolved AuthState/TokenCache -> parent and
+    // clone concurrent first requests -> one provider resolution -> two
+    // independently decoded Managed pages. An explicit structured-auth
+    // override forks the state -> only the replacement provider is consulted.
+    // Request defaults flow through both paths unchanged.
+    //
+    // Decision table:
+    // | derived client       | auth state | provider calls | wire token       |
+    // | withOptions(timeout) | shared     | one total      | parent-provider  |
+    // | withOptions(provider)| isolated   | one replacement| override-provider|
+    //
+    // The provider promise is held behind a barrier so this test proves
+    // single-flight sharing under overlap; a fast provider could otherwise
+    // make two independent caches look equivalent by timing accident.
+    const parentProviderCalls = [];
+    let releaseParentProvider;
+    const parentToken = new Promise((resolve) => { releaseParentProvider = resolve; });
+    const requests = [];
+    const parent = new Client({
+      apiKey: null,
+      authToken: null,
+      credentials: async (options) => {
+        parentProviderCalls.push(options ?? null);
+        return parentToken;
+      },
+      baseURL,
+      timeout: 1_000,
+      maxRetries: 0,
+      defaultHeaders: { 'x-managed-parent': 'preserved' },
+      defaultQuery: { inherited_query: 'preserved' },
+      fetchOptions: { cache: 'no-store' },
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push({
+          authorization: request.headers.get('authorization'),
+          parentHeader: request.headers.get('x-managed-parent'),
+          inheritedQuery: new URL(request.url).searchParams.get('inherited_query'),
+          cache: init?.cache,
+        });
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    const clone = parent.withOptions({ timeout: 2_000 });
+    assert.notStrictEqual(clone, parent);
+    assert.equal(parent.timeout, 1_000);
+    assert.equal(clone.timeout, 2_000);
+
+    const overlapping = Promise.all([
+      parent.beta.sessions.list(),
+      clone.beta.sessions.list(),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    const callsBeforeRelease = parentProviderCalls.length;
+    releaseParentProvider({ token: 'parent-provider', expiresAt: null }); // awaken-allow: secret
+    const pages = await overlapping;
+    assert.equal(callsBeforeRelease, 1, 'overlapping clones share one unresolved provider call');
+    assert.deepEqual(parentProviderCalls, [null]);
+    assert.ok(pages.every((page) => Array.isArray(page.data)));
+    assert.deepEqual(requests, [0, 1].map(() => ({
+      authorization: 'Bearer parent-provider',
+      parentHeader: 'preserved',
+      inheritedQuery: 'preserved',
+      cache: 'no-store',
+    })));
+
+    const overrideProviderCalls = [];
+    const overridden = parent.withOptions({
+      credentials: async (options) => {
+        overrideProviderCalls.push(options ?? null);
+        return { token: 'override-provider', expiresAt: null }; // awaken-allow: secret
+      },
+    });
+    assert.deepEqual((await overridden.beta.sessions.list()).data, []);
+    assert.deepEqual(parentProviderCalls, [null], 'the old cache is not consulted by an auth override');
+    assert.deepEqual(overrideProviderCalls, [null]);
+    assert.deepEqual(requests[2], {
+      authorization: 'Bearer override-provider',
+      parentHeader: 'preserved',
+      inheritedQuery: 'preserved',
+      cache: 'no-store',
+    });
+  });
 }

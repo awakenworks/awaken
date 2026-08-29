@@ -81,6 +81,9 @@ async function main() {
     // exact supported SDK + named profile in an isolated config directory
     //   -> profile/config/credential-file resolution
     //   -> the same real scoped 200 contract;
+    // profile client + withOptions clone before the first request
+    //   -> one shared lazy auth state + inherited resolved API host
+    //   -> both parent and clone reach the same real scoped boundary;
     // exact supported SDK + read-only Bearer token + Vault mutation
     //   -> resolved Workspace scope + denied action
     //   -> exact SDK PermissionDeniedError + exact Workspace + no side effect.
@@ -96,6 +99,7 @@ async function main() {
     // | provider   | resolved | read   | Vault page, one lookup| exact     |
     // | config     | resolved | read   | Vault page, file token| exact     |
     // | profile    | resolved | read   | Vault page, named file| exact     |
+    // | profile clone|resolved| read   | shared lazy resolution | exact     |
     for (const { role, version, Client } of CLIENTS) {
       const label = `${role}:${version}`;
       const projectsWorkspace = projectsWorkspaceResponseContext(version);
@@ -270,6 +274,25 @@ async function main() {
           baseURL: null,
           maxRetries: 0,
         });
+        const profileClone = profiled.withOptions({ timeout: 30_000 });
+        const clonePage = await profileClone.beta.vaults.list({ betas: BETAS }).withResponse();
+        assert.equal(
+          profileClone.baseURL,
+          running.baseUrl,
+          `${label}: pre-resolution clone adopts the profile API host`,
+        );
+        const cloneRequestID = recordUniqueRequestID(
+          requestIDs,
+          clonePage.response.headers.get('request-id'),
+          `${label}: profile-clone response`,
+        );
+        assert.equal(clonePage.request_id, cloneRequestID, `${label}: profile-clone request-id`);
+        assert.equal(
+          clonePage.response.headers.get('anthropic-workspace-id'),
+          workspace,
+          `${label}: profile clone retains the authenticated Workspace`,
+        );
+        assert.equal(Array.isArray(clonePage.data.data), true, `${label}: profile clone decodes page`);
         const profilePage = await profiled.beta.vaults.list({ betas: BETAS }).withResponse();
         assert.equal(
           profiled.baseURL,
@@ -387,7 +410,7 @@ async function main() {
     );
     assert.equal(
       requestIDs.size,
-      CLIENTS.length * 6 + 1,
+      CLIENTS.length * 7 + 1,
       'every observed SDK response owns one request identity',
     );
   } finally {
