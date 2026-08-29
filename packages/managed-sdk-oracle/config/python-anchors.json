@@ -4,7 +4,7 @@
   "anchors": [
     { "version": "0.92.0", "role": "oldest_supported", "reason": "first official Managed Agents release" },
     { "version": "0.100.0", "role": "protocol_change_point", "reason": "credential-provider, multi-agent, outcome, webhook, and vault-validation surface" },
-    { "version": "0.109.0", "role": "protocol_change_point", "reason": "deployment and environment-credential surface" },
+    { "version": "0.109.0", "role": "protocol_change_point", "reason": "deployment, environment-credential, and middleware surface" },
     { "version": "0.115.0", "role": "protocol_change_point", "reason": "event-delta, override, reverse-pagination, and webhook surface" },
     { "version": "0.116.0", "role": "protocol_change_point", "reason": "agent-memory beta selector" },
     { "version": "0.117.1", "role": "protocol_change_point", "reason": "Dream and MCP Tunnel surface" },

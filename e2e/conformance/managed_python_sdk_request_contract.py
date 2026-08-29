@@ -47,6 +47,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.2.0",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
+MIDDLEWARE_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
 
 
 def projects_workspace_response_context(version: str) -> bool:
@@ -1197,6 +1198,11 @@ async def _exercise_error_and_retry_contract_for_mode(
         transport_module,
         asynchronous=asynchronous,
     )
+    await _exercise_middleware_contract_for_mode(
+        anthropic_module,
+        transport_module,
+        asynchronous=asynchronous,
+    )
 
 
 async def _exercise_credential_provider_contract_for_mode(
@@ -1314,6 +1320,147 @@ async def _exercise_credential_provider_contract_for_mode(
             assert request.headers["authorization"] == "Bearer static-token"
             assert "x-api-key" not in request.headers
         assert request.headers["anthropic-beta"] == "managed-agents-2026-04-01"
+
+
+async def _exercise_middleware_contract_for_mode(
+    anthropic_module: Any,
+    transport_module: Any,
+    *,
+    asynchronous: bool,
+) -> None:
+    version = anthropic_module.__version__
+    client_type = (
+        anthropic_module.AsyncAnthropic
+        if asynchronous
+        else anthropic_module.Anthropic
+    )
+    supports_middleware = "middleware" in inspect.signature(client_type).parameters
+    assert supports_middleware is (version in MIDDLEWARE_VERSIONS), (
+        f"{version}: unreviewed middleware change point"
+    )
+    if not supports_middleware:
+        return
+
+    # Call-chain graph shared across sync and async clients:
+    # generated Managed request -> outer middleware mutation -> inner
+    # middleware -> httpx2 transport -> reverse unwind -> SDK retry -> the
+    # complete chain again -> raw response. An ordinary middleware exception
+    # instead terminates before transport and is never normalized or retried.
+    #
+    # Decision table:
+    # | middleware outcome | retries | transport calls | caller result       |
+    # | 500 then 200        | 1       | 2               | raw 200 response    |
+    # | RuntimeError        | 2       | 0               | identical exception |
+    events = []
+    attempts = []
+
+    def transport(request: object) -> object:
+        retry = request.headers["x-stainless-retry-count"]
+        attempts.append(request)
+        events.append(f"transport:{retry}")
+        assert request.headers["x-middleware-attempt"] == retry
+        if len(attempts) == 1:
+            return transport_module.Response(
+                500,
+                request=request,
+                json=canonical_error(500, "api_error"),
+                headers={"retry-after-ms": "0"},
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    if asynchronous:
+        async def outer(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"outer-before:{retry}")
+            assert request.method == "post"
+            assert request.url == "/v1/sessions?beta=true"
+            response = await call_next(request.copy(headers={
+                **request.headers,
+                "x-middleware-attempt": str(retry),
+            }))
+            events.append(f"outer-after:{retry}:{response.status_code}")
+            return response
+
+        async def inner(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"inner-before:{retry}")
+            assert request.headers["x-middleware-attempt"] == str(retry)
+            response = await call_next(request)
+            events.append(f"inner-after:{retry}:{response.status_code}")
+            return response
+    else:
+        def outer(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"outer-before:{retry}")
+            assert request.method == "post"
+            assert request.url == "/v1/sessions?beta=true"
+            response = call_next(request.copy(headers={
+                **request.headers,
+                "x-middleware-attempt": str(retry),
+            }))
+            events.append(f"outer-after:{retry}:{response.status_code}")
+            return response
+
+        def inner(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"inner-before:{retry}")
+            assert request.headers["x-middleware-attempt"] == str(retry)
+            response = call_next(request)
+            events.append(f"inner-after:{retry}:{response.status_code}")
+            return response
+
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        transport,
+        asynchronous=asynchronous,
+        max_retries=1,
+        raw=True,
+        client_options={"middleware": [outer, inner]},
+    )
+    assert response.status_code == 200
+    assert len(attempts) == 2
+    assert events == [
+        "outer-before:0",
+        "inner-before:0",
+        "transport:0",
+        "inner-after:0:500",
+        "outer-after:0:500",
+        "outer-before:1",
+        "inner-before:1",
+        "transport:1",
+        "inner-after:1:200",
+        "outer-after:1:200",
+    ]
+
+    sentinel = RuntimeError("middleware policy rejected request")
+    rejected_transports = []
+
+    def must_not_run(request: object) -> object:
+        rejected_transports.append(request)
+        return transport_module.Response(200, request=request, json={})
+
+    if asynchronous:
+        async def reject(_request: object, _call_next: Any) -> object:
+            raise sentinel
+    else:
+        def reject(_request: object, _call_next: Any) -> object:
+            raise sentinel
+
+    try:
+        await _call_session_create(
+            anthropic_module,
+            transport_module,
+            must_not_run,
+            asynchronous=asynchronous,
+            max_retries=2,
+            client_options={"middleware": [reject]},
+        )
+    except RuntimeError as error:
+        assert error is sentinel
+    else:
+        raise AssertionError("Python SDK accepted a rejected middleware request")
+    assert rejected_transports == []
 
 
 def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:

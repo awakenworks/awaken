@@ -109,7 +109,7 @@ def main() -> None:
     assert supports_config is supports_credentials, (
         f"{label}: provider/config capability boundary diverged"
     )
-    provider_request_count = 0
+    extended_auth_request_count = 0
     if supports_credentials:
         credential_module = importlib.import_module("anthropic.lib.credentials")
         provider_calls: list[bool] = []
@@ -135,7 +135,7 @@ def main() -> None:
             provider_page = raw_provider_page.parse()
             assert isinstance(provider_page.data, list)
         assert provider_calls == [False]
-        provider_request_count = 1
+        extended_auth_request_count = 1
 
         with tempfile.TemporaryDirectory(prefix="awaken-python-sdk-config-") as directory:
             credentials_path = Path(directory) / "credentials.json"
@@ -171,7 +171,7 @@ def main() -> None:
                 assert raw_config_page.headers.get("anthropic-workspace-id") == WORKSPACE_ID
                 config_page = raw_config_page.parse()
                 assert isinstance(config_page.data, list)
-        provider_request_count = 2
+        extended_auth_request_count = 2
 
     with anthropic.Anthropic(
         api_key=None,
@@ -215,7 +215,7 @@ def main() -> None:
         verification = raw_verification.parse()
         assert all(vault.display_name != denied_name for vault in verification.data)
 
-    assert len(request_ids) == 4 + provider_request_count
+    assert len(request_ids) == 4 + extended_auth_request_count
     auth_modes = "static/provider/config" if supports_credentials else "static"
     print(
         f"PYTHON SDK AUTH CONTEXT PASS {version}: "

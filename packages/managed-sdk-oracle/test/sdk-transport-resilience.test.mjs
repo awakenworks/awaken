@@ -228,6 +228,106 @@ for (const { version, Client } of clients) {
     assert.equal(attempts, 1);
   });
 
+  test(`${version}: middleware preserves the canonical Managed retry chain`, async () => {
+    // Call-chain graph:
+    // generated Managed operation -> canonical request/auth/capabilities ->
+    // outer middleware -> inner middleware -> fetch -> parsed clone -> reverse
+    // middleware unwind -> SDK retry/decoder. C1=first response 500 and C2=
+    // second response 200; E1=both attempts traverse the complete chain in
+    // order, E2=middleware sees retry identity and the Managed selector, E3=
+    // parsing through ctx.parse never consumes the response, and E4=the SDK
+    // still decodes the final page. C3=ordinary middleware exception; E5=the
+    // exact exception escapes after one middleware entry and zero fetches.
+    //
+    // Decision table:
+    // | middleware outcome | maxRetries | fetches | caller result            |
+    // | 500 then 200        | 1          | 2       | decoded Managed page     |
+    // | ordinary exception | 2          | 0       | same exception, no retry |
+    const events = [];
+    const parsed = [];
+    let attempts = 0;
+    const middleware = [
+      async (request, next, context) => {
+        const retry = request.headers.get('x-stainless-retry-count');
+        events.push(`outer-before:${retry}`);
+        assert.equal(context.options?.method, 'get');
+        assert.equal(context.options?.path, '/v1/sessions?beta=true');
+        assert.equal(request.headers.get('anthropic-beta'), managedBetas[0]);
+        assert.equal(request.headers.get('x-api-key'), 'middleware-auth');
+        const headers = new Headers(request.headers);
+        headers.set('x-middleware-attempt', retry);
+        const response = await next({ ...request, headers });
+        const body = await context.parse(response);
+        parsed.push({ layer: 'outer', retry, body });
+        events.push(`outer-after:${retry}:${response.status}`);
+        return response;
+      },
+      async (request, next, context) => {
+        const retry = request.headers.get('x-stainless-retry-count');
+        events.push(`inner-before:${retry}`);
+        assert.equal(request.headers.get('x-middleware-attempt'), retry);
+        const response = await next(request);
+        const body = await context.parse(response);
+        parsed.push({ layer: 'inner', retry, body });
+        events.push(`inner-after:${retry}:${response.status}`);
+        return response;
+      },
+    ];
+    const client = new Client({
+      apiKey: 'middleware-auth', // awaken-allow: secret
+      baseURL,
+      maxRetries: 1,
+      middleware,
+      fetch: async (_input, init) => {
+        attempts += 1;
+        const retry = new Headers(init?.headers).get('x-stainless-retry-count');
+        events.push(`fetch:${retry}`);
+        return attempts === 1
+          ? json(errorBody('api_error', 500), 500, { 'retry-after-ms': '0' })
+          : json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    assert.deepEqual((await client.beta.sessions.list()).data, []);
+    assert.equal(attempts, 2);
+    assert.deepEqual(events, [
+      'outer-before:0',
+      'inner-before:0',
+      'fetch:0',
+      'inner-after:0:500',
+      'outer-after:0:500',
+      'outer-before:1',
+      'inner-before:1',
+      'fetch:1',
+      'inner-after:1:200',
+      'outer-after:1:200',
+    ]);
+    assert.equal(parsed.length, 4);
+    assert.strictEqual(parsed[0].body, parsed[1].body, 'one response parse is cached across layers');
+    assert.strictEqual(parsed[2].body, parsed[3].body, 'retry response parse is cached across layers');
+    assert.equal(parsed[0].body.error.type, 'api_error');
+    assert.deepEqual(parsed[2].body.data, []);
+
+    const sentinel = new Error('middleware policy rejected request');
+    let rejectedEntries = 0;
+    let rejectedFetches = 0;
+    const rejecting = new Client({
+      apiKey: 'middleware-auth', // awaken-allow: secret
+      baseURL,
+      maxRetries: 2,
+      middleware: [async () => {
+        rejectedEntries += 1;
+        throw sentinel;
+      }],
+      fetch: async () => {
+        rejectedFetches += 1;
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    await assert.rejects(() => rejecting.beta.sessions.list(), (error) => error === sentinel);
+    assert.equal(rejectedEntries, 1);
+    assert.equal(rejectedFetches, 0);
+  });
+
   test(`${version}: connection faults and SDK timeouts retain distinct retry semantics`, async () => {
     // Cause/effect graph:
     // C1 fetch rejects with a connection fault before any HTTP response;

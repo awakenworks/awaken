@@ -357,7 +357,7 @@
       ],
       "operation_count": 99,
       "operation_fingerprint": "05b9772ca29dc398a0b30682f2c13ce44392e873e7c6be145e97a1e901de8761",
-      "reason": "deployment and environment-credential surface",
+      "reason": "deployment, environment-credential, and middleware surface",
       "role": "protocol_change_point",
       "runtime_source_count": 6,
       "runtime_source_fingerprint": "60d6f23f669560a6207ef8a339227fbdbdac252f115ef1c76e1d541f5560f287",
