@@ -91,6 +91,31 @@ pub trait RepositoryTransportAuthorizer: Send + Sync {
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError>;
 }
 
+/// Validate additive issuer expiry evidence without changing legacy one-shot
+/// host-operation semantics. A long-lived workload consumer separately requires
+/// `Some`; this common Worker boundary rejects any supplied evidence that is
+/// already dead or exceeds the currently revalidated claim/lease.
+fn transport_expiry_is_bounded(
+    transport: &RepositoryTransport,
+    now_unix_ms: u64,
+    authority_expires_at_unix_ms: u64,
+) -> bool {
+    match transport {
+        RepositoryTransport::Direct
+        | RepositoryTransport::GatewayMediated {
+            expires_at_unix_ms: None,
+            ..
+        } => true,
+        RepositoryTransport::GatewayMediated {
+            expires_at_unix_ms: Some(expires_at),
+            ..
+        } => {
+            expires_at.is_live_at(now_unix_ms)
+                && expires_at.unix_ms() <= authority_expires_at_unix_ms
+        }
+    }
+}
+
 /// Registered-Worker client for exact Repository binding verification.
 #[derive(Clone)]
 pub struct HttpRepositoryBindingVerifier {
@@ -395,6 +420,9 @@ async fn verify_run_repository_binding(
     if !revalidated {
         return StatusCode::CONFLICT.into_response();
     }
+    if !transport_expiry_is_bounded(&transport, unix_now_ms(), claim_expires_ms) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     match transport {
         RepositoryTransport::Direct => StatusCode::NO_CONTENT.into_response(),
         transport => (StatusCode::OK, Json(transport)).into_response(),
@@ -490,6 +518,13 @@ async fn verify_terminal_repository_binding(
     if !revalidated {
         return StatusCode::CONFLICT.into_response();
     }
+    if !transport_expiry_is_bounded(
+        &transport,
+        unix_now_ms(),
+        authority.lease.expires_at_unix_ms,
+    ) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     match transport {
         RepositoryTransport::Direct => StatusCode::NO_CONTENT.into_response(),
         transport => (StatusCode::OK, Json(transport)).into_response(),
@@ -540,5 +575,32 @@ mod tests {
             serde_json::from_value::<RepositoryBindingRequest>(unknown).is_err(),
             "W2"
         );
+    }
+
+    #[test]
+    fn gateway_actual_expiry_cannot_outlive_its_authority() {
+        /* Dynamic expiry decision table:
+         * C1=Direct; C2=Gateway expiry absent/present; C3=present expiry live;
+         * C4=present expiry <= current claim/lease. E1=preserve additive legacy
+         * host operations; E2=accept bounded issuer evidence; E3=fail closed.
+         * Rules: X1 C1=>E1; X2 !C1&&!C2=>E1;
+         * X3 !C1+C2+C3+C4=>E2; X4 !C1+C2+(!C3||!C4)=>E3.
+         */
+        let gateway = |expiry: Option<u64>| RepositoryTransport::GatewayMediated {
+            remote_url: "https://gateway.invalid/git/repository".into(),
+            capability: awaken_resource_contract::RepositoryGatewayCapability::new("cap").unwrap(),
+            expires_at_unix_ms: expiry.map(|value| {
+                awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new(value).unwrap()
+            }),
+        };
+        assert!(transport_expiry_is_bounded(
+            &RepositoryTransport::Direct,
+            100,
+            200
+        ));
+        assert!(transport_expiry_is_bounded(&gateway(None), 100, 200));
+        assert!(transport_expiry_is_bounded(&gateway(Some(150)), 100, 200));
+        assert!(!transport_expiry_is_bounded(&gateway(Some(100)), 100, 200));
+        assert!(!transport_expiry_is_bounded(&gateway(Some(201)), 100, 200));
     }
 }
