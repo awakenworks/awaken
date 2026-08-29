@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   AWAKEN_BIN_ENV,
   SCENARIO_HOST_BIN_ENV,
@@ -28,7 +29,11 @@ import {
 } from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import { officialBetaResourceProjection } from '../../packages/managed-sdk-oracle/src/conformance/resource-projection.mjs';
-import { managedTsMethodManifestForOperations } from './managed_ts_sdk_method_manifest.mjs';
+import { projectWireResponseContracts } from '../../packages/managed-sdk-oracle/src/conformance/wire-response-projection.mjs';
+import {
+  managedTsMethodManifestForOperations,
+  managedTsSdkHelperMethods,
+} from './managed_ts_sdk_method_manifest.mjs';
 import {
   MANAGED_SDK_RESPONSE_FINGERPRINT_KEY,
   assertOwnerOperationReceipts,
@@ -106,6 +111,10 @@ const responseContracts = extractResponseContractsFromPackageRoot(
   scope,
   selectedOperations.map(({ id }) => id),
 );
+const sdkModule = await import(pathToFileURL(path.join(sdkRoot, 'index.mjs')));
+const helperMethods = managedTsSdkHelperMethods(new sdkModule.default({
+  apiKey: 'behavior-owner-helper-inventory', // awaken-allow: secret
+}));
 
 // Derive operation-local negative capability evidence from every admitted SDK,
 // rather than maintaining a Files/Skills header list in the test harness. This
@@ -116,6 +125,12 @@ const anchorConfig = JSON.parse(readFileSync(resolve(
   E2E,
   '../packages/managed-sdk-oracle/config/anchors.json',
 ), 'utf8'));
+const oracle = JSON.parse(readFileSync(resolve(
+  E2E,
+  '../contracts/anthropic-managed/upstream-oracle.generated.json',
+), 'utf8'));
+const canonicalRoot = resolveSdkPackage(oracle.current.module).root;
+const currentOperations = extractOperationsFromPackageRoot(canonicalRoot, scope).operations;
 const operationBetaUniverse = new Map();
 for (const root of [
   ...anchorConfig.anchors.map(({ module }) => resolveSdkPackage(module).root),
@@ -127,28 +142,28 @@ for (const root of [
     operationBetaUniverse.set(operation.id, values);
   }
 }
-// Historical SDKs execute their own exact generated request code, but the API
-// deliberately serves one canonical additive wire projection selected by the
-// beta header—not a User-Agent/version-specific response. Validate those bytes
-// strictly against the current oracle while retaining the historical contract
-// above to prove that the operation's JSON/binary/stream media class did not
-// change. This permits only fields and nullability reviewed into the canonical
-// SDK; it does not turn historical validation into an open-object check.
+// Historical SDKs execute their own exact generated request code. Identical
+// request coordinates receive the current additive wire contract because the
+// API never versions by User-Agent. A changed beta capability selects a
+// distinct public projection and therefore retains that anchor's exact response
+// contract. Both branches stay closed and declaration-derived.
 let wireResponseContracts;
 if (historicalSubset) {
-  const oracle = JSON.parse(readFileSync(resolve(
-    E2E,
-    '../contracts/anthropic-managed/upstream-oracle.generated.json',
-  ), 'utf8'));
-  const canonicalRoot = resolveSdkPackage(oracle.current.module).root;
-  wireResponseContracts = extractResponseContractsFromPackageRoot(
+  const currentResponseContracts = extractResponseContractsFromPackageRoot(
     canonicalRoot,
     scope,
     selectedOperations.map(({ id }) => id),
   );
+  wireResponseContracts = projectWireResponseContracts({
+    selectedOperations,
+    currentOperations,
+    selectedResponseContracts: responseContracts,
+    currentResponseContracts,
+  });
 }
 const behaviorManifest = managedTsMethodManifestForOperations(selectedOperations, {
   allowHistoricalSubset: historicalSubset,
+  helperMethods,
   responseContracts,
   wireResponseContracts,
 }).map((operation) => {
@@ -160,6 +175,11 @@ const behaviorManifest = managedTsMethodManifestForOperations(selectedOperations
   return Object.freeze({ ...operation, forbiddenBetas: Object.freeze(forbiddenBetas) });
 });
 const skillsProjection = officialBetaResourceProjection(selectedOperations, 'skills').projection;
+const selectedUserProfiles = officialBetaResourceProjection(selectedOperations, 'userProfiles');
+const currentUserProfiles = officialBetaResourceProjection(currentOperations, 'userProfiles');
+const userProfilesProjection = selectedUserProfiles.capability === currentUserProfiles.capability
+  ? 'current'
+  : 'legacy';
 const selectedOperationIDs = new Set(selectedOperations.map(({ id }) => id));
 const owners = [...new Set(behaviorManifest.map(({ owner }) => owner))].sort();
 const OWNER_TIMEOUT_MS = Number(process.env.AWAKEN_MANAGED_OWNER_TIMEOUT_MS ?? 180_000);
@@ -199,6 +219,7 @@ async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment
         AWAKEN_MANAGED_SDK_PACKAGE_VERSION: sdkVersion,
         AWAKEN_MANAGED_SDK_RESOLUTION_FILE: resolutionFile,
         AWAKEN_MANAGED_SDK_SKILLS_PROJECTION: skillsProjection,
+        AWAKEN_MANAGED_SDK_USER_PROFILES_PROJECTION: userProfilesProjection,
         AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_DREAMS: selectedOperationIDs.has('beta.dreams.create') ? '1' : '0',

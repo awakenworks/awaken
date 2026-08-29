@@ -20,7 +20,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 test('the Open anchor matrix is the only executable SDK version authority', async () => {
   // Cause/effect graph M1: exact package aliases plus unique semantic roles
   // produce one executable client per reviewed anchor. Duplicate ids, modules,
-  // roles, or an unreviewed fourth role fail before any compatibility claim.
+  // roles, or an unreviewed role fail before any compatibility claim. The
+  // 0.121 Beta-resource projection remains an anchor after 0.122 promotion, so
+  // promotion cannot silently narrow the supported-version evidence set.
   const matrix = validateSdkMatrix(readSdkMatrix());
   const clients = await loadQualifiedClients(matrix);
   assert.equal(clients.length, matrix.length, 'M1');
@@ -81,7 +83,7 @@ test('every multi-version Managed E2E consumes the canonical anchor matrix', () 
 });
 
 test('a reviewed candidate joins every shared conformance suite without becoming an anchor', async () => {
-  // Candidate admission graph: C1=the stable three-role matrix is valid;
+  // Candidate admission graph: C1=the stable reviewed-role matrix is valid;
   // C2=the caller supplies the sole reviewed package alias. Effects: E1=the
   // exact candidate is appended once with an explicit non-anchor role; E2=the
   // stable matrix remains unchanged; E3=an arbitrary import specifier fails

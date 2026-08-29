@@ -10,6 +10,7 @@ import {
 
 const managedBetas = ['managed-agents-2026-04-01'];
 const fileBetas = [...managedBetas, 'files-api-2025-04-14'];
+const tunnelBetas = ['mcp-tunnels-2026-06-22'];
 
 export function recoverySdkIdentity(client) {
   return { sdk_version: client.version, sdk_role: client.role };
@@ -31,6 +32,8 @@ const RECOVERY_STATE_FIELDS = Object.freeze([
   'sdk_role',
   'sdk_version',
   'session_id',
+  'tunnel_id',
+  'tunnel_token_sha256',
 ]);
 
 export function validateRecoveryState(state) {
@@ -44,6 +47,11 @@ export function validateRecoveryState(state) {
     );
   }
   assert.match(state.sdk_version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u, 'recovery SDK version');
+  assert.match(
+    state.tunnel_token_sha256,
+    /^[0-9a-f]{64}$/u,
+    'recovery Tunnel token SHA-256 witness',
+  );
   assert.ok(
     ['current_oracle', 'candidate'].includes(state.sdk_role),
     'recovery SDK role',
@@ -69,12 +77,18 @@ export function writeRecoveryState(stateFile, state) {
   }
 }
 
-export async function persistPreparedRecovery({ client, stateFile, state, write = writeRecoveryState }) {
+export async function persistPreparedRecovery({
+  client,
+  tunnelClient,
+  stateFile,
+  state,
+  write = writeRecoveryState,
+}) {
   try {
     write(stateFile, state);
   } catch (writeFailure) {
     try {
-      await cleanupRecovery({ client, state });
+      await cleanupRecovery({ client, tunnelClient, state });
     } catch (cleanupFailure) {
       throw new AggregateError(
         [writeFailure, cleanupFailure],
@@ -91,7 +105,8 @@ async function drain(page) {
   return values;
 }
 
-export async function prepareRecovery({ client, toFile, agent, environmentId, marker }) {
+export async function prepareRecovery({ client, tunnelClient, toFile, agent, environmentId, marker }) {
+  assert.ok(tunnelClient?.beta?.tunnels, 'Tunnel recovery client');
   const commandKey = `managed-recovery-${marker}`;
   const file = await client.beta.files.upload({
     file: await toFile(Buffer.from(`managed recovery ${marker}`), `${marker}.txt`),
@@ -141,18 +156,56 @@ export async function prepareRecovery({ client, toFile, agent, environmentId, ma
   }
   const [first, concurrentReplay] = attempts.map(({ value }) => value);
   assert.equal(concurrentReplay.id, first.id, 'concurrent command converges to one Session');
-  return {
-    schema_version: 1,
-    marker,
-    command_key: commandKey,
-    session_id: first.id,
-    file_id: file.id,
-    agent,
-    environment_id: environmentId,
-  };
+  let tunnel;
+  try {
+    tunnel = await tunnelClient.beta.tunnels.create({
+      display_name: `managed-recovery-${marker}`,
+      betas: tunnelBetas,
+    });
+    const rotated = await tunnelClient.beta.tunnels.rotateToken(tunnel.id, {
+      reason: 'process replacement recovery evidence',
+      betas: tunnelBetas,
+    });
+    assert.ok(
+      typeof rotated.tunnel_token === 'string' && rotated.tunnel_token.length > 0,
+      'Tunnel rotation returns a recovery witness',
+    );
+    return {
+      schema_version: 1,
+      marker,
+      command_key: commandKey,
+      session_id: first.id,
+      file_id: file.id,
+      tunnel_id: tunnel.id,
+      tunnel_token_sha256: crypto.createHash('sha256').update(rotated.tunnel_token).digest('hex'),
+      agent,
+      environment_id: environmentId,
+    };
+  } catch (tunnelFailure) {
+    const compensation = await Promise.allSettled([
+      client.beta.sessions.delete(first.id, { betas: managedBetas }),
+      client.beta.files.delete(file.id),
+      ...(tunnel ? [tunnelClient.beta.tunnels.archive(tunnel.id, { betas: tunnelBetas })] : []),
+    ]);
+    const compensationFailed = compensation.filter(({ status }) => status === 'rejected');
+    if (compensationFailed.length > 0) {
+      throw new AggregateError(
+        [
+          tunnelFailure,
+          new AggregateError(
+            compensationFailed.map(({ reason }) => reason),
+            'Tunnel recovery prepare compensation failed',
+          ),
+        ],
+        'Tunnel recovery prepare and compensation both failed',
+      );
+    }
+    throw tunnelFailure;
+  }
 }
 
-export async function verifyRecovery({ client, state }) {
+export async function verifyRecovery({ client, tunnelClient, state }) {
+  assert.ok(tunnelClient?.beta?.tunnels, 'Tunnel recovery client');
   assert.equal(state.schema_version, 1, 'recovery state schema');
   const session = await client.beta.sessions.retrieve(state.session_id, { betas: managedBetas });
   assert.equal(session.metadata?.qualification_marker, state.marker, 'Session metadata survived restart');
@@ -193,12 +246,38 @@ export async function verifyRecovery({ client, state }) {
     (error) => error?.status === 409,
     'same command key with changed payload remains a conflict after restart',
   );
+
+  // Test design: active_tunnel_and_rotated_secret_survive_process_replacement
+  // Cause graph: create -> rotate -> persist only id+SHA-256 witness -> replace
+  // every serving process -> retrieve/list/reveal through a fresh WIF client.
+  // Decision table: stable aggregate+secret => exact id and digest; cache-only
+  // aggregate, regenerated secret, wrong auth plane, or stale replica => fail.
+  const tunnel = await tunnelClient.beta.tunnels.retrieve(state.tunnel_id, {
+    betas: tunnelBetas,
+  });
+  assert.equal(tunnel.id, state.tunnel_id, 'Tunnel identity survived restart');
+  assert.equal(tunnel.archived_at, null, 'recovery Tunnel remains active');
+  const tunnels = await drain(tunnelClient.beta.tunnels.list({
+    include_archived: true,
+    betas: tunnelBetas,
+  }));
+  assert.ok(tunnels.some(({ id }) => id === state.tunnel_id), 'Tunnel list survived restart');
+  const revealed = await tunnelClient.beta.tunnels.revealToken(state.tunnel_id, {
+    betas: tunnelBetas,
+  });
+  assert.equal(
+    crypto.createHash('sha256').update(revealed.tunnel_token).digest('hex'),
+    state.tunnel_token_sha256,
+    'rotated Tunnel secret survived restart without entering recovery state',
+  );
 }
 
-export async function cleanupRecovery({ client, state }) {
+export async function cleanupRecovery({ client, tunnelClient, state }) {
+  assert.ok(tunnelClient?.beta?.tunnels, 'Tunnel recovery client');
   const cleanup = await Promise.allSettled([
     client.beta.sessions.delete(state.session_id, { betas: managedBetas }),
     client.beta.files.delete(state.file_id),
+    tunnelClient.beta.tunnels.archive(state.tunnel_id, { betas: tunnelBetas }),
   ]);
   const failed = cleanup.filter(({ status }) => status === 'rejected');
   if (failed.length > 0) {
@@ -214,15 +293,25 @@ async function main() {
   const agent = process.env.AWAKEN_MANAGED_AGENT_ID;
   const environmentId = process.env.AWAKEN_MANAGED_ENVIRONMENT_ID;
   const stateFile = process.env.AWAKEN_MANAGED_RECOVERY_STATE_FILE;
-  for (const [name, value] of Object.entries({ baseURL, apiKey, agent, environmentId, stateFile })) {
+  const tunnelAccessToken = process.env.AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN;
+  for (const [name, value] of Object.entries({
+    baseURL,
+    apiKey,
+    tunnelAccessToken,
+    agent,
+    environmentId,
+    stateFile,
+  })) {
     assert.ok(value, `${name} is required`);
   }
   const selected = currentAndCandidateClients(await loadConformanceClients()).at(-1);
   const client = new selected.Client({ apiKey, baseURL });
+  const tunnelClient = new selected.Client({ authToken: tunnelAccessToken, baseURL });
   if (phase === 'prepare') {
     const marker = `${Date.now()}-${crypto.randomUUID()}`;
     const state = await prepareRecovery({
       client,
+      tunnelClient,
       toFile: selected.toFile,
       agent,
       environmentId,
@@ -230,6 +319,7 @@ async function main() {
     });
     await persistPreparedRecovery({
       client,
+      tunnelClient,
       stateFile,
       state: {
         ...state,
@@ -240,8 +330,8 @@ async function main() {
   }
   const state = validateRecoveryState(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
   assertRecoverySdkIdentity(state, selected);
-  if (phase === 'verify') await verifyRecovery({ client, state });
-  else await cleanupRecovery({ client, state });
+  if (phase === 'verify') await verifyRecovery({ client, tunnelClient, state });
+  else await cleanupRecovery({ client, tunnelClient, state });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();

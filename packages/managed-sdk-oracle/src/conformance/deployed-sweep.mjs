@@ -21,6 +21,21 @@ function isCollectionRead(operation) {
 export function buildDeployedProbePlan(coverage) {
   assert.equal(coverage.schema_version, 2, 'unsupported operation coverage schema');
   const seen = new Set();
+  const gaProjectedBetaResources = new Set();
+  for (const resource of new Set(coverage.operations.map((operation) => operation.resource))) {
+    const betaOperations = coverage.operations.filter(
+      (operation) => operation.resource === resource && operation.id.startsWith('beta.'),
+    );
+    const hasGaSurface = coverage.operations.some(
+      (operation) => operation.resource === resource
+        && !operation.id.startsWith('beta.') && !operation.id.startsWith('documented.'),
+    );
+    if (hasGaSurface && betaOperations.length > 0 && betaOperations.every(
+      (operation) => operation.transport_query === 'beta=true' && operation.betas.length === 0,
+    )) {
+      gaProjectedBetaResources.add(resource);
+    }
+  }
   return coverage.operations.map((operation) => {
     assert.ok(!seen.has(operation.id), `duplicate deployed probe ${operation.id}`);
     seen.add(operation.id);
@@ -28,7 +43,7 @@ export function buildDeployedProbePlan(coverage) {
     assert.ok(operation.betas.length <= 1, `${operation.id}: ambiguous public beta policy`);
     const beta = operation.betas[0];
     assert.ok(
-      beta || operation.resource === 'models' || !operation.id.startsWith('beta.'),
+      beta || gaProjectedBetaResources.has(operation.resource) || !operation.id.startsWith('beta.'),
       `${operation.id}: no public beta policy`,
     );
     return {
@@ -60,16 +75,28 @@ function responseShape(body) {
 }
 
 function assertCanonicalResponse(probe, status, body, targetName) {
-  assert.ok(status < 500, `${targetName}/${probe.id}: public operation returned ${status}`);
+  const observed = `status=${status} body=${JSON.stringify(body)}`;
+  assert.ok(status < 500, `${targetName}/${probe.id}: public operation returned ${observed}`);
   if (probe.expectedClass === 'collection') {
-    assert.equal(status, 200, `${targetName}/${probe.id}: collection read`);
-    assert.ok(Array.isArray(body?.data), `${targetName}/${probe.id}: collection data`);
+    assert.equal(status, 200, `${targetName}/${probe.id}: collection read; ${observed}`);
+    assert.ok(Array.isArray(body?.data), `${targetName}/${probe.id}: collection data; ${observed}`);
     return;
   }
-  assert.ok(status >= 400 && status < 500, `${targetName}/${probe.id}: negative partition`);
-  assert.equal(body?.type, 'error', `${targetName}/${probe.id}: error envelope type`);
-  assert.equal(typeof body?.error?.type, 'string', `${targetName}/${probe.id}: error kind`);
-  assert.equal(typeof body?.error?.message, 'string', `${targetName}/${probe.id}: error message`);
+  assert.ok(
+    status >= 400 && status < 500,
+    `${targetName}/${probe.id}: negative partition; ${observed}`,
+  );
+  assert.equal(body?.type, 'error', `${targetName}/${probe.id}: error envelope type; ${observed}`);
+  assert.equal(
+    typeof body?.error?.type,
+    'string',
+    `${targetName}/${probe.id}: error kind; ${observed}`,
+  );
+  assert.equal(
+    typeof body?.error?.message,
+    'string',
+    `${targetName}/${probe.id}: error message; ${observed}`,
+  );
 }
 
 async function executeProbe(probe, target, fetchImpl) {
@@ -83,9 +110,19 @@ async function executeProbe(probe, target, fetchImpl) {
   const request = { method: probe.method, headers, signal: AbortSignal.timeout(15_000) };
   if (!['GET', 'HEAD', 'DELETE'].includes(probe.method)) {
     headers['content-type'] = 'application/json';
-    request.body = '{}';
+    // A syntactically malformed document is an operation-independent negative
+    // witness. `{}` is valid for defaultable resources such as User Profiles,
+    // while malformed JSON must fail before every JSON mutation and also
+    // exercises the media-type boundary of multipart operations. Bodyless
+    // actions still reject their generated absent resource identifiers.
+    request.body = '{';
   }
   const response = await fetchImpl(new URL(probe.path, target.baseURL), request);
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+  assert.ok(
+    contentType === 'application/json' || contentType?.endsWith('+json'),
+    `${target.name}/${probe.id}: expected JSON media type, received ${contentType ?? 'absent'}`,
+  );
   const text = await response.text();
   let body = null;
   if (text) {

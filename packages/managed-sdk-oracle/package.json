@@ -23,6 +23,7 @@
   "dependencies": {
     "@anthropic-ai/sdk-candidate": "npm:@anthropic-ai/sdk@0.122.0",
     "@anthropic-ai/sdk-current": "npm:@anthropic-ai/sdk@0.122.0",
+    "@anthropic-ai/sdk-beta-resources-legacy": "npm:@anthropic-ai/sdk@0.121.0",
     "@anthropic-ai/sdk-oldest": "npm:@anthropic-ai/sdk@0.105.0",
     "@anthropic-ai/sdk-user-profiles-legacy": "npm:@anthropic-ai/sdk@0.117.1",
     "typescript": "5.9.3"

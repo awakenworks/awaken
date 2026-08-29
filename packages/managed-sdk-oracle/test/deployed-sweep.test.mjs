@@ -17,6 +17,8 @@ const operations = [
   { id: 'beta.tunnels.retrieve', method: 'GET', path: '/v1/tunnels/{}', resource: 'tunnels', betas: ['mcp-tunnels-2026-06-22'] },
   { id: 'documented.organizationTunnels.list', method: 'GET', path: '/v1/organizations/tunnels', resource: 'tunnels', betas: ['mcp-tunnels-2026-05-19'] },
   { id: 'documented.skills.versions.retrieveFile', method: 'GET', path: '/v1/skills/{}/versions/{}/files/{}', transport_query: 'beta=true', resource: 'skills', betas: ['skills-2025-10-02'] },
+  { id: 'beta.models.list', method: 'GET', path: '/v1/models', transport_query: 'beta=true', resource: 'models', betas: [] },
+  { id: 'models.list', method: 'GET', path: '/v1/models', resource: 'models', betas: [] },
 ];
 const coverage = { schema_version: 2, operations };
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +28,9 @@ test('deployed probe plan closes operations with one auth and beta policy', () =
   // C2 current Tunnel routes select WIF while C3 legacy routes select the API
   // key; C4 item ids are deliberately absent. Effects: E1 exactly one probe
   // per operation, E2 no credential fallback, E3 deterministic 4xx semantics.
+  // C5 permits a header-free Beta namespace only when the whole family selects
+  // beta=true, every method omits the endpoint capability, and a GA surface
+  // exists; a partial omission or missing GA family cannot masquerade as GA.
   const plan = buildDeployedProbePlan(coverage);
   assert.equal(plan.length, operations.length, 'C1/E1');
   assert.equal(new Set(plan.map(({ id }) => id)).size, operations.length, 'C1/E1');
@@ -39,6 +44,15 @@ test('deployed probe plan closes operations with one auth and beta policy', () =
   const documentedSkill = plan.find(({ id }) => id === 'documented.skills.versions.retrieveFile');
   assert.equal(documentedSkill.beta, 'skills-2025-10-02', 'documented Beta capability');
   assert.match(documentedSkill.path, /\?beta=true$/u, 'documented Beta selector');
+  assert.equal(plan.find(({ id }) => id === 'beta.models.list').beta, undefined, 'C5');
+  assert.throws(
+    () => buildDeployedProbePlan({
+      schema_version: 2,
+      operations: operations.filter(({ id }) => id !== 'models.list'),
+    }),
+    /beta\.models\.list: no public beta policy/u,
+    'C5',
+  );
 });
 
 test('generated Beta and GA inventory is executable by the deployed sweep', () => {
@@ -62,8 +76,12 @@ test('generated Beta and GA inventory is executable by the deployed sweep', () =
 });
 
 test('deployed sweep rejects malformed errors before compatibility is claimed', async () => {
-  // Decision table: collection+200+page => accept; negative+4xx+Anthropic
-  // envelope => accept; negative+5xx or malformed envelope => fail closed.
+  // Cause/effect graph: collection reads use a valid empty query; mutations use
+  // a syntax-invalid JSON witness independent of optional SDK fields; item
+  // reads use absent ids. Every negative response must cross the Anthropic
+  // envelope boundary. Decision table: collection+200+page => accept;
+  // negative+4xx+Anthropic envelope => accept; mutation without exact malformed
+  // witness, negative+5xx, or malformed envelope => fail closed.
   const target = { name: 'actual', baseURL: 'https://actual.invalid', apiKey: 'key', tunnelAccessToken: 'token' };
   const validFetch = async (url, init) => {
     const operation = buildDeployedProbePlan(coverage).find(
@@ -71,6 +89,10 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
         && url.pathname === new URL(path, target.baseURL).pathname,
     );
     assert.ok(operation);
+    if (!['GET', 'HEAD', 'DELETE'].includes(init.method)) {
+      assert.equal(init.headers['content-type'], 'application/json');
+      assert.equal(init.body, '{', `${operation.id}: operation-independent malformed witness`);
+    }
     if (operation.expectedClass === 'collection') {
       return new Response(JSON.stringify({ data: [], has_more: false, next_page: null }), {
         status: 200, headers: { 'content-type': 'application/json' },
@@ -103,6 +125,25 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
       },
     }),
     /error envelope type/u,
+  );
+
+  await assert.rejects(
+    () => exerciseDeployedOperationSweep({
+      actual: target,
+      coverage,
+      fetchImpl: async (url, init) => {
+        const operation = buildDeployedProbePlan(coverage).find(
+          ({ method, path }) => init.method === method
+            && url.pathname === new URL(path, target.baseURL).pathname,
+        );
+        const body = operation.expectedClass === 'collection'
+          ? { data: [], has_more: false, next_page: null }
+          : { type: 'error', error: { type: 'not_found_error', message: 'missing' } };
+        return new Response(JSON.stringify(body), { status: operation.expectedClass === 'collection' ? 200 : 404 });
+      },
+    }),
+    /expected JSON media type/u,
+    'JSON bytes without the protocol media type are not SDK compatibility evidence',
   );
 });
 

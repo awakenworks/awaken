@@ -1,3 +1,4 @@
+// Shared request-contract witness runner; not a standalone E2E entry point.
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 

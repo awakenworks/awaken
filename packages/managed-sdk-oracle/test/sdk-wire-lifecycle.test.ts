@@ -30,9 +30,7 @@ const oracle = JSON.parse(fs.readFileSync(
 const operations = new Map(oracle.current.operations.map((operation) => [operation.id, operation]));
 const managedBeta = ['managed-agents-2026-04-01'];
 const dreamBeta = ['dreaming-2026-04-21'];
-const fileBeta = ['files-api-2025-04-14'];
 const memoryBeta = ['agent-memory-2026-07-22'];
-const skillBeta = ['skills-2025-10-02'];
 const tunnelBeta = ['mcp-tunnels-2026-06-22'];
 const userProfileBeta = ['user-profiles-2026-08-18'];
 const fixtureID = 'fixture-id';
@@ -185,12 +183,12 @@ const scenarios = [
     phases: ['create', 'retrieve', 'list', 'terminal'],
     calls: [
       ['beta.files.upload', async (c) => c.beta.files.upload({
-        file: await toFile(Buffer.from('fixture'), 'fixture.txt'), betas: fileBeta,
+        file: await toFile(Buffer.from('fixture'), 'fixture.txt'),
       })],
-      ['beta.files.retrieveMetadata', (c) => c.beta.files.retrieveMetadata(fixtureID, { betas: fileBeta })],
-      ['beta.files.download', (c) => c.beta.files.download(fixtureID, { betas: fileBeta })],
-      ['beta.files.list', (c) => c.beta.files.list({ betas: fileBeta })],
-      ['beta.files.delete', (c) => c.beta.files.delete(fixtureID, { betas: fileBeta })],
+      ['beta.files.retrieveMetadata', (c) => c.beta.files.retrieveMetadata(fixtureID)],
+      ['beta.files.download', (c) => c.beta.files.download(fixtureID)],
+      ['beta.files.list', (c) => c.beta.files.list()],
+      ['beta.files.delete', (c) => c.beta.files.delete(fixtureID)],
     ],
   },
   {
@@ -251,16 +249,16 @@ const scenarios = [
     phases: ['create', 'retrieve', 'list', 'terminal'],
     calls: [
       ['beta.skills.create', async (c) => c.beta.skills.create({
-        files: [await toFile(Buffer.from('# Skill'), 'SKILL.md')], betas: skillBeta,
+        files: [await toFile(Buffer.from('# Skill'), 'SKILL.md')],
       })],
-      ['beta.skills.retrieve', (c) => c.beta.skills.retrieve(fixtureID, { betas: skillBeta })],
-      ['beta.skills.list', (c) => c.beta.skills.list({ betas: skillBeta })],
-      ['beta.skills.delete', (c) => c.beta.skills.delete(fixtureID, { betas: skillBeta })],
-      ['beta.skills.versions.create', async (c) => c.beta.skills.versions.create(fixtureID, { files: [await toFile(Buffer.from('# Skill'), 'SKILL.md')], betas: skillBeta })],
-      ['beta.skills.versions.retrieve', (c) => c.beta.skills.versions.retrieve(fixtureID, { skill_id: fixtureID, betas: skillBeta })],
-      ['beta.skills.versions.list', (c) => c.beta.skills.versions.list(fixtureID, { betas: skillBeta })],
-      ['beta.skills.versions.download', (c) => c.beta.skills.versions.download(fixtureID, { skill_id: fixtureID, betas: skillBeta })],
-      ['beta.skills.versions.delete', (c) => c.beta.skills.versions.delete(fixtureID, { skill_id: fixtureID, betas: skillBeta })],
+      ['beta.skills.retrieve', (c) => c.beta.skills.retrieve(fixtureID)],
+      ['beta.skills.list', (c) => c.beta.skills.list()],
+      ['beta.skills.delete', (c) => c.beta.skills.delete(fixtureID)],
+      ['beta.skills.versions.create', async (c) => c.beta.skills.versions.create(fixtureID, { files: [await toFile(Buffer.from('# Skill'), 'SKILL.md')] })],
+      ['beta.skills.versions.retrieve', (c) => c.beta.skills.versions.retrieve(fixtureID, { skill_id: fixtureID })],
+      ['beta.skills.versions.list', (c) => c.beta.skills.versions.list(fixtureID)],
+      ['beta.skills.versions.download', (c) => c.beta.skills.versions.download(fixtureID, { skill_id: fixtureID })],
+      ['beta.skills.versions.delete', (c) => c.beta.skills.versions.delete(fixtureID, { skill_id: fixtureID })],
     ],
   },
   {

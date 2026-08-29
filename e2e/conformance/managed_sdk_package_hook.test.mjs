@@ -152,6 +152,11 @@ test('version-projected capability inputs form one closed boolean domain', () =>
     ['management_files_models_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_FILES', /GA Files capability/u],
     ['management_skills_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_SKILLS', /GA Skills capability/u],
     ['managed_dream_e2e.ts', 'AWAKEN_MANAGED_SDK_HAS_DREAMS', /Dreams capability/u],
+    [
+      'management_user_profiles_e2e.mjs',
+      'AWAKEN_MANAGED_SDK_USER_PROFILES_PROJECTION',
+      /User Profiles projection/u,
+    ],
   ]) {
     const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', script)], {
       encoding: 'utf8',

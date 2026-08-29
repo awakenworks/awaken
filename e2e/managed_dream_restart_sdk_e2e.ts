@@ -1,4 +1,5 @@
 // Official TypeScript SDK restart interleaving for durable Dreams.
+// Test design: official_sdk_dream_restart_interleaving
 //
 // Cause/effect decision table:
 // | Rule | Durable state at process loss | SDK action after restart | Effect |

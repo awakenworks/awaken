@@ -11,10 +11,16 @@ import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package
 import {
   MANAGED_TS_METHOD_MANIFEST,
   managedTsMethodManifestForOperations,
+  managedTsSdkHelperMethods,
 } from './managed_ts_sdk_method_manifest.mjs';
 
 const E2E = resolve(import.meta.dirname, '..');
-const Anthropic = qualifiedClient(await loadQualifiedClients(), 'current_oracle').Client;
+const qualifiedClients = await loadQualifiedClients();
+const Anthropic = qualifiedClient(qualifiedClients, 'current_oracle').Client;
+const LegacyAnthropic = qualifiedClient(
+  qualifiedClients,
+  'beta_resource_projection_change_point',
+).Client;
 const operationCoverage = JSON.parse(readFileSync(resolve(
   E2E,
   '../contracts/anthropic-managed/operation-coverage.generated.json',
@@ -59,7 +65,7 @@ function assertExactMethodInventory(manifest, actual) {
 
 test('real-process ownership derives every HTTP method from the canonical operation ledger', () => {
   // Cause/effect graph: C1=current official SDK operations are generated once
-  // into the canonical ledger; C2=the E2E ownership projection adds only four
+  // into the canonical ledger; C2=the E2E ownership projection adds only five
   // non-HTTP generated helpers. Effects: E1=every HTTP id and route is identical
   // to C1, E2=no stale hand-copied operation can survive, E3=documented
   // SDK-absent routes cannot be presented as SDK calls. Decision table:
@@ -90,6 +96,7 @@ test('real-process ownership derives every HTTP method from the canonical operat
       'beta.environments.work.poller',
       'beta.environments.work.worker',
       'beta.sessions.events.toolRunner',
+      'beta.webhooks.parseUnverified',
       'beta.webhooks.unwrap',
     ],
     'C2/E2',
@@ -173,37 +180,55 @@ test('Managed SDK method ownership rejects missing and overlapping scoped entrie
 });
 
 test('one behavior-owner graph projects the exact wire contract of each SDK version', () => {
-  // Metamorphic version projection: C1 0.121 and 0.122 retain the same operation
+  // Metamorphic version projection: C1 0.121 and 0.122 retain the same HTTP operation
   // identities/owners; C2 0.122 removes the Files/Skills feature betas from its
-  // generated requests. E1 current projection is byte-equivalent to the
-  // generated manifest; E2 candidate projection changes only generated wire
-  // coordinates and preserves every owner. This lets one real-process suite
+  // generated requests; C3 0.122 adds parseUnverified. E1 current projection is
+  // byte-equivalent to the generated manifest; E2 legacy projection changes only
+  // generated wire coordinates/helpers and preserves every HTTP owner. This lets one real-process suite
   // replay both versions without freezing 0.121 headers into 0.122 evidence.
+  const legacyOperations = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-beta-resources-legacy').root,
+    scope,
+  ).operations;
   const currentOperations = extractOperationsFromPackageRoot(
     resolveSdkPackage('@anthropic-ai/sdk-current').root,
     scope,
   ).operations;
-  const candidateOperations = extractOperationsFromPackageRoot(
-    resolveSdkPackage('@anthropic-ai/sdk-candidate').root,
-    scope,
-  ).operations;
-  const current = managedTsMethodManifestForOperations(currentOperations);
-  const candidate = managedTsMethodManifestForOperations(candidateOperations);
+  const legacy = managedTsMethodManifestForOperations(legacyOperations, {
+    helperMethods: managedTsSdkHelperMethods(new LegacyAnthropic({
+      apiKey: 'inventory', // awaken-allow: secret
+    })),
+  });
+  const current = managedTsMethodManifestForOperations(currentOperations, {
+    helperMethods: managedTsSdkHelperMethods(new Anthropic({
+      apiKey: 'inventory', // awaken-allow: secret
+    })),
+  });
   assert.deepEqual(current, MANAGED_TS_METHOD_MANIFEST, 'C1/E1');
   assert.deepEqual(
-    candidate.map(({ sdkMethod, owner }) => ({ sdkMethod, owner })),
-    current.map(({ sdkMethod, owner }) => ({ sdkMethod, owner })),
+    legacy.filter(({ method }) => method).map(({ sdkMethod, owner }) => ({ sdkMethod, owner })),
+    current.filter(({ method }) => method).map(({ sdkMethod, owner }) => ({ sdkMethod, owner })),
     'C1/E2',
   );
   assert.deepEqual(
-    current.find(({ sdkMethod }) => sdkMethod === 'beta.files.delete').betas,
+    legacy.find(({ sdkMethod }) => sdkMethod === 'beta.files.delete').betas,
     ['files-api-2025-04-14'],
     'C2',
   );
   assert.deepEqual(
-    candidate.find(({ sdkMethod }) => sdkMethod === 'beta.files.delete').betas,
+    current.find(({ sdkMethod }) => sdkMethod === 'beta.files.delete').betas,
     [],
     'C2/E2',
+  );
+  assert.equal(
+    legacy.some(({ sdkMethod }) => sdkMethod === 'beta.webhooks.parseUnverified'),
+    false,
+    'C3',
+  );
+  assert.equal(
+    current.some(({ sdkMethod }) => sdkMethod === 'beta.webhooks.parseUnverified'),
+    true,
+    'C3/E1',
   );
 });
 

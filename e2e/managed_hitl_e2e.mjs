@@ -152,7 +152,7 @@ async function main() {
     }
 
     console.log('E2E PASS: HITL allow + deny round-trips via TS SDK.');
-  });
+  }, { mode: 'probe' });
 }
 
 main().catch((err) => {

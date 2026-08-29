@@ -2,8 +2,8 @@
 //
 // HTTP operation identity, method and route come exclusively from the generated
 // current-SDK oracle. This file owns only the orthogonal question "which real
-// process scenario proves this operation?" and the four generated SDK helpers
-// that do not correspond to an HTTP operation. Keeping those authorities
+// process scenario proves this operation?" and the version-projected generated
+// SDK helpers that do not correspond to an HTTP operation. Keeping those authorities
 // separate prevents a hand-maintained method inventory from certifying a stale
 // SDK while still making every behavior owner reviewable.
 
@@ -74,6 +74,14 @@ const SDK_HELPERS = [
     owner: 'managed_session_tool_runner_matrix_e2e.mjs',
   },
   {
+    sdkMethod: 'beta.webhooks.parseUnverified',
+    sdkRoot: 'beta',
+    relativeMethod: 'webhooks.parseUnverified',
+    route: 'offline-standard-webhooks',
+    owner: 'managed_webhooks_official_sdk_e2e.mjs',
+    sdkHelper: 'conformance/official_webhook_contract.mjs#exerciseOfficialWebhookContract',
+  },
+  {
     sdkMethod: 'beta.webhooks.unwrap',
     sdkRoot: 'beta',
     relativeMethod: 'webhooks.unwrap',
@@ -119,9 +127,23 @@ const operations = coverage.operations
 export const MANAGED_TS_METHOD_MANIFEST = [...operations, ...SDK_HELPERS]
   .sort((left, right) => left.sdkMethod.localeCompare(right.sdkMethod));
 
+export function managedTsSdkHelperMethods(client) {
+  return new Set(SDK_HELPERS.filter(({ sdkRoot, relativeMethod }) => {
+    const segments = relativeMethod.split('.');
+    let value = sdkRoot === 'beta' ? client.beta : client;
+    for (const segment of segments) value = value?.[segment];
+    return typeof value === 'function';
+  }).map(({ sdkMethod }) => sdkMethod));
+}
+
 export function managedTsMethodManifestForOperations(
   selectedOperations,
-  { allowHistoricalSubset = false, responseContracts, wireResponseContracts } = {},
+  {
+    allowHistoricalSubset = false,
+    helperMethods,
+    responseContracts,
+    wireResponseContracts,
+  } = {},
 ) {
   assert.ok(Array.isArray(selectedOperations), 'selected SDK operations must be an array');
   const selected = new Map();
@@ -147,7 +169,9 @@ export function managedTsMethodManifestForOperations(
   }
 
   return MANAGED_TS_METHOD_MANIFEST
-    .filter((evidence) => !evidence.method || selected.has(evidence.sdkMethod))
+    .filter((evidence) => evidence.method
+      ? selected.has(evidence.sdkMethod)
+      : !helperMethods || helperMethods.has(evidence.sdkMethod))
     .map((evidence) => {
       if (!evidence.method) return evidence;
       const operation = selected.get(evidence.sdkMethod);
