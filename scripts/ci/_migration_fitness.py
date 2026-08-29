@@ -18,6 +18,17 @@ DDL = re.compile(
 )
 SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
 
+# Exact immutable receipts observed in the published dispatch ledger. This is
+# a closed compatibility inventory, not a general exemption: one owner must
+# include both frozen bodies and may declare exactly two legacy migrations.
+PUBLISHED_LEGACY_SQL_AUTHORITIES = {
+    "crates/server/awaken-run-ingress/src/migrations/expanded/V0015__delegation_group.sql":
+        "crates/server/awaken-run-ingress/src/dispatch_schema.rs",
+    "crates/server/awaken-run-ingress/src/migrations/expanded/V0016__drop_legacy_delegation_group.sql":
+        "crates/server/awaken-run-ingress/src/dispatch_schema.rs",
+}
+PUBLISHED_LEGACY_RUST_AUTHORITIES = set(PUBLISHED_LEGACY_SQL_AUTHORITIES.values())
+
 CONDITIONAL_MIGRATION_SQL = (
     ("IF NOT EXISTS", re.compile(r"\bIF\s+NOT\s+EXISTS\b", re.IGNORECASE)),
     ("IF EXISTS", re.compile(r"\bIF\s+EXISTS\b", re.IGNORECASE)),
@@ -127,6 +138,24 @@ def check_all(repo_root: Path) -> list[str]:
     }
     dialect_groups: dict[tuple[Path, str], dict[str, Path]] = {}
     for path in sorted(crates.rglob("*.sql")):
+        relative = str(path.relative_to(repo_root))
+        legacy_owner = PUBLISHED_LEGACY_SQL_AUTHORITIES.get(relative)
+        if legacy_owner is not None:
+            migration_root = path.parents[1]
+            include_path = path.relative_to(migration_root).as_posix()
+            include = f'include_str!("migrations/{include_path}")'
+            owners = [
+                source_path
+                for source_path, source in rust_sources.items()
+                if include in source
+            ]
+            expected_owner = repo_root / legacy_owner
+            if owners != [expected_owner]:
+                errors.append(
+                    f"{relative}: published legacy SQL must be included only by "
+                    f"{legacy_owner} (found {len(owners)} owners)"
+                )
+            continue
         dialect = DIALECT_SQL.fullmatch(path.name)
         if path.parent.name == "migrations" and dialect:
             key = (path.parent, dialect.group("identity"))
@@ -193,10 +222,30 @@ def check_all(repo_root: Path) -> list[str]:
         if owns_migration:
             errors.extend(_conditional_errors(path, migration_source, repo_root))
             for constructor in LEGACY_CONSTRUCTORS:
-                if constructor in migration_source:
+                if (
+                    constructor in migration_source
+                    and str(path.relative_to(repo_root))
+                    not in PUBLISHED_LEGACY_RUST_AUTHORITIES
+                ):
                     errors.append(
                         f"{path.relative_to(repo_root)}: `{constructor[:-1]}` is a parallel "
                         "unreleased-history path; use Migration::new/per_dialect"
+                    )
+            relative = str(path.relative_to(repo_root))
+            if relative in PUBLISHED_LEGACY_RUST_AUTHORITIES:
+                expected = sum(
+                    owner == relative
+                    for owner in PUBLISHED_LEGACY_SQL_AUTHORITIES.values()
+                )
+                actual = migration_source.count("Migration::published_legacy(")
+                unsupported = sum(
+                    migration_source.count(constructor)
+                    for constructor in LEGACY_CONSTRUCTORS[1:]
+                )
+                if actual != expected or unsupported != 0:
+                    errors.append(
+                        f"{relative}: published legacy inventory must contain exactly "
+                        f"{expected} direct immutable declarations"
                     )
         for match in registration.finditer(source):
             if match.group("registered") != match.group("included"):

@@ -37,7 +37,7 @@ use crate::dispatch::{
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
     verify_credential_realization_receipt,
 };
-use crate::dispatch_schema::dispatch_bundle;
+use crate::dispatch_schema::{BUNDLE_ID, converged_dispatch_bundle, selected_dispatch_bundle};
 use crate::postgres_helpers::{
     append_pending_transaction, current_worker_claim, idempotency_conflict, load_pending_input,
     retry_exhausted_candidate,
@@ -71,6 +71,24 @@ pub enum StoreError {
 /// database. It is built in, not configured.
 pub(super) const NS: &str = "runtime";
 
+async fn published_v15_checksum(pool: &PgPool) -> Result<Option<String>, StoreError> {
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(pool)
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    if ledger.is_none() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(&format!(
+        "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 15"
+    ))
+    .bind(BUNDLE_ID)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| StoreError::Migrate(error.to_string()))
+}
+
 /// Shared PostgreSQL candidate predicate. A normal wake/fresh claim waits behind
 /// every other Running or Awaiting Run on its Thread. Cancellation waits only
 /// behind a Running peer so legacy multi-Awaiting rows can drain sequentially.
@@ -100,20 +118,38 @@ pub struct PostgresDispatchStore {
 }
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
-    let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-        .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .run_bundle(&bundle)
+    let published = selected_dispatch_bundle(published_v15_checksum(pool).await?.as_deref())
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    let converged =
+        converged_dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    runner
+        .run_bundle(&published)
+        .await
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    runner
+        .run_bundle(&converged)
         .await
         .map(|_| ())
         .map_err(|err| StoreError::Migrate(err.to_string()))
 }
 
 pub(super) async fn verify_schema(pool: &PgPool) -> Result<(), StoreError> {
-    let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-        .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .verify_bundle(&bundle)
+    let published = selected_dispatch_bundle(published_v15_checksum(pool).await?.as_deref())
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    let converged =
+        converged_dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    runner
+        .verify_bundle(&published)
+        .await
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+    runner
+        .verify_bundle(&converged)
         .await
         .map_err(|err| StoreError::Migrate(err.to_string()))
 }
