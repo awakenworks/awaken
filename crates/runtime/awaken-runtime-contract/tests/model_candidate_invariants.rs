@@ -371,3 +371,61 @@ fn deserialization_cannot_bypass_candidate_invariants() {
         wire["provisioning"]["security_fingerprint"] = "".into();
     });
 }
+
+#[test]
+fn legacy_provider_access_decoding_is_evidence_bounded() {
+    // Causes: L1 current explicit access kind; L2 historical omission with an
+    // exact frozen credential; L3 omission without credential evidence; L4 an
+    // unknown explicit kind. Effects: E1 exact round trip; E2 upgrade to Direct
+    // in memory while preserving the immutable stored bytes/fingerprint; E3/E4
+    // fail closed. Rules: L1=>E1; L2=>E2; L3=>E3; L4=>E4. No provider/route-name
+    // inference or store-specific compatibility reader participates.
+    let expected = ResolvedModelCandidate::try_provider(
+        ModelBinding::new("identity-a", "model-a", "native"),
+        "provider@1",
+        "route@1",
+        "workspace-a",
+        Some(awaken_runtime_contract::CredentialAccess::new(
+            credential(),
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        )),
+        endpoint(),
+    )
+    .expect("current candidate");
+    let current = serde_json::to_value(&expected).expect("L1");
+    assert_eq!(
+        serde_json::from_value::<ResolvedModelCandidate>(current.clone()).unwrap(),
+        expected,
+        "E1"
+    );
+
+    let mut legacy = current.clone();
+    legacy["provisioning"]
+        .as_object_mut()
+        .unwrap()
+        .remove("access_kind");
+    assert_eq!(
+        serde_json::from_value::<ResolvedModelCandidate>(legacy.clone()).unwrap(),
+        expected,
+        "E2"
+    );
+
+    let mut ambiguous = legacy;
+    ambiguous["provisioning"]
+        .as_object_mut()
+        .unwrap()
+        .remove("credential");
+    assert!(
+        serde_json::from_value::<ResolvedModelCandidate>(ambiguous).is_err(),
+        "E3"
+    );
+
+    let mut unknown = current;
+    unknown["provisioning"]["access_kind"] = serde_json::json!("future_kind");
+    assert!(
+        serde_json::from_value::<ResolvedModelCandidate>(unknown).is_err(),
+        "E4"
+    );
+}

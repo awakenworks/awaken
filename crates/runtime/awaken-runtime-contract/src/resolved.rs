@@ -756,7 +756,30 @@ struct ResolvedModelCandidateWire {
 
 impl<'de> Deserialize<'de> for ResolvedModelCandidate {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = ResolvedModelCandidateWire::deserialize(deserializer)?;
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(provisioning) = value
+            .get_mut("provisioning")
+            .and_then(serde_json::Value::as_object_mut)
+            && provisioning.get("type").and_then(serde_json::Value::as_str) == Some("provider")
+            && !provisioning.contains_key("access_kind")
+        {
+            if provisioning
+                .get("credential")
+                .is_some_and(|credential| !credential.is_null())
+            {
+                // Publications written before the explicit access-source axis
+                // could only prove direct access by freezing this credential.
+                // Keep that immutable fingerprint shape readable without
+                // inferring an uncredentialed route as direct or brokered.
+                provisioning.insert("access_kind".into(), serde_json::json!("direct"));
+            } else {
+                return Err(serde::de::Error::custom(
+                    "legacy provider provisioning without access_kind requires an exact credential",
+                ));
+            }
+        }
+        let wire =
+            ResolvedModelCandidateWire::deserialize(value).map_err(serde::de::Error::custom)?;
         Self::try_from_parts(wire.binding, wire.provisioning).map_err(serde::de::Error::custom)
     }
 }
