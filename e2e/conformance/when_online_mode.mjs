@@ -1,3 +1,5 @@
+const OFFICIAL_ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+
 export function whenOnlineMode(env) {
   const required = env.AWAKEN_WHEN_ONLINE_REQUIRED === '1';
   const optedIn = env.AWAKEN_WHEN_ONLINE === '1';
@@ -6,4 +8,11 @@ export function whenOnlineMode(env) {
     return Object.freeze({ run: false, error: 'ANTHROPIC_API_KEY is required by the release gate' });
   }
   return Object.freeze({ run: hasKey && (required || optedIn), error: null });
+}
+
+export function officialAnthropicClientOptions(env) {
+  return Object.freeze({
+    apiKey: env.ANTHROPIC_API_KEY,
+    baseURL: OFFICIAL_ANTHROPIC_BASE_URL,
+  });
 }

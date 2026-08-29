@@ -15,14 +15,18 @@
 import assert from 'node:assert/strict';
 import { waitForSessionEventReceipt } from '../harness.mjs';
 import { rustOutboundTypes, rustInboundTypes } from './catalog.mjs';
-import { whenOnlineMode } from './when_online_mode.mjs';
+import {
+  officialAnthropicClientOptions,
+  whenOnlineMode,
+} from './when_online_mode.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function runOnline() {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  // No baseURL override → the SDK's real https://api.anthropic.com.
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  // Explicit options prevent an ambient ANTHROPIC_BASE_URL from turning a
+  // provider gateway into false Anthropic-reference evidence.
+  const client = new Anthropic(officialAnthropicClientOptions(process.env));
   const agent = process.env.AWAKEN_WHEN_ONLINE_AGENT || 'assistant';
   const environmentId = process.env.AWAKEN_WHEN_ONLINE_ENV || 'env_local';
 
