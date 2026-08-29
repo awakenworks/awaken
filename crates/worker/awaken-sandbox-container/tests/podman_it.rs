@@ -63,6 +63,7 @@ fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
         image: "docker.io/library/busybox:latest".into(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
+        control_services: Default::default(),
         packages: Default::default(),
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
@@ -212,6 +213,7 @@ async fn podman_materializes_inline_content_through_the_provider() {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     };
 
     let sandbox = provider
@@ -274,6 +276,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     };
     let sandbox = provider.create(&spec).await.expect("create environment");
     let process = sandbox
@@ -329,6 +332,7 @@ async fn podman_peer_adoption_renews_only_a_live_environment() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     };
     let handle = {
         let sandbox = provider_a.create(&spec).await.expect("create by worker A");
@@ -397,6 +401,7 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     };
     let sandbox = provider.create(&spec).await.unwrap();
     let process = sandbox

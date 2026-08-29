@@ -131,6 +131,20 @@ impl ContainerEnvironment for ReadyEnvironment {
 }
 
 #[async_trait]
+impl awaken_sandbox_container::SandboxControlServicePublisher for ReadyEnvironment {
+    async fn publish_sandbox_control_service(
+        &self,
+        _kind: awaken_sandbox_container::SandboxControlServiceKind,
+        _service: Arc<dyn awaken_sandbox_container::SandboxControlService>,
+    ) -> Result<
+        Box<dyn awaken_sandbox_container::PublishedSandboxControlService>,
+        awaken_sandbox_container::SandboxControlPublishError,
+    > {
+        Err(awaken_sandbox_container::SandboxControlPublishError)
+    }
+}
+
+#[async_trait]
 impl ContainerEnvironmentProvider for RecordingProvider {
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
         Ok(())
@@ -148,6 +162,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
             resource_limits: true,
             custom_rootfs: true,
             package_provisioning: true,
+            control_services: Default::default(),
         }
     }
 

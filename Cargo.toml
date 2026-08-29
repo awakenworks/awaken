@@ -153,6 +153,7 @@ awaken-durable-projection = { path = "crates/server/awaken-durable-projection" }
 awaken-environment-image-build = { path = "crates/server/awaken-environment-image-build" }
 awaken-environment-package-image-builder = { path = "crates/server/awaken-environment-package-image-builder" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }
+awaken-sandbox-control = { path = "crates/contract/awaken-sandbox-control" }
 awaken-acp-contract = { path = "crates/worker/awaken-acp-contract" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }
 awaken-tool-relay = { path = "crates/worker/awaken-tool-relay" }

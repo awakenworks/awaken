@@ -18,9 +18,15 @@ use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
 use awaken_resource_contract::content_id as content_fingerprint;
+pub use awaken_sandbox_control::{
+    PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher,
+};
 use std::sync::Arc;
 
 mod cache_volume;
+mod control;
+use control::ContainerControlPublicationRegistry;
 mod environment_owned;
 use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
@@ -54,7 +60,7 @@ pub use provider_contract::{
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
-    RuntimeAgentProcess, RuntimeError,
+    RuntimeAgentProcess, RuntimeError, SandboxControlBindingRequest,
 };
 use runtime::{allowlist_capability_advertised, container_capabilities};
 pub use secret::SecretBytes;
@@ -99,6 +105,7 @@ pub struct ContainerPlan {
     /// [`ContainerRuntime::spawn`] / [`ContainerRuntime::spawn_agent`].
     pub command: Vec<String>,
     pub env: Vec<(String, String)>,
+    pub control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
     pub packages: pc::PackageRequirements,
     pub binds: Vec<BindPlan>,
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
@@ -179,6 +186,7 @@ mod planner_tests {
             image: "ghcr.io/awaken/sandbox:1".into(),
             command: vec!["claude".into(), "--acp".into()],
             env: vec![("TZ".into(), "UTC".into())],
+            control_services: Default::default(),
             packages: Default::default(),
             binds: vec![BindPlan {
                 source_ref: "/host/data".into(),
@@ -1041,6 +1049,7 @@ fn container_plan_with_allowlist(
         image: image_of(spec, default_image),
         command: command.to_vec(),
         env,
+        control_services: spec.control_services.clone(),
         packages: spec.packages.clone(),
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
@@ -1120,6 +1129,18 @@ pub struct ContainerProvider<R: ContainerRuntime> {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
+    fn runtime_sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        container_capabilities(
+            self.runtime.enforces_network_none(),
+            allowlist_capability_advertised(
+                self.runtime.enforces_network_allowlist(),
+                self.allowlist_proxy.is_some(),
+            ),
+            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
+            self.runtime.sandbox_control_services(),
+        )
+    }
+
     async fn probe_runtime_ready(&self) -> Result<(), pc::SandboxError> {
         self.runtime.probe_ready().await.map_err(err)
     }
@@ -1214,18 +1235,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         spec: &pc::SandboxSpec,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         // Fail closed against our capabilities before touching the runtime.
-        pc::prepare_environment(
-            spec,
-            &container_capabilities(
-                self.runtime.enforces_network_none(),
-                allowlist_capability_advertised(
-                    self.runtime.enforces_network_allowlist(),
-                    self.allowlist_proxy.is_some(),
-                ),
-                self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
-            ),
-        )
-        .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
+            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
         if spec
             .mounts
             .iter()
@@ -1335,6 +1346,32 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 return Err(err(error));
             }
         };
+        let sandbox_control_incarnation = if spec.control_services.is_empty() {
+            None
+        } else {
+            match self
+                .runtime
+                .sandbox_control_binding(
+                    &container_id,
+                    SandboxControlBindingRequest::New {
+                        required: &spec.control_services,
+                    },
+                )
+                .await
+            {
+                Ok(Some(binding)) => Some(binding),
+                Ok(None) => {
+                    let _ = self.runtime.remove(&container_id).await;
+                    return Err(err(RuntimeError::Backend(
+                        "container runtime omitted a demanded Sandbox control incarnation".into(),
+                    )));
+                }
+                Err(error) => {
+                    let _ = self.runtime.remove(&container_id).await;
+                    return Err(err(error));
+                }
+            }
+        };
         // Report each mount's realization: a byte mount is a Bind and a Memory
         // store is the canonical mounter's copy projection. Built from spec.mounts
         // directly because native volumes do not align with the byte-bind list.
@@ -1360,6 +1397,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             container_id,
             outputs_path: spec.outputs_path.clone(),
             base_env: spec.env.clone(),
+            control_services: spec.control_services.clone(),
+            sandbox_control_incarnation,
+            control_publication: Arc::new(ContainerControlPublicationRegistry::default()),
             blobs: self.blobs.clone(),
             file_store: self.file_store.clone(),
             live_input_projection: self.runtime.supports_live_input_projection(),
@@ -1387,17 +1427,66 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        self.adopt_container_with_spec(None, handle).await
+    }
+
+    async fn adopt_container_with_spec(
+        &self,
+        spec: Option<&pc::SandboxSpec>,
+        handle: &pc::SandboxHandle,
+    ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        let capabilities = self.runtime_sandbox_capabilities();
+        if let Some(spec) = spec {
+            pc::prepare_environment(spec, &capabilities)
+                .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        }
         let payload = recovery::decode_handle(handle)?;
+        let control_services = pc::validate_adopted_sandbox_control_services(
+            spec.map(|spec| &spec.control_services),
+            &payload.control_services,
+            &capabilities,
+        )
+        .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
+        if payload.control_services.is_empty() != payload.sandbox_control_incarnation.is_none() {
+            return Err(err(RuntimeError::Backend(
+                "container handle control topology and incarnation are inconsistent".into(),
+            )));
+        }
         let container_id = payload.container_id;
         if self.runtime.inspect(&container_id).await.map_err(err)? == ContainerState::Gone {
             return Err(err(RuntimeError::NotFound(container_id)));
         }
+        let sandbox_control_incarnation = if control_services.is_empty() {
+            None
+        } else {
+            Some(
+                self.runtime
+                    .sandbox_control_binding(
+                        &container_id,
+                        SandboxControlBindingRequest::Adopt {
+                            required: &control_services,
+                            expected: payload.sandbox_control_incarnation.as_ref(),
+                        },
+                    )
+                    .await
+                    .map_err(err)?
+                    .ok_or_else(|| {
+                        err(RuntimeError::Backend(
+                            "adopted container omitted a demanded Sandbox control incarnation"
+                                .into(),
+                        ))
+                    })?,
+            )
+        };
         Ok(ContainerSandbox {
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),
             container_id,
             outputs_path: payload.outputs_path,
             base_env: payload.base_env,
+            control_services,
+            sandbox_control_incarnation,
+            control_publication: Arc::new(ContainerControlPublicationRegistry::default()),
             blobs: self.blobs.clone(),
             file_store: self.file_store.clone(),
             live_input_projection: payload.live_input_projection,
@@ -1473,14 +1562,7 @@ impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities(
-            self.runtime.enforces_network_none(),
-            allowlist_capability_advertised(
-                self.runtime.enforces_network_allowlist(),
-                self.allowlist_proxy.is_some(),
-            ),
-            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
-        )
+        self.runtime_sandbox_capabilities()
     }
 
     fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
@@ -1506,21 +1588,17 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Ok(Arc::new(self.adopt_container(adoption.handle).await?))
+        Ok(Arc::new(
+            self.adopt_container_with_spec(Some(adoption.spec), adoption.handle)
+                .await?,
+        ))
     }
 }
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities(
-            self.runtime.enforces_network_none(),
-            allowlist_capability_advertised(
-                self.runtime.enforces_network_allowlist(),
-                self.allowlist_proxy.is_some(),
-            ),
-            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
-        )
+        self.runtime_sandbox_capabilities()
     }
 
     async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
@@ -1551,6 +1629,9 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     outputs_path: String,
     /// Secret-free base requirements retained across attempt processes.
     base_env: Vec<pc::EnvVar>,
+    control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
+    sandbox_control_incarnation: Option<pc::SandboxControlIncarnation>,
+    control_publication: Arc<ContainerControlPublicationRegistry>,
     /// Resolution inputs retained so a capable runtime can project a later File
     /// generation through the same canonical BlobSource used at creation.
     blobs: Arc<std::collections::HashMap<String, Vec<u8>>>,
@@ -1758,6 +1839,8 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                 live_input_projection: self.live_input_projection,
                 continuation_excluded_paths: self.continuation_excluded_paths.clone(),
                 runtime_handle: self.runtime_handle.clone(),
+                sandbox_control_incarnation: self.sandbox_control_incarnation.clone(),
+                control_services: self.control_services.clone(),
             },
         )
     }
@@ -1829,6 +1912,10 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        // Publication is a live environment capability. Fence and join it before
+        // any write-back or runtime removal so no task can reopen a channel on a
+        // disposed container incarnation.
+        self.control_publication.close_for_dispose().await;
         // Writable durable credentials belong to the Session environment and are
         // harvested exactly once when that environment terminates, not after each
         // attempt process.

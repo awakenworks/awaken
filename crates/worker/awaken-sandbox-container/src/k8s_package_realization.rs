@@ -942,16 +942,10 @@ fn job_fact(job: &Job, namespace: &str) -> Result<JobFact, K8sPackageRealization
         .ok_or_else(|| K8sPackageRealizationError::invalid("package Job has no Pod template"))?;
     if pod.automount_service_account_token != Some(false)
         || pod.restart_policy.as_deref() != Some("Never")
-        || pod.host_network == Some(true)
-        || pod.host_pid == Some(true)
-        || pod.host_ipc == Some(true)
+        || crate::k8s::has_forbidden_sandbox_namespace_shape(pod)
         || pod.containers.len() != 1
         || pod
             .init_containers
-            .as_ref()
-            .is_some_and(|values| !values.is_empty())
-        || pod
-            .ephemeral_containers
             .as_ref()
             .is_some_and(|values| !values.is_empty())
     {

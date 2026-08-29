@@ -192,6 +192,7 @@ mod tests {
             limits: pc::ResourceLimits::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: Some(60),
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,

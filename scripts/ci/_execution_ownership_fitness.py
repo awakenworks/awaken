@@ -102,7 +102,7 @@ PARALLEL_RAW_TOOL_REGISTRY = re.compile(
 RAW_TOOL_REGISTRY_OWNER = "crates/runtime/awaken-runtime-contract/src/tool.rs"
 RAW_TOOL_REGISTRY_CONSUMERS = (
     "crates/runtime/awaken-runtime/src/runtime.rs",
-    "crates/server/awaken-runtime-host/src/session_environment.rs",
+    "crates/server/awaken-runtime-host/src/session_environment/environment.rs",
     "crates/worker/awaken-tool-relay/src/serve.rs",
 )
 

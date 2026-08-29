@@ -135,6 +135,54 @@ where
     Ok(outcome)
 }
 
+/// Transfer only the process-local runtime-owner lease on one already
+/// realization-fenced Pod. Kubernetes resourceVersion supplies the CAS fence;
+/// the expected UID prevents a same-name replacement from being adopted.
+pub(super) async fn transfer_runtime_owner(
+    api: &Api<Pod>,
+    mut pod: Pod,
+    expected_uid: &str,
+    next_owner: &str,
+) -> Result<Pod, RuntimeError> {
+    if pod.metadata.uid.as_deref() != Some(expected_uid) {
+        return Err(backend(
+            "Kubernetes Sandbox Pod changed before runtime-owner transfer",
+        ));
+    }
+    if pod
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(crate::RUNTIME_OWNER_LABEL))
+        .map(String::as_str)
+        == Some(next_owner)
+    {
+        return Ok(pod);
+    }
+    let name = pod
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
+    pod.metadata
+        .labels
+        .get_or_insert_with(Default::default)
+        .insert(
+            crate::RUNTIME_OWNER_LABEL.to_string(),
+            next_owner.to_owned(),
+        );
+    let replaced = api
+        .replace(&name, &PostParams::default(), &pod)
+        .await
+        .map_err(backend)?;
+    if replaced.metadata.uid.as_deref() != Some(expected_uid) {
+        return Err(backend(
+            "Kubernetes Sandbox Pod changed during runtime-owner transfer",
+        ));
+    }
+    Ok(replaced)
+}
+
 /// Reap a terminal Pod left behind by eviction or node loss before realizing a
 /// new attempt under the same deterministic runtime id. A live or provisioning
 /// Pod is never replaced: its realization digest still decides whether the

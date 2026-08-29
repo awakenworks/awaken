@@ -146,6 +146,7 @@ fn sandbox_spec_from_projection(
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     };
     environment
         .and_then(|projection| projection.sandbox.clone())
@@ -216,6 +217,7 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 

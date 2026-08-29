@@ -760,6 +760,30 @@ the same Model/MCP/Repository validation. The published material source remains
 authoritative; deployment composition installs the matching adapter without a
 compatibility conversion or database fallback.
 
+### Dormant Sandbox control transport boundary
+
+The provider-neutral Sandbox control contract exposes one pre-create-known
+logical coordinate,
+`/run/awaken/control/repository-git-credential.sock`, and a bounded typed
+request/response channel. Linux Namespace projects that directory read-only from
+a provider-private host rendezvous. Kubernetes projects one private `emptyDir`
+read-only to the Agent and writable to a digest-pinned loopback forwarder; a
+same-binary exec probe checks a current generation marker without consuming the
+business channel. Exact realized topology and, for Containers, the provider
+incarnation survive in the durable Sandbox handle so adoption cannot silently
+downgrade a demanded control service.
+
+This is transport, not a credential holder or activation policy. The provider
+does not choose an access pin, holder, exposure, target, claim, verifier,
+Repository, or Vault revision, and it does not create `GIT_CONFIG*`, a Git
+helper overlay, or an Agent-visible synthetic credential. The current
+Repository access pin remains `Forbidden`. A later Session-owned projection may
+refer to the stable coordinate when it compiles the complete sandbox spec, but
+it must first reuse the existing exact access/holder/material authorities and
+must activate Agent plus Native/Resident-Hand paths from that one projection.
+Transport availability alone authorizes nothing and is not evidence that this
+later activation has landed.
+
 ## Staging
 
 Keep one authority per responsibility and stage additional policy without adding

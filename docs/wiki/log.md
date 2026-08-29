@@ -1,5 +1,25 @@
 # Wiki Update Log
 
+## 2026-08-29 — Add dormant provider-neutral Sandbox control transport
+
+- Extended the existing provisioning/provider authority with one typed,
+  fixed-coordinate Repository Git credential endpoint; no second publisher,
+  Environment method, Git helper path, credential store, or selection policy was
+  added.
+- Bound Namespace publication to one private external rendezvous and atomic
+  generation/inode ownership. Bound Kubernetes to one private `emptyDir`,
+  digest-pinned loopback forwarder, current-generation exec marker, exact Pod
+  UID/control forwarder/volume/mount projection, forbidden host/shared/
+  ephemeral namespace shapes, and authenticated first business port-forward;
+  this is not an exact comparison of every API-defaulted Pod field.
+- Preserved exact realized control topology through handles and adoption, kept
+  idle generations alive across bounded channel failures, and made every close
+  join before runtime removal without post-disposal retry.
+- Classified this as dormant provider capability only. `SessionEnvironment`
+  does not yet project `GIT_CONFIG*` or activate Agent/Native/Resident-Hand Git;
+  the existing `Forbidden` Repository pin, holder, claim, verifier, and material
+  authorities remain unchanged. This record does not claim a live GKE run.
+
 ## 2026-08-28 — Close targetless credential and MCP drain authority
 
 - Made Provider, A2A, and MCP publication carry exact catalog/origin/canonical-

@@ -22,6 +22,7 @@ awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-local-process.workspace = true
 awaken-agent-channel.workspace = true
+awaken-sandbox-control.workspace = true
 # BLAKE3 content id for the mount pin (was awaken_file_store::content_id) — kept a
 # leaf dep so this worker-tier crate links no durable store (A-G17).
 blake3 = "1"
@@ -30,7 +31,8 @@ async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["process", "rt", "sync", "io-util"] }
+tokio = { workspace = true, features = ["process", "rt", "sync", "io-util", "net", "time"] }
+tokio-util.workspace = true
 tempfile = "3"
 tar = "0.4"
 url.workspace = true

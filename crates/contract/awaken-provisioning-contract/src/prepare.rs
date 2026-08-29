@@ -25,6 +25,8 @@ pub struct EnvironmentPlan {
     /// The resource caps to enforce — carried forward so a provider realizes exactly
     /// what was admitted (and never a silently-dropped cap).
     pub limits: ResourceLimits,
+    pub control_services:
+        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
 /// Why a spec cannot be prepared against a backend.
@@ -46,6 +48,12 @@ pub enum PrepareError {
     ResourceLimitsUnsupported,
     #[error("resource request exceeds its {0} limit")]
     ResourceRequestExceedsLimit(&'static str),
+    #[error("backend cannot publish every requested Sandbox control service")]
+    SandboxControlServiceUnsupported,
+    #[error("requested Sandbox control services do not match the realized environment")]
+    SandboxControlServiceRealizationMismatch,
+    #[error("runtime-owned Sandbox control path overlaps {0:?}")]
+    SandboxControlPathConflict(String),
     #[error("env key {0:?} is reserved by the runtime")]
     ReservedEnvKey(String),
     #[error("outputs_path must be an absolute sandbox path")]
@@ -71,6 +79,44 @@ pub fn validate_mount_requirements(
     Ok(())
 }
 
+/// Validate one closed set of required Sandbox control services against the
+/// provider's canonical capability projection. Creation and adoption share this
+/// predicate so topology adapters cannot drift into separate allowlists.
+pub fn validate_sandbox_control_services(
+    required: &std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
+    caps: &SandboxCapabilities,
+) -> Result<(), PrepareError> {
+    if required.is_subset(&caps.control_services) {
+        Ok(())
+    } else {
+        Err(PrepareError::SandboxControlServiceUnsupported)
+    }
+}
+
+/// Resolve the exact Sandbox control topology during adoption.
+///
+/// `requested = None` is the generic provider port and restores only the
+/// topology persisted in the handle. A spec-aware owner must request exactly
+/// that realized set; neither path may union, narrow, or infer it from ambient
+/// provider capability. The returned set has passed the same capability
+/// admission predicate used by creation.
+pub fn validate_adopted_sandbox_control_services(
+    requested: Option<
+        &std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
+    >,
+    realized: &std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
+    caps: &SandboxCapabilities,
+) -> Result<
+    std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
+    PrepareError,
+> {
+    if requested.is_some_and(|requested| requested != realized) {
+        return Err(PrepareError::SandboxControlServiceRealizationMismatch);
+    }
+    validate_sandbox_control_services(realized, caps)?;
+    Ok(realized.clone())
+}
+
 /// Validate `spec` against `caps` and produce a plan. Fail-closed: any guarantee
 /// the backend cannot enforce is an error, never a silent downgrade.
 pub fn prepare_environment(
@@ -81,10 +127,35 @@ pub fn prepare_environment(
     if caps.isolation < spec.isolation {
         return Err(PrepareError::InsufficientIsolation);
     }
+    validate_sandbox_control_services(&spec.control_services, caps)?;
 
     // Outputs must be a sandbox-absolute path (G3: sandbox-absolute, not host).
     if !spec.outputs_path.starts_with('/') {
         return Err(PrepareError::OutputsPathNotAbsolute);
+    }
+    if !spec.control_services.is_empty() {
+        let control_dir =
+            std::path::Path::new(awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH)
+                .parent()
+                .expect("the canonical Sandbox control socket has one parent");
+        let conflicts = |candidate: &str| {
+            let candidate = std::path::Path::new(candidate);
+            candidate.starts_with(control_dir) || control_dir.starts_with(candidate)
+        };
+        if conflicts(&spec.outputs_path) {
+            return Err(PrepareError::SandboxControlPathConflict(
+                spec.outputs_path.clone(),
+            ));
+        }
+        if let Some(mount) = spec
+            .mounts
+            .iter()
+            .find(|mount| conflicts(&mount.mount_path))
+        {
+            return Err(PrepareError::SandboxControlPathConflict(
+                mount.mount_path.clone(),
+            ));
+        }
     }
 
     validate_mount_requirements(&spec.mounts, caps)?;
@@ -129,6 +200,7 @@ pub fn prepare_environment(
         outputs_path: spec.outputs_path.clone(),
         requests: spec.requests.clone(),
         limits: spec.limits.clone(),
+        control_services: spec.control_services.clone(),
     })
 }
 
@@ -150,6 +222,7 @@ mod tests {
             resource_limits: isolation >= IsolationClass::Namespace,
             custom_rootfs: isolation == IsolationClass::Container,
             package_provisioning: false,
+            control_services: Default::default(),
         }
     }
 
@@ -184,6 +257,7 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,
@@ -274,6 +348,117 @@ mod tests {
         assert_eq!(
             prepare_environment(&s, &caps(IsolationClass::Namespace)),
             Err(PrepareError::OutputsPathNotAbsolute)
+        );
+    }
+
+    #[test]
+    fn sandbox_control_demand_is_capability_gated_lossless_and_path_reserved() {
+        /* Sandbox-control admission cause/effect table:
+         * C1=empty demand; C2=typed service demand; C3=provider advertises the
+         * exact kind; C4=outputs overlap the runtime control directory; C5=a
+         * mount overlaps it. E1=legacy plan unchanged; E2=unsupported failure;
+         * E3=lossless demand in the plan; E4=path-conflict failure before
+         * provider I/O. Rules: S1 C1=>E1; S2 C2&&!C3=>E2;
+         * S3 C2+C3&&!C4&&!C5=>E3; S4 C2+C3+(C4|C5)=>E4.
+         */
+        let kind = awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential;
+        let mut request = spec();
+        let provider = caps(IsolationClass::Namespace);
+        let legacy = prepare_environment(&request, &provider).expect("S1/E1");
+        assert!(legacy.control_services.is_empty(), "S1/E1");
+
+        request.control_services.insert(kind);
+        assert_eq!(
+            prepare_environment(&request, &provider),
+            Err(PrepareError::SandboxControlServiceUnsupported),
+            "S2/E2"
+        );
+        let mut capable = provider;
+        capable.control_services.insert(kind);
+        assert_eq!(
+            prepare_environment(&request, &capable)
+                .expect("S3/E3")
+                .control_services,
+            request.control_services,
+            "S3/E3"
+        );
+
+        request.outputs_path = "/run/awaken/control/outputs".into();
+        assert_eq!(
+            prepare_environment(&request, &capable),
+            Err(PrepareError::SandboxControlPathConflict(
+                "/run/awaken/control/outputs".into()
+            )),
+            "S4/E4 outputs"
+        );
+        request.outputs_path = "/mnt/session/outputs".into();
+        request.mounts[0].mount_path = "/run/awaken".into();
+        assert_eq!(
+            prepare_environment(&request, &capable),
+            Err(PrepareError::SandboxControlPathConflict(
+                "/run/awaken".into()
+            )),
+            "S4/E4 mount parent"
+        );
+
+        request.control_services.clear();
+        assert!(
+            prepare_environment(&request, &capable).is_ok(),
+            "S1 no endpoint means no new reserved path"
+        );
+    }
+
+    #[test]
+    fn adopted_sandbox_control_topology_is_exact_and_capability_gated() {
+        /* Adoption-topology cause/effect decision table:
+         * C1=generic adoption (no requested set); C2=spec-aware adoption;
+         * C3=requested equals realized; C4=provider advertises every realized
+         * kind. E1=restore the realized set; E2=reject any mismatch in either
+         * direction; E3=reject unsupported realized evidence. Rules:
+         * A1 C1+C4=>E1; A2 C2+C3+C4=>E1; A3 C2+!C3=>E2;
+         * A4 (C1|C2)+!C4=>E3. No rule unions or narrows either set.
+         */
+        let kind = awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential;
+        let empty = std::collections::BTreeSet::new();
+        let realized = std::collections::BTreeSet::from([kind]);
+        let mut capable = caps(IsolationClass::Namespace);
+        capable.control_services.insert(kind);
+
+        assert_eq!(
+            validate_adopted_sandbox_control_services(None, &realized, &capable).unwrap(),
+            realized,
+            "A1/E1 generic restore"
+        );
+        assert_eq!(
+            validate_adopted_sandbox_control_services(Some(&realized), &realized, &capable)
+                .unwrap(),
+            realized,
+            "A2/E1 exact demand"
+        );
+        assert_eq!(
+            validate_adopted_sandbox_control_services(Some(&empty), &realized, &capable),
+            Err(PrepareError::SandboxControlServiceRealizationMismatch),
+            "A3/E2 requested narrower"
+        );
+        assert_eq!(
+            validate_adopted_sandbox_control_services(Some(&realized), &empty, &capable),
+            Err(PrepareError::SandboxControlServiceRealizationMismatch),
+            "A3/E2 requested wider"
+        );
+        assert_eq!(
+            validate_adopted_sandbox_control_services(
+                None,
+                &realized,
+                &caps(IsolationClass::Namespace),
+            ),
+            Err(PrepareError::SandboxControlServiceUnsupported),
+            "A4/E3"
+        );
+        assert!(
+            validate_adopted_sandbox_control_services(None, &empty, &capable)
+                .unwrap()
+                .is_empty(),
+            "A1 legacy ordinary handle"
         );
     }
 

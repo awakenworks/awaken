@@ -1,0 +1,53 @@
+pub mod awaken_sandbox_control
+pub enum awaken_sandbox_control::SandboxControlProtocolError
+pub awaken_sandbox_control::SandboxControlProtocolError::InvalidFrame
+pub awaken_sandbox_control::SandboxControlProtocolError::InvalidMessage
+pub awaken_sandbox_control::SandboxControlProtocolError::Transport
+pub enum awaken_sandbox_control::SandboxControlRequest
+pub awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet
+pub awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet::query: awaken_sandbox_control::RepositoryGitCredentialQuery
+pub enum awaken_sandbox_control::SandboxControlResponse
+pub awaken_sandbox_control::SandboxControlResponse::Denied
+pub awaken_sandbox_control::SandboxControlResponse::RepositoryGitCredential
+pub awaken_sandbox_control::SandboxControlResponse::RepositoryGitCredential::expires_at_unix_ms: awaken_sandbox_control::CapabilityExpiresAtUnixMs
+pub awaken_sandbox_control::SandboxControlResponse::RepositoryGitCredential::password: awaken_sandbox_control::SandboxControlSecret
+pub awaken_sandbox_control::SandboxControlResponse::RepositoryGitCredential::username: awaken_sandbox_control::SandboxControlSecret
+pub awaken_sandbox_control::SandboxControlResponse::Unavailable
+impl core::fmt::Debug for awaken_sandbox_control::SandboxControlResponse
+pub fn awaken_sandbox_control::SandboxControlResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_sandbox_control::SandboxControlServiceKind
+pub awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential
+pub struct awaken_sandbox_control::CapabilityExpiresAtUnixMs(pub u64)
+impl awaken_sandbox_control::CapabilityExpiresAtUnixMs
+pub const fn awaken_sandbox_control::CapabilityExpiresAtUnixMs::is_live_at(self, u64) -> bool
+pub struct awaken_sandbox_control::RepositoryGitCredentialQuery
+pub awaken_sandbox_control::RepositoryGitCredentialQuery::host: alloc::string::String
+pub awaken_sandbox_control::RepositoryGitCredentialQuery::path: alloc::string::String
+pub awaken_sandbox_control::RepositoryGitCredentialQuery::protocol: alloc::string::String
+impl awaken_sandbox_control::RepositoryGitCredentialQuery
+pub fn awaken_sandbox_control::RepositoryGitCredentialQuery::validate(&self) -> core::result::Result<(), awaken_sandbox_control::SandboxControlProtocolError>
+pub struct awaken_sandbox_control::SandboxControlPublishError
+pub struct awaken_sandbox_control::SandboxControlSecret(_)
+impl awaken_sandbox_control::SandboxControlSecret
+pub fn awaken_sandbox_control::SandboxControlSecret::expose_secret(&self) -> &str
+pub fn awaken_sandbox_control::SandboxControlSecret::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_sandbox_control::SandboxControlProtocolError>
+impl core::fmt::Debug for awaken_sandbox_control::SandboxControlSecret
+pub fn awaken_sandbox_control::SandboxControlSecret::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for awaken_sandbox_control::SandboxControlSecret
+pub fn awaken_sandbox_control::SandboxControlSecret::drop(&mut self)
+impl<'de> serde_core::de::Deserialize<'de> for awaken_sandbox_control::SandboxControlSecret
+pub fn awaken_sandbox_control::SandboxControlSecret::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub const awaken_sandbox_control::MAX_SANDBOX_CONTROL_FRAME_BYTES: usize
+pub const awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH: &str
+pub const awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH: &str
+pub const awaken_sandbox_control::SANDBOX_CONTROL_DIRECTORY_PATH: &str
+pub trait awaken_sandbox_control::PublishedSandboxControlService: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_control::PublishedSandboxControlService::close<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_sandbox_control::SandboxControlService: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_control::SandboxControlService::handle<'life0, 'async_trait>(&'life0 self, awaken_sandbox_control::SandboxControlRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_sandbox_control::SandboxControlResponse> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_sandbox_control::SandboxControlServicePublisher: core::marker::Send + core::marker::Sync
+pub fn awaken_sandbox_control::SandboxControlServicePublisher::publish_sandbox_control_service<'life0, 'async_trait>(&'life0 self, awaken_sandbox_control::SandboxControlServiceKind, alloc::sync::Arc<dyn awaken_sandbox_control::SandboxControlService>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_sandbox_control::PublishedSandboxControlService>, awaken_sandbox_control::SandboxControlPublishError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub async fn awaken_sandbox_control::read_frame<R, T>(&mut R) -> core::result::Result<T, awaken_sandbox_control::SandboxControlProtocolError> where R: tokio::io::async_read::AsyncRead + core::marker::Unpin + ?core::marker::Sized, T: serde_core::de::DeserializeOwned
+pub async fn awaken_sandbox_control::serve_one<C>(&mut C, &dyn awaken_sandbox_control::SandboxControlService) -> core::result::Result<(), awaken_sandbox_control::SandboxControlProtocolError> where C: tokio::io::async_read::AsyncRead + tokio::io::async_write::AsyncWrite + core::marker::Unpin + ?core::marker::Sized
+pub async fn awaken_sandbox_control::serve_one_after_first_byte<C>(&mut C, u8, &dyn awaken_sandbox_control::SandboxControlService) -> core::result::Result<(), awaken_sandbox_control::SandboxControlProtocolError> where C: tokio::io::async_read::AsyncRead + tokio::io::async_write::AsyncWrite + core::marker::Unpin + ?core::marker::Sized
+pub async fn awaken_sandbox_control::write_frame<W, T>(&mut W, &T) -> core::result::Result<(), awaken_sandbox_control::SandboxControlProtocolError> where W: tokio::io::async_write::AsyncWrite + core::marker::Unpin + ?core::marker::Sized, T: serde_core::ser::Serialize

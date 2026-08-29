@@ -204,7 +204,7 @@ pub(super) async fn create(
         stamp_pod_realization(&mut pod)?;
         let outcome = create_or_verify_with_status(&pods, &pod).await?;
         let was_created = outcome.created;
-        let mut created = outcome.object;
+        let created = outcome.object;
         if was_created {
             created_pod_uid = created.metadata.uid.clone();
         }
@@ -213,25 +213,12 @@ pub(super) async fn create(
             .name
             .clone()
             .ok_or_else(|| backend("created pod has no name"))?;
-        if created
+        let pod_uid = created
             .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(crate::RUNTIME_OWNER_LABEL))
-            != Some(&runtime.owner_id)
-        {
-            created
-                .metadata
-                .labels
-                .get_or_insert_with(Default::default)
-                .insert(
-                    crate::RUNTIME_OWNER_LABEL.to_string(),
-                    runtime.owner_id.clone(),
-                );
-            pods.replace(&name, &PostParams::default(), &created)
-                .await
-                .map_err(backend)?;
-        }
+            .uid
+            .clone()
+            .ok_or_else(|| backend("created pod has no UID"))?;
+        realization::transfer_runtime_owner(&pods, created, &pod_uid, &runtime.owner_id).await?;
         realization::await_pod_ready(&pods, &name).await?;
         if was_created {
             memory::project_snapshots(runtime, &name, plan).await?;
@@ -282,6 +269,7 @@ mod tests {
             image: image.into(),
             command: vec!["sleep".into(), "30".into()],
             env: vec![("PRIVATE_RUNTIME_INPUT".into(), "never-annotate-me".into())],
+            control_services: Default::default(),
             packages: Default::default(),
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),

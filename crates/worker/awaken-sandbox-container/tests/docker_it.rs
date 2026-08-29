@@ -20,6 +20,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         image: "busybox:latest".into(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
+        control_services: Default::default(),
         packages: Default::default(),
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),

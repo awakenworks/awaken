@@ -11,6 +11,7 @@ authority = "sandbox-provisioning"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-sandbox-control.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

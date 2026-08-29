@@ -530,6 +530,7 @@ impl DeploymentConfig {
                     // advertise this only when an external builder and shared
                     // registry are both configured.
                     package_provisioning: projection.package_provisioning,
+                    control_services: Default::default(),
                 }
             }
             SandboxTier::Namespace => awaken_sandbox_local::NamespaceProvider::capabilities(),

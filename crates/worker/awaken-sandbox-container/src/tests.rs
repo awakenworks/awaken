@@ -70,6 +70,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         },
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: Some(60),
+        control_services: Default::default(),
     }
 }
 
@@ -77,7 +78,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
 
 #[test]
 fn container_capabilities_are_the_strongest_tier() {
-    let c = container_capabilities(true, false, false);
+    let c = container_capabilities(true, false, false, Default::default());
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
@@ -99,7 +100,10 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
     let mut requested = spec("egress-only");
     requested.env[1].visibility = pc::EnvVisibility::EgressOnly;
     assert_eq!(
-        pc::prepare_environment(&requested, &container_capabilities(true, false, false)),
+        pc::prepare_environment(
+            &requested,
+            &container_capabilities(true, false, false, Default::default()),
+        ),
         Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
         "an unsupported provider must fail before materializing or launching the sandbox"
     );
@@ -115,7 +119,10 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
         ..Default::default()
     };
     assert_eq!(
-        pc::prepare_environment(&requested, &container_capabilities(true, false, false)),
+        pc::prepare_environment(
+            &requested,
+            &container_capabilities(true, false, false, Default::default()),
+        ),
         Err(pc::PrepareError::PackageProvisioningUnsupported),
         "Kubernetes and out-of-tree runtimes without immutable image builds must fail before a workload exists"
     );
@@ -736,6 +743,12 @@ struct FakeState {
     native_memory: bool,
     memory_archive: Vec<u8>,
     created_memory_mounts: HashMap<String, Vec<MemoryMount>>,
+    control_enabled: bool,
+    control_binding_missing: bool,
+    control_binding_calls: Vec<(bool, Option<String>)>,
+    control_channel_opens: usize,
+    control_peers: Vec<tokio::io::DuplexStream>,
+    removals: Vec<(String, usize)>,
 }
 
 #[derive(Default)]
@@ -814,6 +827,19 @@ impl FakeRuntime {
         drop(state);
         self
     }
+
+    fn with_sandbox_control(self) -> Self {
+        self.st.lock().unwrap().control_enabled = true;
+        self
+    }
+
+    fn with_missing_sandbox_control_binding(self) -> Self {
+        let mut state = self.st.lock().unwrap();
+        state.control_enabled = true;
+        state.control_binding_missing = true;
+        drop(state);
+        self
+    }
 }
 
 #[async_trait]
@@ -824,6 +850,55 @@ impl ContainerRuntime for FakeRuntime {
 
     fn enforces_network_none(&self) -> bool {
         true
+    }
+
+    fn sandbox_control_services(&self) -> std::collections::BTreeSet<SandboxControlServiceKind> {
+        self.st
+            .lock()
+            .unwrap()
+            .control_enabled
+            .then(|| {
+                std::collections::BTreeSet::from([
+                    SandboxControlServiceKind::RepositoryGitCredential,
+                ])
+            })
+            .unwrap_or_default()
+    }
+
+    async fn sandbox_control_binding(
+        &self,
+        _container_id: &str,
+        request: SandboxControlBindingRequest<'_>,
+    ) -> Result<Option<pc::SandboxControlIncarnation>, RuntimeError> {
+        let expected = match request {
+            SandboxControlBindingRequest::New { .. } => None,
+            SandboxControlBindingRequest::Adopt { expected, .. } => expected
+                .and_then(pc::SandboxControlIncarnation::kubernetes_pod_uid)
+                .map(str::to_owned),
+        };
+        self.st.lock().unwrap().control_binding_calls.push((
+            matches!(request, SandboxControlBindingRequest::Adopt { .. }),
+            expected,
+        ));
+        if self.st.lock().unwrap().control_binding_missing {
+            return Ok(None);
+        }
+        pc::SandboxControlIncarnation::kubernetes_pod("fake-control-incarnation")
+            .map(Some)
+            .map_err(|error| RuntimeError::Backend(error.to_string()))
+    }
+
+    async fn open_sandbox_control_channel(
+        &self,
+        _container_id: &str,
+        _binding: &pc::SandboxControlIncarnation,
+        _kind: SandboxControlServiceKind,
+    ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        let (host, peer) = tokio::io::duplex(64 * 1024);
+        let mut state = self.st.lock().unwrap();
+        state.control_channel_opens += 1;
+        state.control_peers.push(peer);
+        Ok(Box::new(host))
     }
 
     fn supports_live_input_projection(&self) -> bool {
@@ -1039,11 +1114,10 @@ impl ContainerRuntime for FakeRuntime {
         Ok(())
     }
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.st
-            .lock()
-            .unwrap()
-            .alive
-            .insert(container_id.into(), false);
+        let mut state = self.st.lock().unwrap();
+        let opens = state.control_channel_opens;
+        state.removals.push((container_id.into(), opens));
+        state.alive.insert(container_id.into(), false);
         Ok(())
     }
 }
@@ -1108,6 +1182,265 @@ fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = b"container-process-secret".to_vec();
     provider_without_broker(runtime).with_secret_broker(broker)
+}
+
+struct UnavailableControlService;
+
+#[async_trait]
+impl SandboxControlService for UnavailableControlService {
+    async fn handle(
+        &self,
+        _request: awaken_sandbox_control::SandboxControlRequest,
+    ) -> awaken_sandbox_control::SandboxControlResponse {
+        awaken_sandbox_control::SandboxControlResponse::Unavailable
+    }
+}
+
+#[tokio::test]
+async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnation() {
+    /* Container control-binding cause/effect decision table:
+     * C1=empty control demand; C2=typed demand on a capable runtime; C3=generic
+     * adoption of exact handle evidence; C4=spec-aware exact adoption;
+     * C5=requested/realized mismatch; C6=set/incarnation inconsistency;
+     * C7=provider lacks the realized capability; C8=runtime omits an
+     * incarnation. E1=no callback and unchanged ordinary creation; E2=one new
+     * binding and exact topology persisted; E3=adopt with that exact topology;
+     * E4=fail closed before ambient inference. Rules: B1 C1=>E1; B2 C2=>E2;
+     * B3 C2+(C3|C4)=>E3; B4 C5|C6|C7|C8=>E4.
+     */
+    let ordinary_runtime = Arc::new(FakeRuntime::default());
+    provider(ordinary_runtime.clone())
+        .create_container(&spec("ordinary-control-free"))
+        .await
+        .expect("B1/E1");
+    assert!(
+        ordinary_runtime
+            .st
+            .lock()
+            .unwrap()
+            .control_binding_calls
+            .is_empty(),
+        "B1/E1 no callback"
+    );
+
+    let runtime = Arc::new(FakeRuntime::default().with_sandbox_control());
+    let container_provider = provider(runtime.clone());
+    let mut demanded = spec("demanded-control");
+    demanded
+        .control_services
+        .insert(SandboxControlServiceKind::RepositoryGitCredential);
+    let sandbox = container_provider
+        .create_container(&demanded)
+        .await
+        .expect("B2/E2");
+    let handle = pc::Sandbox::handle(&sandbox);
+    let payload = recovery::decode_handle(&handle).unwrap();
+    assert_eq!(payload.control_services, demanded.control_services, "B2/E2");
+    assert_eq!(
+        payload
+            .sandbox_control_incarnation
+            .as_ref()
+            .and_then(pc::SandboxControlIncarnation::kubernetes_pod_uid),
+        Some("fake-control-incarnation"),
+        "B2/E2 persisted"
+    );
+    let generic = container_provider
+        .adopt_container(&handle)
+        .await
+        .expect("B3/E3 generic restore");
+    assert_eq!(generic.control_services, demanded.control_services, "B3/E3");
+    container_provider
+        .adopt_container_with_spec(Some(&demanded), &handle)
+        .await
+        .expect("B4/E3 exact spec");
+    assert_eq!(
+        runtime.st.lock().unwrap().control_binding_calls,
+        vec![
+            (false, None),
+            (true, Some("fake-control-incarnation".into())),
+            (true, Some("fake-control-incarnation".into()))
+        ],
+        "B2/B3/B4 exact callbacks"
+    );
+
+    let missing_incarnation = pc::SandboxHandle::container(
+        &handle.sandbox_id,
+        pc::ContainerSandboxHandleV1 {
+            sandbox_control_incarnation: None,
+            ..payload.clone()
+        },
+    );
+    assert!(
+        container_provider
+            .adopt_container_with_spec(Some(&demanded), &missing_incarnation)
+            .await
+            .is_err(),
+        "B6/E4 realized set without incarnation"
+    );
+
+    let missing_set = pc::SandboxHandle::container(
+        &handle.sandbox_id,
+        pc::ContainerSandboxHandleV1 {
+            control_services: Default::default(),
+            ..payload.clone()
+        },
+    );
+    assert!(
+        container_provider
+            .adopt_container(&missing_set)
+            .await
+            .is_err(),
+        "B6/E4 incarnation without realized set"
+    );
+
+    let ordinary = spec("demanded-control");
+    assert!(
+        container_provider
+            .adopt_container_with_spec(Some(&ordinary), &handle)
+            .await
+            .is_err(),
+        "B5/E4 requested narrower"
+    );
+    let legacy = pc::SandboxHandle::container(
+        &handle.sandbox_id,
+        pc::ContainerSandboxHandleV1 {
+            sandbox_control_incarnation: None,
+            control_services: Default::default(),
+            ..payload.clone()
+        },
+    );
+    assert!(
+        container_provider
+            .adopt_container_with_spec(Some(&demanded), &legacy)
+            .await
+            .is_err(),
+        "B5/E4 legacy empty handle plus new demand"
+    );
+    assert!(
+        provider(Arc::new(FakeRuntime::default()))
+            .adopt_container(&handle)
+            .await
+            .is_err(),
+        "B7/E4 unsupported realized topology"
+    );
+
+    let missing_runtime = Arc::new(FakeRuntime::default().with_missing_sandbox_control_binding());
+    assert!(
+        provider(missing_runtime.clone())
+            .create_container(&demanded)
+            .await
+            .is_err(),
+        "B8/E4 demanded create needs an incarnation"
+    );
+    assert_eq!(
+        missing_runtime.st.lock().unwrap().removals.len(),
+        1,
+        "B8 failed creation reaps its runtime object"
+    );
+}
+
+async fn take_control_peer(runtime: &FakeRuntime) -> tokio::io::DuplexStream {
+    for _ in 0..64 {
+        if let Some(peer) = runtime.st.lock().unwrap().control_peers.pop() {
+            return peer;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("control channel was not reopened")
+}
+
+async fn exchange_unavailable(peer: &mut tokio::io::DuplexStream) {
+    awaken_sandbox_control::write_frame(
+        peer,
+        &awaken_sandbox_control::SandboxControlRequest::RepositoryGitCredentialGet {
+            query: awaken_sandbox_control::RepositoryGitCredentialQuery {
+                protocol: "https".into(),
+                host: "gateway.test".into(),
+                path: "git/repository".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        awaken_sandbox_control::read_frame::<_, awaken_sandbox_control::SandboxControlResponse>(
+            peer
+        )
+        .await
+        .unwrap(),
+        awaken_sandbox_control::SandboxControlResponse::Unavailable
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn control_publication_survives_idle_and_channel_failure_but_stops_before_removal() {
+    /* Container publication cause/effect decision table:
+     * C1=one demanded, incarnation-bound publication; C2=an opened channel is
+     * idle for longer than the exchange deadline; C3=one active channel reaches
+     * EOF; C4=environment disposal; C5=an old lease drops after disposal.
+     * E1=two later requests still receive responses on the same generation;
+     * E2=single-channel failure triggers bounded reopen; E3=publication joins
+     * before runtime removal; E4=no retry/reopen or stale-lease mutation after
+     * disposal. Rules: B5 C1+C2=>E1; B6 C1+C3=>E2;
+     * B7 C1+C4=>E3+E4; B8 C4+C5=>E4.
+     */
+    let runtime = Arc::new(FakeRuntime::default().with_sandbox_control());
+    let mut demanded = spec("publication-lifecycle");
+    demanded
+        .control_services
+        .insert(SandboxControlServiceKind::RepositoryGitCredential);
+    let sandbox = provider(runtime.clone())
+        .create_container(&demanded)
+        .await
+        .unwrap();
+    let lease = SandboxControlServicePublisher::publish_sandbox_control_service(
+        &sandbox,
+        SandboxControlServiceKind::RepositoryGitCredential,
+        Arc::new(UnavailableControlService),
+    )
+    .await
+    .expect("B5 publication");
+    let mut first = take_control_peer(runtime.as_ref()).await;
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    exchange_unavailable(&mut first).await;
+
+    let mut second = take_control_peer(runtime.as_ref()).await;
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    exchange_unavailable(&mut second).await;
+
+    let failed = take_control_peer(runtime.as_ref()).await;
+    assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 3, "B5/E1");
+    drop(failed);
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    let _reopened = take_control_peer(runtime.as_ref()).await;
+    assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B6/E2");
+
+    pc::Sandbox::dispose(&sandbox).await.expect("B7 dispose");
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(
+        state.removals,
+        vec![("cid-publication-lifecycle".into(), 4)],
+        "B7/E3 close precedes removal"
+    );
+    assert_eq!(state.control_channel_opens, 4, "B7/E4");
+    drop(state);
+    tokio::time::advance(std::time::Duration::from_secs(60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B7/E4");
+    assert!(
+        SandboxControlServicePublisher::publish_sandbox_control_service(
+            &sandbox,
+            SandboxControlServiceKind::RepositoryGitCredential,
+            Arc::new(UnavailableControlService),
+        )
+        .await
+        .is_err(),
+        "B8/E4"
+    );
+    drop(lease);
+    assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B8/E4");
 }
 
 struct RejectingSecretBroker;
@@ -1821,6 +2154,7 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     };
 
     let session = provider.open_agent(&spec).await.unwrap();
@@ -1989,6 +2323,7 @@ fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod awaken_provisioning_contract
+pub use awaken_provisioning_contract::SandboxControlServiceKind
 pub enum awaken_provisioning_contract::AdmissionError
 pub awaken_provisioning_contract::AdmissionError::EmptySummary
 pub awaken_provisioning_contract::AdmissionError::MissingRequiredField
@@ -129,6 +130,9 @@ pub awaken_provisioning_contract::PrepareError::ReadOnlyUnsupported(alloc::strin
 pub awaken_provisioning_contract::PrepareError::ReservedEnvKey(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::ResourceLimitsUnsupported
 pub awaken_provisioning_contract::PrepareError::ResourceRequestExceedsLimit(&'static str)
+pub awaken_provisioning_contract::PrepareError::SandboxControlPathConflict(alloc::string::String)
+pub awaken_provisioning_contract::PrepareError::SandboxControlServiceRealizationMismatch
+pub awaken_provisioning_contract::PrepareError::SandboxControlServiceUnsupported
 pub enum awaken_provisioning_contract::Realization
 pub awaken_provisioning_contract::Realization::Bind
 pub awaken_provisioning_contract::Realization::Copy
@@ -144,6 +148,12 @@ pub awaken_provisioning_contract::SandboxAction::Egress
 pub awaken_provisioning_contract::SandboxAction::Spawn
 pub enum awaken_provisioning_contract::SandboxCheckpointExpiryBehavior
 pub awaken_provisioning_contract::SandboxCheckpointExpiryBehavior::FreshFromFrozenEnvironment
+pub enum awaken_provisioning_contract::SandboxControlIncarnation
+pub awaken_provisioning_contract::SandboxControlIncarnation::KubernetesPod
+pub awaken_provisioning_contract::SandboxControlIncarnation::KubernetesPod::uid: awaken_provisioning_contract::KubernetesPodUid
+impl awaken_provisioning_contract::SandboxControlIncarnation
+pub fn awaken_provisioning_contract::SandboxControlIncarnation::kubernetes_pod(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_provisioning_contract::SandboxError>
+pub fn awaken_provisioning_contract::SandboxControlIncarnation::kubernetes_pod_uid(&self) -> core::option::Option<&str>
 pub enum awaken_provisioning_contract::SandboxExecutionPolicyError
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::Disabled
 pub awaken_provisioning_contract::SandboxExecutionPolicyError::Invalid(alloc::string::String)
@@ -197,9 +207,11 @@ pub struct awaken_provisioning_contract::ContainerSandboxHandleV1
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::base_env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::container_id: alloc::string::String
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::continuation_excluded_paths: alloc::vec::Vec<alloc::string::String>
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::live_input_projection: bool
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::outputs_path: alloc::string::String
 pub awaken_provisioning_contract::ContainerSandboxHandleV1::runtime_handle: core::option::Option<awaken_provisioning_contract::ContainerContinuationHandle>
+pub awaken_provisioning_contract::ContainerSandboxHandleV1::sandbox_control_incarnation: core::option::Option<awaken_provisioning_contract::SandboxControlIncarnation>
 pub struct awaken_provisioning_contract::EnvVar
 pub awaken_provisioning_contract::EnvVar::name: alloc::string::String
 pub awaken_provisioning_contract::EnvVar::value: awaken_provisioning_contract::EnvValue
@@ -212,6 +224,7 @@ pub awaken_provisioning_contract::EnvironmentDecl::required_field: core::option:
 pub awaken_provisioning_contract::EnvironmentDecl::summary: alloc::string::String
 pub awaken_provisioning_contract::EnvironmentDecl::writable_base: bool
 pub struct awaken_provisioning_contract::EnvironmentPlan
+pub awaken_provisioning_contract::EnvironmentPlan::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>
 pub awaken_provisioning_contract::EnvironmentPlan::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::EnvironmentPlan::limits: awaken_provisioning_contract::ResourceLimits
 pub awaken_provisioning_contract::EnvironmentPlan::mounts: alloc::vec::Vec<awaken_provisioning_contract::MountRequirement>
@@ -227,6 +240,12 @@ pub struct awaken_provisioning_contract::IsolationPolicy
 pub awaken_provisioning_contract::IsolationPolicy::on_unmet: awaken_provisioning_contract::OnUnmet
 pub awaken_provisioning_contract::IsolationPolicy::prefer: awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationPolicy::require: awaken_provisioning_contract::IsolationClass
+pub struct awaken_provisioning_contract::KubernetesPodUid(_)
+impl awaken_provisioning_contract::KubernetesPodUid
+pub fn awaken_provisioning_contract::KubernetesPodUid::as_str(&self) -> &str
+pub fn awaken_provisioning_contract::KubernetesPodUid::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_provisioning_contract::SandboxError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_provisioning_contract::KubernetesPodUid
+pub fn awaken_provisioning_contract::KubernetesPodUid::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_provisioning_contract::LeaseGrant
 pub awaken_provisioning_contract::LeaseGrant::expires_ms: core::option::Option<u64>
 impl awaken_provisioning_contract::LeaseGrant
@@ -269,6 +288,7 @@ impl awaken_provisioning_contract::MountRequirement
 pub fn awaken_provisioning_contract::MountRequirement::is_secret_writeback(&self) -> bool
 pub struct awaken_provisioning_contract::NamespaceSandboxHandleV1
 pub awaken_provisioning_contract::NamespaceSandboxHandleV1::base_env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
+pub awaken_provisioning_contract::NamespaceSandboxHandleV1::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>
 pub awaken_provisioning_contract::NamespaceSandboxHandleV1::network: awaken_provisioning_contract::NetworkPolicy
 pub awaken_provisioning_contract::NamespaceSandboxHandleV1::outputs_path: alloc::string::String
 pub struct awaken_provisioning_contract::PackageRequirements
@@ -334,6 +354,7 @@ pub fn awaken_provisioning_contract::ResourceRequests::first_limit_violation(&se
 pub fn awaken_provisioning_contract::ResourceRequests::fits_within(&self, &awaken_provisioning_contract::ResourceLimits) -> bool
 pub fn awaken_provisioning_contract::ResourceRequests::is_set(&self) -> bool
 pub struct awaken_provisioning_contract::SandboxCapabilities
+pub awaken_provisioning_contract::SandboxCapabilities::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>
 pub awaken_provisioning_contract::SandboxCapabilities::custom_rootfs: bool
 pub awaken_provisioning_contract::SandboxCapabilities::enforced_network_allowlist: bool
 pub awaken_provisioning_contract::SandboxCapabilities::enforced_readonly: bool
@@ -435,6 +456,7 @@ impl awaken_provisioning_contract::SandboxOverride
 pub fn awaken_provisioning_contract::SandboxOverride::apply(&self, awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::SandboxSpec
 pub fn awaken_provisioning_contract::SandboxOverride::is_empty(&self) -> bool
 pub struct awaken_provisioning_contract::SandboxRequirements
+pub awaken_provisioning_contract::SandboxRequirements::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>
 pub awaken_provisioning_contract::SandboxRequirements::custom_rootfs: bool
 pub awaken_provisioning_contract::SandboxRequirements::enforced_network_allowlist: bool
 pub awaken_provisioning_contract::SandboxRequirements::enforced_readonly: bool
@@ -448,6 +470,7 @@ impl awaken_provisioning_contract::SandboxRequirements
 pub fn awaken_provisioning_contract::SandboxRequirements::from_spec(&awaken_provisioning_contract::SandboxSpec, bool) -> Self
 pub struct awaken_provisioning_contract::SandboxSpec
 pub awaken_provisioning_contract::SandboxSpec::command: alloc::vec::Vec<alloc::string::String>
+pub awaken_provisioning_contract::SandboxSpec::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>
 pub awaken_provisioning_contract::SandboxSpec::deny_tool_egress: bool
 pub awaken_provisioning_contract::SandboxSpec::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::SandboxSpec::environment: core::option::Option<awaken_provisioning_contract::EnvironmentKind>
@@ -527,4 +550,6 @@ pub fn awaken_provisioning_contract::reconcile_adoption(&[awaken_provisioning_co
 pub async fn awaken_provisioning_contract::reconcile_and_apply(&dyn awaken_provisioning_contract::SandboxProvider, &[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::ReconcileOutcome
 pub async fn awaken_provisioning_contract::select_provider<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec) -> core::result::Result<&'a dyn awaken_provisioning_contract::SandboxProvider, awaken_provisioning_contract::SelectionError>
 pub async fn awaken_provisioning_contract::select_provider_with_policy<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::IsolationPolicy) -> core::result::Result<awaken_provisioning_contract::PolicySelection<'a>, awaken_provisioning_contract::SelectionError>
+pub fn awaken_provisioning_contract::validate_adopted_sandbox_control_services(core::option::Option<&alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>>, &alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>, awaken_provisioning_contract::PrepareError>
 pub fn awaken_provisioning_contract::validate_mount_requirements(&[awaken_provisioning_contract::MountRequirement], &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<(), awaken_provisioning_contract::PrepareError>
+pub fn awaken_provisioning_contract::validate_sandbox_control_services(&alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<(), awaken_provisioning_contract::PrepareError>

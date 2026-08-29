@@ -151,6 +151,7 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,
@@ -499,6 +500,25 @@ mod tests {
         feature = "container-podman",
         feature = "container-k8s"
     ))]
+    #[async_trait]
+    impl awaken_sandbox_container::SandboxControlServicePublisher for RecordingEnvironment {
+        async fn publish_sandbox_control_service(
+            &self,
+            _kind: awaken_sandbox_container::SandboxControlServiceKind,
+            _service: Arc<dyn awaken_sandbox_container::SandboxControlService>,
+        ) -> Result<
+            Box<dyn awaken_sandbox_container::PublishedSandboxControlService>,
+            awaken_sandbox_container::SandboxControlPublishError,
+        > {
+            Err(awaken_sandbox_container::SandboxControlPublishError)
+        }
+    }
+
+    #[cfg(any(
+        feature = "container-docker",
+        feature = "container-podman",
+        feature = "container-k8s"
+    ))]
     struct RecordingProvider {
         specs: Arc<Mutex<Vec<pc::SandboxSpec>>>,
         commands: Arc<Mutex<Vec<pc::Command>>>,
@@ -688,6 +708,7 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,

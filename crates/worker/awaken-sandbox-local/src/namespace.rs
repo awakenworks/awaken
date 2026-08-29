@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 use awaken_local_process::LocalProcess;
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_control::{SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlServiceKind};
 use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
@@ -27,6 +28,17 @@ use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
     provision_repo_at, push_repo_to_at, scan_skill_dir_at,
 };
+
+mod adoption;
+mod control;
+mod seatbelt;
+use control::{
+    NamespaceControlPublicationRegistry, private_control_host_directory, private_control_mount,
+};
+#[cfg(test)]
+use seatbelt::projected_runtime_roots;
+use seatbelt::projected_runtime_roots_for_command;
+pub use seatbelt::sandbox_exec_argv;
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
@@ -91,6 +103,10 @@ pub enum RenderMountBoundary {
     General,
     /// A MemoryStore child bind whose `/mnt/memory` parent must remain read-only.
     ManagedMemoryStore,
+    /// Runtime-owned rendezvous projected read-only into the workload. The host
+    /// may create/remove sockets in its private backing directory while the
+    /// Agent can connect but cannot unlink, replace, or symlink the endpoint.
+    PrivateRendezvous,
 }
 
 /// Everything the pure launcher renderers need. Host paths appear only here (a
@@ -265,6 +281,15 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
         }
         a.extend([s("--remount-ro"), s("/mnt/memory")]);
     }
+    if input
+        .mounts
+        .iter()
+        .any(|mount| mount.boundary == RenderMountBoundary::PrivateRendezvous)
+    {
+        a.extend([s("--dir"), s("/run")]);
+        a.extend([s("--dir"), s("/run/awaken")]);
+        a.extend([s("--dir"), s(SANDBOX_CONTROL_DIRECTORY_PATH)]);
+    }
     // `/etc/resolv.conf` is commonly a symlink into one of these `/run`
     // directories. Binding `/etc` alone leaves a dangling link and makes every
     // otherwise-unrestricted namespace fail DNS with EAI_AGAIN. The `-try`
@@ -312,158 +337,6 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
         input.cwd
     }));
     a.push(s("--"));
-    a.extend(input.argv.iter().cloned());
-    a
-}
-
-fn runtime_projection_root(entry: PathBuf) -> Option<PathBuf> {
-    if !entry.is_absolute()
-        || entry.starts_with("/usr")
-        || entry.starts_with("/bin")
-        || entry.starts_with("/sbin")
-    {
-        return None;
-    }
-    let is_bin = entry.file_name().is_some_and(|name| name == "bin");
-    let path = entry.to_string_lossy();
-    Some(
-        if let Some((prefix, _)) = path.split_once("/.local/share/uv/python/") {
-            // uv virtualenv interpreters use absolute links through a moving
-            // version alias (for example `cpython-3.11-linux-*`) that resolves to
-            // a concrete patch directory. Project the uv Python directory so both
-            // the literal alias and its target exist inside the namespace.
-            PathBuf::from(format!("{prefix}/.local/share/uv/python"))
-        } else if is_bin && (path.contains("/venv/") || path.ends_with("/venv/bin")) {
-            // Editable Python installs resolve modules beside the virtualenv
-            // (Hermes installs `hermes_cli` this way). The application root is the
-            // virtualenv's parent, so mounting only `venv/` starts Python but loses
-            // the selected CLI's package.
-            entry
-                .parent()
-                .and_then(std::path::Path::parent)
-                .unwrap_or(&entry)
-                .to_path_buf()
-        } else if is_bin && path.contains("/.nvm/versions/node/") {
-            entry.parent().unwrap_or(&entry).to_path_buf()
-        } else {
-            entry
-        },
-    )
-}
-
-fn push_runtime_projection(roots: &mut Vec<String>, entry: PathBuf) {
-    let Some(root) = runtime_projection_root(entry) else {
-        return;
-    };
-    let root = root.to_string_lossy().into_owned();
-    if !roots.contains(&root) {
-        roots.push(root);
-    }
-}
-
-fn projected_runtime_roots(env: &[(String, String)]) -> Vec<String> {
-    let Some(path) = env
-        .iter()
-        .rev()
-        .find_map(|(key, value)| (key == "PATH").then_some(value))
-    else {
-        return Vec::new();
-    };
-    let mut roots = Vec::new();
-    for entry in std::env::split_paths(path) {
-        push_runtime_projection(&mut roots, entry);
-    }
-    roots
-}
-
-fn projected_runtime_roots_for_command(env: &[(String, String)], argv: &[String]) -> Vec<String> {
-    let mut roots = projected_runtime_roots(env);
-    if let Some(executable) = argv.first().map(PathBuf::from)
-        && let Some(parent) = executable.parent()
-    {
-        push_runtime_projection(&mut roots, parent.to_path_buf());
-    }
-    roots
-}
-
-fn seatbelt_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push('"');
-    escaped
-}
-
-fn seatbelt_path_filters(path: &std::path::Path) -> String {
-    let quoted = seatbelt_string(&path.to_string_lossy());
-    format!("(literal {quoted})(subpath {quoted})")
-}
-
-/// Render a macOS `sandbox-exec` (Seatbelt) command line. The Apple system profile
-/// supplies the minimum Mach/sysctl/runtime reads required to start ordinary macOS
-/// binaries; user data remains deny-by-default. Workspace/output/mount permissions
-/// and the on/off network policy are then added explicitly.
-#[must_use]
-pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
-    let mut readable = vec![
-        input.host_workspace.to_path_buf(),
-        input.host_outputs.to_path_buf(),
-    ];
-    readable.extend(input.mounts.iter().map(|mount| mount.host.clone()));
-    let mut writable = vec![
-        input.host_workspace.to_path_buf(),
-        input.host_outputs.to_path_buf(),
-    ];
-    writable.extend(
-        input
-            .mounts
-            .iter()
-            .filter(|mount| !mount.read_only)
-            .map(|mount| mount.host.clone()),
-    );
-    let readonly: Vec<_> = input
-        .mounts
-        .iter()
-        .filter(|mount| mount.read_only)
-        .map(|mount| mount.host.clone())
-        .collect();
-
-    let mut profile = String::from(
-        "(version 1)(deny default)(import \"system.sb\")\
-         (allow process-fork)(allow process-exec)\
-         (allow file-read-metadata)\
-         (allow file-read* (subpath \"/private/var/select\")\
-          (subpath \"/opt/homebrew\") (subpath \"/usr/local\"))",
-    );
-    for path in readable {
-        profile.push_str("(allow file-read* ");
-        profile.push_str(&seatbelt_path_filters(&path));
-        profile.push(')');
-    }
-    for path in writable {
-        profile.push_str("(allow file-write* ");
-        profile.push_str(&seatbelt_path_filters(&path));
-        profile.push(')');
-    }
-    // A specific deny wins over the enclosing workspace write grant, preserving
-    // declared read-only files/directories even when they live below /workspace.
-    for path in readonly {
-        profile.push_str("(deny file-write* ");
-        profile.push_str(&seatbelt_path_filters(&path));
-        profile.push(')');
-    }
-    if matches!(input.network, pc::NetworkPolicy::Unrestricted) {
-        profile.push_str("(allow network*)");
-    }
-    let mut a = vec![s("sandbox-exec"), s("-p"), profile, s("--")];
     a.extend(input.argv.iter().cloned());
     a
 }
@@ -570,6 +443,13 @@ impl NamespaceProvider {
             resource_limits: false,
             custom_rootfs: false,
             package_provisioning: false,
+            control_services: if cfg!(target_os = "linux") {
+                std::collections::BTreeSet::from([
+                    SandboxControlServiceKind::RepositoryGitCredential,
+                ])
+            } else {
+                Default::default()
+            },
         }
     }
 
@@ -754,7 +634,7 @@ impl NamespaceProvider {
         let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
         std::fs::create_dir_all(&host_outputs).map_err(err)?;
 
-        let (layout, realized, memory_mounts, secret_paths) =
+        let (mut layout, realized, memory_mounts, secret_paths) =
             match self.realize_layout(&root, &host_workspace, spec).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -766,6 +646,26 @@ impl NamespaceProvider {
                     return Err(e);
                 }
             };
+        let control_directory = if spec
+            .control_services
+            .contains(&SandboxControlServiceKind::RepositoryGitCredential)
+        {
+            match private_control_host_directory(&root) {
+                Ok(directory) => {
+                    layout.push(private_control_mount(directory.clone()));
+                    Some(directory)
+                }
+                Err(error) => {
+                    for mount in memory_mounts {
+                        mount.teardown().await;
+                    }
+                    let _ = std::fs::remove_dir_all(root.root());
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
 
         Ok(NamespaceSandbox {
             id: spec.scope.clone(),
@@ -777,45 +677,13 @@ impl NamespaceProvider {
             inherit_agent_stderr: self.inherit_agent_stderr,
             secret_broker: self.secret_broker.clone(),
             network: spec.network.clone(),
+            control_services: spec.control_services.clone(),
+            control_directory,
+            control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
             layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
             memory_mounts: std::sync::Mutex::new(memory_mounts),
-            memory_mounter: self.memory_mounter.clone(),
-        })
-    }
-
-    /// Re-open a namespace sandbox from its durable handle so companion
-    /// capabilities operate on the Run's existing environment.
-    pub async fn adopt_sandbox(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        let provider_kind = if cfg!(target_os = "macos") {
-            pc::NamespaceProviderKind::Seatbelt
-        } else {
-            pc::NamespaceProviderKind::Bubblewrap
-        };
-        let payload = handle.namespace_payload(provider_kind)?;
-        let outputs_path = payload.outputs_path.clone();
-        let raw_root = crate::sandbox_dir(&self.base, &handle.sandbox_id);
-        let root = IsolatedRoot::new(std::fs::canonicalize(&raw_root).unwrap_or(raw_root));
-        let host_workspace = root.resolve("/workspace").map_err(err)?;
-        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
-        Ok(NamespaceSandbox {
-            id: handle.sandbox_id.clone(),
-            root,
-            outputs_path,
-            host_workspace,
-            host_outputs,
-            base_env: payload.base_env.clone(),
-            inherit_agent_stderr: self.inherit_agent_stderr,
-            secret_broker: self.secret_broker.clone(),
-            network: payload.network.clone(),
-            layout: std::sync::RwLock::new(Vec::new()),
-            realized: Vec::new(),
-            secret_paths: Vec::new(),
-            memory_mounts: std::sync::Mutex::new(Vec::new()),
             memory_mounter: self.memory_mounter.clone(),
         })
     }
@@ -832,6 +700,9 @@ pub struct NamespaceSandbox {
     inherit_agent_stderr: bool,
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     network: pc::NetworkPolicy,
+    control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
+    control_directory: Option<PathBuf>,
+    control_publication: Arc<NamespaceControlPublicationRegistry>,
     layout: std::sync::RwLock<Vec<RenderMount>>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized secrets, shredded at dispose before the tree is reaped
@@ -1160,6 +1031,7 @@ impl pc::Sandbox for NamespaceSandbox {
                 outputs_path: self.outputs_path.clone(),
                 base_env: self.base_env.clone(),
                 network: self.network.clone(),
+                control_services: self.control_services.clone(),
             },
         )
     }
@@ -1291,6 +1163,7 @@ impl pc::Sandbox for NamespaceSandbox {
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
         // Order: harvest memory (reads edits back) → shred secrets → reap the tree, so
         // a promised memory write-back is never lost and no credential lingers on disk.
+        self.control_publication.close_for_dispose().await;
         self.release_memory_mounts().await;
         for path in &self.secret_paths {
             if let Ok(meta) = std::fs::metadata(path) {
@@ -1300,6 +1173,13 @@ impl pc::Sandbox for NamespaceSandbox {
         let root = self.root.root();
         if root.exists() {
             std::fs::remove_dir_all(root).map_err(err)?;
+        }
+        if let Some(control_directory) = &self.control_directory {
+            match std::fs::remove_dir_all(control_directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(err(error)),
+            }
         }
         Ok(())
     }
@@ -1365,6 +1245,7 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,
@@ -1525,6 +1406,76 @@ mod tests {
         let mut unknown_schema = serde_json::to_value(&handle).unwrap();
         unknown_schema["payload"]["schema"] = serde_json::json!("namespace_v2");
         assert!(serde_json::from_value::<pc::SandboxHandle>(unknown_schema).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn adoption_restores_only_exact_realized_control_topology() {
+        /* Namespace adoption cause/effect table:
+         * C1=create realizes one demanded private control mount; C2=generic
+         * adoption; C3=spec-aware adoption with the same set; C4=requested and
+         * realized differ; C5=legacy handle omits realized evidence. E1=handle
+         * persists the exact set; E2=both valid adoption ports restore the same
+         * private mount; E3=mismatch fails closed; E4=legacy ordinary adoption
+         * stays control-free. Rules: N1 C1=>E1; N2 C1+C2|C3=>E2;
+         * N3 C4=>E3; N4 C5+generic=>E4; N5 C5+new demand=>E3.
+         */
+        use pc::Sandbox as _;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(temporary.path());
+        let mut requested = ns_spec("namespace-control-adoption", Vec::new());
+        requested
+            .control_services
+            .insert(SandboxControlServiceKind::RepositoryGitCredential);
+        let created = provider.create_sandbox(&requested).await.unwrap();
+        let handle = created.handle();
+        assert_eq!(
+            handle
+                .namespace_payload(pc::NamespaceProviderKind::Bubblewrap)
+                .unwrap()
+                .control_services,
+            requested.control_services,
+            "N1/E1"
+        );
+
+        for adopted in [
+            provider.adopt_sandbox(&handle).await.unwrap(),
+            provider
+                .adopt_sandbox_with_control_services(&handle, &requested.control_services)
+                .await
+                .unwrap(),
+        ] {
+            assert_eq!(
+                adopted.control_services, requested.control_services,
+                "N2/E2"
+            );
+            assert!(adopted.control_directory.is_some(), "N2/E2 private mount");
+        }
+        assert!(
+            provider
+                .adopt_sandbox_with_control_services(&handle, &Default::default())
+                .await
+                .is_err(),
+            "N3/E3 requested narrower"
+        );
+
+        let mut legacy = serde_json::to_value(&handle).unwrap();
+        legacy["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("control_services");
+        let legacy: pc::SandboxHandle = serde_json::from_value(legacy).unwrap();
+        let adopted = provider.adopt_sandbox(&legacy).await.unwrap();
+        assert!(adopted.control_services.is_empty(), "N4/E4");
+        assert!(adopted.control_directory.is_none(), "N4/E4");
+        assert!(
+            provider
+                .adopt_sandbox_with_control_services(&legacy, &requested.control_services)
+                .await
+                .is_err(),
+            "N5/E3 legacy plus new demand"
+        );
     }
 
     /// Live attach cause/effect decision table:

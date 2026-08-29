@@ -669,6 +669,33 @@ new Session             -> current Repository config, clone current remote conte
 
 No cross-Session commit replay is promised.
 
+#### Dormant Repository credential endpoint
+
+The Environment provider can now realize a demanded, provider-neutral
+Repository Git credential control endpoint at the single sandbox-absolute path
+`/run/awaken/control/repository-git-credential.sock`. The path is contract-owned
+and known while `SandboxSpec` is prepared; Namespace and Kubernetes project that
+same logical coordinate through provider-private storage rather than returning a
+dynamic path after publication. Durable handles retain the exact realized
+control-service set, and spec-aware adoption requires exact equality before the
+provider can republish it.
+
+At runtime, a publisher admits its first channel before returning a lease, keeps
+the active generation alive across idle intervals and bounded channel failures,
+and joins it before Sandbox removal. Kubernetes readiness comes from a trusted
+current-generation marker after both listeners bind, not from a probe that
+consumes the credential channel; Pod UID and owner transfer fence subsequent
+port-forwards. The typed request contains only the normalized Git authority and
+the response is short-lived, bounded, and zeroized at the helper/codec edge.
+
+This is a dormant Environment capability. `SessionEnvironment` does not yet
+request it, project a `GIT_CONFIG*` overlay, or activate the helper for Agent,
+Native Hand, or Resident Hand. The provider neither chooses nor verifies the
+Repository/credential binding and cannot turn endpoint availability into access.
+The existing Session Repository pin, Resource binding verifier, material
+resolver, and `Forbidden` exposure remain authoritative; their later activation
+must reuse this endpoint instead of adding a second Git credential path.
+
 ### Release and reclaim
 
 #### Explicit terminal publication

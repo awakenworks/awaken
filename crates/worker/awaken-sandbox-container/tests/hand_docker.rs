@@ -100,6 +100,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
         environment: None,
         command: Vec::new(),
         deny_tool_egress: false,

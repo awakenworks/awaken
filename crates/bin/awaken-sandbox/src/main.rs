@@ -1,11 +1,20 @@
 //! `awaken-sandbox` — the execution-plane binary (opposite the control-plane
-//! `awaken`). The first arg selects the role the pod runs: `acp` or `hand`.
+//! `awaken`). The first arg selects one closed execution-plane role.
 //!
 //!   awaken-sandbox acp [--listen ADDR] <cli> [cli-args...]
 //!       Bridge a dialed TCP socket to a process-as-container ACP CLI's stdio. This is
 //!       the sandbox image ENTRYPOINT; the CLI argv is the container `Cmd`.
 //!   awaken-sandbox hand <--unix PATH|--listen ADDR|--dial ADDR|--nats URL [SUBJECT]>
 //!       Serve the neutral tool-execution endpoint (ADR-0044/0045). `--features hand`.
+//!   awaken-sandbox git-credential --socket PATH <get|store|erase>
+//!       One-shot Git credential helper over a Session-owned control service.
+//!   awaken-sandbox control-forwarder --unix PATH --listen LOOPBACK_ADDR --ready PATH
+//!       Pod-local, payload-opaque Unix/TCP channel forwarder.
+//!   awaken-sandbox control-forwarder-ready --marker PATH
+//!       Exec-readiness check for the current forwarder generation marker.
+
+mod control_forwarder;
+mod git_credential;
 
 use std::process::ExitCode;
 
@@ -17,12 +26,49 @@ async fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("acp") => run_acp(&args[1..]).await,
         Some("hand") => run_hand(&args[1..]).await,
+        Some("git-credential") => run_git_credential(&args[1..]).await,
+        Some("control-forwarder") => run_control_forwarder(&args[1..]).await,
+        Some("control-forwarder-ready") => run_control_forwarder_ready(&args[1..]),
         Some(role) => {
-            eprintln!("awaken-sandbox: unknown role `{role}` (expected: acp | hand)");
+            eprintln!(
+                "awaken-sandbox: unknown role `{role}` (expected: acp | hand | git-credential | control-forwarder | control-forwarder-ready)"
+            );
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("usage: awaken-sandbox <acp|hand> [args...]");
+            eprintln!(
+                "usage: awaken-sandbox <acp|hand|git-credential|control-forwarder|control-forwarder-ready> [args...]"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_control_forwarder_ready(args: &[String]) -> ExitCode {
+    match control_forwarder::check_ready(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("awaken-sandbox control-forwarder-ready: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_git_credential(args: &[String]) -> ExitCode {
+    match git_credential::run(args).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("awaken-sandbox git-credential: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_control_forwarder(args: &[String]) -> ExitCode {
+    match control_forwarder::run(args).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("awaken-sandbox control-forwarder: {error}");
             ExitCode::FAILURE
         }
     }

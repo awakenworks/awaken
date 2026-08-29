@@ -666,6 +666,7 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
         }
     }
 

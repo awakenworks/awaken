@@ -7,7 +7,8 @@
   2026-08-11 (Kubernetes egress-policy evidence — see Amendment 3);
   2026-08-24 (one signed sandbox-image publisher — see Amendment 4);
   2026-08-28 (prove immutable staging before release promotion — see Amendment 5);
-  2026-08-28 (independent signature and predicate retry closure — see Amendment 6)
+  2026-08-28 (independent signature and predicate retry closure — see Amendment 6);
+  2026-08-29 (dormant provider-neutral Sandbox control transport — see Amendment 7)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -433,3 +434,57 @@ only in `S1/P1`, and the workflow resolves that tag again immediately before
 returning success. Thus retry converges across the sign/attest boundary without
 weakening consumer cardinality or treating one evidence type as authority for
 the other.
+
+## Amendment 7 (2026-08-29): dormant provider-neutral Sandbox control transport
+
+The process-level provider seam now has one segregated, typed control transport
+for capabilities that an opaque process may call at a sandbox-absolute
+coordinate. `awaken-sandbox-control` owns the bounded request/response codec,
+the `SandboxControlServicePublisher` port, and the single logical Repository Git
+credential endpoint
+`/run/awaken/control/repository-git-credential.sock`.
+`SandboxSpec.control_services` remains the sole demand authority. Durable
+Namespace and Container handles record only the exact control topology that was
+actually realized; a Container handle also records its provider-owned
+incarnation fence. Generic adoption restores that evidence, while spec-aware
+adoption requires exact requested/realized equality and then repeats ordinary
+capability admission. It never unions, narrows, or infers demand from ambient
+provider capability.
+
+Static provider realization stays below that one port. A Linux Namespace keeps
+the host rendezvous in its provider-private external directory and projects the
+fixed control directory read-only into the sandbox. Socket generation and
+device/inode ownership are one publication critical section. A demanded
+Kubernetes Pod uses one private `emptyDir`: the Agent mount is read-only, the
+digest-pinned forwarder mount is writable, and its TCP listener is loopback-only.
+The same trusted binary atomically publishes a PID/start-time generation marker
+only after both Unix and TCP listeners bind; the Pod's exec readiness probe
+validates that current marker and never connects to the one-exchange business
+port. Pod UID, the exact control forwarder/volume/mount projection, forbidden
+host-network/host-PID/host-IPC/shared-process/ephemeral-container shapes,
+ServiceAccount-token denial, and runtime-owner transfer fence create, adoption,
+and every authenticated port-forward. This is not a claim of exact equality for
+every admission-defaulted Pod field. Unsupported OS/provider cells fail
+capability admission rather than silently dropping the requested service.
+
+Dynamic publication is generation-owned. The first provider channel must open
+within a bounded admission interval before a lease is returned. A successfully
+published generation may then remain idle for the Session lifetime; only a
+started credential exchange has a total deadline. EOF, one failed channel, or a
+failed exchange causes cancel-aware bounded-backoff reconstruction under the
+same active generation. Close/disposal cancels and joins that generation before
+provider runtime removal, cleans only the socket or marker inode it owns, and
+cannot retry or reopen after disposal. The Git helper accepts the standard Git
+credential fields and line endings, discards unknown attributes, treats unknown
+operations and `capability` as successful no-ops, and bounds/zeroizes every
+credential-bearing frame.
+
+This amendment installs **dormant transport capability only**. It does not
+select a Repository, authorize a holder, resolve Vault material, persist a
+credential, expose anything to a model, or generate `GIT_CONFIG*`,
+`credential.helper`, or `GIT_ASKPASS`. In particular, the fixed endpoint is
+known before sandbox creation so a later Session-owned environment projection
+can refer to it without a publish-time path lookup, but no such projection or
+helper activation is implemented by this amendment. The current Repository pin
+continues to require `Forbidden` model exposure; holder/exposure/claim/verifier
+and activation authority remain with the credential and Session owners.

@@ -5,12 +5,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_control::SandboxControlServicePublisher;
 
 use crate::RuntimeAgentProcess;
 
 /// Object-safe live container environment owned by one Session.
 #[async_trait]
-pub trait ContainerEnvironment: pc::Sandbox {
+pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
     fn outputs_path(&self) -> &str {
         "/outputs"
     }
@@ -88,6 +89,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
             resource_limits: false,
             custom_rootfs: false,
             package_provisioning: false,
+            control_services: Default::default(),
         }
     }
 

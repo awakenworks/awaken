@@ -293,6 +293,7 @@ mod tests {
             image: "agent:1".into(),
             command: vec!["sleep".into(), "30".into()],
             env: Vec::new(),
+            control_services: Default::default(),
             packages: Default::default(),
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
@@ -467,6 +468,7 @@ mod tests {
             None,
             &[],
             Some("awc-session-1"),
+            None,
         );
         let spec = pod.spec.unwrap();
         let continuation = spec
@@ -532,6 +534,7 @@ mod tests {
             None,
             &[],
             Some("awc-session-1"),
+            None,
         );
         bind_claim_uid(&mut fenced, "claim-incarnation-1");
         assert_eq!(

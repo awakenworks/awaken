@@ -89,3 +89,11 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: the Managed Session repository derives an additive exact credential-source index from canonical desired MCP attachments, synchronizes it in the root transaction, and transactionally rebuilds it from canonical roots before SQLite/Postgres constructors serve. Vault rollout queries exact Workspace plus source id; the older Vault-membership index is not reinterpreted. Session-owned Repository compensation and terminal cleanup archive only the exact owned source revision through the same Vault lifecycle.
 - Links: [Session-owned Repository lifecycle](../design/resources-memory-files-skills.md#session-ownership-and-root-adoption)
 - Verification: V1-to-V2 migration/backfill/restart, root update/archive/delete/unrelated-source, SQLite/Postgres conformance, exact rollout, and inline Repository credential reclamation tests.
+
+## FACT-CRED-011: Sandbox control transport does not authorize credentials
+
+- Status: active dormant provider capability; Session Git-helper activation is not implemented
+- Owner: [Dormant Sandbox control transport boundary](../design/credentials-and-vaults.md#dormant-sandbox-control-transport-boundary)
+- Fact: Namespace and Kubernetes may realize the same fixed Repository Git credential endpoint and publish a bounded typed service, but the provider does not select or authorize a holder, exposure, claim, verifier, Repository, Vault material, or Git configuration. The Repository pin remains `Forbidden`; a later Session-owned projection must activate Agent and Native/Resident-Hand paths through the existing credential authorities.
+- Links: [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport); [ADR-0067 boundary note](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md#2026-08-29-boundary-note-sandbox-control-transport-is-not-credential-activation)
+- Verification: provider contract/path/adoption/lifecycle tests plus static absence of `GIT_CONFIG*`, helper overlay, holder selection, and material persistence in the provider slice.

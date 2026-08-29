@@ -79,6 +79,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
         environment: None,
         command: Vec::new(),
         deny_tool_egress: false,
