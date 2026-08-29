@@ -4,6 +4,7 @@ import asyncio
 import collections.abc
 import datetime
 import enum
+import importlib
 import io
 import inspect
 import itertools
@@ -45,6 +46,12 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.1.0",
     "1.2.0",
 })
+CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
+ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
+# The 0.109 deployment change point introduced both the environment helpers
+# and middleware. Keep one closed version set so those coupled surfaces cannot
+# silently acquire different historical boundaries.
+MIDDLEWARE_VERSIONS = ENVIRONMENT_HELPER_VERSIONS
 
 
 def projects_workspace_response_context(version: str) -> bool:
@@ -922,6 +929,7 @@ async def _call_session_create(
     max_retries: int,
     raw: bool = False,
     extra_headers: dict[str, str] | None = None,
+    client_options: dict[str, object] | None = None,
 ) -> object:
     arguments = {"agent": "fixture", "environment_id": "fixture"}
     if extra_headers is not None:
@@ -930,12 +938,16 @@ async def _call_session_create(
         async def async_handler(request: object) -> object:
             return handler(request)
 
-        async with anthropic_module.AsyncAnthropic(
-            api_key="async-transport-contract",  # awaken-allow: secret
-            http_client=transport_module.AsyncClient(
+        options = {
+            "api_key": "async-transport-contract",  # awaken-allow: secret
+            "http_client": transport_module.AsyncClient(
                 transport=transport_module.MockTransport(async_handler)
             ),
-            max_retries=max_retries,
+            "max_retries": max_retries,
+        }
+        options.update(client_options or {})
+        async with anthropic_module.AsyncAnthropic(
+            **options,
         ) as client:
             method = (
                 client.beta.sessions.with_raw_response.create
@@ -944,11 +956,15 @@ async def _call_session_create(
             )
             return await method(**arguments)
 
-    with anthropic_module.Anthropic(
-        api_key="transport-contract",  # awaken-allow: secret
-        http_client=transport_module.Client(transport=transport_module.MockTransport(handler)),
-        max_retries=max_retries,
-    ) as client:
+    options = {
+        "api_key": "transport-contract",  # awaken-allow: secret
+        "http_client": transport_module.Client(
+            transport=transport_module.MockTransport(handler)
+        ),
+        "max_retries": max_retries,
+    }
+    options.update(client_options or {})
+    with anthropic_module.Anthropic(**options) as client:
         method = (
             client.beta.sessions.with_raw_response.create
             if raw
@@ -970,7 +986,12 @@ async def _exercise_error_and_retry_contract_for_mode(
     # request only. Retry decision table: C4=status/override selects retry or
     # rejection and C5=max_retries=2; E3=exactly three or one attempts. Mutation
     # relation: C6=one retry with an explicit idempotency key and body; E4=the
-    # complete command identity is byte-stable. This owns Python transport
+    # complete command identity is byte-stable. C8=ConnectError followed by a
+    # valid response and max_retries=1; E5=one retry and a decoded response.
+    # C9=ReadTimeout with max_retries=0; E6=the exact APITimeoutError after one
+    # attempt, distinct from APIConnectionError. C10=ConnectError with
+    # max_retries=0; E7=the exact APIConnectionError and cause after one
+    # attempt. This owns Python transport
     # behavior only; Awaken's production error mapping is owned by deployed/Rust
     # operation cases. C7 projects the same decision graph through sync and
     # async API clients; the transport handler and all expectations remain
@@ -980,6 +1001,7 @@ async def _exercise_error_and_retry_contract_for_mode(
         (401, "authentication_error", "AuthenticationError"),
         (403, "permission_error", "PermissionDeniedError"),
         (404, "not_found_error", "NotFoundError"),
+        (408, "request_timeout", "APIStatusError"),
         (409, "conflict_error", "ConflictError"),
         (413, "request_too_large", "RequestTooLargeError"),
         (422, "invalid_request_error", "UnprocessableEntityError"),
@@ -1104,6 +1126,514 @@ async def _exercise_error_and_retry_contract_for_mode(
     first, second = attempts
     assert (first.method, first.url, first.content) == (second.method, second.url, second.content)
     assert first.headers["idempotency-key"] == second.headers["idempotency-key"] == key
+
+    failed_connection_attempts = []
+
+    def disconnect(request: object) -> object:
+        failed_connection_attempts.append(request)
+        raise transport_module.ConnectError(
+            "connection closed",
+            request=request,
+        )
+
+    try:
+        await _call_session_create(
+            anthropic_module,
+            transport_module,
+            disconnect,
+            asynchronous=asynchronous,
+            max_retries=0,
+        )
+    except anthropic_module.APIConnectionError as error:
+        assert error.__class__ is anthropic_module.APIConnectionError
+        assert isinstance(error.__cause__, transport_module.ConnectError)
+    else:
+        raise AssertionError("Python SDK accepted a connection failure")
+    assert len(failed_connection_attempts) == 1
+
+    connection_attempts = []
+
+    def reconnect(request: object) -> object:
+        connection_attempts.append(request)
+        if len(connection_attempts) == 1:
+            raise transport_module.ConnectError(
+                "connection closed",
+                request=request,
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        reconnect,
+        asynchronous=asynchronous,
+        max_retries=1,
+        raw=True,
+    )
+    assert response.status_code == 200
+    assert len(connection_attempts) == 2
+
+    timeout_attempts = []
+
+    def time_out(request: object) -> object:
+        timeout_attempts.append(request)
+        raise transport_module.ReadTimeout(
+            "SDK deadline elapsed",
+            request=request,
+        )
+
+    try:
+        await _call_session_create(
+            anthropic_module,
+            transport_module,
+            time_out,
+            asynchronous=asynchronous,
+            max_retries=0,
+        )
+    except anthropic_module.APITimeoutError as error:
+        assert error.__class__ is anthropic_module.APITimeoutError
+        assert isinstance(error.__cause__, transport_module.ReadTimeout)
+    else:
+        raise AssertionError("Python SDK accepted a transport timeout")
+    assert len(timeout_attempts) == 1
+
+    await _exercise_credential_provider_contract_for_mode(
+        anthropic_module,
+        transport_module,
+        asynchronous=asynchronous,
+    )
+    await _exercise_middleware_contract_for_mode(
+        anthropic_module,
+        transport_module,
+        asynchronous=asynchronous,
+    )
+
+
+async def _exercise_credential_provider_contract_for_mode(
+    anthropic_module: Any,
+    transport_module: Any,
+    *,
+    asynchronous: bool,
+) -> None:
+    version = anthropic_module.__version__
+    client_type = (
+        anthropic_module.AsyncAnthropic
+        if asynchronous
+        else anthropic_module.Anthropic
+    )
+    supports_credentials = "credentials" in inspect.signature(client_type).parameters
+    assert supports_credentials is (version in CREDENTIAL_PROVIDER_VERSIONS), (
+        f"{version}: unreviewed credential-provider change point"
+    )
+    if not supports_credentials:
+        return
+
+    # Authentication state machine shared by sync and async official clients:
+    # unresolved provider -> cached stale Bearer -> 401 -> forced refresh ->
+    # fresh Bearer -> 200. Static api_key/auth_token instead short-circuit the
+    # provider. This is deliberately part of the existing transport contract,
+    # not a second credential inventory.
+    credential_module = importlib.import_module("anthropic.lib.credentials")
+    provider_calls = []
+    requests = []
+
+    def credentials(*, force_refresh: bool = False) -> object:
+        provider_calls.append(force_refresh)
+        token = "provider-stale" if len(provider_calls) == 1 else "provider-fresh"  # awaken-allow: secret
+        return credential_module.AccessToken(token=token, expires_at=None)
+
+    def refresh(request: object) -> object:
+        requests.append(request)
+        if len(requests) == 1:
+            return transport_module.Response(
+                401,
+                request=request,
+                json=canonical_error(401, "authentication_error"),
+                headers={"request-id": "req_credential_stale", "retry-after-ms": "0"},
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        refresh,
+        asynchronous=asynchronous,
+        max_retries=1,
+        raw=True,
+        client_options={
+            "api_key": None,
+            "auth_token": None,
+            "credentials": credentials,
+        },
+    )
+    assert response.status_code == 200
+    assert provider_calls == [False, True]
+    assert len(requests) == 2
+    assert [request.headers["authorization"] for request in requests] == [
+        "Bearer provider-stale",
+        "Bearer provider-fresh",
+    ]
+    assert all("x-api-key" not in request.headers for request in requests)
+    assert [request.headers["x-stainless-retry-count"] for request in requests] == [
+        "0",
+        "1",
+    ]
+    for request in requests:
+        assert sorted(
+            item.strip()
+            for item in request.headers["anthropic-beta"].split(",")
+        ) == ["managed-agents-2026-04-01", "oauth-2025-04-20"]
+
+    for static_kind in ("api_key", "auth_token"):
+        shadowed_calls = []
+        static_requests = []
+
+        def shadowed_credentials(*, force_refresh: bool = False) -> object:
+            shadowed_calls.append(force_refresh)
+            return credential_module.AccessToken(
+                token="must-not-be-used",  # awaken-allow: secret
+                expires_at=None,
+            )
+
+        def accept(request: object) -> object:
+            static_requests.append(request)
+            return transport_module.Response(200, request=request, json={})
+
+        static_options = {
+            "api_key": "static-api" if static_kind == "api_key" else None,  # awaken-allow: secret
+            "auth_token": "static-token" if static_kind == "auth_token" else None,  # awaken-allow: secret
+            "credentials": shadowed_credentials,
+        }
+        response = await _call_session_create(
+            anthropic_module,
+            transport_module,
+            accept,
+            asynchronous=asynchronous,
+            max_retries=0,
+            raw=True,
+            client_options=static_options,
+        )
+        assert response.status_code == 200
+        assert shadowed_calls == []
+        assert len(static_requests) == 1
+        request = static_requests[0]
+        if static_kind == "api_key":
+            assert request.headers["x-api-key"] == "static-api"
+            assert "authorization" not in request.headers
+        else:
+            assert request.headers["authorization"] == "Bearer static-token"
+            assert "x-api-key" not in request.headers
+        assert request.headers["anthropic-beta"] == "managed-agents-2026-04-01"
+
+    # Causal graph: credential client -> with_options transport clone -> shared
+    # TokenCache -> two Managed calls and one provider lookup. Supplying a new
+    # credentials= provider forks that state while preserving default headers,
+    # query, and the shared httpx transport. This runs through both official
+    # sync and async client implementations under the one version authority
+    # above.
+    #
+    # Decision table:
+    # | derived client       | token cache | provider calls | wire token       |
+    # | with_options(timeout)| shared      | one total      | parent-provider  |
+    # | with_options(provider)| isolated   | one replacement| override-provider|
+    parent_calls = []
+    override_calls = []
+    derived_requests = []
+
+    def parent_credentials(*, force_refresh: bool = False) -> object:
+        parent_calls.append(force_refresh)
+        return credential_module.AccessToken(
+            token="parent-provider",  # awaken-allow: secret
+            expires_at=None,
+        )
+
+    def override_credentials(*, force_refresh: bool = False) -> object:
+        override_calls.append(force_refresh)
+        return credential_module.AccessToken(
+            token="override-provider",  # awaken-allow: secret
+            expires_at=None,
+        )
+
+    def accept_derived(request: object) -> object:
+        derived_requests.append(request)
+        return transport_module.Response(200, request=request, json={})
+
+    common_options = {
+        "api_key": None,
+        "auth_token": None,
+        "credentials": parent_credentials,
+        "max_retries": 0,
+        "default_headers": {"x-managed-parent": "preserved"},
+        "default_query": {"inherited_query": "preserved"},
+    }
+    arguments = {"agent": "fixture", "environment_id": "fixture"}
+    if asynchronous:
+        async def async_accept_derived(request: object) -> object:
+            return accept_derived(request)
+
+        async with transport_module.AsyncClient(
+            transport=transport_module.MockTransport(async_accept_derived)
+        ) as http_client:
+            async with anthropic_module.AsyncAnthropic(
+                **common_options,
+                http_client=http_client,
+            ) as parent:
+                clone = parent.with_options(timeout=1.0)
+                overridden = parent.with_options(credentials=override_credentials)
+                await parent.beta.sessions.create(**arguments)
+                await clone.beta.sessions.create(**arguments)
+                await overridden.beta.sessions.create(**arguments)
+    else:
+        with transport_module.Client(
+            transport=transport_module.MockTransport(accept_derived)
+        ) as http_client:
+            with anthropic_module.Anthropic(
+                **common_options,
+                http_client=http_client,
+            ) as parent:
+                clone = parent.with_options(timeout=1.0)
+                overridden = parent.with_options(credentials=override_credentials)
+                parent.beta.sessions.create(**arguments)
+                clone.beta.sessions.create(**arguments)
+                overridden.beta.sessions.create(**arguments)
+
+    assert parent_calls == [False]
+    assert override_calls == [False]
+    assert len(derived_requests) == 3
+    assert [request.headers["authorization"] for request in derived_requests] == [
+        "Bearer parent-provider",
+        "Bearer parent-provider",
+        "Bearer override-provider",
+    ]
+    assert all("x-api-key" not in request.headers for request in derived_requests)
+    assert all(
+        request.headers["x-managed-parent"] == "preserved"
+        for request in derived_requests
+    )
+    assert all(
+        request.url.params["inherited_query"] == "preserved"
+        for request in derived_requests
+    )
+
+    environment_work = getattr(parent.beta.environments, "work", None)
+    supports_poller = hasattr(environment_work, "poller")
+    expected_poller = asynchronous and version in ENVIRONMENT_HELPER_VERSIONS
+    assert supports_poller is expected_poller, (
+        f"{version}: unreviewed environment-helper change point or client mode"
+    )
+    if asynchronous and supports_poller:
+        # Helper composition graph: API-key parent -> public WorkPoller ->
+        # scoped with_options client -> one claimed poll and acknowledgement.
+        # The helper credential must replace the parent API key while routing/transport defaults and
+        # helper telemetry survive. One claimed item drives poll -> ack; the
+        # consumer then breaks with auto_stop=False, proving the scoped request
+        # chain without introducing a synthetic stop owner.
+        helper_requests = []
+        helper_work = {
+            "id": "work_wire",
+            "acknowledged_at": "2026-08-29T00:00:01Z",
+            "created_at": "2026-08-29T00:00:00Z",
+            "data": {"id": "session_wire", "type": "session"},
+            "environment_id": "environment_wire",
+            "latest_heartbeat_at": None,
+            "metadata": {},
+            "started_at": None,
+            "state": "active",
+            "stop_requested_at": None,
+            "stopped_at": None,
+            "type": "work",
+        }
+
+        async def accept_helper_request(request: object) -> object:
+            helper_requests.append(request)
+            return transport_module.Response(200, request=request, json=helper_work)
+
+        async with transport_module.AsyncClient(
+            transport=transport_module.MockTransport(accept_helper_request)
+        ) as http_client:
+            async with anthropic_module.AsyncAnthropic(
+                api_key="parent-must-not-leak",  # awaken-allow: secret
+                http_client=http_client,
+                max_retries=0,
+                default_headers={"x-parent-routing": "preserved"},
+                default_query={"parent_query": "preserved"},
+            ) as helper_parent:
+                claimed = []
+                async for work in helper_parent.beta.environments.work.poller(
+                    environment_id="environment_wire",
+                    environment_key="environment-helper",
+                    worker_id="worker-helper",
+                    block_ms=None,
+                    auto_stop=False,
+                ):
+                    claimed.append(work)
+                    break
+        assert [work.id for work in claimed] == ["work_wire"]
+        assert len(helper_requests) == 2
+        assert [request.method for request in helper_requests] == ["GET", "POST"]
+        assert [request.url.path for request in helper_requests] == [
+            "/v1/environments/environment_wire/work/poll",
+            "/v1/environments/environment_wire/work/work_wire/ack",
+        ]
+        assert all(
+            request.headers["authorization"] == "Bearer environment-helper"
+            for request in helper_requests
+        )
+        assert all("x-api-key" not in request.headers for request in helper_requests)
+        assert all(
+            request.headers["x-stainless-helper"] == "environments-work-poller"
+            for request in helper_requests
+        )
+        assert helper_requests[0].headers["anthropic-worker-id"] == "worker-helper"
+        assert all(
+            request.headers["x-parent-routing"] == "preserved"
+            for request in helper_requests
+        )
+        assert all(
+            request.url.params["parent_query"] == "preserved"
+            for request in helper_requests
+        )
+
+
+async def _exercise_middleware_contract_for_mode(
+    anthropic_module: Any,
+    transport_module: Any,
+    *,
+    asynchronous: bool,
+) -> None:
+    version = anthropic_module.__version__
+    client_type = (
+        anthropic_module.AsyncAnthropic
+        if asynchronous
+        else anthropic_module.Anthropic
+    )
+    supports_middleware = "middleware" in inspect.signature(client_type).parameters
+    assert supports_middleware is (version in MIDDLEWARE_VERSIONS), (
+        f"{version}: unreviewed middleware change point"
+    )
+    if not supports_middleware:
+        return
+
+    # Call-chain graph shared across sync and async clients:
+    # generated Managed request -> outer middleware mutation -> inner
+    # middleware -> httpx2 transport -> reverse unwind -> SDK retry -> the
+    # complete chain again -> raw response. An ordinary middleware exception
+    # instead terminates before transport and is never normalized or retried.
+    #
+    # Decision table:
+    # | middleware outcome | retries | transport calls | caller result       |
+    # | 500 then 200        | 1       | 2               | raw 200 response    |
+    # | RuntimeError        | 2       | 0               | identical exception |
+    events = []
+    attempts = []
+
+    def transport(request: object) -> object:
+        retry = request.headers["x-stainless-retry-count"]
+        attempts.append(request)
+        events.append(f"transport:{retry}")
+        assert request.headers["x-middleware-attempt"] == retry
+        if len(attempts) == 1:
+            return transport_module.Response(
+                500,
+                request=request,
+                json=canonical_error(500, "api_error"),
+                headers={"retry-after-ms": "0"},
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    if asynchronous:
+        async def outer(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"outer-before:{retry}")
+            assert request.method == "post"
+            assert request.url == "/v1/sessions?beta=true"
+            response = await call_next(request.copy(headers={
+                **request.headers,
+                "x-middleware-attempt": str(retry),
+            }))
+            events.append(f"outer-after:{retry}:{response.status_code}")
+            return response
+
+        async def inner(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"inner-before:{retry}")
+            assert request.headers["x-middleware-attempt"] == str(retry)
+            response = await call_next(request)
+            events.append(f"inner-after:{retry}:{response.status_code}")
+            return response
+    else:
+        def outer(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"outer-before:{retry}")
+            assert request.method == "post"
+            assert request.url == "/v1/sessions?beta=true"
+            response = call_next(request.copy(headers={
+                **request.headers,
+                "x-middleware-attempt": str(retry),
+            }))
+            events.append(f"outer-after:{retry}:{response.status_code}")
+            return response
+
+        def inner(request: object, call_next: Any) -> object:
+            retry = request.retries_taken
+            events.append(f"inner-before:{retry}")
+            assert request.headers["x-middleware-attempt"] == str(retry)
+            response = call_next(request)
+            events.append(f"inner-after:{retry}:{response.status_code}")
+            return response
+
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        transport,
+        asynchronous=asynchronous,
+        max_retries=1,
+        raw=True,
+        client_options={"middleware": [outer, inner]},
+    )
+    assert response.status_code == 200
+    assert len(attempts) == 2
+    assert events == [
+        "outer-before:0",
+        "inner-before:0",
+        "transport:0",
+        "inner-after:0:500",
+        "outer-after:0:500",
+        "outer-before:1",
+        "inner-before:1",
+        "transport:1",
+        "inner-after:1:200",
+        "outer-after:1:200",
+    ]
+
+    sentinel = RuntimeError("middleware policy rejected request")
+    rejected_transports = []
+
+    def must_not_run(request: object) -> object:
+        rejected_transports.append(request)
+        return transport_module.Response(200, request=request, json={})
+
+    if asynchronous:
+        async def reject(_request: object, _call_next: Any) -> object:
+            raise sentinel
+    else:
+        def reject(_request: object, _call_next: Any) -> object:
+            raise sentinel
+
+    try:
+        await _call_session_create(
+            anthropic_module,
+            transport_module,
+            must_not_run,
+            asynchronous=asynchronous,
+            max_retries=2,
+            client_options={"middleware": [reject]},
+        )
+    except RuntimeError as error:
+        assert error is sentinel
+    else:
+        raise AssertionError("Python SDK accepted a rejected middleware request")
+    assert rejected_transports == []
 
 
 def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:
