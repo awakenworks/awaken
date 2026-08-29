@@ -1270,9 +1270,9 @@ async fn create_session_defaults_to_empty_surface() {
     assert!(s["agent"]["skills"].as_array().unwrap().is_empty());
     assert!(s["agent"]["multiagent"].is_null());
     assert!(s["resources"].as_array().unwrap().is_empty());
-    // Wire-shape partition: ordinary synchronous creation is Ready, for which
-    // the Awaken-only preparation projection is neutral and therefore absent.
-    // Preparing/failed responses are owned by the explicit respond-async tests.
+    // Wire-shape partition: ordinary synchronous creation exposes only the
+    // official Session DTO. Internal realization state is lifecycle evidence,
+    // not an extra public response field.
     // This exact key set is the official SDK's required Session response plus
     // no product extension; adding an unconditional field cannot hide behind
     // the SDK's permissive JSON decoder.
