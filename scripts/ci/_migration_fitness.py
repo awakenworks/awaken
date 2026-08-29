@@ -22,6 +22,12 @@ SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
 # a closed compatibility inventory, not a general exemption: one owner must
 # include both frozen bodies and may declare exactly two legacy migrations.
 PUBLISHED_LEGACY_SQL_AUTHORITIES = {
+    "crates/server/awaken-sandbox-policy-store/src/migrations/expanded/V0001__policy_version.sql":
+        "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs",
+    "crates/server/awaken-sandbox-policy-store/src/migrations/expanded/V0002__current_policy.sql":
+        "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs",
+    "crates/server/awaken-sandbox-policy-store/src/migrations/expanded/V0003__environment_binding.sql":
+        "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs",
     "crates/control/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.postgres.sql":
         "crates/control/awaken-config-store/src/schema/expanded.rs",
     "crates/control/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.sqlite.sql":
@@ -64,6 +70,7 @@ PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS = {
     "crates/control/awaken-config-store/src/schema/expanded.rs": (0, 0, 0, 2),
     "crates/resources/awaken-memory-store/src/schema.rs": (1, 0, 0, 0),
     "crates/server/awaken-run-ingress/src/dispatch_schema.rs": (2, 0, 0, 0),
+    "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs": (3, 0, 0, 0),
 }
 PUBLISHED_LEGACY_RUST_AUTHORITIES = set(PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS)
 

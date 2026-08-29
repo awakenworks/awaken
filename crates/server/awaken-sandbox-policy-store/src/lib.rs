@@ -1,5 +1,7 @@
 //! Durable SandboxExecutionPolicy versions.
 
+mod expanded_schema;
+
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -14,16 +16,39 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sqlx::{PgPool, Row};
 
 const NS: &str = "sandbox_execution_policy";
+const BUNDLE_ID: &str = "awaken.sandbox_execution_policy";
+const CONVERGED_BUNDLE_ID: &str = "awaken.sandbox_execution_policy.converged";
 
 /// The single portable schema authority shared by the SQLite and Postgres adapters.
 fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
-        "awaken.sandbox_execution_policy",
+        BUNDLE_ID,
         vec![Migration::new(
             1,
             "current and immutable sandbox execution policy versions",
             "CREATE TABLE {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version)); \
              CREATE TABLE {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+        )?],
+    )
+}
+
+fn selected_sandbox_policy_bundle(
+    v1_checksum: Option<&str>,
+) -> Result<MigrationBundle, MigrationError> {
+    if v1_checksum == Some(expanded_schema::V1_CHECKSUM) {
+        expanded_schema::bundle()
+    } else {
+        sandbox_policy_bundle()
+    }
+}
+
+fn converged_sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        CONVERGED_BUNDLE_ID,
+        vec![Migration::new(
+            1,
+            "seal the converged sandbox policy migration history",
+            "SELECT 1",
         )?],
     )
 }
@@ -130,10 +155,18 @@ impl PostgresSandboxExecutionPolicyStore {
 
     /// Wrap a pool and apply the canonical sandbox-policy migration bundle.
     pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
-        let bundle = sandbox_policy_bundle().map_err(|error| error.to_string())?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|error| error.to_string())?
-            .run_bundle(&bundle)
+        let (published, converged) = selected_bundles(&pool).await?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&published)
+            .await
+            .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&converged)
             .await
             .map_err(|error| error.to_string())?;
         Ok(Self { pool })
@@ -150,14 +183,46 @@ impl PostgresSandboxExecutionPolicyStore {
 
     /// Wrap an existing pool after verifying its scoped migration ledger.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, String> {
-        let bundle = sandbox_policy_bundle().map_err(|error| error.to_string())?;
-        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-            .map_err(|error| error.to_string())?
-            .verify_bundle(&bundle)
+        let (published, converged) = selected_bundles(&pool).await?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|error| error.to_string())?;
+        runner
+            .verify_bundle(&published)
+            .await
+            .map_err(|error| error.to_string())?;
+        runner
+            .verify_bundle(&converged)
             .await
             .map_err(|error| error.to_string())?;
         Ok(Self { pool })
     }
+}
+
+async fn selected_bundles(pool: &PgPool) -> Result<(MigrationBundle, MigrationBundle), String> {
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let v1_checksum: Option<String> = if ledger.is_some() {
+        sqlx::query_scalar(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    Ok((
+        selected_sandbox_policy_bundle(v1_checksum.as_deref())
+            .map_err(|error| error.to_string())?,
+        converged_sandbox_policy_bundle().map_err(|error| error.to_string())?,
+    ))
 }
 
 #[async_trait]
@@ -248,10 +313,34 @@ fn as_i64(value: u64) -> Result<i64, SandboxExecutionPolicyError> {
 impl SqliteSandboxExecutionPolicyStore {
     pub fn open(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|error| error.to_string())?;
-        let bundle = sandbox_policy_bundle().map_err(|error| error.to_string())?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        let ledger_exists = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [format!("{NS}_schema_migrations")],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let v1_checksum = if ledger_exists {
+            conn.query_row(
+                &format!(
+                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+                ),
+                [BUNDLE_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
             .map_err(|error| error.to_string())?
-            .run_bundle(&conn, &bundle)
+        } else {
+            None
+        };
+        let published = selected_sandbox_policy_bundle(v1_checksum.as_deref())
+            .map_err(|error| error.to_string())?;
+        let converged = converged_sandbox_policy_bundle().map_err(|error| error.to_string())?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&conn, &published)
+            .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|error| error.to_string())?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -346,6 +435,7 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
 mod tests {
     use super::*;
     use awaken_provisioning_contract::{IsolationClass, SandboxExecutionPolicyId, SandboxOverride};
+    use awaken_scoped_migration::{Dialect, MigrationError, plan};
 
     fn policy(id: &str, version: u64, isolation: IsolationClass) -> SandboxExecutionPolicy {
         SandboxExecutionPolicy {
@@ -432,7 +522,7 @@ mod tests {
     #[test]
     fn sqlite_schema_has_one_scoped_migration_authority() {
         // Causal graph:
-        // open -> run canonical bundle -> ledger + two policy tables -> serve
+        // open -> run selected published bundle -> common convergence -> serve
         // reopen -> ledger verifies checksums -> no duplicate schema path
         // Environment binding -> remains in the Control Environment aggregate
         //
@@ -456,6 +546,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied, 1);
+        let converged: i64 = first
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = 'awaken.sandbox_execution_policy.converged'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(converged, 1);
         let foreign_binding_table: Option<String> = first
             .conn
             .lock()
@@ -498,6 +599,84 @@ mod tests {
             SqliteSandboxExecutionPolicyStore::open(path).is_err(),
             "checksum drift fails closed instead of being rewritten"
         );
+    }
+
+    #[test]
+    fn published_schema_histories_select_exact_v1_and_converge() {
+        // Causes: H1 no/current receipt, H2 exact expanded V1 receipt, H3
+        // unknown V1 receipt, H4 an expanded V3 environment table. Effects:
+        // E1 compact selection, E2 exact V1..V3 selection, E3 checksum failure,
+        // E4 common convergence while the foreign table remains inert.
+        //
+        // Decision table: H1 -> E1; H2+H4 -> E2+E4; H3 -> E3. Runtime policy
+        // reads/writes use only version/current tables in every accepted rule.
+        let compact = sandbox_policy_bundle().expect("compact");
+        let expanded = expanded_schema::bundle().expect("expanded");
+        let compact_v1 = compact.migrations()[0].checksum_for(Dialect::Sqlite);
+        assert_eq!(
+            selected_sandbox_policy_bundle(None).expect("H1 empty"),
+            compact
+        );
+        assert_eq!(
+            selected_sandbox_policy_bundle(Some(&compact_v1)).expect("H1 current"),
+            compact
+        );
+        assert_eq!(
+            selected_sandbox_policy_bundle(Some(expanded_schema::V1_CHECKSUM))
+                .expect("H2 expanded"),
+            expanded
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("expanded-policy.db");
+        let conn = Connection::open(&path).unwrap();
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .unwrap()
+            .run_bundle(&conn, &expanded)
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sandbox_execution_policy_environment(environment_id, policy_id, version) VALUES('legacy-env', 'legacy-policy', 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let migrated = SqliteSandboxExecutionPolicyStore::open(path.to_str().unwrap()).unwrap();
+        let ledgers: (i64, i64) = migrated
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT \
+                   SUM(CASE WHEN bundle_id = 'awaken.sandbox_execution_policy' THEN 1 ELSE 0 END), \
+                   SUM(CASE WHEN bundle_id = 'awaken.sandbox_execution_policy.converged' THEN 1 ELSE 0 END) \
+                 FROM sandbox_execution_policy_schema_migrations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ledgers, (3, 1), "H2+H4 -> E2+E4");
+        let historical_rows: i64 = migrated
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sandbox_execution_policy_environment",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical_rows, 1, "H4 remains inert and is not rewritten");
+
+        let unknown = std::collections::BTreeMap::from([(1, "f".repeat(64))]);
+        assert!(matches!(
+            plan(
+                &selected_sandbox_policy_bundle(Some(&"f".repeat(64)))
+                    .expect("H3 selects compact for ordinary verification"),
+                &unknown,
+                Dialect::Sqlite,
+            ),
+            Err(MigrationError::ChecksumMismatch { version: 1, .. })
+        ));
     }
 
     #[tokio::test]
