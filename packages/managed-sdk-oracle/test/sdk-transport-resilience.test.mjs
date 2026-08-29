@@ -498,12 +498,15 @@ for (const { version, Client } of clients) {
     // clone concurrent first requests -> one provider resolution -> two
     // independently decoded Managed pages. An explicit structured-auth
     // override forks the state -> only the replacement provider is consulted.
-    // Request defaults flow through both paths unchanged.
+    // Request defaults flow through both paths unchanged unless one call
+    // explicitly removes or overrides them; that call must not mutate shared
+    // auth state or either derived client.
     //
     // Decision table:
-    // | derived client       | auth state | provider calls | wire token       |
-    // | withOptions(timeout) | shared     | one total      | parent-provider  |
-    // | withOptions(provider)| isolated   | one replacement| override-provider|
+    // | derived request       | auth state | defaults       | provider calls |
+    // | withOptions(timeout)  | shared     | inherited      | one total      |
+    // | per-request options   | shared     | removed/changed| no extra call  |
+    // | withOptions(provider) | isolated   | inherited      | one replacement|
     //
     // The provider promise is held behind a barrier so this test proves
     // single-flight sharing under overlap; a fast provider could otherwise
@@ -559,6 +562,18 @@ for (const { version, Client } of clients) {
       cache: 'no-store',
     })));
 
+    assert.deepEqual((await clone.beta.sessions.list({}, {
+      headers: { 'x-managed-parent': null },
+      query: { inherited_query: undefined },
+      fetchOptions: { cache: 'reload' },
+    })).data, []);
+    assert.deepEqual(requests[2], {
+      authorization: 'Bearer parent-provider',
+      parentHeader: null,
+      inheritedQuery: null,
+      cache: 'reload',
+    }, 'per-request options remove inherited defaults without changing shared auth');
+
     const overrideProviderCalls = [];
     const overridden = parent.withOptions({
       credentials: async (options) => {
@@ -569,11 +584,42 @@ for (const { version, Client } of clients) {
     assert.deepEqual((await overridden.beta.sessions.list()).data, []);
     assert.deepEqual(parentProviderCalls, [null], 'the old cache is not consulted by an auth override');
     assert.deepEqual(overrideProviderCalls, [null]);
-    assert.deepEqual(requests[2], {
+    assert.deepEqual(requests[3], {
       authorization: 'Bearer override-provider',
       parentHeader: 'preserved',
       inheritedQuery: 'preserved',
       cache: 'no-store',
     });
+  });
+
+  test(`${version}: async apiKey setter is an explicit upstream pre-transport variance`, async () => {
+    // Declaration/runtime differential: every reviewed SDK declaration admits
+    // `apiKey: () => Promise<string>`, but these executable packages normalize
+    // a non-string constructor value to null and never invoke it. The request
+    // therefore fails authentication validation before fetch. This is not an
+    // Awaken response and must never be counted as server incompatibility.
+    // When an admitted candidate fixes the upstream runtime, this exact test
+    // fails so the variance is consciously reclassified as a supported path.
+    let setterCalls = 0;
+    let fetches = 0;
+    const dynamic = new Client({
+      apiKey: async () => {
+        setterCalls += 1;
+        return 'dynamic-api-key'; // awaken-allow: secret
+      },
+      baseURL,
+      maxRetries: 0,
+      fetch: async () => {
+        fetches += 1;
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    await assert.rejects(
+      () => dynamic.beta.sessions.list(),
+      (error) => error.constructor === Error
+        && /Could not resolve authentication method/u.test(error.message),
+    );
+    assert.equal(setterCalls, 0, 'the reviewed upstream runtime never invokes the declared setter');
+    assert.equal(fetches, 0, 'the upstream rejection cannot be attributed to an Awaken response');
   });
 }

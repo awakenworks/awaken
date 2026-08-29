@@ -57,7 +57,11 @@ evidence from drifting from the external expectation:
   that must escape without transport execution. A controlled provider barrier
   proves concurrent parent/`withOptions()` requests share one unresolved auth
   state and token cache; an explicit provider override must fork that state
-  while inherited headers, query, and fetch options remain exact. The Python historical matrix
+  while inherited headers, query, and fetch options remain exact, including
+  per-request removal/override. The suite also owns the reviewed upstream
+  declaration/runtime variance where an async `apiKey` setter is admitted by
+  TypeScript but rejected before transport; this cannot be misreported as an
+  Awaken response failure. The Python historical matrix
   projects the same connection-versus-timeout distinction and retry bound
   through both synchronous and asynchronous transports for every wheel, and
   owns the credential-provider introduction at `0.100.0` and middleware
@@ -66,7 +70,8 @@ evidence from drifting from the external expectation:
   transport nor retry. Its sync/async `with_options()` cases likewise prove
   cache sharing, explicit provider isolation, and inherited request defaults;
   from `0.109.0` the public async WorkPoller must replace a parent's API key
-  with its environment Bearer credential across both poll and ack calls.
+  with its environment Bearer credential across both poll and ack calls, and a
+  fatal authentication response must surface exactly once without backoff.
 - `e2e/conformance/managed_sdk_auth_context_e2e.mjs` composes those SDK
   projections with a real self-managed IAM process. Every supported TypeScript
   anchor must decode an invalid credential as its exact `AuthenticationError`
@@ -99,7 +104,8 @@ evidence from drifting from the external expectation:
   resolution/admission, and Memory helper invariants. The WorkPoller contract
   also records its derived client on the wire: parent transport/routing defaults
   survive, the environment Bearer replaces the parent API key, and helper
-  telemetry is exact. A newly exported symbol
+  telemetry is exact. Fatal 401 authentication terminates after one poll, while
+  a pre-aborted poller performs zero requests. A newly exported symbol
   therefore fails as unowned even when its entrypoint and file fingerprint were
   already known.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
