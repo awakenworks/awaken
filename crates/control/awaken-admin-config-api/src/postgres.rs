@@ -27,7 +27,7 @@ use awaken_config_resolver::{
 };
 use awaken_store_runtime::block_on_owned_runtime as block;
 
-use crate::schema::admin_bundle;
+use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";
@@ -83,15 +83,7 @@ impl PostgresAdminStore {
             if migrate_schema {
                 migrate(&pool).await?;
             } else {
-                let bundle = admin_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
-                awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
-                    pool.clone(),
-                    NS,
-                )
-                .map_err(|err| StoreError::Schema(err.to_string()))?
-                .verify_bundle(&bundle)
-                .await
-                .map_err(|err| StoreError::Schema(err.to_string()))?;
+                verify(&pool).await?;
             }
             Ok::<_, StoreError>(pool)
         })?;
@@ -192,13 +184,67 @@ impl Drop for PostgresAdminStore {
 /// Apply the `admin` migration bundle to `pool` (idempotent; the runner records
 /// applied versions in `admin_schema_migrations`).
 async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
-    let bundle = admin_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
-        .map_err(|err| StoreError::Migrate(err.to_string()))?
-        .run_bundle(&bundle)
+    let (published, converged) = selected_bundles(pool).await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(&published)
         .await
-        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    runner
+        .run_bundle(&converged)
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
     Ok(())
+}
+
+async fn verify(pool: &PgPool) -> Result<(), StoreError> {
+    let (published, converged) = selected_bundles(pool).await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| StoreError::Schema(error.to_string()))?;
+    runner
+        .verify_bundle(&published)
+        .await
+        .map_err(|error| StoreError::Schema(error.to_string()))?;
+    runner
+        .verify_bundle(&converged)
+        .await
+        .map_err(|error| StoreError::Schema(error.to_string()))?;
+    Ok(())
+}
+
+async fn selected_bundles(
+    pool: &PgPool,
+) -> Result<
+    (
+        awaken_scoped_migration::MigrationBundle,
+        awaken_scoped_migration::MigrationBundle,
+    ),
+    StoreError,
+> {
+    let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(format!("{NS}_schema_migrations"))
+        .fetch_one(pool)
+        .await
+        .map_err(|error| StoreError::Schema(error.to_string()))?;
+    let v1_checksum: Option<String> = if ledger.is_some() {
+        sqlx::query_scalar(&format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
+        ))
+        .bind(BUNDLE_ID)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| StoreError::Schema(error.to_string()))?
+    } else {
+        None
+    };
+    Ok((
+        selected_admin_bundle(v1_checksum.as_deref())
+            .map_err(|error| StoreError::Schema(error.to_string()))?,
+        converged_admin_bundle().map_err(|error| StoreError::Schema(error.to_string()))?,
+    ))
 }
 
 /// Serialize every mutation for one webhook id, including the absent-row create

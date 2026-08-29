@@ -22,6 +22,28 @@ SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
 # a closed compatibility inventory, not a general exemption: one owner must
 # include both frozen bodies and may declare exactly two legacy migrations.
 PUBLISHED_LEGACY_SQL_AUTHORITIES = {
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0001__inference_profile.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0002__mcp_server.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0003__agent_mcp.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0004__agent_resource.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0005__webhook.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0006__memory_store.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0007__webhook_outbox.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0008__resource_catalog.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0009__retire_legacy_mcp_config.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0010__retire_legacy_webhook_outbox.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0011__webhook_mutation_intent.sql":
+        "crates/control/awaken-admin-config-api/src/schema.rs",
     "crates/resources/awaken-memory-store/src/migrations/expanded/V0001__blob.sql":
         "crates/resources/awaken-memory-store/src/schema.rs",
     "crates/server/awaken-run-ingress/src/migrations/expanded/V0015__delegation_group.sql":
@@ -30,6 +52,9 @@ PUBLISHED_LEGACY_SQL_AUTHORITIES = {
         "crates/server/awaken-run-ingress/src/dispatch_schema.rs",
 }
 PUBLISHED_LEGACY_RUST_AUTHORITIES = set(PUBLISHED_LEGACY_SQL_AUTHORITIES.values())
+PUBLISHED_LEGACY_ALIAS_COUNTS = {
+    "crates/control/awaken-admin-config-api/src/schema.rs": 1,
+}
 
 CONDITIONAL_MIGRATION_SQL = (
     ("IF NOT EXISTS", re.compile(r"\bIF\s+NOT\s+EXISTS\b", re.IGNORECASE)),
@@ -240,14 +265,31 @@ def check_all(repo_root: Path) -> list[str]:
                     for owner in PUBLISHED_LEGACY_SQL_AUTHORITIES.values()
                 )
                 actual = migration_source.count("Migration::published_legacy(")
+                inventory = re.search(
+                    r"PUBLISHED_LEGACY_MIGRATION_COUNT:\s*usize\s*=\s*([0-9]+)",
+                    source,
+                )
+                table_driven = int(inventory.group(1)) if inventory else None
+                aliases = migration_source.count(
+                    "Migration::published_legacy_with_aliases("
+                )
                 unsupported = sum(
                     migration_source.count(constructor)
-                    for constructor in LEGACY_CONSTRUCTORS[1:]
+                    for constructor in LEGACY_CONSTRUCTORS[2:]
                 )
-                if actual != expected or unsupported != 0:
+                expected_aliases = PUBLISHED_LEGACY_ALIAS_COUNTS.get(relative, 0)
+                valid_direct = table_driven is None and actual == expected
+                valid_table = (
+                    table_driven == expected and actual == 1 and expected > 1
+                )
+                if (
+                    (not valid_direct and not valid_table)
+                    or aliases != expected_aliases
+                    or unsupported != 0
+                ):
                     errors.append(
                         f"{relative}: published legacy inventory must contain exactly "
-                        f"{expected} direct immutable declarations"
+                        f"{expected} closed immutable declarations"
                     )
         for match in registration.finditer(source):
             if match.group("registered") != match.group("included"):

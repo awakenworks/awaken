@@ -19,7 +19,7 @@ use awaken_config_resolver::{
     WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
 };
 
-use crate::schema::admin_bundle;
+use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";
@@ -54,11 +54,36 @@ impl SqliteAdminStore {
     }
 
     fn over(conn: Connection) -> Result<Self, StoreError> {
-        let bundle = admin_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&conn, &bundle)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let ledger_exists = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [format!("{NS}_schema_migrations")],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let v1_checksum = if ledger_exists {
+            conn.query_row(
+                &format!(
+                    "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+                ),
+                [BUNDLE_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?
+        } else {
+            None
+        };
+        let published = selected_admin_bundle(v1_checksum.as_deref())
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let converged =
+            converged_admin_bundle().map_err(|error| StoreError::Migrate(error.to_string()))?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        runner
+            .run_bundle(&conn, &published)
+            .and_then(|_| runner.run_bundle(&conn, &converged))
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -553,6 +578,7 @@ impl WebhookStore for SqliteAdminStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{admin_bundle, selected_admin_bundle};
     use awaken_config_resolver::{
         BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, ModelTarget,
         ProfileCandidate, ResourceAccess,
@@ -817,6 +843,54 @@ mod tests {
         )
         .expect("seed A3 drift");
         assert!(runner.run_bundle(&conn, &full).is_err(), "A3/E3");
+    }
+
+    #[test]
+    fn published_admin_database_reopens_without_parallel_schema_writes() {
+        // Causes: P1 exact expanded V1..V11 with the observed V9 alias;
+        // P2 active rows already exist; P3 reopen through the sole Admin adapter.
+        // Effects: E1 select expanded history, E2 append only convergence,
+        // E3 preserve active rows. Rule R1=P1+P2+P3=>E1+E2+E3; exact replay
+        // is covered by the shared runner and schema history table.
+        let conn = Connection::open_in_memory().expect("published sqlite");
+        let expanded = selected_admin_bundle(Some(
+            "a96581cecf572657f5503a0064d76b9b4c6653785d9ff74dd4821752735c604d",
+        ))
+        .expect("expanded bundle");
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        runner
+            .run_bundle(&conn, &expanded)
+            .expect("seed expanded history");
+        conn.execute(
+            "UPDATE admin_schema_migrations SET checksum = ?1
+             WHERE bundle_id = ?2 AND version = 9",
+            [
+                "987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131",
+                BUNDLE_ID,
+            ],
+        )
+        .expect("seed observed V9 alias");
+        conn.execute(
+            "INSERT INTO admin_inference_profile (id, data) VALUES ('profile', '{}')",
+            [],
+        )
+        .expect("seed active row");
+        let store = SqliteAdminStore::over(conn).expect("R1 reopen");
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .expect("connection")
+                .query_row(
+                    "SELECT COUNT(*) FROM admin_inference_profile WHERE id = 'profile'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("E3 row"),
+            1
+        );
+        drop(store);
     }
 
     #[test]
