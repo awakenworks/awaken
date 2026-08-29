@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_run_executor_acp::{AgentChannelSource, AgentSession, OpenError};
+use awaken_run_executor_acp::{
+    AgentChannelSource, AgentSession, BackendOwnedStateIsolation, OpenError,
+};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
@@ -47,6 +49,19 @@ impl BoundLocalChannelSource {
             backend,
             mcp_servers,
         }
+    }
+
+    /// Realize the one writable Session directory used by ACP adapter state and
+    /// managed configuration. The Session Environment remains its only path and
+    /// teardown owner.
+    async fn materialize_session_home(&self) -> Result<String, OpenError> {
+        let home = self.sandbox.config_home();
+        let logical = self.sandbox.config_home_logical();
+        self.sandbox
+            .materialize_inline(&format!("{logical}/.awaken-config-home"), b"")
+            .await
+            .map_err(|error| OpenError(format!("materialize ACP config home: {error}")))?;
+        Ok(home)
     }
 }
 
@@ -87,54 +102,65 @@ impl AgentChannelSource for BoundLocalChannelSource {
         } else if !self.sandbox.is_container() {
             launch.env = awaken_run_executor_acp::with_local_host_launch_environment(launch.env);
         }
-        if let Some(cli) = cli
-            && !backend_owned
-        {
-            if self.sandbox.is_container() {
+        if let Some(cli) = cli {
+            if !backend_owned && self.sandbox.is_container() {
                 launch.argv = cli
                     .container_argv
                     .iter()
                     .map(|part| (*part).to_string())
                     .collect();
             }
+
             // The resolver's host config-home path is outside a namespace/container
-            // sandbox. Point every CLI — including AcpSession CLIs with no generated
-            // config file — at a directory realized inside the bound Session
-            // environment. A sentinel forces the directory to exist before launch.
-            let config_home = self.sandbox.config_home();
-            let config_home_logical = self.sandbox.config_home_logical();
-            self.sandbox
-                .materialize_inline(&format!("{config_home_logical}/.awaken-config-home"), b"")
-                .await
-                .map_err(|error| OpenError(format!("materialize ACP config home: {error}")))?;
-            if let Some(config_home_env) = cli.config_home_env {
-                launch.env.retain(|var| var.name != config_home_env);
-                launch.env.push(pc::EnvVar {
-                    name: config_home_env.to_string(),
-                    value: pc::EnvValue::Inline {
-                        value: config_home.to_string(),
-                    },
-                    visibility: pc::EnvVisibility::Process,
-                });
+            // sandbox. A managed CLI needs its complete home inside the Session; a
+            // backend-owned CLI may instead isolate only its catalog-declared mutable
+            // state while retaining the host HOME that owns login and user config.
+            // Both reuse the same Session directory and teardown owner.
+            match (backend_owned, cli.backend_owned_state_isolation) {
+                (true, BackendOwnedStateIsolation::SharedHost) => {}
+                (true, BackendOwnedStateIsolation::SessionDirectory { env }) => {
+                    let session_home = self.materialize_session_home().await?;
+                    launch.env.retain(|var| var.name != env);
+                    launch.env.push(pc::EnvVar {
+                        name: env.to_string(),
+                        value: pc::EnvValue::Inline {
+                            value: session_home,
+                        },
+                        visibility: pc::EnvVisibility::Process,
+                    });
+                }
+                (false, _) => {
+                    let config_home = self.materialize_session_home().await?;
+                    if let Some(config_home_env) = cli.config_home_env {
+                        launch.env.retain(|var| var.name != config_home_env);
+                        launch.env.push(pc::EnvVar {
+                            name: config_home_env.to_string(),
+                            value: pc::EnvValue::Inline {
+                                value: config_home.clone(),
+                            },
+                            visibility: pc::EnvVisibility::Process,
+                        });
+                    }
+                    for alias in cli.config_home_aliases {
+                        launch.env.retain(|var| var.name != *alias);
+                        launch.env.push(pc::EnvVar {
+                            name: (*alias).to_string(),
+                            value: pc::EnvValue::Inline {
+                                value: config_home.clone(),
+                            },
+                            visibility: pc::EnvVisibility::Process,
+                        });
+                    }
+                    // Do not expose the operator's home to an opaque managed CLI.
+                    // This gives it one writable, Session-isolated config directory.
+                    launch.env.retain(|var| var.name != "HOME");
+                    launch.env.push(pc::EnvVar {
+                        name: "HOME".to_string(),
+                        value: pc::EnvValue::Inline { value: config_home },
+                        visibility: pc::EnvVisibility::Process,
+                    });
+                }
             }
-            for alias in cli.config_home_aliases {
-                launch.env.retain(|var| var.name != *alias);
-                launch.env.push(pc::EnvVar {
-                    name: (*alias).to_string(),
-                    value: pc::EnvValue::Inline {
-                        value: config_home.to_string(),
-                    },
-                    visibility: pc::EnvVisibility::Process,
-                });
-            }
-            // Do not expose the operator's home to an opaque managed CLI. This
-            // gives it one writable, Session-isolated configuration directory.
-            launch.env.retain(|var| var.name != "HOME");
-            launch.env.push(pc::EnvVar {
-                name: "HOME".to_string(),
-                value: pc::EnvValue::Inline { value: config_home },
-                visibility: pc::EnvVisibility::Process,
-            });
         }
         if let Some(artifact) = resolved.credential_artifact {
             let broker = resolved.secret_broker.ok_or_else(|| {
@@ -327,6 +353,7 @@ mod tests {
     struct BackendOwnedResolver {
         selection: awaken_runtime_contract::resolved::BackendModelSelection,
         model: &'static str,
+        extra_env: Vec<(String, String)>,
     }
 
     #[async_trait]
@@ -344,6 +371,13 @@ mod tests {
                 "sha256:test",
                 Default::default(),
             ))
+        }
+
+        fn extra_env(
+            &self,
+            _activation: &RunActivation,
+        ) -> Result<Vec<(String, String)>, OpenError> {
+            Ok(self.extra_env.clone())
         }
     }
 
@@ -428,6 +462,9 @@ mod tests {
     struct CapturingAgentSandbox {
         container: bool,
         host_identity: bool,
+        config_home: String,
+        config_home_logical: String,
+        materialize_error: Option<String>,
         command: Mutex<Option<pc::Command>>,
         materialized: Mutex<Vec<(String, Vec<u8>)>>,
     }
@@ -437,6 +474,9 @@ mod tests {
             Self {
                 container: true,
                 host_identity: false,
+                config_home: SANDBOX_CONFIG_HOME.to_string(),
+                config_home_logical: SANDBOX_CONFIG_HOME.to_string(),
+                materialize_error: None,
                 command: Mutex::new(None),
                 materialized: Mutex::new(Vec::new()),
             }
@@ -448,6 +488,7 @@ mod tests {
             Self {
                 container: false,
                 host_identity: true,
+                config_home_logical: WORKDIR_CONFIG_HOME.to_string(),
                 ..Self::default()
             }
         }
@@ -456,6 +497,27 @@ mod tests {
             Self {
                 container: false,
                 host_identity: false,
+                config_home_logical: WORKDIR_CONFIG_HOME.to_string(),
+                ..Self::default()
+            }
+        }
+
+        fn local_with_config_home(config_home: &str, config_home_logical: &str) -> Self {
+            Self {
+                container: false,
+                host_identity: true,
+                config_home: config_home.to_string(),
+                config_home_logical: config_home_logical.to_string(),
+                ..Self::default()
+            }
+        }
+
+        fn local_with_materialize_error(message: &str) -> Self {
+            Self {
+                container: false,
+                host_identity: true,
+                config_home_logical: WORKDIR_CONFIG_HOME.to_string(),
+                materialize_error: Some(message.to_string()),
                 ..Self::default()
             }
         }
@@ -472,15 +534,11 @@ mod tests {
         }
 
         fn config_home(&self) -> String {
-            SANDBOX_CONFIG_HOME.to_string()
+            self.config_home.clone()
         }
 
         fn config_home_logical(&self) -> String {
-            if self.container {
-                SANDBOX_CONFIG_HOME.to_string()
-            } else {
-                WORKDIR_CONFIG_HOME.to_string()
-            }
+            self.config_home_logical.clone()
         }
 
         fn workspace_cwd(&self) -> String {
@@ -492,6 +550,9 @@ mod tests {
             logical: &str,
             contents: &[u8],
         ) -> Result<(), pc::SandboxError> {
+            if let Some(error) = &self.materialize_error {
+                return Err(pc::SandboxError::new(error.clone()));
+            }
             self.materialized
                 .lock()
                 .unwrap()
@@ -541,17 +602,43 @@ mod tests {
         selection: awaken_runtime_contract::resolved::BackendModelSelection,
         model: &'static str,
     ) -> BoundLocalChannelSource {
+        bound_backend_owned_source_with_env(sandbox, cli_id, selection, model, Vec::new())
+    }
+
+    fn bound_backend_owned_source_with_env(
+        sandbox: Arc<CapturingAgentSandbox>,
+        cli_id: &str,
+        selection: awaken_runtime_contract::resolved::BackendModelSelection,
+        model: &'static str,
+        extra_env: Vec<(String, String)>,
+    ) -> BoundLocalChannelSource {
         let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
         BoundLocalChannelSource {
             sandbox,
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(
                 *cli,
-                Arc::new(BackendOwnedResolver { selection, model }),
+                Arc::new(BackendOwnedResolver {
+                    selection,
+                    model,
+                    extra_env,
+                }),
             )),
             codec: awaken_run_executor_acp::Codec::Acp,
             backend: awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli_id}")),
             mcp_servers: Vec::new(),
         }
+    }
+
+    fn inline_command_env<'a>(command: &'a pc::Command, name: &str) -> Option<&'a str> {
+        command.env.iter().find_map(|entry| {
+            if entry.name != name {
+                return None;
+            }
+            match &entry.value {
+                pc::EnvValue::Inline { value } => Some(value.as_str()),
+                pc::EnvValue::Secret { .. } => None,
+            }
+        })
     }
 
     #[tokio::test]
@@ -624,16 +711,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_owned_identity_is_host_only_and_never_materialized() {
-        // Cause graph: BackendOwned -> Workdir host identity -> PATH/HOME + CLI.
-        // Namespace/container cannot make host identity available without copying
-        // credentials, so both terminate before materialization or spawn.
+    async fn backend_owned_identity_preserves_login_and_isolates_declared_session_state() {
+        // Cause/effect graph: C1 provisioning is BackendOwned; C2 the catalog
+        // declares SharedHost or SessionDirectory state; C3 the environment is
+        // trusted Workdir or an isolated tier; C4 an upstream projection may
+        // carry a conflicting state path; C5 Session directory realization may
+        // fail. Effects: E1 host PATH/HOME and login remain intact; E2 only
+        // declared mutable state enters the Session home;
+        // E3 different Session homes never share SQLite; E4 the exact Session
+        // path overrides C4; E5 realization failure is terminal with no fallback;
+        // E6 isolated tiers reject before materialization.
+        // Credentials and provider material are not causes: BackendOwned never
+        // enters either delivery path.
         //
         // Decision table:
-        // H1 Workdir + Default     -> host HOME, no provider env/files, spawn
-        // H2 Workdir + Codex Exact -> same identity + ACP Session model option
-        // H3 Namespace + any       -> reject before spawn/materialization
-        // H4 Container + any       -> reject before spawn/materialization
+        // | rule | tier      | state policy     | conflict | realize | effect   |
+        // | H1   | Workdir   | SharedHost       | no       | n/a     | E1       |
+        // | H2   | Workdir A | SessionDirectory | no       | yes     | E1+E2    |
+        // | H3   | Workdir B | SessionDirectory | yes      | yes     | E1+E3+E4 |
+        // | H4   | Workdir   | SessionDirectory | no       | no      | E5       |
+        // | H5   | Namespace | any              | any      | n/a     | E6       |
+        // | H6   | Container | any              | any      | n/a     | E6       |
         let sandbox = Arc::new(CapturingAgentSandbox::local());
         let source = bound_backend_owned_source(
             sandbox.clone(),
@@ -653,18 +751,12 @@ mod tests {
         {
             let command = sandbox.command.lock().unwrap();
             let command = command.as_ref().expect("H1 spawned");
-            let inline = |name: &str| {
-                command.env.iter().find_map(|entry| {
-                    if entry.name != name {
-                        return None;
-                    }
-                    match &entry.value {
-                        pc::EnvValue::Inline { value } => Some(value.as_str()),
-                        pc::EnvValue::Secret { .. } => None,
-                    }
-                })
-            };
-            assert_eq!(inline("HOME"), std::env::var("HOME").ok().as_deref(), "H1");
+            assert_eq!(
+                inline_command_env(command, "HOME"),
+                std::env::var("HOME").ok().as_deref(),
+                "H1/E1"
+            );
+            assert_eq!(inline_command_env(command, "CODEX_SQLITE_HOME"), None, "H1");
             assert!(
                 command.env.iter().all(|entry| {
                     !matches!(&entry.value, pc::EnvValue::Secret { .. })
@@ -676,7 +768,10 @@ mod tests {
             );
         }
 
-        let sandbox = Arc::new(CapturingAgentSandbox::local());
+        let sandbox = Arc::new(CapturingAgentSandbox::local_with_config_home(
+            "/sessions/a/.acp-config",
+            WORKDIR_CONFIG_HOME,
+        ));
         let source = bound_backend_owned_source(
             sandbox.clone(),
             "codex",
@@ -693,21 +788,111 @@ mod tests {
         let selection = session.session_config_options.first().expect("H2");
         assert_eq!(selection.config_id, "model", "H2");
         assert_eq!(selection.value, "gpt-exact", "H2");
-        assert!(sandbox.materialized.lock().unwrap().is_empty(), "H2");
+        {
+            let command = sandbox.command.lock().unwrap();
+            let command = command.as_ref().expect("H2 spawned");
+            assert_eq!(
+                inline_command_env(command, "HOME"),
+                std::env::var("HOME").ok().as_deref(),
+                "H2/E1"
+            );
+            assert_eq!(
+                inline_command_env(command, "CODEX_SQLITE_HOME"),
+                Some("/sessions/a/.acp-config"),
+                "H2/E2"
+            );
+            assert_eq!(inline_command_env(command, "CODEX_HOME"), None, "H2");
+            assert!(
+                command.env.iter().all(|entry| {
+                    !matches!(&entry.value, pc::EnvValue::Secret { .. })
+                        && !entry.name.contains("API_KEY")
+                }),
+                "H2: state isolation must not materialize credentials"
+            );
+        }
+        assert_eq!(
+            *sandbox.materialized.lock().unwrap(),
+            [(
+                format!("{WORKDIR_CONFIG_HOME}/.awaken-config-home"),
+                Vec::new()
+            )],
+            "H2/E2"
+        );
+
+        let sandbox = Arc::new(CapturingAgentSandbox::local_with_config_home(
+            "/sessions/b/.acp-config",
+            WORKDIR_CONFIG_HOME,
+        ));
+        let source = bound_backend_owned_source_with_env(
+            sandbox.clone(),
+            "codex",
+            awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            "",
+            vec![(
+                "CODEX_SQLITE_HOME".to_string(),
+                "/host/shared-codex-state".to_string(),
+            )],
+        );
+        source
+            .open(
+                &acp_activation("acp:codex"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .expect("H3");
+        {
+            let command = sandbox.command.lock().unwrap();
+            let command = command.as_ref().expect("H3 spawned");
+            assert_eq!(
+                inline_command_env(command, "HOME"),
+                std::env::var("HOME").ok().as_deref(),
+                "H3/E1"
+            );
+            assert_eq!(
+                inline_command_env(command, "CODEX_SQLITE_HOME"),
+                Some("/sessions/b/.acp-config"),
+                "H3/E3+E4"
+            );
+            assert_ne!(
+                inline_command_env(command, "CODEX_SQLITE_HOME"),
+                Some("/sessions/a/.acp-config"),
+                "H3/E3"
+            );
+        }
+
+        let sandbox = Arc::new(CapturingAgentSandbox::local_with_materialize_error(
+            "state directory unavailable",
+        ));
+        let source = bound_backend_owned_source(
+            sandbox.clone(),
+            "codex",
+            awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            "",
+        );
+        let error = source
+            .open(
+                &acp_activation("acp:codex"),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .await
+            .err()
+            .expect("H4/E5");
+        assert!(error.0.contains("materialize ACP config home"), "H4/E5");
+        assert!(sandbox.command.lock().unwrap().is_none(), "H4/E5");
 
         for (rule, sandbox) in [
-            ("H3", Arc::new(CapturingAgentSandbox::namespace())),
-            ("H4", Arc::new(CapturingAgentSandbox::default())),
+            ("H5", Arc::new(CapturingAgentSandbox::namespace())),
+            ("H6", Arc::new(CapturingAgentSandbox::default())),
         ] {
             let source = bound_backend_owned_source(
                 sandbox.clone(),
-                "claude",
+                "codex",
                 awaken_runtime_contract::resolved::BackendModelSelection::Default,
                 "",
             );
             let error = source
                 .open(
-                    &acp_activation("acp:claude"),
+                    &acp_activation("acp:codex"),
                     &awaken_runtime_contract::RuntimeRunContext::new(),
                 )
                 .await

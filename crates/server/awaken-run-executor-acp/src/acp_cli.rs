@@ -46,6 +46,23 @@ pub enum BackendModelInterface {
     Unsupported,
 }
 
+/// Where a backend-owned CLI writes mutable process state while retaining the
+/// host user's login and configuration identity.
+///
+/// This is deliberately narrower than [`AcpCli::config_home_env`]: moving the
+/// whole config home would also move credentials and user configuration. A CLI
+/// selects Session isolation only when it exposes a dedicated non-secret state
+/// directory such as Codex's SQLite home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendOwnedStateIsolation {
+    /// The CLI has no independently configurable state directory, so its state
+    /// remains part of the trusted host identity.
+    SharedHost,
+    /// Point the declared environment variable at the existing Session-owned
+    /// config directory. The Runtime Host owns realization and teardown.
+    SessionDirectory { env: &'static str },
+}
+
 /// How an ACP CLI receives the managed route's exact model id. Most adapters
 /// read it from their catalog-declared environment projection; adapters that
 /// own model selection at the protocol layer receive `session/set_model` after
@@ -173,6 +190,9 @@ pub struct AcpCli {
     /// Exact-model interface for backend-owned local login. Default-model
     /// selection never consumes it.
     pub backend_model_interface: BackendModelInterface,
+    /// Mutable-state isolation for backend-owned local login. This never moves
+    /// the CLI's credential or user configuration home.
+    pub backend_owned_state_isolation: BackendOwnedStateIsolation,
     /// Exact-model interface for an Awaken-managed provider route.
     pub managed_model_interface: ManagedModelInterface,
     /// Managed provider credential delivery. Local backend-owned login is a
@@ -862,6 +882,44 @@ mod tests {
             assert!(row.supports_model_api_dialect(dialect), "{cli}");
             assert!(!row.supports_model_api_dialect("unsupported"), "{cli}");
         }
+    }
+
+    #[test]
+    fn backend_owned_state_isolation_is_catalog_owned_and_codex_only() {
+        // Cause/effect graph: C1 a backend-owned ACP row is selected; C2 the
+        // external CLI exposes a state-only directory separate from its login
+        // home. Effects: E1 Codex declares one exact Session-directory env;
+        // E2 every other row shares host state; E3 relabeling a row cannot alter
+        // the declared behavior. Constraint: the Runtime Host consumes this
+        // datum and must not recreate an adapter-id allowlist.
+        //
+        // Decision table:
+        // | rule | dedicated state dir | row      | effect |
+        // | S1   | yes                 | Codex    | E1     |
+        // | S2   | no                  | non-Codex| E2     |
+        // | S3   | yes                 | relabeled| E3     |
+        let codex = acp_cli("codex").expect("S1 Codex row");
+        assert_eq!(
+            codex.backend_owned_state_isolation,
+            BackendOwnedStateIsolation::SessionDirectory {
+                env: "CODEX_SQLITE_HOME"
+            },
+            "S1/E1"
+        );
+        assert!(
+            known_acp_clis()
+                .iter()
+                .filter(|row| row.id != "codex")
+                .all(|row| row.backend_owned_state_isolation
+                    == BackendOwnedStateIsolation::SharedHost),
+            "S2/E2"
+        );
+        let mut relabeled = *codex;
+        relabeled.id = "fixture";
+        assert_eq!(
+            relabeled.backend_owned_state_isolation, codex.backend_owned_state_isolation,
+            "S3/E3"
+        );
     }
 
     #[test]

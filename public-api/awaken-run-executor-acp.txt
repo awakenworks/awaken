@@ -41,6 +41,10 @@ pub awaken_run_executor_acp::BackendModelInterface::Flag::flag: &'static str
 pub awaken_run_executor_acp::BackendModelInterface::SessionConfigOption
 pub awaken_run_executor_acp::BackendModelInterface::SessionConfigOption::config_id: &'static str
 pub awaken_run_executor_acp::BackendModelInterface::Unsupported
+pub enum awaken_run_executor_acp::BackendOwnedStateIsolation
+pub awaken_run_executor_acp::BackendOwnedStateIsolation::SessionDirectory
+pub awaken_run_executor_acp::BackendOwnedStateIsolation::SessionDirectory::env: &'static str
+pub awaken_run_executor_acp::BackendOwnedStateIsolation::SharedHost
 pub enum awaken_run_executor_acp::CredentialArtifactCodec
 pub awaken_run_executor_acp::CredentialArtifactCodec::CodexAuthJson
 pub enum awaken_run_executor_acp::ManagedCredentialDelivery
@@ -95,6 +99,7 @@ pub struct awaken_run_executor_acp::AcpCli
 pub awaken_run_executor_acp::AcpCli::acquisition: awaken_run_executor_acp::AcpAcquisition
 pub awaken_run_executor_acp::AcpCli::auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::backend_model_interface: awaken_run_executor_acp::BackendModelInterface
+pub awaken_run_executor_acp::AcpCli::backend_owned_state_isolation: awaken_run_executor_acp::BackendOwnedStateIsolation
 pub awaken_run_executor_acp::AcpCli::capability_probe_auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::config_home_aliases: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::config_home_env: core::option::Option<&'static str>
