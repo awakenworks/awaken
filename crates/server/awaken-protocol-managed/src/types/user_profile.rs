@@ -33,16 +33,17 @@ pub enum AccessType {
     Passthrough,
 }
 
-/// `BetaUserProfile` — the wire projection.
+/// Fields shared by every official `BetaUserProfile` projection.
+///
+/// The beta capability owns only the access-model vocabulary. Keeping the
+/// stable fields in one type prevents the legacy/current serializers from
+/// becoming parallel copies of the resource contract.
 #[derive(Debug, Clone, Serialize)]
-pub struct UserProfile {
+pub struct UserProfileCore {
     pub id: String,
     pub created_at: String,
     pub updated_at: String,
     pub metadata: BTreeMap<String, String>,
-    pub relationship: Relationship,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_type: Option<AccessType>,
     /// Trust grants keyed by grant name; empty on this single-machine surface.
     pub trust_grants: BTreeMap<String, TrustGrant>,
     #[serde(rename = "type")]
@@ -51,6 +52,35 @@ pub struct UserProfile {
     pub external_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// `BetaUserProfile` selected by `user-profiles-2026-03-24`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LegacyUserProfile {
+    #[serde(flatten)]
+    pub core: UserProfileCore,
+    pub relationship: Relationship,
+}
+
+/// `BetaUserProfile` selected by `user-profiles-2026-08-18`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurrentUserProfile {
+    #[serde(flatten)]
+    pub core: UserProfileCore,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_type: Option<AccessType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<Relationship>,
+}
+
+/// The response is selected solely by the explicit beta capability carried on
+/// the request. The enum is untagged because both variants are official wire
+/// shapes, not an Awaken-owned discriminator.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum UserProfile {
+    Legacy(LegacyUserProfile),
+    Current(CurrentUserProfile),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

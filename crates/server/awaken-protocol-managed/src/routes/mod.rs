@@ -16,6 +16,7 @@ pub mod credential_rollouts;
 pub mod deployments;
 pub mod dreams;
 pub mod environments;
+mod extractors;
 pub mod sessions;
 pub mod tunnels;
 pub mod user_profiles;
@@ -25,7 +26,7 @@ pub mod vaults;
 // plumbing so sibling resource routers answer bad bodies and domain errors alike.
 pub(crate) use awaken_tenancy::WorkspaceScope;
 pub use dreams::dreams_router;
-pub(crate) use sessions::ManagedJson;
+pub(crate) use extractors::{ManagedJson, ManagedMultipart, ManagedQuery};
 pub use sessions::{
     create_profiled_session, enforce_managed_beta, release_profiled_session,
     replace_resource_manifest, router,

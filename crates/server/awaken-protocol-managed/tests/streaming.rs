@@ -392,6 +392,9 @@ async fn root_stream_immediately_projects_thread_live_observations_only() {
 /// Session status; E2 archive returns the terminated Thread and the unique
 /// projector commits one terminal fact.
 /// Decision table: S1=C1+C2=>E1; S2=C1+C3=>E2.
+// Test design: child_thread_sse_is_isolated_and_archive_projects_durable_terminal
+// Cause/effect graph: child SSE admits only child facts; archive appends one replayable terminal frame.
+// Decision table: matching child=ordered frames; root/sibling=excluded; archive=one terminal; unknown=404.
 #[tokio::test]
 async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
@@ -589,6 +592,9 @@ async fn durable_child_archive_broadcasts_and_backfills_one_terminal_frame() {
 /// status payloads reuse C2's `sthr_` id; E3 the aggregate Idle closes SSE.
 /// Decision table: P1(C1+C2+C3)->E1+E2+E3. Unknown/stale selectors are U1/U2
 /// in the rejection test below.
+// Test design: stream_thread_events_backfills_the_primary_thread
+// Cause/effect graph: primary Thread SSE backfills committed root facts then appends ordered live facts.
+// Decision table: primary=backfill+live; child=excluded; reconnect=full replay; unknown=404.
 #[tokio::test]
 async fn stream_thread_events_backfills_the_primary_thread() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run

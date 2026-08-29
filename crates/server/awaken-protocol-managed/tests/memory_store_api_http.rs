@@ -128,6 +128,10 @@ async fn create_store(router: &Router, name: &str) -> String {
     v["id"].as_str().expect("minted store id").to_string()
 }
 
+// Test design: store_lifecycle_create_get_list_update_archive_delete
+// Cause/effect graph: create establishes a MemoryStore aggregate; reads and updates project it;
+// archive hides it from live queries; delete removes the terminal aggregate and its addressability.
+// Decision table: absent=create/404; active=read/update/archive; archived=filtered; deleted=404.
 #[tokio::test]
 async fn store_lifecycle_create_get_list_update_archive_delete() {
     let router = router();
@@ -304,6 +308,10 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
     }
 }
 
+// Test design: memory_crud_with_precondition_and_version_log
+// Cause/effect graph: a path-addressed Memory head and immutable versions advance through CAS;
+// list/retrieve/redact observe the same history while archive/delete retire only the selected head.
+// Decision table: fresh precondition=advance; stale=409; missing parent/path/version=404; redact=immutable marker.
 #[tokio::test]
 async fn memory_crud_with_precondition_and_version_log() {
     let router = router();
@@ -320,6 +328,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(status, StatusCode::OK, "{mem}");
     let mid = mem["id"].as_str().unwrap().to_string();
     let sha = mem["content_sha256"].as_str().unwrap().to_string();
+    let created_at = mem["created_at"].clone();
     assert_eq!(mem["path"], "/a.md");
     assert_eq!(
         mem["content"],
@@ -438,6 +447,26 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(updated_basic["content"], Value::Null, "R5");
     assert_eq!(updated_basic["memory_version_id"], updated_version_id);
+
+    // Metamorphic list/read rule: changing the head content changes updated
+    // state only. Both views must be projected from one frozen head generation;
+    // neither may rewrite created_at or pair the new hash with old content.
+    let (status, after_update) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memories?view=full"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = after_update["data"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == mid))
+        .expect("updated memory remains listed");
+    assert_eq!(listed["created_at"], created_at);
+    assert_eq!(listed["content"], "world");
+    assert_eq!(listed["content_sha256"], updated["content_sha256"]);
+    assert_eq!(listed["memory_version_id"], updated_version_id);
 
     // The version log now carries a `created` then a `modified` row.
     let (status, versions) = call(

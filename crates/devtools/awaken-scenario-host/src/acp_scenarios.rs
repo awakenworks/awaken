@@ -143,6 +143,11 @@ pub async fn build_acp_jsonrpc_router() -> Router {
                 "",
                 format!("acp:{}", cli.id),
             )))
+            // The HITL row must author the policy it claims to prove. Relying on
+            // a runtime default made this fixture silently become always-allow
+            // when the neutral tool policy was normalized. Read remains an
+            // ordinary ACP capability; only the exact mutating fixture tool asks.
+            .agent_bindings(ask_tool_bindings("write"))
             .build()
     }));
     let publication = fixed_agent_publication(snapshots);

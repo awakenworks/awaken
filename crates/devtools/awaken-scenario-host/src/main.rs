@@ -51,7 +51,10 @@ impl awaken_session_contract::ManagedListPriceProvider for ScenarioListPriceProv
 
 fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::ManagedServiceAdapters {
     let adapters = awaken_cli::ManagedServiceAdapters::default()
-        .with_list_price_provider(Arc::new(ScenarioListPriceProvider));
+        .with_list_price_provider(Arc::new(ScenarioListPriceProvider))
+        .with_tunnel_application(Arc::new(
+            awaken_protocol_managed::test_support::EmptyManagedTunnelApplication,
+        ));
     if !rate_limit_transition {
         return adapters;
     }
@@ -133,9 +136,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     let mut scenario_lifecycle = None;
     let app = match model_mode.as_deref() {
-        Ok("probe") => {
-            awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
-        }
+        Ok("probe") => awaken_scenario_host::build_probe_router(),
         Ok("revise") => awaken_scenario_host::build_router(
             Arc::new(awaken_scenario_host::ReviseModel),
             "revise",
@@ -445,10 +446,7 @@ mod dispatch_tests {
         let mut local_test_deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
         local_test_deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
         let dispatch: Vec<(&str, axum::Router)> = vec![
-            (
-                "probe",
-                sh::build_router(std::sync::Arc::new(sh::ProbeModel), "probe"),
-            ),
+            ("probe", sh::build_probe_router()),
             (
                 "revise",
                 sh::build_router(std::sync::Arc::new(sh::ReviseModel), "revise"),

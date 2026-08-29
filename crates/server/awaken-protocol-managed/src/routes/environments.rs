@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -25,7 +25,7 @@ use crate::env_registry::{
     EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworkingMutation,
     EnvironmentPackagesMutation,
 };
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::environment::{
     CloudNetworkingParams, CloudNetworkingUpdateParams, DeletedEnvironment, Environment,
     EnvironmentConfigParams, EnvironmentConfigUpdateParams, EnvironmentCreateParams,
@@ -266,7 +266,7 @@ struct EnvironmentListParams {
 
 async fn list_envs(
     State(state): State<Arc<EnvironmentAuthoringState>>,
-    Query(query): Query<EnvironmentListParams>,
+    ManagedQuery(query): ManagedQuery<EnvironmentListParams>,
 ) -> Result<Json<PageCursor<Environment>>, WireError> {
     let definitions = if query.include_archived.unwrap_or(false) {
         state.application.list_all().await

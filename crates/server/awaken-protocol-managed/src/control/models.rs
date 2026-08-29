@@ -326,15 +326,16 @@ mod tests {
         }
     }
 
+    // Test design: models_route_uses_the_canonical_header_flavor_without_splitting_inventory
+    // Cause/effect graph: C1 no Managed beta selector; C2 the canonical Managed beta
+    // header; C3 `beta=true` without a capability; C4 every request
+    // addresses the same fixed inventory. Effects:
+    // E1 C1 returns GA ModelInfo without allowed_fallback_models; E2 C2
+    // and C3 return BetaModelInfo with it; E3 all retain the same model id.
+    // Constraint: transport selection changes projection only. Decision
+    // Decision table: R1 C1+C4->E1+E3; R2 C2+C4->E2+E3;
     #[tokio::test]
     async fn models_route_uses_the_canonical_header_flavor_without_splitting_inventory() {
-        // Causes: C1 no Managed beta selector; C2 the canonical Managed beta
-        // header; C3 `beta=true` without a capability; C4 every request
-        // addresses the same fixed inventory. Effects:
-        // E1 C1 returns GA ModelInfo without allowed_fallback_models; E2 C2
-        // and C3 return BetaModelInfo with it; E3 all retain the same model id.
-        // Constraint: transport selection changes projection only. Decision
-        // table: R1 C1+C4->E1+E3; R2 C2+C4->E2+E3;
         // R3 C3+C4->E2+E3.
         let app = models_router(Arc::new(vec![ModelEntry::new("model-a", "Model A")])).layer(
             axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
@@ -445,14 +446,16 @@ mod tests {
         }
     }
 
+    // Test design: retrieve_accepts_complete_slash_bearing_model_id
+    // Cause/effect graph: C1 the registered model id contains provider/model path
+    // separators; C2 the request supplies that complete id through the
+    // wildcard route. Effect: E1 retrieval matches the exact id and returns
+    // its BetaModelInfo document. Decision rule R1=C1&&C2 -> E1. This test
+    // belongs to the HTTP adapter; directory implementations need only
+    // supply opaque model ids.
+    // Decision table: exact complete id=>200 canonical model; truncated/unknown id=>404.
     #[tokio::test]
     async fn retrieve_accepts_complete_slash_bearing_model_id() {
-        // Causes: C1 the registered model id contains provider/model path
-        // separators; C2 the request supplies that complete id through the
-        // wildcard route. Effect: E1 retrieval matches the exact id and returns
-        // its BetaModelInfo document. Decision rule R1=C1&&C2 -> E1. This test
-        // belongs to the HTTP adapter; directory implementations need only
-        // supply opaque model ids.
         let id = "provider/claude/model-a";
         let app = models_router(Arc::new(vec![ModelEntry::new(id, "Model A")])).layer(
             axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),

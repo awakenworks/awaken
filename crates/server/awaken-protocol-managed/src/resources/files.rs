@@ -9,6 +9,7 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
 };
+use crate::routes::ManagedMultipart;
 use crate::types::file::{
     BetaFileCursorListParams, BetaFileCursorMetadata, BetaFileListParams, BetaFileMetadata,
     BetaFileScope, DeletedFile, DeletedFileObjectType, FileExpirySeconds, FileListParams,
@@ -17,7 +18,7 @@ use crate::types::file::{
 use crate::types::page::paginate_id_page;
 use crate::types::{PageCursor, PageQuery, paginate};
 use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
-use axum::extract::{Multipart, Path, RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -247,7 +248,7 @@ async fn upload_file(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
-    mut multipart: Multipart,
+    mut multipart: ManagedMultipart,
 ) -> impl IntoResponse {
     let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
         Ok(surface) => surface,
@@ -255,7 +256,12 @@ async fn upload_file(
     };
     let mut upload: Option<(String, String, Vec<u8>)> = None;
     let mut expiry_seconds = None;
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Some(field) = match multipart.0.next_field().await {
+        Ok(field) => field,
+        Err(multipart_error) => {
+            return error(StatusCode::BAD_REQUEST, multipart_error.to_string());
+        }
+    } {
         if field.name() == Some("expires_in_seconds") {
             if surface == ManagedResourceApiSurface::CapabilityBeta {
                 return error(

@@ -183,6 +183,37 @@ async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
     )
 }
 
+// Test design: malformed_skill_multipart_is_atomic_and_sdk_decodable
+// Cause/effect graph: a complete SKILL.md prefix followed by a malformed field
+// -> multipart stream failure -> canonical invalid_request_error -> the atomic
+// Skill aggregate create port is never called.
+// Decision table: complete closing boundary creates one Skill; malformed suffix
+// returns 400 JSON and leaves the Workspace definition set empty.
+#[tokio::test]
+async fn malformed_skill_multipart_is_atomic_and_sdk_decodable() {
+    let (router, store, dir) = router_with_store();
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"files\"; filename=\"SKILL.md\"\r\n\r\n",
+    );
+    body.extend_from_slice(b"---\nname: partial\ndescription: must-not-persist\n---\n");
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"broken\"");
+
+    let (status, error) = post_multipart_body(&router, "/v1/skills", body, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["error"]["type"], "invalid_request_error");
+    assert!(error["error"]["message"].is_string());
+    assert!(store.list_definitions("test").await.unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// Test design: ga_skill_projection_and_query_only_selector_match_official_sdk
+// Cause/effect graph: capability/query selection changes only the Beta/GA wire projection over one Skill aggregate.
+// Decision table: current query-only/GA=GA shape; legacy capability=Beta shape; ambiguous selector=400.
 #[tokio::test]
 async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     // Cause/effect graph: C1 no beta selector, C2 GA display_name multipart,
@@ -583,6 +614,9 @@ async fn browser_publish_rejects_a_stale_base_version_without_appending() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// Test design: multipart_bundle_preserves_binary_support_files
+// Cause/effect graph: multipart import canonicalizes SKILL.md while preserving binary support-file bytes and paths.
+// Decision table: valid unique bundle=round-trip; missing/duplicate/unsafe path=4xx before persistence.
 #[tokio::test]
 async fn multipart_bundle_preserves_binary_support_files() {
     let (router, _store, dir) = router_with_store();
@@ -626,6 +660,9 @@ async fn multipart_bundle_preserves_binary_support_files() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// Test design: sdk_multipart_create_list_retrieve_and_version_lifecycle
+// Cause/effect graph: SDK multipart create establishes one Skill and immutable versions shared by every lifecycle route.
+// Decision table: live version=retrieve/download; retire non-sole=delete; sole/unknown=4xx/404; Skill delete=terminal.
 #[tokio::test]
 async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     let (router, _store, dir) = router_with_store();

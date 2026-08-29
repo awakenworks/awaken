@@ -919,6 +919,10 @@ async fn executable_registration_seeds_work_only_for_self_hosted_environments() 
     assert!(cloud_work["data"].as_array().unwrap().is_empty(), "R2");
 }
 
+// Test design: environment_crud_and_work_lifecycle
+// Cause/effect graph: Environment CRUD authors one durable configuration; self-hosted
+// configuration seeds leaseable Work whose ack/heartbeat/update/stop transitions are observable.
+// Decision table: valid owner+revision advances; stale/wrong owner conflicts; archive/delete terminates.
 #[tokio::test]
 async fn environment_crud_and_work_lifecycle() {
     let app = app();

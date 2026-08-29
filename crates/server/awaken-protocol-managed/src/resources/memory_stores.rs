@@ -21,7 +21,7 @@ use awaken_resource_contract::{
     UpdateMemoryStoreCommand, memory_sha256_hex,
 };
 use axum::Extension;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -29,7 +29,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::routes::sessions::ManagedJson;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::memory::{
     AuthenticatedMemoryActor, MemoryActor, MemoryVersion as MemoryVersionObject,
     MemoryVersionOperation as MemoryVersionOperationObject,
@@ -523,7 +523,7 @@ async fn get_store(
 async fn list_stores(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    Query(query): Query<MemoryStoreListParams>,
+    ManagedQuery(query): ManagedQuery<MemoryStoreListParams>,
 ) -> axum::response::Response {
     let created_at_gte = match query
         .created_at_gte
@@ -638,17 +638,23 @@ async fn archive_store(
 
 // ---- Memory routes ---------------------------------------------------------
 
-/// Find a memory's current path by its id in the durable store (path-addressed, so
-/// an id lookup scans the store's listing — memory stores are small).
-async fn path_of(state: &MemoryStoreApi, store: &str, mid: &str) -> Option<String> {
-    state
+/// Resolve one current head by id from the repository's atomic snapshot.
+///
+/// Returning the repository error is intentional: storage unavailability must
+/// never be projected as a stable public 404, and callers that need content must
+/// not reconstruct a mixed-generation head with `list` followed by `get`.
+async fn memory_by_id(
+    state: &MemoryStoreApi,
+    store: &str,
+    mid: &str,
+) -> Result<Option<Memory>, MemErr> {
+    let memory = state
         .memories
-        .list(store, "/")
-        .await
-        .ok()?
+        .snapshot_heads(store)
+        .await?
         .into_iter()
-        .find(|e| e.id == mid)
-        .map(|e| e.path)
+        .find(|memory| memory.id == mid);
+    Ok(memory)
 }
 
 fn memory_conflict() -> axum::response::Response {
@@ -666,7 +672,7 @@ async fn create_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
-    Query(query): Query<std::collections::HashMap<String, String>>,
+    ManagedQuery(query): ManagedQuery<std::collections::HashMap<String, String>>,
     actor: Option<Extension<AuthenticatedMemoryActor>>,
     ManagedJson(body): ManagedJson<MemoryCreateParams>,
 ) -> axum::response::Response {
@@ -707,7 +713,7 @@ async fn list_memories(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
+    ManagedQuery(q): ManagedQuery<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
@@ -742,7 +748,10 @@ async fn list_memories(
     } else {
         requested_limit.min(20)
     };
-    let entries = match state.memories.list(&id, prefix).await {
+    // Full and basic views share one frozen head snapshot. Besides avoiding an
+    // N+1 read, this keeps created_at/content/hash/version from different
+    // generations out of one SDK page under concurrent writes.
+    let entries = match state.memories.snapshot_heads(&id).await {
         Ok(entries) => entries,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
@@ -768,17 +777,7 @@ async fn list_memories(
             continue;
         }
         // `basic` elides content (metadata only); `full` fetches the head content.
-        let content = if view == MemoryView::Basic {
-            None
-        } else {
-            state
-                .memories
-                .get_by_path(&id, &entry.path)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|m| m.content)
-        };
+        let content = view.includes_content().then(|| entry.content).flatten();
         let Some(memory_version_id) = current_version_id(&versions, &entry.id) else {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -788,7 +787,7 @@ async fn list_memories(
         data.push(MemoryListItem::Memory(MemoryObject {
             id: entry.id,
             kind: "memory",
-            created_at: timestamp(entry.updated_unix_nanos),
+            created_at: timestamp(entry.created_unix_nanos),
             updated_at: timestamp(entry.updated_unix_nanos),
             memory_store_id: id.clone(),
             memory_version_id: memory_version_id.to_string(),
@@ -828,7 +827,7 @@ async fn get_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
-    Query(query): Query<std::collections::HashMap<String, String>>,
+    ManagedQuery(query): ManagedQuery<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Full) {
         Ok(view) => view,
@@ -839,15 +838,14 @@ async fn get_memory(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let Some(path) = path_of(&state, &id, &mid).await else {
-        return not_found("memory");
+    let memory = match memory_by_id(&state, &id, &mid).await {
+        Ok(Some(memory)) => memory,
+        Ok(None) | Err(MemErr::NotFound(_)) => return not_found("memory"),
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
-    match state.memories.get_by_path(&id, &path).await {
-        Ok(Some(mem)) => match project_current_memory(&state, &mem, &id, view).await {
-            Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
-            Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        },
-        _ => not_found("memory"),
+    match project_current_memory(&state, &memory, &id, view).await {
+        Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
+        Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -860,7 +858,7 @@ async fn update_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
-    Query(query): Query<std::collections::HashMap<String, String>>,
+    ManagedQuery(query): ManagedQuery<std::collections::HashMap<String, String>>,
     actor: Option<Extension<AuthenticatedMemoryActor>>,
     ManagedJson(body): ManagedJson<MemoryUpdateParams>,
 ) -> axum::response::Response {
@@ -873,11 +871,10 @@ async fn update_memory(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let Some(path) = path_of(&state, &id, &mid).await else {
-        return not_found("memory");
-    };
-    let Ok(Some(current)) = state.memories.get_by_path(&id, &path).await else {
-        return not_found("memory");
+    let current = match memory_by_id(&state, &id, &mid).await {
+        Ok(Some(memory)) => memory,
+        Ok(None) | Err(MemErr::NotFound(_)) => return not_found("memory"),
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     // The CAS base: an explicit precondition (stale → conflict) else the live sha.
     let base_sha = body
@@ -921,7 +918,7 @@ async fn delete_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
-    Query(query): Query<MemoryDeleteParams>,
+    ManagedQuery(query): ManagedQuery<MemoryDeleteParams>,
     actor: Option<Extension<AuthenticatedMemoryActor>>,
 ) -> axum::response::Response {
     match active_store_exists(&state, &workspace, &id).await {
@@ -929,8 +926,10 @@ async fn delete_memory(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let Some(path) = path_of(&state, &id, &mid).await else {
-        return not_found("memory");
+    let path = match memory_by_id(&state, &id, &mid).await {
+        Ok(Some(memory)) => memory.path,
+        Ok(None) | Err(MemErr::NotFound(_)) => return not_found("memory"),
+        Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     let actor = actor.as_ref().map(|actor| &actor.0.0);
     if let Some(expected_sha) = query.expected_content_sha256.as_deref() {
@@ -1033,7 +1032,7 @@ async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
-    Query(query): Query<std::collections::HashMap<String, String>>,
+    ManagedQuery(query): ManagedQuery<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
         Ok(view) => view,
@@ -1071,7 +1070,7 @@ async fn get_version(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
-    Query(query): Query<std::collections::HashMap<String, String>>,
+    ManagedQuery(query): ManagedQuery<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Full) {
         Ok(view) => view,
@@ -1100,7 +1099,7 @@ async fn redact_version(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
-    _query: Query<std::collections::HashMap<String, String>>,
+    _query: ManagedQuery<std::collections::HashMap<String, String>>,
     actor: Option<Extension<AuthenticatedMemoryActor>>,
 ) -> axum::response::Response {
     match active_store_exists(&state, &workspace, &id).await {

@@ -62,13 +62,13 @@ use awaken_credential_vault::{
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
 use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::routes::{ManagedJson, sha256_identity};
+use crate::routes::{ManagedJson, ManagedQuery, sha256_identity};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire,
     CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialNetworking,
@@ -1179,8 +1179,8 @@ async fn retrieve_vault(
 async fn list_vaults(
     State(state): State<Arc<VaultState>>,
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
-    Query(query): Query<ListQuery>,
-    Query(page): Query<PageQuery>,
+    ManagedQuery(query): ManagedQuery<ListQuery>,
+    ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Vault>>, WireError> {
     let mut records = state
         .repository
@@ -1534,8 +1534,8 @@ async fn list_credentials(
     State(state): State<Arc<VaultState>>,
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(vault_id): Path<String>,
-    Query(query): Query<ListQuery>,
-    Query(page): Query<PageQuery>,
+    ManagedQuery(query): ManagedQuery<ListQuery>,
+    ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Credential>>, WireError> {
     if state
         .repository

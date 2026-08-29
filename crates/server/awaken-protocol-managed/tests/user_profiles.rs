@@ -7,7 +7,7 @@ use std::sync::Arc;
 use awaken_data_subject_application::DataSubjectApplication;
 use awaken_data_subject_store::InMemoryDataSubjectRepo;
 use awaken_protocol_managed::{
-    MANAGED_BETA, USER_PROFILES_BETA, enforce_managed_beta, user_profiles_router,
+    MANAGED_BETA, ManagedCapability, USER_PROFILES_BETA, enforce_managed_beta, user_profiles_router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -26,7 +26,18 @@ fn app() -> Router {
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    call_with_beta(app, method, uri, USER_PROFILES_BETA, body).await
+}
+
+async fn call_with_beta(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    beta: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
+    b = b.header("anthropic-beta", beta);
     let body = match body {
         Some(v) => {
             b = b.header("content-type", "application/json");
@@ -45,6 +56,84 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     (status, value)
 }
 
+#[tokio::test]
+async fn beta_capability_selects_one_exact_user_profile_projection() {
+    // Causal graph: one durable profile -> capability selector -> one wire
+    // vocabulary. The selector, not SDK/User-Agent metadata, is the only cause.
+    //
+    // Decision table:
+    // | selector | access_type request | response fields | effect |
+    // | 03-24    | absent              | relationship    | accept |
+    // | 03-24    | present             | n/a             | reject before write |
+    // | 08-18    | present             | access_type + relationship | accept |
+    // | both     | any                 | n/a             | reject as ambiguous |
+    //
+    // Cross-projection invariant: reading the current-created aggregate through
+    // the legacy capability omits only the new vocabulary; identity and legacy
+    // relationship remain stable.
+    let app = app();
+    let current = ManagedCapability::UserProfilesCurrent.beta();
+    let (status, created) = call_with_beta(
+        &app,
+        "POST",
+        "/v1/user_profiles",
+        current,
+        Some(json!({ "access_type": "passthrough", "name": "Resold" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["access_type"], "passthrough");
+    assert_eq!(created["relationship"], "resold");
+    let id = created["id"].as_str().unwrap();
+
+    let (status, legacy) = call(&app, "GET", &format!("/v1/user_profiles/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(legacy.get("access_type").is_none());
+    assert_eq!(legacy["relationship"], "resold");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/user_profiles",
+        Some(json!({ "access_type": "application" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let combined = format!("{USER_PROFILES_BETA}, {current}");
+    let (status, _) = call_with_beta(
+        &app,
+        "GET",
+        &format!("/v1/user_profiles/{id}"),
+        &combined,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// Test design: malformed_user_profile_query_uses_anthropic_error_envelope
+// Cause/effect graph: malformed public query -> shared ManagedQuery boundary ->
+// SDK-decodable invalid_request_error; the profile application is never called.
+// Decision table: order={asc,desc} -> typed list input; order={unknown} -> 400
+// JSON error envelope with the rejected field in the diagnostic.
+#[tokio::test]
+async fn malformed_user_profile_query_uses_anthropic_error_envelope() {
+    let (status, body) = call(&app(), "GET", "/v1/user_profiles?order=newest", None).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "error");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("order"))
+    );
+}
+
+// Test design: user_profile_crud_and_metadata_merge
+// Cause/effect graph: one UserProfile aggregate owns create/retrieve/update/list/enrollment and metadata merge semantics.
+// Decision table: omitted=preserve; null/empty removes where specified; conflicting access vocabulary=400; unknown=404.
 #[tokio::test]
 async fn user_profile_crud_and_metadata_merge() {
     // Cause/effect graph: C1 operation={create,retrieve,update,list,enroll}; C2
@@ -233,7 +322,10 @@ async fn user_profiles_require_their_own_beta_family() {
         (None, StatusCode::BAD_REQUEST),
         (Some(MANAGED_BETA), StatusCode::BAD_REQUEST),
         (Some(USER_PROFILES_BETA), StatusCode::OK),
-        (Some("user-profiles-2026-08-18"), StatusCode::OK),
+        (
+            Some(ManagedCapability::UserProfilesCurrent.beta()),
+            StatusCode::OK,
+        ),
     ] {
         let mut request = Request::get("/v1/user_profiles");
         if let Some(header) = header {

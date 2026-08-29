@@ -7,12 +7,12 @@
 use std::sync::Arc;
 
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentRetrieveParams, AgentUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -194,7 +194,7 @@ async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
-    Query(query): Query<AgentRetrieveParams>,
+    ManagedQuery(query): ManagedQuery<AgentRetrieveParams>,
 ) -> Result<Json<Agent>, WireError> {
     state
         .repository
@@ -207,7 +207,7 @@ async fn retrieve_agent(
 async fn list_agents(
     State(state): State<Arc<AgentRegistryState>>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
-    Query(params): Query<AgentListParams>,
+    ManagedQuery(params): ManagedQuery<AgentListParams>,
 ) -> Result<Json<PageCursor<Agent>>, WireError> {
     state
         .repository
@@ -276,7 +276,7 @@ async fn list_versions(
     State(state): State<Arc<AgentRegistryState>>,
     Path(id): Path<String>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
-    Query(page): Query<PageQuery>,
+    ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Agent>>, WireError> {
     state
         .repository
@@ -526,12 +526,14 @@ mod tests {
         assert_eq!(repository.writes.load(Ordering::SeqCst), 1, "C4");
     }
 
+    // Test design: agent_lifecycle_projects_every_official_sdk_operation
+    // Cause/effect graph: create establishes revision 1; retrieve
+    // and list project that identity without mutation; versions exposes the
+    // immutable revision; archive advances once and returns the terminal
+    // projection. Every official Agent route participates in this chain.
+    // Decision table: absent->create; active->read/update/archive; archived->terminal projection.
     #[tokio::test]
     async fn agent_lifecycle_projects_every_official_sdk_operation() {
-        // State-transition design A1: create establishes revision 1; retrieve
-        // and list project that identity without mutation; versions exposes the
-        // immutable revision; archive advances once and returns the terminal
-        // projection. Every official Agent route participates in this chain.
         let repository = Arc::new(FakeRepository::new());
         let policy = Arc::new(Policy {
             allow: AtomicBool::new(true),

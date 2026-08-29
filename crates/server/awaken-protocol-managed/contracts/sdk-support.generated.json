@@ -28,14 +28,26 @@
     },
     {
       "declaration_file_count": 58,
-      "id": "current",
+      "id": "beta_resources_legacy",
       "managed_export_count": 33,
       "managed_export_fingerprint": "cbcede7282b8baebb0183c9cdc7a328e84d0bc97d25dcfe0133383454fcfe2e4",
-      "operation_fingerprint": "0d85e4b43ed7e5720dbdb77340afd3e7ebeffa0967d19b3a0b4af8dd8abd6189",
-      "role": "current_oracle",
+      "operation_fingerprint": "7a11ea378257bf52010d981b3720174ad76cfe2c320d4d04feba2603d117f334",
+      "role": "beta_resource_projection_change_point",
       "runtime_file_count": 112,
       "runtime_fingerprint": "885483af1fdc09315dea9181c6bb1a03bdd2dfc2fa017c639547e0a5c2d8be1c",
-      "type_fingerprint": "174d7580d6270f178dfd0f49b4029fc6341522d1734af58045466c8bdc524b88",
+      "type_fingerprint": "c535637f745eeace33719d95c720897bf7149622a8d6cc57caba80aa28631e5c",
+      "version": "0.121.0"
+    },
+    {
+      "declaration_file_count": 58,
+      "id": "current",
+      "managed_export_count": 32,
+      "managed_export_fingerprint": "ccaa28658729c9ccab5ec52398847d0ea6cb8101381fe570899373b333d1c49d",
+      "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
+      "role": "current_oracle",
+      "runtime_file_count": 112,
+      "runtime_fingerprint": "2e976bde253b7ccea8ceea51ac3b9a9a75745fc438721f5f41eb7ff3a54e6d01",
+      "type_fingerprint": "89200b55bb7be293b12847c4123ebb6a0753ffb96258ea77df8cd7f053901fb4",
       "version": "0.122.0"
     }
   ]

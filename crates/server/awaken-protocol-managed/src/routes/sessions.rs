@@ -10,8 +10,7 @@ use std::sync::Arc;
 use std::collections::HashSet;
 
 use awaken_tenancy::WorkspaceScope;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Path, Query, RawQuery, Request, State};
+use axum::extract::{Path, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -25,6 +24,7 @@ use crate::common::headers::{
     USER_PROFILES_BETA_LATEST, has_capability,
 };
 use crate::preview::ThreadPreviewProjector;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
     ManagedState, PROCESSED_AT, RunError, RunErrorKind, StateError, internal_thread_id,
     lifecycle_event, lifecycle_fact,
@@ -60,47 +60,6 @@ impl SessionListOrder {
         match self {
             Self::Asc => "asc",
             Self::Desc => "desc",
-        }
-    }
-}
-
-/// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
-/// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown
-/// tagged-union variant) it returns the Anthropic error envelope
-/// (`invalid_request_error`, HTTP 400) instead of axum's default plain-text/422
-/// rejection, so the SDK parses the failure like any other API error. Shared with
-/// the vault routes so the whole managed surface answers bad bodies identically.
-pub(crate) struct ManagedJson<T>(pub(crate) T);
-
-fn managed_json_message(detail: String) -> String {
-    // Cause graph / decision table: a decode error under `resources[i]` is a
-    // resource-union admission failure, so prefix the stable public category and
-    // retain serde's exact path/detail; every other Managed body keeps its
-    // existing diagnostic. This avoids coupling SDK users to Rust type wording.
-    if detail.contains("resources[") {
-        format!("invalid resource: {detail}")
-    } else {
-        detail
-    }
-}
-
-impl<S, T> FromRequest<S> for ManagedJson<T>
-where
-    Json<T>: FromRequest<S, Rejection = JsonRejection>,
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, Json<ErrorResponse>);
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        match Json::<T>::from_request(req, state).await {
-            Ok(Json(value)) => Ok(Self(value)),
-            Err(rejection) => Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(
-                    "invalid_request_error",
-                    managed_json_message(rejection.body_text()),
-                )),
-            )),
         }
     }
 }
@@ -700,7 +659,7 @@ async fn archive_thread(
 async fn list_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-    Query(query): Query<PageQuery>,
+    ManagedQuery(query): ManagedQuery<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
     state
         .refresh_committed_events(&id)
@@ -1515,7 +1474,7 @@ async fn list_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
-    Query(query): Query<PageQuery>,
+    ManagedQuery(query): ManagedQuery<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let order = parse_event_list_order(raw.as_deref())?;
     let filter = parse_event_list_filter(raw.as_deref())?;
@@ -1591,9 +1550,10 @@ mod managed_json_tests {
     use tower::ServiceExt as _;
 
     use super::{
-        SseTerminalScope, enforce_managed_beta, error_response, managed_json_message,
-        parse_event_deltas, replay_is_terminal_after,
+        SseTerminalScope, enforce_managed_beta, error_response, parse_event_deltas,
+        replay_is_terminal_after,
     };
+    use crate::routes::extractors::managed_json_message;
     use crate::state::{RunError, StateError};
 
     #[test]

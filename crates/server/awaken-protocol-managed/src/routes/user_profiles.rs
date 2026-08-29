@@ -8,16 +8,18 @@ use awaken_data_subject_application::{
     EnrollmentTicket, UpdateUserProfileCommand, UserProfileFieldUpdate, UserProfileRecord,
     UserProfileRelationship, UserProfileTrustGrant, UserProfileTrustGrantStatus,
 };
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use crate::routes::ManagedJson;
+use crate::common::headers::{ManagedCapability, has_capability};
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::user_profile::{
-    AccessType, EnrollmentUrl, Relationship, TrustGrant, TrustGrantStatus, UserProfile,
-    UserProfileCreateParams, UserProfileUpdateParams,
+    AccessType, CurrentUserProfile, EnrollmentUrl, LegacyUserProfile, Relationship, TrustGrant,
+    TrustGrantStatus, UserProfile, UserProfileCore, UserProfileCreateParams,
+    UserProfileUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
@@ -74,6 +76,82 @@ fn bad_request(message: impl Into<String>) -> WireError {
         StatusCode::BAD_REQUEST,
         Json(ErrorResponse::new("invalid_request_error", message)),
     )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserProfileProjection {
+    Legacy,
+    Current,
+}
+
+fn user_profile_projection(legacy: bool, current: bool) -> Option<UserProfileProjection> {
+    match (legacy, current) {
+        (true, false) => Some(UserProfileProjection::Legacy),
+        (false, true) => Some(UserProfileProjection::Current),
+        (true, true) | (false, false) => None,
+    }
+}
+
+fn selected_projection(headers: &HeaderMap) -> Result<UserProfileProjection, WireError> {
+    let legacy = has_capability(headers, ManagedCapability::UserProfilesLegacy);
+    let current = has_capability(headers, ManagedCapability::UserProfilesCurrent);
+    match user_profile_projection(legacy, current) {
+        Some(projection) => Ok(projection),
+        None if legacy && current => Err(bad_request(
+            "legacy and current User Profiles beta capabilities cannot be combined",
+        )),
+        None => Err(bad_request("a User Profiles beta capability is required")),
+    }
+}
+
+fn user_profile_field_set_is_valid(
+    projection: UserProfileProjection,
+    access_type_is_present: bool,
+) -> bool {
+    projection == UserProfileProjection::Current || !access_type_is_present
+}
+
+fn reject_current_only_field(
+    projection: UserProfileProjection,
+    access_type_is_present: bool,
+) -> Result<(), WireError> {
+    if !user_profile_field_set_is_valid(projection, access_type_is_present) {
+        Err(bad_request(
+            "access_type requires the user-profiles-2026-08-18 beta capability",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn user_profile_capability_and_field_projection_is_total_exclusive_and_exact() {
+    let legacy: bool = kani::any();
+    let current: bool = kani::any();
+    let access_type_is_present: bool = kani::any();
+    let projection = user_profile_projection(legacy, current);
+
+    match projection {
+        None => assert_eq!(legacy, current),
+        Some(UserProfileProjection::Legacy) => {
+            assert!(legacy && !current);
+            assert_eq!(
+                user_profile_field_set_is_valid(
+                    UserProfileProjection::Legacy,
+                    access_type_is_present,
+                ),
+                !access_type_is_present,
+            );
+        }
+        Some(UserProfileProjection::Current) => {
+            assert!(!legacy && current);
+            assert!(user_profile_field_set_is_valid(
+                UserProfileProjection::Current,
+                access_type_is_present,
+            ));
+        }
+    }
 }
 
 fn check_len(field: &str, value: Option<&str>) -> Result<(), WireError> {
@@ -169,8 +247,10 @@ fn grant_to_wire(value: UserProfileTrustGrant) -> TrustGrant {
     }
 }
 
-fn project(record: UserProfileRecord) -> UserProfile {
-    UserProfile {
+fn project(record: UserProfileRecord, projection: UserProfileProjection) -> UserProfile {
+    let relationship = relationship_to_wire(record.relationship);
+    let access_type = record.access_type.map(access_type_to_wire);
+    let core = UserProfileCore {
         id: record.id,
         created_at: awaken_session_contract::epoch_millis_to_rfc3339(
             record.created_at.max(0) as u64
@@ -179,8 +259,6 @@ fn project(record: UserProfileRecord) -> UserProfile {
             record.updated_at.max(0) as u64
         ),
         metadata: record.metadata,
-        relationship: relationship_to_wire(record.relationship),
-        access_type: record.access_type.map(access_type_to_wire),
         trust_grants: record
             .trust_grants
             .into_iter()
@@ -189,13 +267,26 @@ fn project(record: UserProfileRecord) -> UserProfile {
         object_type: "user_profile",
         external_id: record.external_id,
         name: record.name,
+    };
+    match projection {
+        UserProfileProjection::Legacy => {
+            UserProfile::Legacy(LegacyUserProfile { core, relationship })
+        }
+        UserProfileProjection::Current => UserProfile::Current(CurrentUserProfile {
+            core,
+            access_type,
+            relationship: Some(relationship),
+        }),
     }
 }
 
 async fn create_profile(
     State(state): State<Arc<UserProfileHttpState>>,
+    headers: HeaderMap,
     ManagedJson(params): ManagedJson<UserProfileCreateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
+    let projection = selected_projection(&headers)?;
+    reject_current_only_field(projection, params.access_type.is_some())?;
     check_len("external_id", params.external_id.as_deref())?;
     check_len("name", params.name.as_deref())?;
     if let (Some(access_type), Some(relationship)) = (params.access_type, params.relationship) {
@@ -216,7 +307,7 @@ async fn create_profile(
             name: params.name,
         })
         .await
-        .map(project)
+        .map(|record| project(record, projection))
         .map(Json)
         .map_err(error_response)
 }
@@ -224,12 +315,14 @@ async fn create_profile(
 async fn retrieve_profile(
     State(state): State<Arc<UserProfileHttpState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<UserProfile>, WireError> {
+    let projection = selected_projection(&headers)?;
     state
         .application
         .get_user_profile(&state.org, &id)
         .await
-        .map(project)
+        .map(|record| project(record, projection))
         .map(Json)
         .map_err(error_response)
 }
@@ -269,29 +362,37 @@ struct UserProfileListParams {
 
 async fn list_profiles(
     State(state): State<Arc<UserProfileHttpState>>,
-    Query(query): Query<UserProfileListParams>,
+    headers: HeaderMap,
+    ManagedQuery(query): ManagedQuery<UserProfileListParams>,
 ) -> Result<Json<PageCursor<UserProfile>>, WireError> {
+    let projection = selected_projection(&headers)?;
     let mut data = state
         .application
         .list_user_profiles(&state.org)
         .await
-        .map_err(error_response)?
-        .into_iter()
-        .map(project)
-        .collect::<Vec<_>>();
+        .map_err(error_response)?;
     if matches!(query.order, Some(UserProfileListOrder::Desc)) {
         data.reverse();
     }
-    Ok(Json(paginate(data, &query.page, |profile| {
-        profile.id.as_str()
-    })))
+    let page = paginate(data, &query.page, |profile| profile.id.as_str());
+    Ok(Json(PageCursor {
+        data: page
+            .data
+            .into_iter()
+            .map(|record| project(record, projection))
+            .collect(),
+        next_page: page.next_page,
+    }))
 }
 
 async fn update_profile(
     State(state): State<Arc<UserProfileHttpState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ManagedJson(params): ManagedJson<UserProfileUpdateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
+    let projection = selected_projection(&headers)?;
+    reject_current_only_field(projection, params.access_type.is_some())?;
     check_len(
         "external_id",
         params
@@ -347,7 +448,7 @@ async fn update_profile(
             },
         )
         .await
-        .map(project)
+        .map(|record| project(record, projection))
         .map(Json)
         .map_err(error_response)
 }
@@ -362,7 +463,9 @@ fn field_update<T>(value: Option<Option<T>>) -> Option<UserProfileFieldUpdate<T>
 async fn enrollment_url(
     State(state): State<Arc<UserProfileHttpState>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<EnrollmentUrl>, WireError> {
+    selected_projection(&headers)?;
     state
         .application
         .mint_enrollment(&state.org, &id)

@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Extension, Path, Query, RawQuery, State};
+use axum::extract::{Extension, Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 
 use super::{WireError, bad_request, not_found};
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::environment::{
     Work, WorkHeartbeat, WorkHeartbeatObjectType, WorkQueueStats, WorkQueueStatsObjectType,
     WorkStopParams, WorkUpdateParams,
@@ -37,7 +37,7 @@ fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
 pub(super) async fn list_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path(id): Path<String>,
-    Query(page): Query<PageQuery>,
+    ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Work>>, WireError> {
     let data: Vec<Work> = state
         .list_work(&id)
@@ -218,7 +218,7 @@ pub(super) async fn heartbeat_work(
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     access: Option<Extension<awaken_session_contract::work_queue::WorkSessionAccess>>,
-    Query(params): Query<HeartbeatParams>,
+    ManagedQuery(params): ManagedQuery<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     let command = LeaseHeartbeat {
         condition: crate::work_queue::HeartbeatCondition::from_wire(

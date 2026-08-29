@@ -13,7 +13,7 @@ use awaken_deployment_application::{
     DeploymentSchedule, DeploymentSeedEvent, DeploymentStatus, DeploymentTrigger, DeploymentView,
     FieldUpdate, MetadataUpdate, UpdateDeploymentCommand,
 };
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,7 +22,7 @@ use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
     DeploymentUpdateParams, PausedReason, PausedReasonError, RunError, Schedule, TriggerContext,
@@ -642,7 +642,7 @@ fn page_query(query: &PageQuery) -> Result<PageQuery, WireError> {
 
 async fn list_deployments(
     State(application): State<Arc<DeploymentApplication>>,
-    Query(query): Query<DeploymentListParams>,
+    ManagedQuery(query): ManagedQuery<DeploymentListParams>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<PageCursor<Deployment>>, WireError> {
     if query.include_archived && query.status.is_some() {
@@ -848,7 +848,7 @@ async fn retrieve_run(
 
 async fn list_runs(
     State(application): State<Arc<DeploymentApplication>>,
-    Query(query): Query<DeploymentRunListParams>,
+    ManagedQuery(query): ManagedQuery<DeploymentRunListParams>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<PageCursor<DeploymentRun>>, WireError> {
     let page = page_query(&query.page)?;

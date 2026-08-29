@@ -15,6 +15,7 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
 };
+use crate::routes::ManagedMultipart;
 use crate::types::skill::{
     BetaSkill, BetaSkillListParams, BetaSkillVersion, BetaSkillVersionListParams, DeletedSkill,
     DeletedSkillObjectType, DeletedSkillVersion, DeletedSkillVersionObjectType, Skill,
@@ -30,7 +31,7 @@ use awaken_resource_contract::{
     ResourceKind, ResourceTarget, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
     skill_bundle_sha256, skill_catalog_id, skill_stem,
 };
-use axum::extract::{Multipart, Path, RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -213,12 +214,13 @@ fn optional_multipart_text(value: String) -> Option<String> {
 }
 
 async fn read_multipart(
-    mut multipart: Multipart,
+    mut multipart: ManagedMultipart,
 ) -> Result<(Option<String>, Vec<UploadedSkillBundleFile>), String> {
     let mut display_title = None;
     let mut executable_paths = None;
     let mut files = Vec::new();
     while let Some(field) = multipart
+        .0
         .next_field()
         .await
         .map_err(|error| error.to_string())?
@@ -344,7 +346,7 @@ async fn create_skill(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
-    multipart: Multipart,
+    multipart: ManagedMultipart,
 ) -> axum::response::Response {
     let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
         Ok(surface) => surface,
@@ -566,7 +568,7 @@ async fn create_version(
     Path(id): Path<String>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
-    multipart: Multipart,
+    multipart: ManagedMultipart,
 ) -> axum::response::Response {
     let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
         Ok(surface) => surface,

@@ -160,6 +160,9 @@ async fn post_session_with_idempotency(
 /// | I5 | same key, different owner | same | distinct owner-scoped Sessions |
 /// | I6 | valid, repeated | same non-empty initial Events | one Session and one durable batch |
 /// | I7 | valid key and exact owner | same | exported prediction equals the server-selected Session id |
+// Test design: session_create_idempotency_replays_one_canonical_session
+// Cause/effect graph: the owner-scoped key and payload select one canonical Session identity.
+// Decision table: same key+payload=replay; changed payload=409; invalid key=400; different owner=independent.
 #[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
     // Causes: the fixtures below establish `session create idempotency replays one canonical
@@ -1057,6 +1060,9 @@ async fn initial_events_rejected_cases() {
     assert!(sessions["data"].as_array().unwrap().is_empty());
 }
 
+// Test design: happy_path_projects_message_and_idle
+// Cause/effect graph: accepted user.message -> one Run -> agent.message -> committed idle boundary.
+// Decision table: idle+valid event=receipt/message/idle; invalid event or terminal Session=4xx without a Run.
 #[tokio::test]
 async fn happy_path_projects_message_and_idle() {
     // Causes: the fixtures below establish `happy path` with the concrete inputs, state,
@@ -3174,6 +3180,9 @@ async fn interrupt_then_message_redirects_in_order() {
     );
 }
 
+// Test design: retrieve_session_and_sse_event_names
+// Cause/effect graph: committed public events map to official SSE names; internal facts remain hidden.
+// Decision table: known Session=ordered typed frames; unknown=404; unsupported selector=400.
 #[tokio::test]
 async fn retrieve_session_and_sse_event_names() {
     // Coverage rationale: `retrieve session and sse event names` is one independent branch
@@ -3498,6 +3507,9 @@ async fn the_collection_route_is_never_fenced() {
 /// The event list is paged by cursor (`?page=<event_id>`?cursor=<event_id>&limit=<n>`limit=<n>`): the pages
 /// walk the session's events oldest-first with no gap or overlap, `has_more` and
 /// `next_page` bracket the walk, and a fabricated cursor is a 400.
+// Test design: events_are_paged_by_cursor
+// Cause/effect graph: order/filter/cursor/limit partition one committed history into disjoint pages.
+// Decision table: valid cursor=next page; reverse=inverted traversal; fabricated cursor=400.
 #[tokio::test]
 async fn events_are_paged_by_cursor() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run

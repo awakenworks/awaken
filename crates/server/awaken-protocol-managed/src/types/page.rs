@@ -285,4 +285,46 @@ mod tests {
             "R5"
         );
     }
+
+    #[test]
+    fn cursor_pages_exhaustively_preserve_order_progress_and_exactly_once_traversal() {
+        // Test design: bounded exhaustive state exploration over every collection
+        // length 0..=8 and requested page size 0..=10. Cause/effect graph:
+        // ordered unique identities + cursor + normalized limit -> a strict
+        // suffix, a progressing cursor iff more rows remain, and one terminal
+        // page. Decision table: empty=>one empty terminal page; zero=>limit one;
+        // below length=>multiple pages; at/above length=>one page. Replaying all
+        // returned cursors must equal the source exactly, with no gaps/duplicates.
+        for len in 0..=8 {
+            let rows = (0..len)
+                .map(|index| format!("row-{index}"))
+                .collect::<Vec<_>>();
+            for requested_limit in 0..=10 {
+                let mut cursor = None;
+                let mut observed = Vec::new();
+                let mut page_count = 0;
+                loop {
+                    let page = paginate(
+                        rows.clone(),
+                        &PageQuery {
+                            limit: Some(requested_limit),
+                            page: cursor.clone(),
+                        },
+                        String::as_str,
+                    );
+                    page_count += 1;
+                    assert!(page_count <= len.max(1), "cursor must make progress");
+                    observed.extend(page.data);
+                    match page.next_page {
+                        Some(next) => {
+                            assert_ne!(cursor.as_deref(), Some(next.as_str()));
+                            cursor = Some(next);
+                        }
+                        None => break,
+                    }
+                }
+                assert_eq!(observed, rows, "len={len}, limit={requested_limit}");
+            }
+        }
+    }
 }

@@ -182,15 +182,17 @@ async fn deployment_initial_events_match_the_managed_agents_wire_contract() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "A4");
 }
 
+// Test design: deployment_lifecycle_and_runs
+// Cause/effect graph: C1 active Deployment; C2 manually paused;
+// C3 archived. Effects: E1 create/update commit; E2 C2 suppresses only
+// scheduled triggers while manual run still creates a Session and preserves
+// the manual pause reason; E3 unpause restores Active; E4 C3 is terminal.
+// Constraint K1 manual and schedule triggers share the same launcher but
+// only the scheduler consults Active. Rules L1=C1=>E1; L2=C2+manual=>E2;
+// Decision table: L1=C1=>E1; L2=C2+manual=>E2;
+// L3=C2+unpause=>E3; L4=C3=>E4.
 #[tokio::test]
 async fn deployment_lifecycle_and_runs() {
-    // Lifecycle cause/effect graph: C1 active Deployment; C2 manually paused;
-    // C3 archived. Effects: E1 create/update commit; E2 C2 suppresses only
-    // scheduled triggers while manual run still creates a Session and preserves
-    // the manual pause reason; E3 unpause restores Active; E4 C3 is terminal.
-    // Constraint K1 manual and schedule triggers share the same launcher but
-    // only the scheduler consults Active. Rules L1=C1=>E1; L2=C2+manual=>E2;
-    // L3=C2+unpause=>E3; L4=C3=>E4.
     let app = app();
 
     // Create — agent string normalizes to a reference; status defaults active.

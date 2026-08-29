@@ -448,6 +448,9 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
     );
 }
 
+// Test design: replacement_control_instance_reads_the_same_vault_authority
+// Cause/effect graph: a replacement control instance reopens the same durable Vault aggregate without process-local truth.
+// Decision table: same workspace+id=identical secret-free projection; other workspace/unknown=404.
 #[tokio::test]
 async fn replacement_control_instance_reads_the_same_vault_authority() {
     // Cause/effect decision table for rolling Control replacement:
@@ -492,6 +495,9 @@ async fn replacement_control_instance_reads_the_same_vault_authority() {
     );
 }
 
+// Test design: vault_credential_lifecycle_and_resolution
+// Cause/effect graph: Vault/Credential creation seals one secret, resolves authorized material, and returns only public metadata.
+// Decision table: valid owner+kind=resolve; unknown/cross-owner=404; invalid target=4xx; no response leaks plaintext.
 #[tokio::test]
 async fn vault_credential_lifecycle_and_resolution() {
     let h = harness();
@@ -766,6 +772,9 @@ async fn create_credential(h: &Harness, vault_id: &str, secret_name: &str) -> St
     cred["id"].as_str().unwrap().to_string()
 }
 
+// Test design: delete_vault_fences_children_and_converges_after_rollout_ack
+// Cause/effect graph: delete fences child credentials, waits for rollout acknowledgement, then commits one terminal Vault result.
+// Decision table: active+ack=delete; pending ack=non-visible transition; stale/wrong owner=conflict; repeated=404.
 #[tokio::test]
 async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
     let h = harness();
@@ -894,6 +903,9 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// Test design: list_vaults_returns_one_full_page_sorted_by_id
+// Cause/effect graph: workspace-scoped live Vaults are deterministically sorted and wrapped in the official cursor envelope.
+// Decision table: live=included once; archived excluded unless requested; foreign excluded; empty=valid empty page.
 #[tokio::test]
 async fn list_vaults_returns_one_full_page_sorted_by_id() {
     let h = harness();
@@ -913,6 +925,9 @@ async fn list_vaults_returns_one_full_page_sorted_by_id() {
     assert_eq!(data[1]["id"], b);
 }
 
+// Test design: list_credentials_is_scoped_to_the_vault_and_404s_unknown
+// Cause/effect graph: Vault identity and workspace jointly scope the credential page without revealing siblings or secrets.
+// Decision table: known owned Vault=filtered page; foreign/unknown Vault=404; archived inclusion follows explicit flag.
 #[tokio::test]
 async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
     let h = harness();
@@ -957,6 +972,9 @@ async fn list_credentials_is_scoped_to_the_vault_and_404s_unknown() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// Test design: archive_vault_soft_deletes_and_hides_from_default_list
+// Cause/effect graph: archive records one timestamp and removes the Vault from default live queries without hard deletion.
+// Decision table: active=archive; archived=replay/terminal; default list=hides; include_archived=shows; unknown=404.
 #[tokio::test]
 async fn archive_vault_soft_deletes_and_hides_from_default_list() {
     let h = harness();
@@ -1011,6 +1029,9 @@ async fn archive_vault_soft_deletes_and_hides_from_default_list() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// Test design: archive_credential_soft_deletes_and_hides_from_list
+// Cause/effect graph: credential archive retires selection and default visibility while preserving its secret-free audit projection.
+// Decision table: active=archive; archived excluded by default/included explicitly; wrong Vault/unknown=404.
 #[tokio::test]
 async fn archive_credential_soft_deletes_and_hides_from_list() {
     let h = harness();
@@ -1086,6 +1107,9 @@ async fn archive_credential_soft_deletes_and_hides_from_list() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// Test design: delete_credential_removes_one_and_scopes_by_vault
+// Cause/effect graph: hard delete removes exactly one credential under its owning Vault and leaves siblings untouched.
+// Decision table: correct Vault+id=delete; wrong Vault/unknown/repeated=404; sibling remains retrievable.
 #[tokio::test]
 async fn delete_credential_removes_one_and_scopes_by_vault() {
     let h = harness();
@@ -1144,6 +1168,9 @@ async fn delete_credential_removes_one_and_scopes_by_vault() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// Test design: update_vault_replaces_name_and_patches_metadata
+// Cause/effect graph: update replaces display name and applies metadata patch to one durable Vault revision.
+// Decision table: omitted=preserve; empty metadata value=remove; valid value=upsert; invalid/unknown=4xx/404.
 #[tokio::test]
 async fn update_vault_replaces_name_and_patches_metadata() {
     let h = harness();
@@ -1217,6 +1244,9 @@ async fn update_vault_replaces_name_and_patches_metadata() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// Test design: update_credential_patches_fields_reseals_secret_and_rejects_type_change
+// Cause/effect graph: mutable metadata/network fields patch in place while supplied secret material is atomically resealed.
+// Decision table: omitted=preserve; explicit null=clear; new secret=rotate; credential kind change=400; unknown=404.
 #[tokio::test]
 async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change() {
     let h = harness();

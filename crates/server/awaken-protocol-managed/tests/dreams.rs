@@ -486,13 +486,15 @@ async fn wait_for_status(app: &axum::Router, id: &str, expected: &str) -> Value 
     panic!("Dream did not reach {expected}")
 }
 
+// Test design: official_create_retrieve_list_archive_and_failure_shapes
+// Cause/effect graph: Anthropic Dreams contract inputs and Worker outcomes select the projection.
+// C1 valid memory + 1..=100 Sessions + model -> E1 async Dream; D1.
+// C2 worker completes -> E2 output/session/usage retained; D2.
+// C3 terminal archive -> E3 timestamp set, status unchanged, default list hides; D3.
+// C4 worker fails after prepare -> E4 failed + typed error + partial output retained; D4.
+// Decision table: D1=C1; D2=C1+C2; D3=C2+C3; D4=C1+C4.
 #[tokio::test]
 async fn official_create_retrieve_list_archive_and_failure_shapes() {
-    // Cause/effect graph and decision rules (Anthropic Dreams contract):
-    // C1 valid memory + 1..=100 Sessions + model -> E1 async Dream; D1.
-    // C2 worker completes -> E2 output/session/usage retained; D2.
-    // C3 terminal archive -> E3 timestamp set, status unchanged, default list hides; D3.
-    // C4 worker fails after prepare -> E4 failed + typed error + partial output retained; D4.
     let (complete, _, _) = state(Outcome::Complete);
     let app = dreams_router(complete);
     let (status, created) = request(
@@ -605,11 +607,13 @@ async fn validation_and_terminal_mutation_decision_table() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+// Test design: cancellation_is_immediate_idempotent_and_retains_prepared_output
+// Cause/effect graph: C1 running prepared job + cancel -> E1 public status immediately canceled;
+// C2 output already cloned -> E2 retained; C3 repeated cancel -> E3 same object;
+// C4 late worker completion -> E4 cannot overwrite canceled.
+// Decision table: D1=C1; D2=C1+C2; D3=C1+C3; D4=C1+C4.
 #[tokio::test]
 async fn cancellation_is_immediate_idempotent_and_retains_prepared_output() {
-    // C1 running prepared job + cancel -> E1 public status immediately canceled;
-    // C2 output already cloned -> E2 retained; C3 repeated cancel -> E3 same object;
-    // C4 late worker completion -> E4 cannot overwrite canceled. Rules D1-D4.
     let (state, started, release) = state(Outcome::Block);
     let app = dreams_router(state);
     let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;

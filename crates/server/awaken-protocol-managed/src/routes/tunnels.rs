@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::routes::{ManagedJson, WorkspaceScope};
+use crate::routes::{ManagedJson, ManagedQuery, WorkspaceScope};
 use crate::types::tunnel::{
     CertificateCreateParams, TunnelCreateParams, TunnelListQuery, TunnelRotateTokenParams,
 };
@@ -147,7 +147,7 @@ async fn list(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     workspace: Option<Extension<WorkspaceScope>>,
     headers: HeaderMap,
-    Query(query): Query<TunnelListQuery>,
+    ManagedQuery(query): ManagedQuery<TunnelListQuery>,
 ) -> Result<Json<PageCursor<crate::types::tunnel::Tunnel>>, WireError> {
     let rows = app
         .list_tunnels(scope(workspace, &headers), query.include_archived)
@@ -238,7 +238,7 @@ async fn list_certificates(
     Path(tunnel_id): Path<String>,
     workspace: Option<Extension<WorkspaceScope>>,
     headers: HeaderMap,
-    Query(query): Query<TunnelListQuery>,
+    ManagedQuery(query): ManagedQuery<TunnelListQuery>,
 ) -> Result<Json<PageCursor<crate::types::tunnel::TunnelCertificate>>, WireError> {
     let rows = app
         .list_certificates(
@@ -493,6 +493,9 @@ mod tests {
         );
     }
 
+    // Test design: tunnel_lifecycle_projects_every_current_sdk_operation
+    // Cause/effect graph: Tunnel creation, token/certificate rotation, listing, retrieval and archive share one aggregate.
+    // Decision table: active+owner=mutate/read; stale token/cert=conflict; archived=terminal; unknown/cross-owner=404.
     #[tokio::test]
     async fn tunnel_lifecycle_projects_every_current_sdk_operation() {
         // State-transition design T1: create, read/list, secret operations,
