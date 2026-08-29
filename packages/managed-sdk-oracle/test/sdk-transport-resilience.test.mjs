@@ -23,6 +23,7 @@ const errorCases = [
   [401, 'authentication_error', 'AuthenticationError'],
   [403, 'permission_error', 'PermissionDeniedError'],
   [404, 'not_found_error', 'NotFoundError'],
+  [408, 'request_timeout', 'APIError'],
   [409, 'conflict_error', 'ConflictError'],
   [413, 'request_too_large', 'APIError'],
   [422, 'invalid_request_error', 'UnprocessableEntityError'],
@@ -225,5 +226,354 @@ for (const { version, Client } of clients) {
       (error) => error.constructor === Client.APIUserAbortError,
     );
     assert.equal(attempts, 1);
+  });
+
+  test(`${version}: middleware preserves the canonical Managed retry chain`, async () => {
+    // Call-chain graph:
+    // generated Managed operation -> canonical request/auth/capabilities ->
+    // outer middleware -> inner middleware -> fetch -> parsed clone -> reverse
+    // middleware unwind -> SDK retry/decoder. C1=first response 500 and C2=
+    // second response 200; E1=both attempts traverse the complete chain in
+    // order, E2=middleware sees retry identity and the Managed selector, E3=
+    // parsing through ctx.parse never consumes the response, and E4=the SDK
+    // still decodes the final page. C3=ordinary middleware exception; E5=the
+    // exact exception escapes after one middleware entry and zero fetches.
+    //
+    // Decision table:
+    // | middleware outcome | maxRetries | fetches | caller result            |
+    // | 500 then 200        | 1          | 2       | decoded Managed page     |
+    // | ordinary exception | 2          | 0       | same exception, no retry |
+    const events = [];
+    const parsed = [];
+    let attempts = 0;
+    const middleware = [
+      async (request, next, context) => {
+        const retry = request.headers.get('x-stainless-retry-count');
+        events.push(`outer-before:${retry}`);
+        assert.equal(context.options?.method, 'get');
+        assert.equal(context.options?.path, '/v1/sessions?beta=true');
+        assert.equal(request.headers.get('anthropic-beta'), managedBetas[0]);
+        assert.equal(request.headers.get('x-api-key'), 'middleware-auth');
+        const headers = new Headers(request.headers);
+        headers.set('x-middleware-attempt', retry);
+        const response = await next({ ...request, headers });
+        const body = await context.parse(response);
+        parsed.push({ layer: 'outer', retry, body });
+        events.push(`outer-after:${retry}:${response.status}`);
+        return response;
+      },
+      async (request, next, context) => {
+        const retry = request.headers.get('x-stainless-retry-count');
+        events.push(`inner-before:${retry}`);
+        assert.equal(request.headers.get('x-middleware-attempt'), retry);
+        const response = await next(request);
+        const body = await context.parse(response);
+        parsed.push({ layer: 'inner', retry, body });
+        events.push(`inner-after:${retry}:${response.status}`);
+        return response;
+      },
+    ];
+    const client = new Client({
+      apiKey: 'middleware-auth', // awaken-allow: secret
+      baseURL,
+      maxRetries: 1,
+      middleware,
+      fetch: async (_input, init) => {
+        attempts += 1;
+        const retry = new Headers(init?.headers).get('x-stainless-retry-count');
+        events.push(`fetch:${retry}`);
+        return attempts === 1
+          ? json(errorBody('api_error', 500), 500, { 'retry-after-ms': '0' })
+          : json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    assert.deepEqual((await client.beta.sessions.list()).data, []);
+    assert.equal(attempts, 2);
+    assert.deepEqual(events, [
+      'outer-before:0',
+      'inner-before:0',
+      'fetch:0',
+      'inner-after:0:500',
+      'outer-after:0:500',
+      'outer-before:1',
+      'inner-before:1',
+      'fetch:1',
+      'inner-after:1:200',
+      'outer-after:1:200',
+    ]);
+    assert.equal(parsed.length, 4);
+    assert.strictEqual(parsed[0].body, parsed[1].body, 'one response parse is cached across layers');
+    assert.strictEqual(parsed[2].body, parsed[3].body, 'retry response parse is cached across layers');
+    assert.equal(parsed[0].body.error.type, 'api_error');
+    assert.deepEqual(parsed[2].body.data, []);
+
+    const sentinel = new Error('middleware policy rejected request');
+    let rejectedEntries = 0;
+    let rejectedFetches = 0;
+    const rejecting = new Client({
+      apiKey: 'middleware-auth', // awaken-allow: secret
+      baseURL,
+      maxRetries: 2,
+      middleware: [async () => {
+        rejectedEntries += 1;
+        throw sentinel;
+      }],
+      fetch: async () => {
+        rejectedFetches += 1;
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    await assert.rejects(() => rejecting.beta.sessions.list(), (error) => error === sentinel);
+    assert.equal(rejectedEntries, 1);
+    assert.equal(rejectedFetches, 0);
+  });
+
+  test(`${version}: connection faults and SDK timeouts retain distinct retry semantics`, async () => {
+    // Cause/effect graph:
+    // C1 fetch rejects with a connection fault before any HTTP response;
+    // C2 maxRetries=0 or 1; C3 the retry's second attempt returns a valid
+    // Managed page; C4 the SDK deadline aborts an otherwise pending fetch.
+    // Effects: C1+C2(0) -> exact APIConnectionError after one attempt;
+    // C1+C2(1)+C3 -> exactly two attempts and one decoded page; C4+C2(0) ->
+    // exact APIConnectionTimeoutError after one attempt. A caller
+    // abort remains separately owned above and must never be normalized into
+    // either transport outcome.
+    //
+    // Decision table:
+    // | cause                 | retries | terminal result                  |
+    // | connection            | 0       | APIConnectionError, once         |
+    // | connection, then 200  | 1       | decoded page, two attempts       |
+    // | SDK deadline          | 0       | APIConnectionTimeoutError, once  |
+    // | caller abort          | any     | APIUserAbortError, once (above)  |
+    let failedConnectionAttempts = 0;
+    const disconnected = new Client({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL,
+      maxRetries: 0,
+      fetch: async () => {
+        failedConnectionAttempts += 1;
+        throw new TypeError('connection closed');
+      },
+    });
+    await assert.rejects(
+      () => disconnected.beta.sessions.list(),
+      (error) => error.constructor === Client.APIConnectionError
+        && error.cause?.constructor === TypeError,
+    );
+    assert.equal(failedConnectionAttempts, 1, 'a disabled connection retry issues one attempt');
+
+    let connectionAttempts = 0;
+    const reconnecting = new Client({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL,
+      maxRetries: 1,
+      fetch: async () => {
+        connectionAttempts += 1;
+        if (connectionAttempts === 1) throw new TypeError('connection closed');
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    const page = await reconnecting.beta.sessions.list();
+    assert.deepEqual(page.data, [], 'connection retry decodes the eventual response');
+    assert.equal(connectionAttempts, 2, 'connection retry uses the exact configured bound');
+
+    let timeoutAttempts = 0;
+    const timingOut = new Client({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL,
+      maxRetries: 0,
+      fetch: async (_input, init) => new Promise((_resolve, reject) => {
+        timeoutAttempts += 1;
+        const fail = () => reject(new DOMException('SDK deadline elapsed', 'AbortError'));
+        if (init?.signal?.aborted) fail();
+        else init?.signal?.addEventListener('abort', fail, { once: true });
+      }),
+    });
+    await assert.rejects(
+      () => timingOut.beta.sessions.list({}, { timeout: 20 }),
+      (error) => error.constructor === Client.APIConnectionTimeoutError,
+    );
+    assert.equal(timeoutAttempts, 1, 'a disabled timeout retry cannot issue later work');
+  });
+
+  test(`${version}: dynamic credentials preserve precedence, scope, and one forced refresh`, async () => {
+    // Authentication state machine:
+    // S0 provider unresolved -> S1 cached stale Bearer -> 401 -> S2 forced
+    // provider refresh -> S3 fresh Bearer -> 200. An API key instead enters
+    // S4 static auth and must never resolve the provider. Although the current
+    // TypeScript declaration comment says a provider precedes authToken, every
+    // admitted executable package gives both explicit static forms precedence;
+    // this behavioral change point must be reviewed if upstream reconciles it.
+    //
+    // Decision table:
+    // | apiKey | authToken | provider | first result | requests/provider calls |
+    // | absent | absent    | present  | 401 then 200 | 2 / [normal, forced]    |
+    // | present| absent    | present  | 200          | 1 / 0                   |
+    // | absent | present   | present  | 200          | 1 / 0                   |
+    //
+    // The OAuth capability is part of credential transport, while the Managed
+    // capability remains the operation selector; both must survive refresh
+    // exactly once without leaking the shadowed static token.
+    const providerCalls = [];
+    const requests = [];
+    const credentials = async (options) => {
+      providerCalls.push(options ?? null);
+      return {
+        token: providerCalls.length === 1 ? 'provider-stale' : 'provider-fresh',
+        expiresAt: null,
+      };
+    };
+    const refreshing = new Client({
+      apiKey: null,
+      authToken: null,
+      credentials,
+      baseURL,
+      maxRetries: 1,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return requests.length === 1
+          ? json(errorBody('authentication_error', 401), 401, { 'retry-after-ms': '0' })
+          : json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    assert.deepEqual((await refreshing.beta.sessions.list()).data, []);
+    assert.deepEqual(providerCalls, [null, { forceRefresh: true }]);
+    assert.equal(requests.length, 2, 'one rejected token permits one refreshed attempt');
+    assert.deepEqual(
+      requests.map((request) => request.headers.get('authorization')),
+      ['Bearer provider-stale', 'Bearer provider-fresh'],
+    );
+    assert.ok(requests.every((request) => request.headers.get('x-api-key') === null));
+    assert.deepEqual(
+      requests.map((request) => request.headers.get('x-stainless-retry-count')),
+      ['0', '1'],
+    );
+    assert.ok(requests.every((request) => {
+      const betas = request.headers.get('anthropic-beta')?.split(',').map((item) => item.trim()).sort();
+      return JSON.stringify(betas) === JSON.stringify([
+        'managed-agents-2026-04-01',
+        'oauth-2025-04-20',
+      ]);
+    }), 'provider auth composes the Managed and OAuth capabilities exactly');
+
+    for (const staticKind of ['apiKey', 'authToken']) {
+      let shadowedProviderCalls = 0;
+      let staticRequest;
+      const staticClient = new Client({
+        apiKey: staticKind === 'apiKey' ? 'static-api' : null, // awaken-allow: secret
+        authToken: staticKind === 'authToken' ? 'static-token' : null, // awaken-allow: secret
+        credentials: async () => {
+          shadowedProviderCalls += 1;
+          return { token: 'must-not-be-used', expiresAt: null }; // awaken-allow: secret
+        },
+        baseURL,
+        maxRetries: 0,
+        fetch: async (input, init) => {
+          staticRequest = new Request(input, init);
+          return json({ data: [], has_more: false, next_page: null });
+        },
+      });
+      await staticClient.beta.sessions.list();
+      assert.equal(shadowedProviderCalls, 0, `an explicit ${staticKind} never resolves credentials`);
+      assert.equal(
+        staticRequest.headers.get('x-api-key'),
+        staticKind === 'apiKey' ? 'static-api' : null,
+      );
+      assert.equal(
+        staticRequest.headers.get('authorization'),
+        staticKind === 'authToken' ? 'Bearer static-token' : null,
+      );
+      assert.deepEqual(
+        staticRequest.headers.get('anthropic-beta')?.split(',').map((item) => item.trim()),
+        managedBetas,
+        'static auth does not impersonate OAuth transport',
+      );
+    }
+  });
+
+  test(`${version}: withOptions shares unresolved auth but isolates an explicit override`, async () => {
+    // Causal graph:
+    // parent provider -> shared unresolved AuthState/TokenCache -> parent and
+    // clone concurrent first requests -> one provider resolution -> two
+    // independently decoded Managed pages. An explicit structured-auth
+    // override forks the state -> only the replacement provider is consulted.
+    // Request defaults flow through both paths unchanged.
+    //
+    // Decision table:
+    // | derived client       | auth state | provider calls | wire token       |
+    // | withOptions(timeout) | shared     | one total      | parent-provider  |
+    // | withOptions(provider)| isolated   | one replacement| override-provider|
+    //
+    // The provider promise is held behind a barrier so this test proves
+    // single-flight sharing under overlap; a fast provider could otherwise
+    // make two independent caches look equivalent by timing accident.
+    const parentProviderCalls = [];
+    let releaseParentProvider;
+    const parentToken = new Promise((resolve) => { releaseParentProvider = resolve; });
+    const requests = [];
+    const parent = new Client({
+      apiKey: null,
+      authToken: null,
+      credentials: async (options) => {
+        parentProviderCalls.push(options ?? null);
+        return parentToken;
+      },
+      baseURL,
+      timeout: 1_000,
+      maxRetries: 0,
+      defaultHeaders: { 'x-managed-parent': 'preserved' },
+      defaultQuery: { inherited_query: 'preserved' },
+      fetchOptions: { cache: 'no-store' },
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push({
+          authorization: request.headers.get('authorization'),
+          parentHeader: request.headers.get('x-managed-parent'),
+          inheritedQuery: new URL(request.url).searchParams.get('inherited_query'),
+          cache: init?.cache,
+        });
+        return json({ data: [], has_more: false, next_page: null });
+      },
+    });
+    const clone = parent.withOptions({ timeout: 2_000 });
+    assert.notStrictEqual(clone, parent);
+    assert.equal(parent.timeout, 1_000);
+    assert.equal(clone.timeout, 2_000);
+
+    const overlapping = Promise.all([
+      parent.beta.sessions.list(),
+      clone.beta.sessions.list(),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    const callsBeforeRelease = parentProviderCalls.length;
+    releaseParentProvider({ token: 'parent-provider', expiresAt: null }); // awaken-allow: secret
+    const pages = await overlapping;
+    assert.equal(callsBeforeRelease, 1, 'overlapping clones share one unresolved provider call');
+    assert.deepEqual(parentProviderCalls, [null]);
+    assert.ok(pages.every((page) => Array.isArray(page.data)));
+    assert.deepEqual(requests, [0, 1].map(() => ({
+      authorization: 'Bearer parent-provider',
+      parentHeader: 'preserved',
+      inheritedQuery: 'preserved',
+      cache: 'no-store',
+    })));
+
+    const overrideProviderCalls = [];
+    const overridden = parent.withOptions({
+      credentials: async (options) => {
+        overrideProviderCalls.push(options ?? null);
+        return { token: 'override-provider', expiresAt: null }; // awaken-allow: secret
+      },
+    });
+    assert.deepEqual((await overridden.beta.sessions.list()).data, []);
+    assert.deepEqual(parentProviderCalls, [null], 'the old cache is not consulted by an auth override');
+    assert.deepEqual(overrideProviderCalls, [null]);
+    assert.deepEqual(requests[2], {
+      authorization: 'Bearer override-provider',
+      parentHeader: 'preserved',
+      inheritedQuery: 'preserved',
+      cache: 'no-store',
+    });
   });
 }

@@ -72,6 +72,18 @@ async function main() {
     // exact supported SDK + valid Bearer token
     //   -> resolved Workspace scope
     //   -> 200 page + fresh request-id + exact Workspace;
+    // exact supported SDK + dynamic credential provider
+    //   -> OAuth + Managed capabilities on one real request
+    //   -> one provider resolution + the same scoped 200 contract;
+    // exact supported SDK + in-memory user-OAuth config + private token file
+    //   -> config-selected base URL and Workspace header
+    //   -> the same real scoped 200 contract;
+    // exact supported SDK + named profile in an isolated config directory
+    //   -> profile/config/credential-file resolution
+    //   -> the same real scoped 200 contract;
+    // profile client + withOptions clone before the first request
+    //   -> one shared lazy auth state + inherited resolved API host
+    //   -> both parent and clone reach the same real scoped boundary;
     // exact supported SDK + read-only Bearer token + Vault mutation
     //   -> resolved Workspace scope + denied action
     //   -> exact SDK PermissionDeniedError + exact Workspace + no side effect.
@@ -84,6 +96,10 @@ async function main() {
     // | invalid    | absent   | read   | AuthenticationError   | absent    |
     // | restricted | resolved | write  | PermissionDeniedError | exact     |
     // | admin      | resolved | read   | Vault page            | exact     |
+    // | provider   | resolved | read   | Vault page, one lookup| exact     |
+    // | config     | resolved | read   | Vault page, file token| exact     |
+    // | profile    | resolved | read   | Vault page, named file| exact     |
+    // | profile clone|resolved| read   | shared lazy resolution | exact     |
     for (const { role, version, Client } of CLIENTS) {
       const label = `${role}:${version}`;
       const projectsWorkspace = projectsWorkspaceResponseContext(version);
@@ -155,6 +171,159 @@ async function main() {
         assert.equal(listed.workspace_id, workspace, `${label}: promoted Workspace`);
       }
 
+      const providerCalls = [];
+      const providerAuthorized = new Client({
+        apiKey: null,
+        authToken: null,
+        credentials: async (options) => {
+          providerCalls.push(options ?? null);
+          return { token, expiresAt: null };
+        },
+        baseURL: running.baseUrl,
+        maxRetries: 0,
+      });
+      const provided = await providerAuthorized.beta.vaults.list({ betas: BETAS }).withResponse();
+      assert.deepEqual(providerCalls, [null], `${label}: provider resolves once`);
+      const providerRequestID = recordUniqueRequestID(
+        requestIDs,
+        provided.response.headers.get('request-id'),
+        `${label}: dynamic-provider response`,
+      );
+      assert.equal(provided.request_id, providerRequestID, `${label}: provider request-id`);
+      assert.equal(
+        provided.response.headers.get('anthropic-workspace-id'),
+        workspace,
+        `${label}: provider retains the authenticated Workspace`,
+      );
+      assert.equal(Array.isArray(provided.data.data), true, `${label}: provider decodes Vault page`);
+      assert.equal(
+        'workspace_id' in provided,
+        projectsWorkspace,
+        `${label}: reviewed provider Workspace capability`,
+      );
+      if (projectsWorkspace) {
+        assert.equal(provided.workspace_id, workspace, `${label}: promoted provider Workspace`);
+      }
+
+      const credentialsPath = path.join(root, `sdk-config-${version}.json`);
+      fs.writeFileSync(credentialsPath, JSON.stringify({
+        version: '1.0',
+        type: 'oauth_token',
+        access_token: token,
+      }), { mode: 0o600 });
+      const configured = new Client({
+        apiKey: null,
+        authToken: null,
+        config: {
+          authentication: {
+            type: 'user_oauth',
+            credentials_path: credentialsPath,
+          },
+          base_url: running.baseUrl,
+          workspace_id: workspace,
+        },
+        baseURL: null,
+        maxRetries: 0,
+      });
+      assert.equal(configured.baseURL, running.baseUrl, `${label}: config selects the API host`);
+      const configPage = await configured.beta.vaults.list({ betas: BETAS }).withResponse();
+      const configRequestID = recordUniqueRequestID(
+        requestIDs,
+        configPage.response.headers.get('request-id'),
+        `${label}: configured-credential response`,
+      );
+      assert.equal(configPage.request_id, configRequestID, `${label}: config request-id`);
+      assert.equal(
+        configPage.response.headers.get('anthropic-workspace-id'),
+        workspace,
+        `${label}: config Workspace agrees with authenticated scope`,
+      );
+      assert.equal(Array.isArray(configPage.data.data), true, `${label}: config decodes Vault page`);
+      assert.equal(
+        'workspace_id' in configPage,
+        projectsWorkspace,
+        `${label}: reviewed config Workspace capability`,
+      );
+      if (projectsWorkspace) {
+        assert.equal(configPage.workspace_id, workspace, `${label}: promoted config Workspace`);
+      }
+
+      const profileRoot = path.join(root, `sdk-profile-${version}`);
+      const profileConfigDirectory = path.join(profileRoot, 'configs');
+      const profileCredentialsPath = path.join(profileRoot, 'credentials.json');
+      fs.mkdirSync(profileConfigDirectory, { recursive: true });
+      fs.writeFileSync(profileCredentialsPath, JSON.stringify({
+        version: '1.0',
+        type: 'oauth_token',
+        access_token: token,
+      }), { mode: 0o600 });
+      fs.writeFileSync(path.join(profileConfigDirectory, 'fixture.json'), JSON.stringify({
+        version: '1.0',
+        authentication: {
+          type: 'user_oauth',
+          credentials_path: profileCredentialsPath,
+        },
+        base_url: running.baseUrl,
+        workspace_id: workspace,
+      }), { mode: 0o600 });
+      const previousConfigDirectory = process.env.ANTHROPIC_CONFIG_DIR;
+      process.env.ANTHROPIC_CONFIG_DIR = profileRoot;
+      try {
+        const profiled = new Client({
+          profile: 'fixture',
+          baseURL: null,
+          maxRetries: 0,
+        });
+        const profileClone = profiled.withOptions({ timeout: 30_000 });
+        const clonePage = await profileClone.beta.vaults.list({ betas: BETAS }).withResponse();
+        assert.equal(
+          profileClone.baseURL,
+          running.baseUrl,
+          `${label}: pre-resolution clone adopts the profile API host`,
+        );
+        const cloneRequestID = recordUniqueRequestID(
+          requestIDs,
+          clonePage.response.headers.get('request-id'),
+          `${label}: profile-clone response`,
+        );
+        assert.equal(clonePage.request_id, cloneRequestID, `${label}: profile-clone request-id`);
+        assert.equal(
+          clonePage.response.headers.get('anthropic-workspace-id'),
+          workspace,
+          `${label}: profile clone retains the authenticated Workspace`,
+        );
+        assert.equal(Array.isArray(clonePage.data.data), true, `${label}: profile clone decodes page`);
+        const profilePage = await profiled.beta.vaults.list({ betas: BETAS }).withResponse();
+        assert.equal(
+          profiled.baseURL,
+          running.baseUrl,
+          `${label}: first request adopts the profile API host`,
+        );
+        const profileRequestID = recordUniqueRequestID(
+          requestIDs,
+          profilePage.response.headers.get('request-id'),
+          `${label}: profile-credential response`,
+        );
+        assert.equal(profilePage.request_id, profileRequestID, `${label}: profile request-id`);
+        assert.equal(
+          profilePage.response.headers.get('anthropic-workspace-id'),
+          workspace,
+          `${label}: profile Workspace agrees with authenticated scope`,
+        );
+        assert.equal(Array.isArray(profilePage.data.data), true, `${label}: profile decodes Vault page`);
+        assert.equal(
+          'workspace_id' in profilePage,
+          projectsWorkspace,
+          `${label}: reviewed profile Workspace capability`,
+        );
+        if (projectsWorkspace) {
+          assert.equal(profilePage.workspace_id, workspace, `${label}: promoted profile Workspace`);
+        }
+      } finally {
+        if (previousConfigDirectory === undefined) delete process.env.ANTHROPIC_CONFIG_DIR;
+        else process.env.ANTHROPIC_CONFIG_DIR = previousConfigDirectory;
+      }
+
       const restricted = new Client({
         apiKey: null,
         authToken: issued.token,
@@ -202,7 +371,7 @@ async function main() {
           return true;
         },
       );
-      pass(`${label}: real self-managed 401/403/200 response context`);
+      pass(`${label}: real self-managed static/provider/config/profile 401/403/200 context`);
     }
 
     const current = CLIENTS.find(({ role }) => role === 'current_oracle');
@@ -241,7 +410,7 @@ async function main() {
     );
     assert.equal(
       requestIDs.size,
-      CLIENTS.length * 3 + 1,
+      CLIENTS.length * 7 + 1,
       'every observed SDK response owns one request identity',
     );
   } finally {

@@ -137,7 +137,7 @@ function apiError(Anthropic, status) {
   );
 }
 
-function assertEnvironmentHelpers(module, Anthropic, label) {
+async function assertEnvironmentHelpers(module, Anthropic, label) {
   assert.equal(module.MANAGED_AGENTS_BETA, 'managed-agents-2026-04-01');
   assert.equal(module.POLL_BLOCK_MS, 999);
   assert.equal(module.DEFAULT_MAX_IDLE_MS, 60_000);
@@ -182,6 +182,62 @@ function assertEnvironmentHelpers(module, Anthropic, label) {
 
   const worker = new module.EnvironmentWorker({ client, workdir: process.cwd() });
   assert.equal(worker.client, client);
+
+  // Call-chain graph: parent API-key client -> WorkPoller helper factory ->
+  // withOptions auth fork -> one non-blocking generated work.poll call. The
+  // helper must inherit transport/routing defaults while replacing, rather
+  // than combining, the parent's credential. Returning null closes the drain
+  // iterator without ack/stop side effects.
+  //
+  // Decision table:
+  // | parent auth | helper auth     | queue | requests | terminal result |
+  // | X-Api-Key   | environment key | empty | one poll | clean drain     |
+  let observedRequest;
+  const wireClient = new Anthropic({
+    apiKey: 'parent-must-not-leak', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    maxRetries: 0,
+    defaultHeaders: { 'x-parent-routing': 'preserved' },
+    defaultQuery: { parent_query: 'preserved' },
+    fetchOptions: { cache: 'no-store' },
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      observedRequest = {
+        method: request.method,
+        pathname: new URL(request.url).pathname,
+        authorization: request.headers.get('authorization'),
+        apiKey: request.headers.get('x-api-key'),
+        helper: request.headers.get('x-stainless-helper'),
+        workerID: request.headers.get('anthropic-worker-id'),
+        routing: request.headers.get('x-parent-routing'),
+        query: new URL(request.url).searchParams.get('parent_query'),
+        cache: init?.cache,
+      };
+      return new Response('null', { headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const wirePoller = new module.WorkPoller({
+    client: wireClient,
+    environmentId: 'environment_wire',
+    environmentKey: 'environment-helper',
+    workerId: 'worker-helper',
+    drain: true,
+    blockMs: null,
+  });
+  const claimed = [];
+  for await (const work of wirePoller) claimed.push(work);
+  assert.deepEqual(claimed, [], `${label}: empty helper poll drains without a fabricated item`);
+  assert.deepEqual(observedRequest, {
+    method: 'GET',
+    pathname: '/v1/environments/environment_wire/work/poll',
+    authorization: 'Bearer environment-helper',
+    apiKey: null,
+    helper: 'environments-work-poller',
+    workerID: 'worker-helper',
+    routing: 'preserved',
+    query: 'preserved',
+    cache: 'no-store',
+  }, `${label}: helper owns auth while preserving parent transport defaults`);
 }
 
 function assertAccumulator(module, label) {
@@ -344,7 +400,7 @@ for (const packageAlias of PACKAGE_ALIASES) {
 
     const { default: Anthropic } = await import(moduleURL(sdk.root, 'index.mjs'));
     await assertZodHelpers(modules.get('helpers/beta/zod.mjs'), sdk.root, label);
-    assertEnvironmentHelpers(modules.get('lib/environments/index.mjs'), Anthropic, label);
+    await assertEnvironmentHelpers(modules.get('lib/environments/index.mjs'), Anthropic, label);
     const accumulator = modules.get('lib/sessions/accumulate.mjs');
     if (accumulator) assertAccumulator(accumulator, label);
     await assertAgentToolset(modules.get('tools/agent-toolset/node.mjs'), Anthropic, label);

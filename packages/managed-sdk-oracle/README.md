@@ -48,17 +48,43 @@ evidence from drifting from the external expectation:
   anchor and the admitted candidate through one error/retry contract. It owns
   the exact 400/401/403/404/409/413/422/429/500/529 subclasses and headers,
   retry decision table including `x-should-retry`, byte-identical mutation
-  identity, opaque cursor traversal, and caller-abort fencing.
+  identity, opaque cursor traversal, connection-fault recovery, SDK deadline
+  classification, caller-abort fencing, static/dynamic credential precedence,
+  OAuth capability injection, and one forced refresh after a rejected cached
+  token. It also executes the full Managed middleware chain on every attempt:
+  canonical path/auth/capability observation, ordered request mutation,
+  clone-backed response parsing, retry unwind, and ordinary middleware errors
+  that must escape without transport execution. A controlled provider barrier
+  proves concurrent parent/`withOptions()` requests share one unresolved auth
+  state and token cache; an explicit provider override must fork that state
+  while inherited headers, query, and fetch options remain exact. The Python historical matrix
+  projects the same connection-versus-timeout distinction and retry bound
+  through both synchronous and asynchronous transports for every wheel, and
+  owns the credential-provider introduction at `0.100.0` and middleware
+  introduction at `0.109.0` in both modes. Python middleware evidence preserves
+  ordered mutation/unwind and proves ordinary policy failures reach neither
+  transport nor retry. Its sync/async `with_options()` cases likewise prove
+  cache sharing, explicit provider isolation, and inherited request defaults;
+  from `0.109.0` the public async WorkPoller must replace a parent's API key
+  with its environment Bearer credential across both poll and ack calls.
 - `e2e/conformance/managed_sdk_auth_context_e2e.mjs` composes those SDK
   projections with a real self-managed IAM process. Every supported TypeScript
   anchor must decode an invalid credential as its exact `AuthenticationError`
   without a Workspace, decode an authenticated policy denial as its exact
   `PermissionDeniedError` with the token Workspace, decode an admitted page,
   retain one globally unique request id per response, and prove denied writes
-  leave no persisted resource.
+  leave no persisted resource. The same matrix sends a dynamically resolved
+  token and an in-memory user-OAuth config backed by a private credential file
+  through the real process, closing the gap between SDK-only credential tests
+  and raw IAM behavior. Named profiles are exercised from an isolated config
+  directory, including a `withOptions()` clone created before the first request;
+  both clone and parent must adopt the profile host and authenticated Workspace.
 - The Python runtime matrix projects the same real 401/403/200 authentication
   graph through `managed_python_sdk_auth_context_e2e.py` for the current wheel
-  and every reviewed historical wheel. It reuses the matrix's hash-qualified
+  and every reviewed historical wheel. From the reviewed `0.100.0` capability
+  boundary onward it additionally projects both a direct provider and an
+  in-memory config/private credential file; `0.92.0` must expose neither. It
+  reuses the matrix's hash-qualified
   installations and one self-managed process, so a permissive mock transport or
   an ambient Python package cannot satisfy the proof.
 - The declaration oracle includes the Managed helper entrypoints in addition
@@ -70,7 +96,10 @@ evidence from drifting from the external expectation:
   to the closed behavior catalog and execute its developer-visible contract:
   Zod parsing, error predicates/backoff, helper lifecycle/abort, Session event
   accumulation, filesystem confinement and tools, persistent Bash state, Skill
-  resolution/admission, and Memory helper invariants. A newly exported symbol
+  resolution/admission, and Memory helper invariants. The WorkPoller contract
+  also records its derived client on the wire: parent transport/routing defaults
+  survive, the environment Bearer replaces the parent API key, and helper
+  telemetry is exact. A newly exported symbol
   therefore fails as unowned even when its entrypoint and file fingerprint were
   already known.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
