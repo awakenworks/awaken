@@ -18,6 +18,9 @@ pub const BACKGROUND_TASK_PLUGIN_ID: &str = "background_task";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundTaskConfig {
+    /// Canonical ids of existing ordinary tools that may be invoked in the
+    /// background. This does not grant the tools or change their permission,
+    /// concurrency, recovery, or resource policies.
     #[serde(default)]
     pub tools: BTreeSet<String>,
 }

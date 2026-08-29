@@ -50,6 +50,25 @@ const groups = [
     ),
   },
   {
+    id: 'background-tool-execution',
+    native: evidence(
+      'crates/runtime/awaken-runtime/tests/background_task_state.rs',
+      'ids.contains("run_in_background")',
+    ),
+    ...acpPartitions(
+      'crates/control/awaken-agent-config/src/compile.rs',
+      'R2 ACP + background_task',
+    ),
+    a2a: evidence(
+      'crates/control/awaken-agent-config/src/compile.rs',
+      'R3 A2A + background_task',
+    ),
+    negative: evidence(
+      'crates/runtime/awaken-ext-background-task/tests/plugin_state.rs',
+      'model cannot select an',
+    ),
+  },
+  {
     id: 'resources-memory-and-files',
     native: evidence('e2e/managed_resources_e2e.mjs', 'managed_memory_real_eval_native'),
     ...acpPartitions('e2e/acp_runtime_memory_matrix_e2e.mjs', 'managed_memory_real_eval_acp_runtime_matrix'),

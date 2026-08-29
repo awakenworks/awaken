@@ -352,6 +352,19 @@ fn compile_with_models(
             });
         }
     }
+    // Background tool execution retains an identity-bound prepared executor in
+    // the Native process. An external ACP or outbound A2A backend cannot honor
+    // that local executor contract.
+    // Reject the incompatible publication here instead of allowing a reviewed
+    // Agent to fail only when its first Session is constructed.
+    if matches!(config.kind(), AgentKind::Acp(_) | AgentKind::A2a(_))
+        && config.plugin_ids.iter().any(|id| id == "background_task")
+    {
+        return Err(CompileError::UnsupportedCapability {
+            agent: config.id.clone(),
+            axis: "background_task",
+        });
+    }
 
     // The normalized binding consumes the resolved advisor candidate, while
     // the content address must independently prove that exact route. Retain one
@@ -1128,6 +1141,45 @@ mod tests {
                 "backend `{backend}` must honor skills/mcp"
             );
         }
+    }
+
+    #[test]
+    fn background_tool_execution_is_rejected_for_external_backends_before_publication() {
+        // Cause/effect matrix:
+        // R1 Native + background_task -> compile: the in-process prepared executor exists.
+        // R2 ACP + background_task    -> reject: the external harness cannot retain it.
+        // R3 A2A + background_task    -> reject: outbound A2A owns no local Hand.
+        // R4 ACP without it           -> compile: unrelated Managed Agent features remain valid.
+        let mut native = config(&[]);
+        native.plugin_ids = vec!["background_task".into()];
+        assert!(compile(&native, &[]).is_ok(), "R1");
+
+        let mut acp = config(&[]);
+        acp.model_binding = ModelSelection::pinned("p", "m", "acp:codex");
+        acp.plugin_ids = vec!["background_task".into()];
+        assert_eq!(
+            compile(&acp, &[]).unwrap_err(),
+            CompileError::UnsupportedCapability {
+                agent: "agent-1".into(),
+                axis: "background_task",
+            },
+            "R2",
+        );
+
+        let mut a2a = config(&[]);
+        a2a.model_binding = ModelSelection::pinned("p", "m", "a2a:https://remote/agent");
+        a2a.plugin_ids = vec!["background_task".into()];
+        assert_eq!(
+            compile(&a2a, &[]).unwrap_err(),
+            CompileError::UnsupportedCapability {
+                agent: "agent-1".into(),
+                axis: "background_task",
+            },
+            "R3",
+        );
+
+        acp.plugin_ids.clear();
+        assert!(compile(&acp, &[]).is_ok(), "R4");
     }
 
     #[test]
