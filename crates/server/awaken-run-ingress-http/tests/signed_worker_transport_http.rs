@@ -1031,7 +1031,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .lock()
             .unwrap()
             .as_slice(),
-        &[completion.clone()],
+        std::slice::from_ref(&completion),
         "K4"
     );
     let removed_fingerprint = "removed-worker-bundle";
