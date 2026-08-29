@@ -564,7 +564,13 @@ pub fn control_router(input: ControlRouterInput) -> Router {
             crate::authz::fixed_workspace_header_guard,
         ));
     }
-    mgmt = protect_management_router(mgmt, audit_plane, iam, remote_iam, managed_request_limiter);
+    mgmt = awaken_protocol_managed::with_managed_response_context(protect_management_router(
+        mgmt,
+        audit_plane,
+        iam,
+        remote_iam,
+        managed_request_limiter,
+    ));
     if let Some(local_browser_auth) = local_browser_auth {
         mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
     }

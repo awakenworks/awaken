@@ -118,6 +118,15 @@ async function executeProbe(probe, target, fetchImpl) {
     request.body = '{';
   }
   const response = await fetchImpl(new URL(probe.path, target.baseURL), request);
+  const responseContext = {
+    requestID: Boolean(response.headers.get('request-id')?.trim()),
+    workspaceID: Boolean(response.headers.get('anthropic-workspace-id')?.trim()),
+  };
+  assert.deepEqual(
+    responseContext,
+    { requestID: true, workspaceID: true },
+    `${target.name}/${probe.id}: official SDK response context`,
+  );
   const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
   assert.ok(
     contentType === 'application/json' || contentType?.endsWith('+json'),
@@ -133,7 +142,12 @@ async function executeProbe(probe, target, fetchImpl) {
     }
   }
   assertCanonicalResponse(probe, response.status, body, target.name);
-  return { id: probe.id, status: response.status, shape: responseShape(body) };
+  return {
+    id: probe.id,
+    status: response.status,
+    responseContext,
+    shape: responseShape(body),
+  };
 }
 
 export function compareDeployedResults(actual, reference) {

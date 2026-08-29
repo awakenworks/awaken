@@ -48,6 +48,7 @@ const betaReceipt = {
   sdk: true,
   sdkVersion: '0.121.0',
   status: 200,
+  responseContext: { requestID: true, workspaceID: true },
   responseShape: { kind: 'object', fields: { id: { kind: 'string' } } },
 };
 const sdkVersion = '0.121.0';
@@ -126,6 +127,33 @@ test('only a successful application response is positive operation evidence', ()
   assert.equal(receiptMatchesOperation(
     { ...betaReceipt, status: 500 }, betaOperation, sdkVersion,
   ), false);
+});
+
+test('every successful operation receipt requires the official SDK response context', () => {
+  // Cause/effect graph: a real official SDK request reaches one operation,
+  // then router composition must project both correlation and Workspace
+  // coordinates before the response crosses back into the SDK. A 2xx DTO by
+  // itself cannot prove that complete call chain.
+  //
+  // Decision table:
+  // | 2xx | request-id | workspace-id | ownership evidence |
+  // | yes | present    | present      | accepted           |
+  // | yes | absent     | present      | rejected           |
+  // | yes | present    | absent       | rejected           |
+  // | no  | any        | any          | rejected elsewhere |
+  assert.equal(receiptMatchesOperation(betaReceipt, betaOperation, sdkVersion), true);
+  assert.equal(receiptMatchesOperation({
+    ...betaReceipt,
+    responseContext: { requestID: false, workspaceID: true },
+  }, betaOperation, sdkVersion), false);
+  assert.equal(receiptMatchesOperation({
+    ...betaReceipt,
+    responseContext: { requestID: true, workspaceID: false },
+  }, betaOperation, sdkVersion), false);
+  assert.equal(receiptMatchesOperation({
+    ...betaReceipt,
+    responseContext: undefined,
+  }, betaOperation, sdkVersion), false, 'legacy/partial receipts fail closed');
 });
 
 test('owner qualification fails closed for every missing runtime edge', () => {
@@ -498,9 +526,10 @@ test('static subresources outrank placeholder identities during receipt attribut
 
 test('transport hook records only non-secret completed exchange coordinates', () => {
   // Information-flow rule: credentials and bodies may enter the request, but
-  // only method/path/selectors/SDK marker/status may enter the receipt. The
-  // response status is written after fetch completes, so an attempted request
-  // cannot leave an apparently successful ownership fact.
+  // only method/path/selectors/SDK marker/status plus response-header presence
+  // may enter the receipt; identifier values remain absent. The response status
+  // is written after fetch completes, so an attempted request cannot leave an
+  // apparently successful ownership fact.
   const directory = mkdtempSync(resolve(tmpdir(), 'awaken-receipt-hook-test-'));
   const receiptFile = resolve(directory, 'receipt.jsonl');
   try {
@@ -528,6 +557,7 @@ test('transport hook records only non-secret completed exchange coordinates', ()
       sdk: true,
       sdkVersion: null,
       status: 200,
+      responseContext: { requestID: false, workspaceID: false },
       responseShape: { kind: 'object', fields: {} },
     });
   } finally {
@@ -543,7 +573,11 @@ test('in-process and child-process receipt collection share one encoder', async 
   // object so instrumentation cannot change SDK decoding semantics.
   const response = new Response('{}', {
     status: 200,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'request-id': 'req_fixture',
+      'anthropic-workspace-id': 'workspace_fixture',
+    },
   });
   const receipts = [];
   const input = new Request('https://managed.invalid/v1/files/file_1?beta=true', {
@@ -563,11 +597,16 @@ test('in-process and child-process receipt collection share one encoder', async 
     responseShape: { kind: 'object', fields: {} },
   });
   assert.ok(!JSON.stringify(receipts).includes('must-not-leak'), 'credential non-interference');
+  assert.ok(!JSON.stringify(receipts).includes('req_fixture'), 'request identity non-interference');
+  assert.ok(
+    !JSON.stringify(receipts).includes('workspace_fixture'),
+    'workspace identity non-interference',
+  );
 });
 
 test('finite receipt model accepts exactly the conjunction of all ownership coordinates', () => {
-  // Finite model check over the eight independent predicates in the ownership
-  // invariant. Exhausting 2^8 combinations proves no single missing coordinate,
+  // Finite model check over the ten independent predicates in the ownership
+  // invariant. Exhausting 2^10 combinations proves no single missing coordinate,
   // stale operation-local capability, or interaction can satisfy the matcher.
   const dimensions = [true, false];
   const operation = { ...betaOperation, forbiddenBetas: ['skills-2025-10-02'] };
@@ -580,26 +619,35 @@ test('finite receipt model accepts exactly the conjunction of all ownership coor
             for (const capability of dimensions) {
               for (const version of dimensions) {
                 for (const noForbiddenCapability of dimensions) {
-                  const receipt = {
-                    ...betaReceipt,
-                    sdk,
-                    sdkVersion: version ? sdkVersion : '0.122.0',
-                    status: healthy ? 200 : 500,
-                    method: method ? 'GET' : 'POST',
-                    path: path ? '/v1/files/file_1' : '/v1/files/file_1/extra',
-                    beta: selector ? 'true' : null,
-                    betas: [
-                      ...(capability ? ['files-api-2025-04-14'] : []),
-                      ...(noForbiddenCapability ? [] : ['skills-2025-10-02']),
-                    ],
-                  };
-                  assert.equal(
-                    receiptMatchesOperation(receipt, operation, sdkVersion),
-                    sdk && healthy && method && path && selector && capability
-                      && version && noForbiddenCapability,
-                    JSON.stringify(receipt),
-                  );
-                  cases += 1;
+                  for (const requestContext of dimensions) {
+                    for (const workspaceContext of dimensions) {
+                      const receipt = {
+                        ...betaReceipt,
+                        sdk,
+                        sdkVersion: version ? sdkVersion : '0.122.0',
+                        status: healthy ? 200 : 500,
+                        responseContext: {
+                          requestID: requestContext,
+                          workspaceID: workspaceContext,
+                        },
+                        method: method ? 'GET' : 'POST',
+                        path: path ? '/v1/files/file_1' : '/v1/files/file_1/extra',
+                        beta: selector ? 'true' : null,
+                        betas: [
+                          ...(capability ? ['files-api-2025-04-14'] : []),
+                          ...(noForbiddenCapability ? [] : ['skills-2025-10-02']),
+                        ],
+                      };
+                      assert.equal(
+                        receiptMatchesOperation(receipt, operation, sdkVersion),
+                        sdk && healthy && method && path && selector && capability
+                          && version && noForbiddenCapability && requestContext
+                          && workspaceContext,
+                        JSON.stringify(receipt),
+                      );
+                      cases += 1;
+                    }
+                  }
                 }
               }
             }
@@ -608,5 +656,5 @@ test('finite receipt model accepts exactly the conjunction of all ownership coor
       }
     }
   }
-  assert.equal(cases, 256);
+  assert.equal(cases, 1024);
 });

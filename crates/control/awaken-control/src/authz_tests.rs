@@ -962,6 +962,34 @@ async fn mg11a_authenticated_workspace_is_stamped_for_inner_layers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mg11a_authenticated_denial_retains_the_official_workspace_response_context() {
+    // Cause/effect graph: a valid workspace-scoped token resolves identity and
+    // ownership, but its read-only role denies a write. The handler is never
+    // entered, yet the official SDK must retain the trusted Workspace response
+    // coordinate. Missing/invalid credentials are intentionally excluded: they
+    // have no authenticated Workspace to disclose.
+    let (_dir, iam) = fresh_iam();
+    let token = mint(&iam, "tok_denied", "wrkspc_denied", "workspace_user");
+    let response = guarded_app(iam)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/config/credentials")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("management response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.headers()["anthropic-workspace-id"],
+        "wrkspc_denied"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mg11b_require_approval_is_403_approval() {
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());

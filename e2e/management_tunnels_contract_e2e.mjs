@@ -4,8 +4,9 @@ import Anthropic from '@anthropic-ai/sdk';
 
 // Cause/effect graph: C1 each SDK Tunnel/Certificate method, C2 research beta
 // header present, C3 official path and body. Effects: E1 request reaches the one
-// wire owner, E2 response decodes to the SDK union, E3 token responses are never
-// cached. Decision table: T1=C1+C2+C3 -> E1+E2; T2=!C2 -> server rejection is
+// wire owner, E2 response decodes to the SDK union with standard response
+// context, E3 token responses are never cached. Decision table:
+// T1=C1+C2+C3+request/workspace headers -> E1+E2; T2=!C2 -> server rejection is
 // owned by Rust middleware; T3=reveal/rotate -> E2+E3. Cloud lifecycle behavior
 // is intentionally a separate Full-target suite over the same public artifact.
 
@@ -29,6 +30,8 @@ const server = http.createServer(async (request, response) => {
   observed.push({ method: request.method, url: request.url, beta: request.headers['anthropic-beta'], body });
   assert.match(request.headers['anthropic-beta'] ?? '', new RegExp(beta), 'T1 beta');
   response.setHeader('content-type', 'application/json');
+  response.setHeader('request-id', `req_tunnel_contract_${observed.length}`);
+  response.setHeader('anthropic-workspace-id', 'workspace_tunnel_contract');
   if (request.url.includes('/certificates')) {
     response.end(JSON.stringify(request.method === 'GET' && !request.url.includes(certificate.id)
       ? { data: [certificate], next_page: null }
@@ -48,7 +51,13 @@ try {
   const { port } = server.address();
   const client = new Anthropic({ apiKey: 'contract-key', baseURL: `http://127.0.0.1:${port}` }); // awaken-allow: secret -- inert loopback fixture
   const betas = [beta];
-  assert.equal((await client.beta.tunnels.create({ display_name: 'contract', betas })).id, tunnel.id, 'T1 create');
+  const created = await client.beta.tunnels.create({ display_name: 'contract', betas }).withResponse();
+  assert.equal(created.data.id, tunnel.id, 'T1 create');
+  assert.match(created.response.headers.get('request-id') ?? '', /^req_tunnel_contract_\d+$/u);
+  assert.equal(
+    created.response.headers.get('anthropic-workspace-id'),
+    'workspace_tunnel_contract',
+  );
   await client.beta.tunnels.retrieve(tunnel.id, { betas });
   for await (const row of client.beta.tunnels.list({ betas })) assert.equal(row.id, tunnel.id, 'T1 list');
   await client.beta.tunnels.archive(tunnel.id, { betas });

@@ -91,6 +91,10 @@ export async function managedSdkReceipt(input, init, response) {
     sdk: request.headers.get('x-stainless-lang') === 'js',
     sdkVersion: request.headers.get('x-stainless-package-version'),
     status: response.status,
+    responseContext: Object.freeze({
+      requestID: response.headers.has('request-id'),
+      workspaceID: response.headers.has('anthropic-workspace-id'),
+    }),
     responseShape: await responseShape(response),
   });
 }
@@ -180,6 +184,8 @@ export function receiptMatchesOperation(receipt, operation, expectedSdkVersion) 
     && Number.isInteger(receipt.status)
     && receipt.status >= 200
     && receipt.status < 300
+    && receipt.responseContext?.requestID === true
+    && receipt.responseContext?.workspaceID === true
     && receipt.method === operation.method
     && pathMatches(operation.route, receipt.path)
     && receipt.beta === (operation.transportQuery === 'beta=true' ? 'true' : null)

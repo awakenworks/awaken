@@ -756,28 +756,32 @@ pub(super) async fn prepare_runtime_routers(
         deployment_iam.clone(),
         deployment_remote_iam.clone(),
     );
-    let coordinator_management = awaken_control::protect_management_router(
-        coordinator.management_router,
-        deployment_audit_plane.clone(),
-        deployment_iam.clone(),
-        deployment_remote_iam.clone(),
-        Some(managed_rate_limiter.clone()),
-    )
-    .layer(axum::middleware::from_fn_with_state(
-        coordinator.work_session_access.clone(),
-        awaken_protocol_managed::work_session_guard,
-    ));
-    let coordinator_managed = awaken_control::protect_management_router(
-        coordinator.managed_router,
-        deployment_audit_plane,
-        deployment_iam,
-        deployment_remote_iam,
-        Some(managed_rate_limiter.clone()),
-    )
-    .layer(axum::middleware::from_fn_with_state(
-        coordinator.work_session_access,
-        awaken_protocol_managed::work_session_guard,
-    ));
+    let coordinator_management = awaken_protocol_managed::with_managed_response_context(
+        awaken_control::protect_management_router(
+            coordinator.management_router,
+            deployment_audit_plane.clone(),
+            deployment_iam.clone(),
+            deployment_remote_iam.clone(),
+            Some(managed_rate_limiter.clone()),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            coordinator.work_session_access.clone(),
+            awaken_protocol_managed::work_session_guard,
+        )),
+    );
+    let coordinator_managed = awaken_protocol_managed::with_managed_response_context(
+        awaken_control::protect_management_router(
+            coordinator.managed_router,
+            deployment_audit_plane,
+            deployment_iam,
+            deployment_remote_iam,
+            Some(managed_rate_limiter.clone()),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            coordinator.work_session_access,
+            awaken_protocol_managed::work_session_guard,
+        )),
+    );
     let data = coordinator_data
         .merge(coordinator_managed)
         .merge(coordinator_management);

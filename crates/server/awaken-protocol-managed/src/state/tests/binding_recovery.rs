@@ -1184,6 +1184,65 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
 }
 
 #[tokio::test]
+async fn cold_workspace_list_isolates_a_missing_preview_publication() {
+    // Cause/effect matrix:
+    // C1 a normal durable Session has no exact publication pin;
+    // C2 a temporary Preview Session froze revision 1, then its intentionally
+    // ephemeral publication disappeared across restart;
+    // C3 the process cache is cold.
+    // R1 C1+C3 => list the normal Session from durable truth.
+    // R2 C2+C3 => list a read-only frozen projection without restoring Runtime.
+    // R3 C2+interactive recovery => fail closed; a collection read must never
+    // make the missing publication executable.
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-a",
+        sample_persisted("sesn_normal"),
+    )
+    .await;
+    let mut preview = sample_persisted("sesn_preview");
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut preview.baseline
+    else {
+        unreachable!("fixture baseline is frozen")
+    };
+    baseline.agent_id = "preview-expired".into();
+    baseline.agent_revision = Some(1);
+    create_session_fixture(repo.as_ref(), "workspace-a", preview.clone()).await;
+
+    let runtime = RehydrateFake::default();
+    let restored = runtime.restored.clone();
+    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+    let listed = restarted
+        .list_sessions_scoped_durable("workspace-a")
+        .await
+        .expect("one missing Preview publication cannot fail the collection");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["sesn_normal", "sesn_preview"],
+        "R1 + R2"
+    );
+    let preview_projection = listed
+        .iter()
+        .find(|session| session.id == "sesn_preview")
+        .expect("R2 Preview projection remains discoverable");
+    assert_eq!(preview_projection.agent.id, "preview-expired", "R2");
+    assert_eq!(preview_projection.agent.version, 1, "R2");
+    assert!(
+        restored.lock().unwrap().is_empty(),
+        "R2 no Runtime restoration"
+    );
+    let interactive = restarted.rehydrated_session("sesn_preview", "workspace-a", preview);
+    assert!(
+        matches!(interactive, Err(StateError::Run(ref error)) if error.code == "unavailable"),
+        "R3 interactive recovery stays fail-closed: {interactive:?}"
+    );
+}
+
+#[tokio::test]
 async fn committed_event_refresh_merges_peer_messages_exactly_once() {
     // Cause/effect graph:
     // C1 a durable Session is already cached on Coordinator A;
