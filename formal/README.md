@@ -55,6 +55,10 @@ The named harnesses in the strict gate invoke production pure functions directly
   - a Session tombstone is admitted only for a hidden, terminal aggregate with
     verified cleanup completion.
 - `awaken-runtime-contract`
+  - an anchored compaction window grows with the transcript and therefore never
+    moves past the prefix represented by summary plus bridge;
+  - a legacy unanchored window fails open to the full transcript instead of
+    silently dropping messages whose coverage cannot be reconstructed.
   - terminal tool calls never re-enter execution;
   - only a matching approval ticket enters execution;
   - every tool-call transition has its unique documented precondition;
@@ -253,6 +257,16 @@ production logic.
   followers that cannot return early, cooperative completion, deadline abort,
   and repeated shutdown after the active drain. `ServiceLifecycleProof.tla`
   proves the shutdown admission and return barriers directly.
+- `BackgroundTask.tla` covers the Thread-state-owned background aggregate:
+  one fenced owner/epoch/lease, waiting and cancellation, exact heartbeat and
+  finish fences, expiry reclaim, NeverReplay indeterminacy, bounded attempts,
+  and terminal owner clearing. The process-local supervisor remains a driver,
+  not a second durable task store.
+- `EvalEvidence.tla` covers only deterministic evaluation evidence handling:
+  frozen dataset version, exactly-one observation validity, complete case
+  classification before publication, and post-publication immutability.
+  LLM-judge semantics and benchmark representativeness remain external and are
+  not promoted to formal claims.
 
 ### Orthogonal state regions
 

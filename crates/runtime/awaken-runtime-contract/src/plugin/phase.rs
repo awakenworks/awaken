@@ -97,16 +97,66 @@ impl StateKey for ContextMessages {
     type Value = BTreeMap<String, Vec<Message>>;
 }
 
-/// Run-scoped request-window override. A compaction producer writes this only
-/// after it has supplied complete coverage (summary plus any bridge) for the
+/// Run-scoped request-window plan. A compaction producer writes this only after
+/// it has supplied complete coverage (summary plus any bridge) for the
 /// conversational prefix the kernel will hide.
+///
+/// The anchor is essential: after a tool step appends transcript messages, a
+/// fixed KeepLast value would move the hidden boundary past the summarized
+/// prefix and silently lose context. The effective tail therefore grows by the
+/// exact transcript growth since compaction. Legacy scalar values have no
+/// recoverable anchor and fail open to the full transcript.
 pub struct ContextWindow;
 
 impl StateKey for ContextWindow {
     const KEY: &'static str = "context_window";
     const SCOPE: Scope = Scope::Run;
     const MERGE: MergePolicy = MergePolicy::Exclusive;
-    type Value = Option<usize>;
+    type Value = ContextWindowPlan;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ContextWindowPlan {
+    Anchored {
+        keep_last: usize,
+        conversation_len: usize,
+    },
+    Legacy(Option<usize>),
+}
+
+impl Default for ContextWindowPlan {
+    fn default() -> Self {
+        Self::Legacy(None)
+    }
+}
+
+impl ContextWindowPlan {
+    #[must_use]
+    pub const fn anchored(keep_last: usize, conversation_len: usize) -> Self {
+        Self::Anchored {
+            keep_last,
+            conversation_len,
+        }
+    }
+
+    /// Resolve the exact suffix that retains the original fold boundary.
+    ///
+    /// A shorter transcript, arithmetic overflow, or a legacy scalar cannot
+    /// prove coverage and therefore disables windowing rather than dropping
+    /// unrepresented messages.
+    #[must_use]
+    pub const fn keep_last_at(&self, current_conversation_len: usize) -> Option<usize> {
+        match self {
+            Self::Anchored {
+                keep_last,
+                conversation_len,
+            } if current_conversation_len >= *conversation_len => {
+                keep_last.checked_add(current_conversation_len - *conversation_len)
+            }
+            Self::Anchored { .. } | Self::Legacy(_) => None,
+        }
+    }
 }
 
 /// What a hook stages back into the loop: durable state commands plus committed
@@ -158,4 +208,57 @@ pub trait PhaseHook: Send + Sync {
         conversation: &[Message],
         state: &Store,
     ) -> HookReaction;
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::*;
+
+    #[test]
+    fn anchored_window_decision_table_preserves_the_fold_boundary() {
+        // Cause/effect graph:
+        // C1 same transcript length -> original tail; C2 transcript growth ->
+        // tail grows by the same delta; C3 transcript rewind, C4 legacy scalar,
+        // C5 arithmetic overflow -> no window.
+        // Effects R1-R2 keep current_len - effective_keep equal to the
+        // original fold boundary; R3-R5 fail open to full context.
+        let plan = ContextWindowPlan::anchored(2, 10);
+        assert_eq!(plan.keep_last_at(10), Some(2), "R1");
+        assert_eq!(plan.keep_last_at(13), Some(5), "R2");
+        assert_eq!(plan.keep_last_at(9), None, "R3");
+        assert_eq!(
+            ContextWindowPlan::Legacy(Some(2)).keep_last_at(13),
+            None,
+            "R4"
+        );
+        assert_eq!(
+            ContextWindowPlan::anchored(usize::MAX, 1).keep_last_at(2),
+            None,
+            "R5"
+        );
+    }
+}
+
+#[cfg(kani)]
+mod context_window_verification {
+    use super::*;
+
+    #[kani::proof]
+    fn anchored_context_window_never_moves_past_the_covered_prefix() {
+        let keep_last: usize = kani::any();
+        let anchor_len: usize = kani::any();
+        let current_len: usize = kani::any();
+        kani::assume(keep_last <= anchor_len);
+        let plan = ContextWindowPlan::anchored(keep_last, anchor_len);
+        if let Some(effective) = plan.keep_last_at(current_len) {
+            assert!(effective <= current_len);
+            assert_eq!(current_len - effective, anchor_len - keep_last);
+        }
+    }
+
+    #[kani::proof]
+    fn unanchored_legacy_context_never_hides_transcript_messages() {
+        let legacy = ContextWindowPlan::Legacy(kani::any());
+        assert_eq!(legacy.keep_last_at(kani::any()), None);
+    }
 }

@@ -31,8 +31,8 @@ pub use env::{
 };
 pub use guard::{RunEndContext, RunEndDecision, RunEndGuard};
 pub use phase::{
-    AfterToolContext, ContextMessages, ContextWindow, HookReaction, PhaseContext, PhaseHook,
-    PhaseHookPoint, PhaseKind,
+    AfterToolContext, ContextMessages, ContextWindow, ContextWindowPlan, HookReaction,
+    PhaseContext, PhaseHook, PhaseHookPoint, PhaseKind,
 };
 
 #[cfg(test)]
