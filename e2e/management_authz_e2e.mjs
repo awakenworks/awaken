@@ -68,7 +68,29 @@ async function req(base, method, uri, body, token) {
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : null;
-  return { status: res.status, json, text };
+  return { status: res.status, json, text, headers: res.headers };
+}
+
+function assertRequestIdentity(response, label) {
+  const requestID = response.headers.get('request-id') ?? '';
+  assert.match(requestID, /^req_[0-9a-f]{32}$/u, `${label}: one generated request identity`);
+  return requestID;
+}
+
+function assertUnauthenticatedContext(response, label) {
+  const requestID = assertRequestIdentity(response, label);
+  assert.equal(
+    response.headers.get('anthropic-workspace-id'),
+    null,
+    `${label}: unauthenticated response cannot disclose a Workspace`,
+  );
+  return requestID;
+}
+
+function recordUnauthenticatedContext(seenRequestIDs, response, label) {
+  const requestID = assertUnauthenticatedContext(response, label);
+  assert.ok(!seenRequestIDs.has(requestID), `${label}: request identity is fresh`);
+  seenRequestIDs.add(requestID);
 }
 
 async function main() {
@@ -98,15 +120,33 @@ async function main() {
     }
     pass(`T${process.platform === 'win32' ? '5' : '4'}: bootstrap admin token persisted safely, sk-awaken-… shape`);
 
+    // Test design: unauthenticated_error_context_does_not_disclose_workspace
+    //
+    // Cause/effect graph: missing, malformed, expired, or revoked identity
+    // -> 401 + fresh request-id + no Workspace coordinate; authenticated
+    // identity -> admitted response + exact Workspace coordinate. This keeps
+    // SDK correlation total without turning an error into a tenant-discovery
+    // channel.
+    //
+    // Decision table:
+    // | credential | identity resolved | request-id | workspace response |
+    // | missing    | no                | fresh      | absent             |
+    // | malformed  | no                | fresh      | absent             |
+    // | valid      | yes               | fresh      | exact              |
     // Without a token: 401 in the Managed error envelope, on both surfaces.
+    const unauthenticatedRequestIDs = new Set();
     let r = await req(base, 'GET', '/v1/config/catalog');
     assert.equal(r.status, 401, `unauthenticated catalog read: ${JSON.stringify(r.json)}`);
     assert.equal(r.json.type, 'error');
     assert.equal(r.json.error.type, 'authentication_error');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'missing catalog token');
     r = await req(base, 'POST', '/v1/vaults', { display_name: 'nope' });
     assert.equal(r.status, 401);
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'missing vault token');
     r = await req(base, 'GET', '/v1/config/catalog', undefined, 'sk-ant-bogus.bogus');
     assert.equal(r.status, 401, 'garbage token is rejected');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'malformed catalog token');
+    assert.equal(unauthenticatedRequestIDs.size, 3, 'every 401 has a fresh request identity');
     pass('missing/garbage tokens -> 401 authentication_error on config + vault surfaces');
 
     // With the admin token: the full authoring flow.
@@ -115,6 +155,12 @@ async function main() {
     assert.equal(r.status, 200, `model attributes put: ${JSON.stringify(r.json)}`);
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
     assert.equal(r.status, 200);
+    assertRequestIdentity(r, 'authenticated catalog read');
+    assert.equal(
+      r.headers.get('anthropic-workspace-id'),
+      workspace,
+      'authenticated catalog read projects the exact Workspace',
+    );
     assert.equal(r.json.model_attributes['authz-model'].context_window, 4096);
     r = await req(base, 'POST', '/v1/config/credentials', {
       workspace_id: workspace, kind: 'vault', provider_id: 'anthropic',
@@ -161,6 +207,11 @@ async function main() {
     assert.ok(r.json.some((c) => c.id === credId), 'credential row persisted across restart');
     r = await req(base, 'GET', '/v1/config/catalog');
     assert.equal(r.status, 401, 'the gate survives the restart too');
+    recordUnauthenticatedContext(
+      unauthenticatedRequestIDs,
+      r,
+      'missing catalog token after restart',
+    );
     pass('restart: same token authenticates (iam.sqlite hydration), config + gate persist');
 
     // ---- token management: mint, author, rotate the bootstrap credential ---
@@ -199,14 +250,23 @@ async function main() {
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
     assert.equal(r.status, 401, 'revoked bootstrap token is refused');
     assert.equal(r.json.error.type, 'authentication_error');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'revoked catalog token');
     r = await req(base, 'GET', '/v1/config/catalog', undefined, opToken);
     assert.equal(r.status, 200, 'the successor token keeps working');
     r = await req(base, 'GET', '/v1/files', undefined, token);
     assert.equal(r.status, 401, 'revoked bootstrap token is refused by the resource PEP too');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'revoked resource token');
     r = await req(base, 'GET', '/v1/files', undefined, 'sk-ant-bogus.bogus');
     assert.equal(r.status, 401, 'invalid credentials fail closed at the resource PEP');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'invalid resource token');
     r = await req(base, 'GET', '/v1/workspaces/not-the-token-workspace/files', undefined, opToken);
     assert.equal(r.status, 403, 'a resource path cannot select a workspace outside token scope');
+    assertRequestIdentity(r, 'authenticated foreign Workspace rejection');
+    assert.equal(
+      r.headers.get('anthropic-workspace-id'),
+      workspace,
+      'authenticated rejection projects the token Workspace, never the requested foreign one',
+    );
     pass('bootstrap token revoked over HTTP: old 401s, minted successor still passes');
 
     // An expiring token: valid before its expiry, refused after (the expired
@@ -225,8 +285,10 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, afterExpiryDelay));
     r = await req(base, 'GET', '/v1/config/catalog', undefined, shortLived);
     assert.equal(r.status, 401, 'expired token is refused');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'expired catalog token');
     r = await req(base, 'GET', '/v1/files', undefined, shortLived);
     assert.equal(r.status, 401, 'expired token is refused by the resource PEP too');
+    recordUnauthenticatedContext(unauthenticatedRequestIDs, r, 'expired resource token');
     pass('T6 expiring token: 200 before expiry, 401 after');
 
     // ---- second restart: rotation and mint both persisted -----------------
@@ -237,6 +299,11 @@ async function main() {
 
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
     assert.equal(r.status, 401, 'bootstrap revocation survives the restart');
+    recordUnauthenticatedContext(
+      unauthenticatedRequestIDs,
+      r,
+      'revoked catalog token after restart',
+    );
     r = await req(base, 'GET', '/v1/config/catalog', undefined, opToken);
     assert.equal(r.status, 200, `minted token survives the restart: ${JSON.stringify(r.json)}`);
     assert.equal(

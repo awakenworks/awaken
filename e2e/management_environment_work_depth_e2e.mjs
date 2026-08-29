@@ -5,7 +5,8 @@
 // response context on the complete scenario-host composition.
 // Decision table: queued work is retrievable/updatable/claimable; one owner may
 // ack/heartbeat/stop; stale CAS, unknown ids, invalid poll bounds never mutate;
-// every successful operation must retain request/workspace response headers.
+// every successful operation must retain request/workspace response headers;
+// a forged Work sessions token retains correlation but discloses no Workspace.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -29,6 +30,24 @@ try {
   await waitForPort(PORT);
   const admin = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
   const worker = new Anthropic({ authToken: 'e2e-env-key', baseURL }); // awaken-allow: secret
+
+  // Authentication partition W0: a Work-shaped credential is intercepted by
+  // the Work capability edge before generic IAM. The process has already
+  // seeded its local persistence Workspace, so the real route must prove that
+  // unresolved identity cannot turn that internal scope into a public header.
+  const forgedWorkResponse = await fetch(new URL('/v1/sessions/sesn_forged', baseURL), {
+    headers: {
+      authorization: 'Bearer sk-ant-req-forged', // awaken-allow: secret
+      'anthropic-beta': BETAS[0],
+      'anthropic-version': '2023-06-01',
+    },
+  });
+  assert.equal(forgedWorkResponse.status, 401);
+  assert.equal((await forgedWorkResponse.json()).error.type, 'authentication_error');
+  assert.match(forgedWorkResponse.headers.get('request-id') ?? '', /^req_[0-9a-f]{32}$/u);
+  assert.equal(forgedWorkResponse.headers.get('anthropic-workspace-id'), null);
+  pass('forged Work sessions token retains correlation without Workspace disclosure');
+
   const environment = await admin.beta.environments.create({
     name: 'environment-work-depth',
     config: { type: 'self_hosted' },

@@ -4,4 +4,7 @@ pub mod headers;
 mod response_context;
 pub(crate) mod scope;
 
-pub use response_context::{with_managed_response_context, with_managed_workspace_header};
+pub use response_context::{
+    with_managed_response_context, with_managed_workspace_header,
+    with_unscoped_managed_response_context,
+};
