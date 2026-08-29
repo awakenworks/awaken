@@ -22,6 +22,7 @@ pub const BUNDLE_ID: &str = "awaken.run_dispatch";
 /// Once either published numbering stream reaches its terminal schema, every
 /// future dispatch migration is appended here. The historical streams remain
 /// immutable compatibility evidence; they are not parallel future writers.
+#[cfg(feature = "durable")]
 pub const CONVERGED_BUNDLE_ID: &str = "awaken.run_dispatch.converged";
 
 /// The embedded migration files, in apply order. Each entry is
@@ -132,17 +133,22 @@ const DISPATCH_RESERVATION_CLAIM: &str =
 const PENDING_CONTEXT_MESSAGES: &str =
     include_str!("migrations/V0027__pending_context_messages.sql");
 
+#[cfg(feature = "durable")]
 const EXPANDED_V15_SQL: &str = include_str!("migrations/expanded/V0015__delegation_group.sql");
+#[cfg(feature = "durable")]
 const EXPANDED_V16_SQL: &str =
     include_str!("migrations/expanded/V0016__drop_legacy_delegation_group.sql");
+#[cfg(feature = "durable")]
 const EXPANDED_V15_CHECKSUM: &str =
     "7bd1db97f64a971e72ccc3505bedf1c8929577e6616eec092911e393cbb21e36";
+#[cfg(feature = "durable")]
 const EXPANDED_V16_CHECKSUM: &str =
     "b69507cd88429793df7d48d30bf84246ff61873687be7938cd737a602776db6b";
 #[cfg(test)]
 const COMPACT_V15_CHECKSUM: &str =
     "e835f0eaae0017589eda70e1f1049fc1d2e428e7ade63f42defdc2366c737a90";
 
+#[cfg(feature = "durable")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublishedDispatchStream {
     Compact,
@@ -219,6 +225,7 @@ pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
 /// before compact numbering existed, then append each later schema effect once
 /// at V25..V29. SQL bodies shared with the compact stream are referenced from
 /// the same constants; only their immutable historical version identities vary.
+#[cfg(feature = "durable")]
 pub(crate) fn expanded_dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
     let mut migrations = FILES
         .iter()
@@ -273,6 +280,7 @@ pub(crate) fn expanded_dispatch_bundle() -> Result<MigrationBundle, MigrationErr
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
+#[cfg(feature = "durable")]
 fn published_dispatch_stream(v15_checksum: Option<&str>) -> PublishedDispatchStream {
     if v15_checksum == Some(EXPANDED_V15_CHECKSUM) {
         PublishedDispatchStream::Expanded
@@ -285,6 +293,7 @@ fn published_dispatch_stream(v15_checksum: Option<&str>) -> PublishedDispatchStr
 /// V15 are common and safely continue on the compact stream; an unknown V15 is
 /// deliberately sent to the compact bundle so the migration runner reports the
 /// ordinary checksum mismatch without any special bypass.
+#[cfg(feature = "durable")]
 pub(crate) fn selected_dispatch_bundle(
     v15_checksum: Option<&str>,
 ) -> Result<MigrationBundle, MigrationError> {
@@ -297,6 +306,7 @@ pub(crate) fn selected_dispatch_bundle(
 /// The sole append point after either immutable historical stream has reached
 /// its terminal schema. V1 is a durable convergence receipt; new schema changes
 /// start at V2 instead of extending both historical numberings.
+#[cfg(feature = "durable")]
 pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,
