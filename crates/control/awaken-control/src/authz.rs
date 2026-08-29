@@ -1257,13 +1257,13 @@ pub async fn management_guard(
     // routers, so reaching this arm means a route was added without extending
     // the action table.
     let Some(route) = action_for(req.method(), req.uri().path()) else {
-        return forbidden("no management action is mapped for this route");
+        return unscoped_forbidden("no management action is mapped for this route");
     };
     // MCP Tunnels are a Cloud-only workload-identity surface. A self-managed
     // API token or browser session must never become a compatibility backdoor
     // for the public `/v1/tunnels` contract.
     if is_tunnel_route(req.uri().path()) {
-        return unauthorized("Tunnel API requires a WIF bearer token");
+        return unauthenticated("Tunnel API requires a WIF bearer token");
     }
 
     let legacy_tunnel_route = is_legacy_tunnel_route(req.uri().path());
@@ -1278,14 +1278,17 @@ pub async fn management_guard(
     };
     let (principal, workspace) = match authenticated {
         Ok(identity) => identity,
-        Err(AuthReject::Expired) => return unauthorized("API token is expired"),
-        Err(AuthReject::Revoked) => return unauthorized("API token is revoked"),
-        Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
+        Err(AuthReject::Expired) => return unauthenticated("API token is expired"),
+        Err(AuthReject::Revoked) => return unauthenticated("API token is revoked"),
+        Err(AuthReject::Invalid) => return unauthenticated("invalid API token"),
     };
 
     let (action, scope_class, action_namespace) = match route {
         RouteAuthz::Application => {
-            return forbidden("application protocol must use the application-token guard");
+            return awaken_protocol_managed::with_managed_workspace_header(
+                forbidden("application protocol must use the application-token guard"),
+                &workspace.0,
+            );
         }
         RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Workspace),
         RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Workspace),
@@ -1422,11 +1425,11 @@ pub async fn cloud_management_guard(
         return next.run(req).await;
     }
     let Some(route) = action_for(req.method(), req.uri().path()) else {
-        return forbidden("no management action is mapped for this route");
+        return unscoped_forbidden("no management action is mapped for this route");
     };
     let (action, scope_class, action_namespace) = match route {
         RouteAuthz::Application => {
-            return forbidden("application protocol must use the application-token guard");
+            return unscoped_forbidden("application protocol must use the application-token guard");
         }
         RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Workspace),
         RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Workspace),
@@ -1434,7 +1437,7 @@ pub async fn cloud_management_guard(
             (action, scope, ActionNamespace::HostedRuntime)
         }
         RouteAuthz::TokenAdmin => {
-            return forbidden("API-token administration belongs to self-managed IAM");
+            return unscoped_forbidden("API-token administration belongs to self-managed IAM");
         }
     };
 
@@ -1448,16 +1451,16 @@ pub async fn cloud_management_guard(
     let authenticated = match authenticate_off_event_loop(authz.clone(), presented).await {
         Ok(authenticated) => authenticated,
         Err(RemoteAuthenticationFailure::Expired) => {
-            return unauthorized("cloud access token is expired");
+            return unauthenticated("cloud access token is expired");
         }
         Err(RemoteAuthenticationFailure::Revoked) => {
-            return unauthorized("cloud access token is revoked");
+            return unauthenticated("cloud access token is revoked");
         }
         Err(RemoteAuthenticationFailure::Invalid) => {
-            return unauthorized("invalid cloud access token");
+            return unauthenticated("invalid cloud access token");
         }
         Err(RemoteAuthenticationFailure::Transport) => {
-            return unauthorized("cloud authentication transport failed");
+            return unauthenticated("cloud authentication transport failed");
         }
     };
     if tunnel_route && !authenticated.is_managed_tunnel_workload() {
@@ -1637,6 +1640,14 @@ fn forbidden(message: &str) -> Response {
         .into_response()
 }
 
+fn unauthenticated(message: &str) -> Response {
+    awaken_protocol_managed::with_unscoped_managed_response_context(unauthorized(message))
+}
+
+fn unscoped_forbidden(message: &str) -> Response {
+    awaken_protocol_managed::with_unscoped_managed_response_context(forbidden(message))
+}
+
 // ---- Token management routes ---------------------------------------------------
 
 /// The HTTP token-management surface (`/v1/config/iam/tokens*`). Mounted
@@ -1760,7 +1771,7 @@ fn stamped_principal(req_ext: Option<&AuthedPrincipal>) -> Option<PrincipalRef> 
 
 /// The 401 for a token-management route reached without the guard's stamp.
 fn missing_guard_stamp() -> Response {
-    unauthorized("token management requires the embedded IAM guard")
+    unauthenticated("token management requires the embedded IAM guard")
 }
 
 /// Authorize `principal` for `action` at the TARGET workspace: `None` on

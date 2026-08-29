@@ -99,7 +99,42 @@ function assertCanonicalResponse(probe, status, body, targetName) {
   );
 }
 
-async function executeProbe(probe, target, fetchImpl) {
+export function assertManagedResponseContext({
+  requestID,
+  workspaceID,
+  expectedWorkspaceID,
+  seenRequestIDs,
+  label,
+}) {
+  // Response coordinates are scalar protocol fields. A proxy that duplicates
+  // either field commonly exposes a comma-joined value through Fetch/Node; it
+  // must not be mistaken for one valid SDK identity.
+  const one = (value, name) => {
+    assert.ok(
+      typeof value === 'string' && value.trim().length > 0 && !value.includes(','),
+      `${label}: official SDK response context requires exactly one non-empty ${name}`,
+    );
+    return value.trim();
+  };
+  const normalizedRequestID = one(requestID, 'request-id');
+  const normalizedWorkspaceID = one(workspaceID, 'anthropic-workspace-id');
+  if (seenRequestIDs) {
+    assert.ok(
+      !seenRequestIDs.has(normalizedRequestID),
+      `${label}: request-id must identify exactly one response`,
+    );
+    seenRequestIDs.add(normalizedRequestID);
+  }
+  if (expectedWorkspaceID !== undefined) {
+    assert.ok(
+      normalizedWorkspaceID === expectedWorkspaceID,
+      `${label}: response workspace must equal authenticated workspace`,
+    );
+  }
+  return { requestID: true, workspaceID: true };
+}
+
+async function executeProbe(probe, target, fetchImpl, seenRequestIDs) {
   const headers = {
     accept: 'application/json',
     'anthropic-version': '2023-06-01',
@@ -118,15 +153,13 @@ async function executeProbe(probe, target, fetchImpl) {
     request.body = '{';
   }
   const response = await fetchImpl(new URL(probe.path, target.baseURL), request);
-  const responseContext = {
-    requestID: Boolean(response.headers.get('request-id')?.trim()),
-    workspaceID: Boolean(response.headers.get('anthropic-workspace-id')?.trim()),
-  };
-  assert.deepEqual(
-    responseContext,
-    { requestID: true, workspaceID: true },
-    `${target.name}/${probe.id}: official SDK response context`,
-  );
+  const responseContext = assertManagedResponseContext({
+    requestID: response.headers.get('request-id'),
+    workspaceID: response.headers.get('anthropic-workspace-id'),
+    expectedWorkspaceID: target.workspaceId,
+    seenRequestIDs,
+    label: `${target.name}/${probe.id}`,
+  });
   const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
   assert.ok(
     contentType === 'application/json' || contentType?.endsWith('+json'),
@@ -167,17 +200,32 @@ export async function exerciseDeployedOperationSweep({
   coverage,
   coveragePath = defaultCoveragePath,
   fetchImpl = fetch,
+  actualSeenRequestIDs = new Set(),
+  referenceSeenRequestIDs = new Set(),
 }) {
   const contract = coverage ?? JSON.parse(fs.readFileSync(coveragePath, 'utf8'));
   const probes = buildDeployedProbePlan(contract);
-  const run = async (target) => {
+  const run = async (target, seenRequestIDs) => {
     assert.ok(target?.baseURL && target?.apiKey, `${target?.name ?? 'target'} credentials`);
     assert.ok(target.tunnelAccessToken, `${target.name} Tunnel bearer`);
+    assert.ok(seenRequestIDs instanceof Set, `${target.name} request identity ledger`);
+    if (target.workspaceId !== undefined) {
+      assert.ok(
+        typeof target.workspaceId === 'string'
+          && target.workspaceId.length > 0
+          && target.workspaceId === target.workspaceId.trim(),
+        `${target.name} Workspace identity`,
+      );
+    }
     const results = [];
-    for (const probe of probes) results.push(await executeProbe(probe, target, fetchImpl));
+    for (const probe of probes) {
+      results.push(await executeProbe(probe, target, fetchImpl, seenRequestIDs));
+    }
     return results;
   };
-  const actualResults = await run(actual);
-  if (reference) compareDeployedResults(actualResults, await run(reference));
+  const actualResults = await run(actual, actualSeenRequestIDs);
+  if (reference) {
+    compareDeployedResults(actualResults, await run(reference, referenceSeenRequestIDs));
+  }
   return actualResults;
 }

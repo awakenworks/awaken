@@ -275,7 +275,19 @@ async function req(base, method, uri, token, { apiKey = false, body, headers: ex
       responseBody = text;
     }
   }
-  return { status: response.status, body: responseBody };
+  return { status: response.status, body: responseBody, headers: response.headers };
+}
+
+function recordUnscopedAuthenticationFailure(seenRequestIDs, response, label) {
+  const requestID = response.headers.get('request-id') ?? '';
+  assert.match(requestID, /^req_[0-9a-f]{32}$/u, `${label}: generated request identity`);
+  assert.ok(!seenRequestIDs.has(requestID), `${label}: request identity is fresh`);
+  seenRequestIDs.add(requestID);
+  assert.equal(
+    response.headers.get('anthropic-workspace-id'),
+    null,
+    `${label}: failed Cloud authentication cannot disclose a Workspace`,
+  );
 }
 
 async function main() {
@@ -1048,25 +1060,45 @@ async function main() {
     assert.equal(result.status, 404, 'self-managed token administration is not mounted in cloud mode');
     assert.equal(iam.calls.length, callsBeforeTokenAdmin, 'token administration does not reach PDP');
 
-    for (const invalid of ['not-a-jwt', wrongAudienceToken]) {
-      assert.equal((await req(base, 'GET', '/v1/files', invalid)).status, 401);
-      assert.equal((await req(base, 'GET', '/v1/config/catalog', invalid)).status, 401);
+    // Test design: cloud_authentication_failure_has_correlation_without_tenancy
+    //
+    // Cause/effect graph: malformed, wrong-audience, or expired Cloud identity
+    // fails before the remote PDP and yields a fresh request-id but no Workspace
+    // coordinate. A valid identity denied by the PDP has resolved the trusted
+    // platform Workspace and therefore returns that exact coordinate.
+    //
+    // Decision table: invalid/expired -> 401 + request id + no workspace;
+    // authenticated deny/approval -> 403 + request id + exact workspace.
+    const unscopedRequestIDs = new Set();
+    for (const [kind, invalid] of [['malformed', 'not-a-jwt'], ['wrong audience', wrongAudienceToken]]) {
+      for (const uri of ['/v1/files', '/v1/config/catalog']) {
+        const rejected = await req(base, 'GET', uri, invalid);
+        assert.equal(rejected.status, 401);
+        recordUnscopedAuthenticationFailure(unscopedRequestIDs, rejected, `${kind} ${uri}`);
+      }
     }
     for (const uri of ['/v1/files', '/v1/config/catalog']) {
       const expired = await req(base, 'GET', uri, expiredToken);
       assert.equal(expired.status, 401);
       assert.match(expired.body.error.message, /cloud access token is expired/u);
+      recordUnscopedAuthenticationFailure(unscopedRequestIDs, expired, `expired ${uri}`);
     }
     pass('malformed/wrong-audience tokens fail closed and expiry keeps its reason');
 
     iam.decide('deny');
-    assert.equal((await req(base, 'GET', '/v1/files', explicitToken)).status, 403);
-    assert.equal((await req(base, 'GET', '/v1/config/catalog', explicitToken)).status, 403);
+    for (const uri of ['/v1/files', '/v1/config/catalog']) {
+      const denied = await req(base, 'GET', uri, explicitToken);
+      assert.equal(denied.status, 403);
+      assert.match(denied.headers.get('request-id') ?? '', /^req_[0-9a-f]{32}$/u);
+      assert.equal(denied.headers.get('anthropic-workspace-id'), localWorkspace);
+    }
     iam.decide('require_approval');
     const approvalResource = await req(base, 'GET', '/v1/files', explicitToken);
     assert.equal(approvalResource.status, 403, JSON.stringify(approvalResource.body));
+    assert.equal(approvalResource.headers.get('anthropic-workspace-id'), localWorkspace);
     const approvalCatalog = await req(base, 'GET', '/v1/config/catalog', explicitToken);
     assert.equal(approvalCatalog.status, 403, JSON.stringify(approvalCatalog.body));
+    assert.equal(approvalCatalog.headers.get('anthropic-workspace-id'), localWorkspace);
     pass('remote deny and approval obligations remain fail-closed at both PEPs');
 
     console.log('E2E PASS: Awaken Cloud identity and remote authorization stay outside resource services.');

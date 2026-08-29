@@ -138,28 +138,28 @@ pub async fn work_session_guard(
     {
         Ok(Some(access)) => access,
         Ok(None) => {
-            return error(
+            return crate::with_unscoped_managed_response_context(error(
                 StatusCode::UNAUTHORIZED,
                 "authentication_error",
                 "invalid or expired Work sessions token",
-            );
+            ));
         }
         Err(_) => {
-            return error(
+            return crate::with_unscoped_managed_response_context(error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "api_error",
                 "Work session authorization is unavailable",
-            );
+            ));
         }
     };
     let scope = match state.sessions.work_session_scope(&access.session_id).await {
         Ok(scope) => scope,
         Err(_) => {
-            return error(
+            return crate::with_unscoped_managed_response_context(error(
                 StatusCode::UNAUTHORIZED,
                 "authentication_error",
                 "Work Session is unavailable",
-            );
+            ));
         }
     };
     if !permits(req.method(), req.uri().path(), &access, &scope) {

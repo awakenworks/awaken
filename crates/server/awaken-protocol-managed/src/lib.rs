@@ -43,6 +43,7 @@ pub use common::headers::{
 };
 pub use common::with_managed_response_context;
 pub use common::with_managed_workspace_header;
+pub use common::with_unscoped_managed_response_context;
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
 pub use resources::{
