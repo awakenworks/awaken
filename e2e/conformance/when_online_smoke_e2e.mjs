@@ -5,7 +5,8 @@
 // conformance skips cleanly without credentials; AWAKEN_WHEN_ONLINE_REQUIRED=1
 // makes the controlled release lane fail rather than silently skip.
 //
-// Enable:  AWAKEN_WHEN_ONLINE=1  ANTHROPIC_API_KEY=sk-ant-...  node conformance/when_online_smoke_e2e.mjs
+// Enable: AWAKEN_WHEN_ONLINE=1 plus ANTHROPIC_API_KEY and the explicit
+// AWAKEN_WHEN_ONLINE_AGENT / AWAKEN_WHEN_ONLINE_ENV fixture ids.
 // Default (no creds): prints SKIP and exits 0.
 //
 // What it checks when online: the real server's outbound event `type`s are a SUBSET
@@ -27,8 +28,8 @@ async function runOnline() {
   // Explicit options prevent an ambient ANTHROPIC_BASE_URL from turning a
   // provider gateway into false Anthropic-reference evidence.
   const client = new Anthropic(officialAnthropicClientOptions(process.env));
-  const agent = process.env.AWAKEN_WHEN_ONLINE_AGENT || 'assistant';
-  const environmentId = process.env.AWAKEN_WHEN_ONLINE_ENV || 'env_local';
+  const agent = process.env.AWAKEN_WHEN_ONLINE_AGENT;
+  const environmentId = process.env.AWAKEN_WHEN_ONLINE_ENV;
 
   const session = await client.beta.sessions.create({ agent, environment_id: environmentId, betas: BETAS });
   // Test design: C1 exact live-API receipt and C2 at least one resulting public
@@ -68,7 +69,7 @@ async function main() {
     return;
   }
   if (!mode.run) {
-    console.log('SKIP: when-online smoke not enabled (set AWAKEN_WHEN_ONLINE=1 + ANTHROPIC_API_KEY).');
+    console.log('SKIP: when-online smoke not enabled (set AWAKEN_WHEN_ONLINE=1 plus official credentials and fixture ids).');
     console.log('  This suite is pre-staged and intentionally inert without real-API credentials.');
     process.exitCode = 0;
     return;

@@ -10,18 +10,48 @@ test('local conformance remains an explicit clean skip', () => {
 });
 
 test('release mode cannot silently skip a missing credential', () => {
-  assert.match(whenOnlineMode({ AWAKEN_WHEN_ONLINE_REQUIRED: '1' }).error, /required/);
+  assert.equal(
+    whenOnlineMode({ AWAKEN_WHEN_ONLINE_REQUIRED: '1' }).error,
+    'official Managed online gate requires ANTHROPIC_API_KEY, '
+      + 'AWAKEN_WHEN_ONLINE_AGENT, AWAKEN_WHEN_ONLINE_ENV',
+  );
 });
 
-test('release mode runs with a credential even without the optional opt-in flag', () => {
+test('release mode runs with complete fixtures even without the optional opt-in flag', () => {
   assert.deepEqual(
-    whenOnlineMode({ AWAKEN_WHEN_ONLINE_REQUIRED: '1', ANTHROPIC_API_KEY: 'secret' }),
+    whenOnlineMode({
+      AWAKEN_WHEN_ONLINE_REQUIRED: '1',
+      ANTHROPIC_API_KEY: 'secret', // awaken-allow: secret
+      AWAKEN_WHEN_ONLINE_AGENT: 'agent_reference',
+      AWAKEN_WHEN_ONLINE_ENV: 'environment_reference',
+    }),
     { run: true, error: null },
   );
 });
 
 test('a credential alone never opts a developer into billable external work', () => {
   assert.deepEqual(whenOnlineMode({ ANTHROPIC_API_KEY: 'secret' }), { run: false, error: null });
+});
+
+test('an opted-in partial fixture fails before external work', () => {
+  // Decision table: no opt-in + ambient key => skip; either opt-in mode + any
+  // missing fixture => error; either opt-in mode + all fixtures => run. This
+  // prevents local placeholder identities from becoming reference evidence.
+  const mode = whenOnlineMode({
+    AWAKEN_WHEN_ONLINE: '1',
+    ANTHROPIC_API_KEY: 'secret', // awaken-allow: secret
+  });
+  assert.equal(mode.run, false);
+  assert.match(mode.error, /AWAKEN_WHEN_ONLINE_AGENT, AWAKEN_WHEN_ONLINE_ENV/u);
+});
+
+test('developer opt-in runs only with one complete official fixture tuple', () => {
+  assert.deepEqual(whenOnlineMode({
+    AWAKEN_WHEN_ONLINE: '1',
+    ANTHROPIC_API_KEY: 'secret', // awaken-allow: secret
+    AWAKEN_WHEN_ONLINE_AGENT: 'agent_reference',
+    AWAKEN_WHEN_ONLINE_ENV: 'environment_reference',
+  }), { run: true, error: null });
 });
 
 test('official evidence cannot be redirected by an ambient SDK base URL', () => {
