@@ -2034,17 +2034,23 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     use awaken_run_ingress::DispatchQueue as _;
 
     // Cause/effect graph: C1 a cold Managed Session has no Runtime or
-    // Environment; C2 its User Event requires a durable reservation; C3 a
-    // Worker has not claimed it. Effects: E1 persist one unclaimable
+    // Environment; C2 its complete command is exact or operation/capabilities
+    // change; C3 durable phase is Reserved, Activated, Recovery, or Completed;
+    // C4 only trace context changes. Effects: E1 persist one unclaimable
     // reservation; E2 create no Environment; E3 evict the envelope-only Runtime
     // so the claimed Worker must rebuild from frozen dispatch truth; E4 freeze
-    // application restrictions into that same dispatch row.
+    // application restrictions and current command fingerprint in that row; E5
+    // exact/C4 retries report the phase; E6 command changes conflict against
+    // both live and completed durable evidence as BadRequest.
     // Constraint: physical realization remains in the existing claimed Worker
     // path; reservation introduces no second executor or store.
     //
-    // | Rule | cold | reservation | claimed | Effects |
-    // |---|---|---|---|---|
-    // | R1 | yes | requested | no | E1+E2+E3+E4 |
+    // | Rule | Command | Phase | Effects |
+    // |---|---|---|---|
+    // | R1 | exact | Reserved/Activated/Recovery/Completed | E1-E5 |
+    // | R2 | operation changed | Reserved/Completed | E6 |
+    // | R3 | capabilities empty to present | Reserved/Completed | E6 |
+    // | R4 | trace changed | Reserved | E5 |
     let thread = "cold-session-reservation";
     let run_id = RunId("cold-session-reservation-run".into());
     let dispatch = Arc::new(
@@ -2055,34 +2061,64 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone()));
     install_test_session_application(&host);
     let managed = crate::ManagedHost::new(host.clone());
+    let command = awaken_session_contract::AdmitSessionRun {
+        session_id: thread.into(),
+        agent_id: "assistant".into(),
+        operation_id: "cold-session-reservation-op".into(),
+        run_id: run_id.clone(),
+        messages: vec![Message::new(
+            MessageId::session_event_input(thread, "cold-session-reservation-op"),
+            Role::User,
+            vec![ContentBlock::text("reserve before realization")],
+        )],
+        data_subject_id: None,
+        traceparent: None,
+        execution_requirements: awaken_session_contract::SessionRunExecutionRequirements {
+            tool_capability_narrowing:
+                awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+            required_worker_capabilities: std::collections::BTreeSet::from([
+                "application:test-session-envelope/v1".to_string(),
+            ]),
+        },
+        replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+    };
+    let expected_fingerprint =
+        awaken_session_contract::SessionRunCommandFingerprint::current(&command);
 
     assert_eq!(
         managed
-            .reserve_session_run(awaken_session_contract::AdmitSessionRun {
-                session_id: thread.into(),
-                agent_id: "assistant".into(),
-                operation_id: "cold-session-reservation-op".into(),
-                run_id,
-                messages: vec![Message::new(
-                    MessageId::session_event_input(thread, "cold-session-reservation-op",),
-                    Role::User,
-                    vec![ContentBlock::text("reserve before realization")],
-                )],
-                data_subject_id: None,
-                traceparent: None,
-                execution_requirements: awaken_session_contract::SessionRunExecutionRequirements {
-                    tool_capability_narrowing:
-                        awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
-                    required_worker_capabilities: std::collections::BTreeSet::from([
-                        "application:test-session-envelope/v1".to_string(),
-                    ]),
-                },
-                replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
-            })
+            .reserve_session_run(command.clone())
             .await
             .expect("R1 reservation"),
         awaken_session_contract::SessionRunReservation::Reserved,
         "R1/E1"
+    );
+    assert_eq!(
+        managed
+            .reserve_session_run(command.clone())
+            .await
+            .expect("R1 exact Reserved replay"),
+        awaken_session_contract::SessionRunReservation::AlreadyReserved,
+        "R1/E5 Reserved"
+    );
+    let mut retraced = command.clone();
+    retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
+    assert_eq!(
+        managed
+            .reserve_session_run(retraced)
+            .await
+            .expect("R4 trace-only replay"),
+        awaken_session_contract::SessionRunReservation::AlreadyReserved,
+        "R4/E5"
+    );
+    let mut changed_operation = command.clone();
+    changed_operation.operation_id = "cold-session-reservation-other-op".into();
+    assert!(
+        managed
+            .reserve_session_run(changed_operation)
+            .await
+            .is_err(),
+        "R2/E6 operation change conflicts"
     );
     assert_eq!(
         managed
@@ -2110,6 +2146,87 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .is_none(),
         "R1/E3"
     );
+
+    let mut empty_capabilities = command.clone();
+    empty_capabilities.run_id = RunId("cold-session-empty-capabilities-run".into());
+    empty_capabilities.operation_id = "cold-session-empty-capabilities-op".into();
+    empty_capabilities.messages = vec![Message::new(
+        MessageId::session_event_input(thread, "cold-session-empty-capabilities-op"),
+        Role::User,
+        vec![ContentBlock::text("empty capability command")],
+    )];
+    empty_capabilities
+        .execution_requirements
+        .required_worker_capabilities
+        .clear();
+    assert_eq!(
+        managed
+            .reserve_session_run(empty_capabilities.clone())
+            .await
+            .expect("R3 reserve empty capabilities"),
+        awaken_session_contract::SessionRunReservation::Reserved,
+        "R3 precondition"
+    );
+    let mut added_capability = empty_capabilities.clone();
+    added_capability
+        .execution_requirements
+        .required_worker_capabilities
+        .insert("application:added-after-reservation/v1".into());
+    assert!(
+        managed.reserve_session_run(added_capability).await.is_err(),
+        "R3/E6 empty-to-present capability change conflicts"
+    );
+    let mut recovery_command = command.clone();
+    recovery_command.run_id = RunId("cold-session-recovery-run".into());
+    recovery_command.operation_id = "cold-session-recovery-op".into();
+    recovery_command.messages = vec![Message::new(
+        MessageId::session_event_input(thread, "cold-session-recovery-op"),
+        Role::User,
+        vec![ContentBlock::text("recover reserved command")],
+    )];
+    assert_eq!(
+        managed
+            .reserve_session_run(recovery_command.clone())
+            .await
+            .expect("R1 reserve recovery probe"),
+        awaken_session_contract::SessionRunReservation::Reserved,
+        "R1/E5 Recovery precondition"
+    );
+    let recovery_claim = dispatch
+        .claim_run(
+            &recovery_command.run_id,
+            "reservation-recovery-owner",
+            1_000,
+            u64::MAX,
+            &Default::default(),
+        )
+        .await
+        .expect("R1 claim expired recovery probe")
+        .expect("R1 expired reservation is repairable");
+    assert!(
+        recovery_claim.session_activity_admission_required,
+        "R1 Recovery claim stays admission-only"
+    );
+    assert_eq!(
+        managed
+            .reserve_session_run(recovery_command)
+            .await
+            .expect("R1 exact Recovery replay"),
+        awaken_session_contract::SessionRunReservation::RecoveryClaimed,
+        "R1/E5 Recovery"
+    );
+    assert_eq!(
+        dispatch
+            .resolve_claimed_session_run_reservation(
+                &awaken_run_ingress::RunClaim::from(&recovery_claim.lease),
+                awaken_run_ingress::SessionRunReservationResolution::Rejected,
+            )
+            .await
+            .expect("R1 remove recovery probe"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R1 Recovery cleanup"
+    );
+
     assert_eq!(
         dispatch
             .activate_session_run_reservation(
@@ -2121,6 +2238,16 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .expect("R1 activate exact reservation"),
         awaken_run_ingress::SessionRunReservationActivation::Activated,
         "R1/E4 inspection uses the ordinary post-activity transition"
+    );
+    assert_eq!(
+        managed
+            .reserve_session_run(command.clone())
+            .await
+            .expect("R1 exact Activated replay"),
+        awaken_session_contract::SessionRunReservation::AlreadyActivated {
+            session_activity_epoch: 1,
+        },
+        "R1/E5 Activated"
     );
     let mut manifest = awaken_run_ingress::WorkerManifest::default();
     manifest
@@ -2162,6 +2289,115 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .required_capabilities
             .contains("application:test-session-envelope/v1"),
         "R1/E4 capability is frozen in the one durable dispatch"
+    );
+    assert_eq!(
+        claimed.request.session_command_fingerprint.as_ref(),
+        Some(&expected_fingerprint),
+        "R1/E4 fingerprint is computed from the raw command before projection"
+    );
+    assert_eq!(
+        dispatch
+            .settle(
+                &run_id,
+                claimed.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("R1 settle Managed reservation"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R1 Completed precondition"
+    );
+    assert_eq!(
+        managed
+            .reserve_session_run(command)
+            .await
+            .expect("R1 exact Completed replay"),
+        awaken_session_contract::SessionRunReservation::Completed,
+        "R1/E5 Completed"
+    );
+    let completion = dispatch
+        .completion_events_after(0, usize::MAX)
+        .await
+        .expect("R1 completion fingerprint query")
+        .into_iter()
+        .find(|completion| completion.run_id == run_id)
+        .expect("R1 Managed completion exists");
+    assert_eq!(
+        completion.request_fingerprint.as_deref(),
+        Some(expected_fingerprint.as_str()),
+        "R1/E4 completion retains the current compact identity"
+    );
+
+    assert_eq!(
+        dispatch
+            .activate_session_run_reservation(
+                &empty_capabilities.run_id,
+                &ThreadId(thread.into()),
+                2,
+            )
+            .await
+            .expect("R3 activate empty-capability completion probe"),
+        awaken_run_ingress::SessionRunReservationActivation::Activated,
+        "R3 Completed precondition"
+    );
+    let empty_capabilities_claim = dispatch
+        .claim_run(
+            &empty_capabilities.run_id,
+            "empty-capability-completion-worker",
+            1_000,
+            0,
+            &Default::default(),
+        )
+        .await
+        .expect("R3 claim empty-capability completion probe")
+        .expect("R3 activated empty-capability probe is claimable");
+    assert_eq!(
+        dispatch
+            .settle(
+                &empty_capabilities.run_id,
+                empty_capabilities_claim.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("R3 settle empty-capability completion probe"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R3 Completed precondition"
+    );
+    assert_eq!(
+        managed
+            .reserve_session_run(empty_capabilities.clone())
+            .await
+            .expect("R3 exact empty-capability Completed replay"),
+        awaken_session_contract::SessionRunReservation::Completed,
+        "R3/E5 Completed"
+    );
+    let mut completed_changed_operation = empty_capabilities.clone();
+    completed_changed_operation.operation_id =
+        "cold-session-empty-capabilities-completed-other-op".into();
+    let completed_operation_error = managed
+        .reserve_session_run(completed_changed_operation)
+        .await
+        .expect_err("R2 completed operation change conflicts");
+    assert_eq!(
+        completed_operation_error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "R2/E6 Completed"
+    );
+    let mut completed_added_capability = empty_capabilities;
+    completed_added_capability
+        .execution_requirements
+        .required_worker_capabilities
+        .insert("application:added-after-completion/v1".into());
+    let completed_capability_error = managed
+        .reserve_session_run(completed_added_capability)
+        .await
+        .expect_err("R3 completed empty-to-present capability change conflicts");
+    assert_eq!(
+        completed_capability_error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "R3/E6 Completed"
     );
 }
 

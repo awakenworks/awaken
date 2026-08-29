@@ -7,7 +7,8 @@ use awaken_provisioning_contract::{
     EnvVar, MountRequirement, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
 };
 use awaken_session_contract::{
-    McpAttachmentOrigin, McpTarget, SessionNetworkPolicy, SessionToolConfiguration,
+    McpAttachmentOrigin, McpTarget, SessionNetworkPolicy, SessionRunExecutionRequirements,
+    SessionToolConfiguration,
 };
 use axum::Router;
 use axum::handler::Handler;
@@ -112,6 +113,28 @@ pub struct ProfiledSessionCreated {
     pub metadata: BTreeMap<String, String>,
 }
 
+/// Complete immutable input for one Run of an existing product-authored
+/// Session. The Session identity is owned by the path, so the body cannot carry
+/// a second coordinate that could disagree with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionRunSubmit {
+    pub agent_id: String,
+    pub operation_id: String,
+    pub run_id: awaken_agent_contract::agent::run::Id,
+    pub messages: Vec<awaken_agent_contract::agent::message::Message>,
+    pub execution_requirements: SessionRunExecutionRequirements,
+}
+
+/// Stable acknowledgement that the canonical Session Run is durably admitted
+/// and linked for execution. It is intentionally not a second Run status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionRunReceipt {
+    pub session_id: String,
+    pub run_id: awaken_agent_contract::agent::run::Id,
+}
+
 /// Exact Repository selector and Git coordinate supplied by the product at the
 /// terminal release boundary. The adapter resolves `binding_id` against the
 /// Session root; callers cannot supply or reconstruct a `ResolvedInput`.
@@ -159,6 +182,18 @@ where
     Router::new().route("/v1/awaken/sessions", post(handler))
 }
 
+/// Mount the private profiled-Run adapter beside Session creation. The handler
+/// lowers into the existing Session application admission path and owns no Run
+/// state, dispatch queue, or compatibility event path.
+pub fn profiled_session_run_router<H, T, S>(handler: H) -> Router<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route("/v1/awaken/sessions/{id}/runs", post(handler))
+}
+
 /// Mount the private terminal-release adapter beside the create extension. It
 /// projects the existing Session cleanup operation and owns no release state.
 pub fn profiled_session_release_router<H, T, S>(handler: H) -> Router<S>
@@ -173,6 +208,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_provisioning_contract::{
         EnvValue, EnvVisibility, MountAccess, MountLifetime, MountSource,
     };
@@ -340,5 +376,136 @@ mod tests {
             serde_json::from_value::<ProfiledSessionRelease>(unknown).is_err(),
             "W4"
         );
+    }
+
+    #[test]
+    fn profiled_run_wire_preserves_the_canonical_command_and_rejects_parallel_identity() {
+        // Cause/effect graph: C1 exact Agent/operation/Run/Message identities,
+        // roles, content, and restrictions; C2 a body-level Session identity or
+        // other unknown field; C3 an unknown nested execution requirement.
+        // Effects: E1 C1 round-trips byte-for-byte; E2 C2/C3 fail before the
+        // handler; E3 the receipt exposes only path Session plus admitted Run.
+        // Rules R1/R4/R9/R10 require E1, R5/R7 require E2, and W1 covers E3.
+        let encoded = serde_json::json!({
+            "agent_id": "coding-agent",
+            "operation_id": "issue-42:primary",
+            "run_id": "flow-run-42-primary",
+            "messages": [{
+                "id": "flow-message-42",
+                "role": "User",
+                "content": [{"type": "text", "text": "Implement the accepted Issue"}]
+            }],
+            "execution_requirements": {
+                "tool_capability_narrowing": "deny_all",
+                "required_worker_capabilities": ["awaken.flow.coding.v1"]
+            }
+        });
+        let request = serde_json::from_value::<ProfiledSessionRunSubmit>(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), encoded, "R1/R4/R9");
+
+        let mut parallel_session_identity = encoded.clone();
+        parallel_session_identity["session_id"] = serde_json::json!("other-session");
+        assert!(
+            serde_json::from_value::<ProfiledSessionRunSubmit>(parallel_session_identity).is_err(),
+            "R5/R7 body cannot duplicate path identity"
+        );
+        let mut unknown_requirement = encoded;
+        unknown_requirement["execution_requirements"]["fallback_to_local"] =
+            serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<ProfiledSessionRunSubmit>(unknown_requirement).is_err(),
+            "R7 nested requirements remain closed"
+        );
+
+        let receipt = ProfiledSessionRunReceipt {
+            session_id: "profiled-session-42".into(),
+            run_id: RunId("flow-run-42-primary".into()),
+        };
+        assert_eq!(
+            serde_json::from_value::<ProfiledSessionRunReceipt>(
+                serde_json::to_value(&receipt).unwrap()
+            )
+            .unwrap(),
+            receipt,
+            "W1"
+        );
+    }
+
+    #[tokio::test]
+    async fn profiled_run_route_inventory_has_one_post_only_owner() {
+        // Route causes: C1 exact path+POST; C2 exact path+another method; C3 a
+        // sibling path. Effects: E1 only C1 reaches the leaf; E2 C2 is 405; E3
+        // C3 is 404. Rules I1=C1=>E1, I2=C2=>E2, I3=C3=>E3. Workspace rewriting
+        // is owned by Coordinator, so this crate registers no prefixed copy.
+        use axum::Json;
+        use axum::body::Body;
+        use axum::extract::Path;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        async fn accept(
+            Path(session_id): Path<String>,
+            Json(body): Json<ProfiledSessionRunSubmit>,
+        ) -> Json<ProfiledSessionRunReceipt> {
+            Json(ProfiledSessionRunReceipt {
+                session_id,
+                run_id: body.run_id,
+            })
+        }
+
+        let request = serde_json::json!({
+            "agent_id": "coding-agent",
+            "operation_id": "issue-42:primary",
+            "run_id": "flow-run-42-primary",
+            "messages": [{
+                "id": "flow-message-42",
+                "role": "User",
+                "content": [{"type": "text", "text": "Implement"}]
+            }],
+            "execution_requirements": {
+                "tool_capability_narrowing": "configured",
+                "required_worker_capabilities": ["awaken.flow.coding.v1"]
+            }
+        });
+        let app = profiled_session_run_router(accept);
+        for (rule, method, uri, expected) in [
+            (
+                "I1",
+                "POST",
+                "/v1/awaken/sessions/session-42/runs",
+                StatusCode::OK,
+            ),
+            (
+                "I2",
+                "GET",
+                "/v1/awaken/sessions/session-42/runs",
+                StatusCode::METHOD_NOT_ALLOWED,
+            ),
+            (
+                "I3",
+                "POST",
+                "/v1/awaken/sessions/session-42/run",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let body = if method == "POST" {
+                Body::from(serde_json::to_vec(&request).unwrap())
+            } else {
+                Body::empty()
+            };
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{rule}");
+        }
     }
 }

@@ -36,8 +36,10 @@ use crate::types::{
 use crate::types::{Event, StreamFrame};
 
 mod pagination;
+mod profiled_run;
 
 use pagination::{SessionListPage, parse_session_list, session_list_page};
+pub use profiled_run::submit_profiled_session_run;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionListOrder {

@@ -382,11 +382,17 @@ write is not a second creation phase.
 flowchart TD
     A["Client optionally opens Session SSE stream"]
     B["Existing: committed snapshot plus live subscription"]
-    C["Client POSTs Session Events"]
+    C["Public client POSTs Session Events"]
     D["Existing: auth, ownership, Session state, and batch validation"]
     E{"Admitted?"}
     F["Return 4xx without a partial Event batch"]
     G["Existing: atomically retain the complete inbound Event batch"]
+    C2["Product POSTs one typed profiled Session Run"]
+    D2["Existing: Workspace IAM plus profiled Session and frozen Agent validation"]
+    E2{"Admitted?"}
+    F2["Return typed 4xx or 5xx without fallback"]
+    G2["Existing: reserve Session Run and activity through SessionApplication"]
+    Y2["Return exact Session and Run receipt after activation"]
     H["Existing: load frozen Session baseline and Resource manifest"]
     I["Existing: prepare RunActivation"]
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
@@ -418,6 +424,10 @@ flowchart TD
     E -- No --> F
     E -- Yes --> G --> Y
     G --> H --> I --> J --> K --> L --> M --> N --> O
+    C2 --> D2 --> E2
+    E2 -- No --> F2
+    E2 -- Yes --> G2 --> Y2
+    G2 --> J
     O -. preview .-> P -.-> B
     O --> Q --> R --> S
     S -- Duplicate or stale --> T
@@ -518,8 +528,27 @@ The public result has two surfaces:
 
 1. `POST /v1/sessions/{id}/events` returns the admitted Event receipts after the
    processing command reaches its boundary;
-2. SSE or `GET /events` returns projected Agent messages, tool activity, errors,
+2. private `POST /v1/awaken/sessions/{id}/runs` returns only the exact Session
+   and Run identities after canonical admission and activation;
+3. SSE or `GET /events` returns projected Agent messages, tool activity, errors,
    and the terminal Session state.
+
+The private profiled Run body carries exact Agent, operation, Run, Message, tool
+narrowing, and required Worker-capability values. The path alone owns Session
+identity and the adapter fixes `PreservePrior`; it cannot author another
+replacement, lifecycle, queue, or status. Managed Events remain the public
+mutation and committed-observation vocabulary, but are never a fallback start
+transport for this product command.
+
+Before Skill expansion or current Runtime projection, Runtime Host hashes that
+complete immutable command into the Session-owned
+`session-command-v1:sha256:<lowercase hex>` identity (excluding trace context).
+The existing dispatch JSON and completion fingerprint columns carry the value;
+there is no additional mapping or lifecycle store. A current incoming command
+is mandatory. Only a stored row that predates the field, or an old stored
+`sha256:` completion, selects legacy-equivalent replay; unknown versions fail
+closed. Projection drift can therefore replay but cannot overwrite the first
+dispatch, while changed operation or required capabilities conflict.
 
 Preview frames are best effort. Committed messages and terminal events are the
 response authority, so reconnecting clients backfill the snapshot and do not
@@ -582,6 +611,9 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   composer, freeze their direct Resource inputs and mutation policy before the
   original insert, and use the Session repository receipt rather than mutable
   metadata for create replay;
+- exact Runs of an existing profiled Session lower through one typed leaf into
+  the existing SessionApplication admission/activation path; Managed Events and
+  simplified background submission are not compatibility fallbacks;
 - `ResourceAuthorities` exposes the authoritative `ResourceCatalog` beside its
   existing File, Memory, Skill, repository-verification, and lifecycle ports;
 - HTTP File commands and Runtime artifact harvesting call one
@@ -666,6 +698,7 @@ cite the rule they cover.
 | E25 | profiled create includes direct Resource and Repository inputs | resolve all inputs once, freeze the selected policy, and insert complete revision-1 desired truth plus its receipt before realization/activation/WorkQueue effects |
 | E26 | a product retries creation or attempts post-create completion | exact receipt preflight or concurrent `Replayed` returns current durable truth with no repeated effect; a mismatched payload or private profiled whole-manifest write fails without a parallel authoring path |
 | E27 | exact create replay names `ActivationFailed`, a tombstone, or corrupt receipt/identity state | return typed 409 for terminal occupation and typed internal failure for corruption; never resurrect, backfill, or execute external effects |
+| E28 | a product submits or retries one exact Run for an existing profiled Session | canonical Session admission preserves exact identities and requirements, returns one stable receipt, and projects committed truth through the existing Managed read surface |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the

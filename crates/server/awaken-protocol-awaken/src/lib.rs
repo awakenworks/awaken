@@ -17,7 +17,8 @@ pub use profiled_sessions::{
     ProfiledSessionCreate, ProfiledSessionCreated, ProfiledSessionMcpAttachment,
     ProfiledSessionMode, ProfiledSessionRelease, ProfiledSessionReleased,
     ProfiledSessionRepository, ProfiledSessionRepositoryPublication,
-    ProfiledSessionRepositoryPublished, profiled_session_release_router, profiled_session_router,
+    ProfiledSessionRepositoryPublished, ProfiledSessionRunReceipt, ProfiledSessionRunSubmit,
+    profiled_session_release_router, profiled_session_router, profiled_session_run_router,
 };
 pub use resource_manifests::session_resource_manifest_router;
 pub use sandbox_policies::environment_extensions_router;

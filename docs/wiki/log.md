@@ -668,3 +668,17 @@
   creating an unbounded claim/relinquish loop.
 - Added no Session, WorkQueue, Run, or retry authority; a later business attempt
   preserves the failed Session as history and creates fresh execution truth.
+
+## 2026-08-29 — Route profiled Runs through canonical Session admission
+
+- Added one private typed profiled Run leaf over the existing SessionApplication
+  reserve/activity/activation authority.
+- Kept Managed Events as the public mutation and committed observation surface,
+  with no product Events fallback, second Run store, queue, or status model.
+- Recorded exact replay, error, capability-placement, and committed-projection
+  cause/effect rules in ADR-0075.
+- Bound replay to the Session-owned versioned fingerprint of the complete raw
+  command before mutable Runtime projection, using only stored old evidence for
+  legacy compatibility and no new schema.
+- Restored the complete public Session projection fact and added a distinct
+  ADR-owned retrieval fact for the typed profiled Run leaf.

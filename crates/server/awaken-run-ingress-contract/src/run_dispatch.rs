@@ -246,6 +246,11 @@ pub struct RunDispatch {
         skip_serializing_if = "DispatchIdentityScope::is_full_dispatch"
     )]
     pub identity_scope: DispatchIdentityScope,
+    /// Immutable Session-application command identity computed before mutable
+    /// Runtime projection. Older durable rows omit it; only a stored omission
+    /// selects the legacy reservation comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_command_fingerprint: Option<awaken_session_contract::SessionRunCommandFingerprint>,
     /// Session whose runtime capabilities and commit/history boundary must drive
     /// this Run after recovery. Ordinary Runs omit it and route by their own
     /// thread. A child Run names its parent's session while retaining its own
@@ -371,7 +376,7 @@ impl RunDispatch {
     /// retry may therefore reconstruct different current Agent, model-routing,
     /// Resource, Runtime, Environment, or placement projections, but it must
     /// neither conflict with nor overwrite the frozen request already stored.
-    fn session_reservation_bytes(&self) -> Vec<u8> {
+    fn legacy_session_reservation_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(&(
             &self.activation.run_id,
             &self.activation.thread_id,
@@ -388,6 +393,7 @@ impl RunDispatch {
         Self {
             activation,
             identity_scope: DispatchIdentityScope::FullDispatch,
+            session_command_fingerprint: None,
             session_thread_id: None,
             session_activity_epoch: None,
             session_run_replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
@@ -424,13 +430,34 @@ impl RunDispatch {
     /// continue to use [`Self::same_canonical_dispatch`].
     #[must_use]
     pub fn same_session_reservation(&self, other: &Self) -> bool {
-        self.session_reservation_bytes() == other.session_reservation_bytes()
+        match self.session_command_fingerprint.as_ref() {
+            Some(stored) if stored.is_current() => other
+                .session_command_fingerprint
+                .as_ref()
+                .is_some_and(|incoming| incoming.is_current() && incoming == stored),
+            Some(_) => false,
+            None => {
+                self.legacy_session_reservation_bytes() == other.legacy_session_reservation_bytes()
+            }
+        }
     }
 
     /// Compact identity retained after a Session root dispatch settles. It is
     /// the tombstone twin of [`Self::same_session_reservation`].
     #[must_use]
     pub fn session_reservation_fingerprint(&self) -> String {
+        self.session_command_fingerprint.as_ref().map_or_else(
+            || self.legacy_session_reservation_fingerprint(),
+            |fingerprint| fingerprint.as_str().to_string(),
+        )
+    }
+
+    /// Pre-versioned compact identity retained only for comparing a current
+    /// incoming retry with a completion or live row written by an older build.
+    /// Callers must choose it from stored legacy evidence, never from an
+    /// incoming request.
+    #[must_use]
+    pub fn legacy_session_reservation_fingerprint(&self) -> String {
         let fingerprint = awaken_runtime_contract::content_fingerprint(&(
             &self.activation.run_id,
             &self.activation.thread_id,
@@ -440,7 +467,7 @@ impl RunDispatch {
             &self.activation.tool_capability_narrowing,
             &self.session_thread_id,
         ))
-        .expect("Session reservation identity has no fallible serializable value");
+        .expect("legacy Session reservation identity has no fallible serializable value");
         format!("sha256:{fingerprint}")
     }
 
@@ -484,6 +511,17 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_command_identity(mut self) -> Self {
         self.identity_scope = DispatchIdentityScope::SessionCommand;
+        self
+    }
+
+    /// Attach the Session authority's command identity. The reservation port
+    /// separately marks the accepted row's identity scope after validation.
+    #[must_use]
+    pub fn with_session_command_fingerprint(
+        mut self,
+        fingerprint: awaken_session_contract::SessionRunCommandFingerprint,
+    ) -> Self {
+        self.session_command_fingerprint = Some(fingerprint);
         self
     }
 
@@ -751,6 +789,15 @@ mod tests {
         )
     }
 
+    fn command_fingerprint(fill: char) -> awaken_session_contract::SessionRunCommandFingerprint {
+        serde_json::from_value(serde_json::Value::String(format!(
+            "{}{}",
+            awaken_session_contract::SessionRunCommandFingerprint::CURRENT_PREFIX,
+            fill.to_string().repeat(64)
+        )))
+        .expect("test fingerprint decodes")
+    }
+
     /// The request a durable queue persists and replays must survive a
     /// serialize→deserialize round-trip unchanged — G3's whole point (it carries no
     /// live handle), and the accessors read the same ids back out.
@@ -872,6 +919,7 @@ mod tests {
         let session = ThreadId("thrd-1".into());
         let original = RunDispatch::new(activation())
             .for_session(session.clone())
+            .with_session_command_fingerprint(command_fingerprint('a'))
             .with_session_command_identity();
 
         let mut reprojected = original.clone();
@@ -904,6 +952,7 @@ mod tests {
             Role::User,
             "different command",
         )];
+        changed_command.session_command_fingerprint = Some(command_fingerprint('b'));
         assert!(
             !original.same_session_reservation(&changed_command),
             "R2/E2"
@@ -931,6 +980,58 @@ mod tests {
             original.session_reservation_fingerprint(),
             "R1/E1"
         );
+    }
+
+    #[test]
+    fn session_command_identity_wire_and_legacy_selection_follow_stored_evidence() {
+        // Cause/effect graph: C1 stored identity is current, absent legacy, or
+        // unknown; C2 incoming identity is exact current, changed current, or
+        // absent. Effects: E1 current round-trips and exact replays; E2 changed
+        // current conflicts; E3 only a stored absence selects legacy subset
+        // comparison; E4 unknown stored and current-stored/missing-incoming fail
+        // closed. Decision rules W1=current+exact=>E1,
+        // W2=current+changed=>E2, W3=absent+legacy-equivalent=>E3,
+        // W4=unknown|current+missing=>E4.
+        let current = RunDispatch::new(activation())
+            .for_session(ThreadId("thrd-1".into()))
+            .with_session_command_fingerprint(command_fingerprint('a'))
+            .with_session_command_identity();
+        let wire = serde_json::to_value(&current).expect("W1 serializes");
+        let round_trip: RunDispatch = serde_json::from_value(wire).expect("W1 deserializes");
+        assert_eq!(round_trip, current, "W1/E1");
+        assert!(current.same_session_reservation(&round_trip), "W1/E1");
+        assert!(
+            current
+                .session_reservation_fingerprint()
+                .starts_with(awaken_session_contract::SessionRunCommandFingerprint::CURRENT_PREFIX),
+            "W1/E1"
+        );
+
+        let changed = current
+            .clone()
+            .with_session_command_fingerprint(command_fingerprint('b'));
+        assert!(!current.same_session_reservation(&changed), "W2/E2");
+
+        let legacy = RunDispatch::new(activation())
+            .for_session(ThreadId("thrd-1".into()))
+            .with_session_command_identity();
+        let legacy_wire = serde_json::to_value(&legacy).expect("W3 serializes");
+        assert!(
+            legacy_wire.get("session_command_fingerprint").is_none(),
+            "W3/E3"
+        );
+        assert!(legacy.same_session_reservation(&current), "W3/E3");
+        assert!(
+            !current.same_session_reservation(&legacy),
+            "W4/E4 stored current does not select legacy"
+        );
+
+        let unknown = serde_json::from_value(serde_json::Value::String(
+            "session-command-v2:sha256:future".into(),
+        ))
+        .expect("W4 unknown value remains inspectable");
+        let unknown = legacy.clone().with_session_command_fingerprint(unknown);
+        assert!(!unknown.same_session_reservation(&current), "W4/E4");
     }
 
     /// Resource-envelope compatibility causes/effects: C1 current dispatch has a

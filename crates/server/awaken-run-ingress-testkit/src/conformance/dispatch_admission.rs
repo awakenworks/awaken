@@ -479,8 +479,9 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         "SC2"
     );
 
-    let session_root =
-        dispatch(ns, "managed-session-root", "managed-parent").for_session(parent.clone());
+    let session_root = current_session_command(
+        dispatch(ns, "managed-session-root", "managed-parent").for_session(parent.clone()),
+    );
     assert_eq!(
         store
             .reserve_session_run(session_root.clone(), 49_000)

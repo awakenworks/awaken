@@ -1940,6 +1940,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-run-ingress-contract",
  "awaken-runtime-contract",
+ "awaken-session-contract",
  "axum",
  "serde_json",
  "tokio",

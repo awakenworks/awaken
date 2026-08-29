@@ -5,6 +5,7 @@
 - Amended: 2026-08-28 — terminal Repository publication uses the same Worker realization owner
 - Amended: 2026-08-29 — pre-realization cancellation does not fabricate a Runtime interval
 - Amended: 2026-08-29 — unattempted Dispatch projection amendment is Coordinator-owned
+- Amended: 2026-08-29 — profiled products submit typed Runs through canonical Session admission
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -603,3 +604,97 @@ non-canonical receipt fails before durable acknowledgement and leaves the same
 operation retryable. A legacy or new cleanup with no explicit publication
 intent emits no publication command and retains the exact pre-amendment v1
 cleanup path.
+
+## Amendment (2026-08-29): profiled Run submission is a typed leaf over canonical admission
+
+The private profiled Session edge needs to start an exact product-owned Run
+without turning public Managed Event batches or the simplified background
+operation into a second command transport. The existing
+`SessionApplication::admit_session_run_for_owner` remains the sole owner of Run
+reservation, Session activity admission, durable recovery, and retry identity;
+`activate_admitted_session_run` remains the sole asynchronous activation seam.
+Runtime Host and Run ingress retain the only dispatch, capability-placement,
+claim, commit, and settlement authorities.
+
+The private wire adds exactly one leaf operation:
+
+```text
+POST /v1/awaken/sessions/{session_id}/runs
+  body: exact Agent, operation, Run, Messages, and execution requirements
+  -> require authenticated Workspace and an existing non-Managed profiled Session
+  -> verify the frozen Agent
+  -> AdmitSessionRun { path Session, exact body, no subject/trace, PreservePrior }
+  -> fingerprint the complete immutable command before Runtime projection
+  -> SessionApplication::admit_session_run_for_owner
+  -> verify admitted Session and Run identities
+  -> SessionApplication::activate_admitted_session_run
+  -> stable { session_id, run_id } receipt
+```
+
+The body cannot repeat `session_id`, select replacement behavior, inject trace
+or data-subject identity, or carry unknown fields. A missing, foreign, or
+ordinary Managed Session is hidden as `404` and is never created implicitly.
+Invalid input and a changed command under the same Run identity are
+`400`; unavailable reservation, projection, or activation is `503`; internal
+or mismatched admission truth is `500`. Exact replay returns the same receipt.
+The receipt is an acknowledgement after activation, not another Run status.
+
+The static dependency direction remains one-way:
+
+```text
+profiled wire DTO/router -> Managed wire lowering -> SessionApplication
+                                                -> Runtime Host -> RunIngress
+Managed GET/SSE projection <------------- committed Session/Thread/Run truth
+```
+
+Public Managed Event mutation remains the compatibility surface for Managed
+clients, and committed Managed Events remain a valid observation/resume/cancel
+projection for product adapters. They are not a fallback for profiled Run
+start. The simplified `SessionRunBackgroundApplication` also remains separate:
+it may derive identities and default requirements for its own caller, whereas
+this edge must preserve every supplied identity, Message, tool narrowing, and
+required Worker capability. No Run table, queue, event store, mapping
+repository, dual-write, or compatibility route is added.
+
+The Session contract owns one versioned `SessionRunCommandFingerprint`. The
+current compact form is `session-command-v1:sha256:<lowercase hex>` over the
+Session, Agent, operation, Run, Messages, data-subject identity, tool narrowing,
+required Worker capabilities, and replacement intent. Trace context is excluded
+because it identifies a delivery attempt. Runtime Host computes this value from
+the raw `AdmitSessionRun` before Skill expansion or current Agent, model,
+Resource, Environment, placement, and snapshot projection. `RunDispatch`
+persists it as one optional serde-default field; completion reuses the same
+compact string. Existing JSON request and completion columns already own these
+values, so this amendment adds no table or DDL.
+
+New Session reservations require the exact current fingerprint and reject a
+missing, malformed, or unknown incoming version before persistence. For replay,
+only stored evidence selects compatibility: a stored current live row compares
+the current fingerprint, a stored pre-field live row uses the former Session
+subset equivalence, and a stored old `sha256:` completion uses its matching
+legacy compact equivalence. Unknown stored versions fail closed. Thus a newer
+Runtime projection can recognize the first command without overwriting its
+dispatch, while a changed operation or required-capability set cannot be
+mistaken for replay.
+
+The cause/effect rules for this leaf are:
+
+| Rule | Cause | Required effect |
+|---|---|---|
+| R1 | exact existing profiled Session and Primary command | reserve and activate the exact identities, Messages, Configured narrowing, and required capabilities; return the exact receipt |
+| R2 | exact current command fingerprint retries before or after reservation, activation, recovery claim, completion, or response loss; trace/current Runtime projection alone drifts | return the same durable phase and receipt without another reservation, activity, activation, or dispatch overwrite |
+| R3 | the same Run identity carries changed Agent, operation, Messages, data subject, tool narrowing, required capabilities, replacement, or Session | derive another command fingerprint and reject without overwriting or relinking durable truth |
+| R4 | OutputRepair uses a distinct Run on the same Session | preserve prior Runs, deny all tools for the repair, and retain the frozen Agent |
+| R5 | target is missing, foreign, or ordinary Managed | return `404` and create no Session |
+| R6 | projection, reservation, or activation authority is unavailable | return `503`; unchanged retry remains safe |
+| R7 | malformed input, deterministic rejection, or internal failure | preserve the `400` versus `500` classification |
+| R8 | admission returns another Session or Run identity | fail before activation and expose no receipt |
+| R9 | the exact command requires a Worker capability that is absent and later appears | retain both the requirement and command fingerprint on the first dispatch; an incapable Worker cannot claim and a capable Worker can converge, while changing the required set conflicts |
+| R10 | Runtime commits Running, output, usage, or terminal truth | ordinary Managed GET/SSE reconstructs it from the same committed Session/Thread/Run authority |
+
+Product adapters should build one protocol-neutral `AdmitSessionRun` value for
+both embedded and hosted placement. Embedded composition passes it directly to
+the application; hosted composition projects the same fields into this wire
+and lets the leaf restore only the path-owned and fixed fields. That shared
+projector, not an Event batch builder, owns stable product Message identities
+and per-attempt tool/capability restrictions.

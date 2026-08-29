@@ -304,6 +304,7 @@ pub awaken_run_ingress_contract::run_dispatch::RunDispatch::inference_plaintext_
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::placement: awaken_worker_contract::PlacementRequirements
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::preferred_environment_shape: core::option::Option<awaken_provisioning_contract::spec::SandboxCapacityShapeId>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_activity_epoch: core::option::Option<u64>
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_command_fingerprint: core::option::Option<awaken_session_contract::run_admission::SessionRunCommandFingerprint>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_resources: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_run_replacement: awaken_session_contract::run_admission::SessionRunReplacement
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_runtime: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope>
@@ -314,6 +315,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::admission_fingerp
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::admission_shape(&self) -> awaken_run_ingress_contract::run_dispatch::DispatchAdmissionShape
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::canonical_fingerprint(&self) -> alloc::string::String
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::for_session(self, awaken_agent_contract::agent::thread::Id) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::legacy_session_reservation_fingerprint(&self) -> alloc::string::String
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::new(awaken_runtime_contract::activation::RunActivation) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::same_admission_dispatch(&self, &Self) -> bool
@@ -328,6 +330,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_inference_pl
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(self, awaken_worker_contract::PlacementRequirements) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_preferred_environment_shape(self, awaken_provisioning_contract::spec::SandboxCapacityShapeId) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_activity_epoch(self, u64) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_command_fingerprint(self, awaken_session_contract::run_admission::SessionRunCommandFingerprint) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_command_identity(self) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_resources(self, awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_run_replacement(self, awaken_session_contract::run_admission::SessionRunReplacement) -> Self
@@ -598,6 +601,7 @@ pub awaken_run_ingress_contract::RunDispatch::inference_plaintext_holder: core::
 pub awaken_run_ingress_contract::RunDispatch::placement: awaken_worker_contract::PlacementRequirements
 pub awaken_run_ingress_contract::RunDispatch::preferred_environment_shape: core::option::Option<awaken_provisioning_contract::spec::SandboxCapacityShapeId>
 pub awaken_run_ingress_contract::RunDispatch::session_activity_epoch: core::option::Option<u64>
+pub awaken_run_ingress_contract::RunDispatch::session_command_fingerprint: core::option::Option<awaken_session_contract::run_admission::SessionRunCommandFingerprint>
 pub awaken_run_ingress_contract::RunDispatch::session_resources: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope>
 pub awaken_run_ingress_contract::RunDispatch::session_run_replacement: awaken_session_contract::run_admission::SessionRunReplacement
 pub awaken_run_ingress_contract::RunDispatch::session_runtime: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope>
@@ -608,6 +612,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::admission_fingerp
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::admission_shape(&self) -> awaken_run_ingress_contract::run_dispatch::DispatchAdmissionShape
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::canonical_fingerprint(&self) -> alloc::string::String
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::for_session(self, awaken_agent_contract::agent::thread::Id) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::legacy_session_reservation_fingerprint(&self) -> alloc::string::String
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::new(awaken_runtime_contract::activation::RunActivation) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::same_admission_dispatch(&self, &Self) -> bool
@@ -622,6 +627,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_inference_pl
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(self, awaken_worker_contract::PlacementRequirements) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_preferred_environment_shape(self, awaken_provisioning_contract::spec::SandboxCapacityShapeId) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_activity_epoch(self, u64) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_command_fingerprint(self, awaken_session_contract::run_admission::SessionRunCommandFingerprint) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_command_identity(self) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_resources(self, awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_run_replacement(self, awaken_session_contract::run_admission::SessionRunReplacement) -> Self

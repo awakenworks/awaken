@@ -43,8 +43,23 @@ mod tests {
         );
         let session_id = "reservation-repair";
         let run_id = "reservation-repair-run";
-        let request = awaken_run_ingress::RunDispatch::new(test_activation(session_id, run_id))
-            .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
+        let activation = test_activation(session_id, run_id);
+        let fingerprint = awaken_session_contract::SessionRunCommandFingerprint::current(
+            &awaken_session_contract::AdmitSessionRun {
+                session_id: session_id.into(),
+                agent_id: activation.snapshot.root_agent_id.0.clone(),
+                operation_id: "reservation-repair-operation".into(),
+                run_id: activation.run_id.clone(),
+                messages: activation.input.clone(),
+                data_subject_id: None,
+                traceparent: None,
+                execution_requirements: Default::default(),
+                replacement: Default::default(),
+            },
+        );
+        let request = awaken_run_ingress::RunDispatch::new(activation)
+            .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()))
+            .with_session_command_fingerprint(fingerprint);
         assert_eq!(
             store
                 .reserve_session_run(request, 1)

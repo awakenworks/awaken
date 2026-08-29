@@ -195,4 +195,69 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "/v1/agents|ws_authorized|ws_authorized");
     }
+
+    #[tokio::test]
+    async fn profiled_session_run_uses_the_single_flat_and_workspace_route_owner() {
+        // Addressing causes: C1 protocol registers only the flat profiled-Run
+        // POST; C2 the generic wrapper sees a Workspace-prefixed spelling.
+        // Effects: E1 C1 reaches that handler with the existing platform scope;
+        // E2 C2 rewrites to the same handler and stamps the path Workspace.
+        // Rules A1=C1=>E1 and A2=C1+C2=>E2. No prefixed route copy exists.
+        async fn submit(
+            Path(session_id): Path<String>,
+            axum::Extension(scope): axum::Extension<WorkspaceScope>,
+            axum::Json(body): axum::Json<awaken_protocol_awaken::ProfiledSessionRunSubmit>,
+        ) -> String {
+            format!("{session_id}|{}|{}", scope.0, body.run_id.0)
+        }
+
+        let flat = with_platform_workspace(
+            awaken_protocol_awaken::profiled_session_run_router(submit),
+            "ws_local".into(),
+        );
+        let app = with_workspace_path_addressing(flat);
+        let request_body = serde_json::to_vec(&serde_json::json!({
+            "agent_id": "coding-agent",
+            "operation_id": "issue-42:primary",
+            "run_id": "flow-run-42-primary",
+            "messages": [{
+                "id": "flow-message-42",
+                "role": "User",
+                "content": [{"type": "text", "text": "Implement"}]
+            }],
+            "execution_requirements": {
+                "tool_capability_narrowing": "configured",
+                "required_worker_capabilities": ["awaken.flow.coding.v1"]
+            }
+        }))
+        .unwrap();
+        for (rule, uri, expected_scope) in [
+            ("A1", "/v1/awaken/sessions/session-42/runs", "ws_local"),
+            (
+                "A2",
+                "/v1/workspaces/ws_cloud/awaken/sessions/session-42/runs",
+                "ws_cloud",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(Body::from(request_body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{rule}");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                String::from_utf8(body.to_vec()).unwrap(),
+                format!("session-42|{expected_scope}|flow-run-42-primary"),
+                "{rule}"
+            );
+        }
+    }
 }

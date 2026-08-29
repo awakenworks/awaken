@@ -11,7 +11,9 @@
 /// C8 replacement intent preserves/supersedes prior live work and is replayed
 /// exactly from the immutable reservation.
 /// C9 cold replay reconstructs the same Session command with different current
-/// Agent/model/placement projections.
+/// Agent/model/Resource/placement/Skill projections. C10 live or completed
+/// durable evidence has a current/missing/unknown versioned command fingerprint,
+/// and its operation/capability inputs are exact or changed.
 /// Effects: E1 persist one unclaimable intent; E2 never open or overwrite the
 /// wrong activity; E3 exact replay reports the durable phase; E4 repair never
 /// binds a Sandbox or executes; E5 admitted repair publishes ordinary Pending;
@@ -23,6 +25,9 @@
 /// deadlines by the store authority rather than trusted as absolute caller time.
 /// E13 newest-wins reservation and prior-state transition share one store
 /// transaction; ordinary reservations never mutate prior work.
+/// E14 only a current fingerprint can create a row; operation/capability changes
+/// conflict against live and completed evidence while trace/projection drift
+/// neither conflicts nor overwrites.
 ///
 /// | Rule | Identity/state | Epoch/claim | Command | Effect |
 /// |---|---|---|---|---|
@@ -36,6 +41,7 @@
 /// | SR7 | Reserved(cancelled) | before deadline | claim/activate | E9, then Pending(cancelled) |
 /// | SR8 | ReservationLeased | expired lease/retry TTL | every claim surface | E10-E12 |
 /// | SR9 | prior Awaiting/unsafe live phase | preserve/supersede/replay | reserve | preserve / E13 / reject / E3 |
+/// | SR10 | current/missing/unknown; exact/changed op or caps | live/completed | reserve/replay | E1/E14/E2 |
 async fn session_run_reservation_is_atomic_and_recoverable(
     store: &dyn DispatchQueue,
     ns: &str,
@@ -54,12 +60,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     // Session admission command; this distinguishes validation from a backend
     // that returns an error after inserting a hidden or claimable row.
     let enqueue_session = thread_id(ns, "reservation-ordinary-enqueue-session");
-    let enqueue_request = dispatch(
-        ns,
-        "reservation-ordinary-enqueue",
-        "reservation-ordinary-enqueue-session",
-    )
-    .for_session(enqueue_session);
+    let enqueue_request = current_session_command(
+        dispatch(
+            ns,
+            "reservation-ordinary-enqueue",
+            "reservation-ordinary-enqueue-session",
+        )
+        .for_session(enqueue_session),
+    );
     assert!(
         store.enqueue(enqueue_request.clone()).await.is_err(),
         "SR0/E2 ordinary enqueue rejects an unreceipted Session root"
@@ -80,12 +88,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
 
     let options_session = thread_id(ns, "reservation-ordinary-options-session");
-    let options_request = dispatch(
-        ns,
-        "reservation-ordinary-options",
-        "reservation-ordinary-options-session",
-    )
-    .for_session(options_session);
+    let options_request = current_session_command(
+        dispatch(
+            ns,
+            "reservation-ordinary-options",
+            "reservation-ordinary-options-session",
+        )
+        .for_session(options_session),
+    );
     assert!(
         store
             .enqueue_with(options_request.clone(), SubmitOptions::default())
@@ -109,12 +119,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
 
     let claim_session = thread_id(ns, "reservation-ordinary-claim-session");
-    let claim_request = dispatch(
-        ns,
-        "reservation-ordinary-claim",
-        "reservation-ordinary-claim-session",
-    )
-    .for_session(claim_session);
+    let claim_request = current_session_command(
+        dispatch(
+            ns,
+            "reservation-ordinary-claim",
+            "reservation-ordinary-claim-session",
+        )
+        .for_session(claim_session),
+    );
     assert!(
         store
             .claim_new_run(
@@ -144,12 +156,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
 
     let compatible_session = thread_id(ns, "reservation-ordinary-compatible-session");
-    let compatible_request = dispatch(
-        ns,
-        "reservation-ordinary-compatible",
-        "reservation-ordinary-compatible-session",
-    )
-    .for_session(compatible_session);
+    let compatible_request = current_session_command(
+        dispatch(
+            ns,
+            "reservation-ordinary-compatible",
+            "reservation-ordinary-compatible-session",
+        )
+        .for_session(compatible_session),
+    );
     let worker = ready_dispatch_worker(ns, "reservation-ordinary-compatible");
     assert!(
         store
@@ -173,11 +187,84 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .expect("SR0 remove compatible probe reservation")
     );
 
+    // SR10 negative wire partitions prove validation precedes persistence:
+    // missing and unknown incoming versions fail closed, then the same Run id
+    // remains available to its current command.
+    let missing = dispatch(
+        ns,
+        "reservation-missing-fingerprint",
+        "reservation-missing-fingerprint-session",
+    )
+    .for_session(thread_id(ns, "reservation-missing-fingerprint-session"));
+    assert!(
+        store
+            .reserve_session_run(missing.clone(), RESERVATION_TTL_MS)
+            .await
+            .is_err(),
+        "SR10/E14 missing incoming fingerprint is rejected"
+    );
+    let missing_current = current_session_command(missing);
+    assert_eq!(
+        store
+            .reserve_session_run(missing_current.clone(), RESERVATION_TTL_MS)
+            .await
+            .expect("SR10 missing rejection left no row"),
+        SessionRunReservationOutcome::Reserved,
+        "SR10/E1"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(missing_current.run_id())
+            .await
+            .expect("SR10 remove missing-version probe")
+    );
+
+    let mut unknown = current_session_command(
+        dispatch(
+            ns,
+            "reservation-unknown-fingerprint",
+            "reservation-unknown-fingerprint-session",
+        )
+        .for_session(thread_id(ns, "reservation-unknown-fingerprint-session")),
+    );
+    unknown.session_command_fingerprint = Some(
+        serde_json::from_value(serde_json::Value::String(
+            "session-command-v2:sha256:future".into(),
+        ))
+        .expect("unknown durable value remains inspectable"),
+    );
+    assert!(
+        store
+            .reserve_session_run(unknown.clone(), RESERVATION_TTL_MS)
+            .await
+            .is_err(),
+        "SR10/E14 unknown incoming fingerprint is rejected"
+    );
+    let unknown_current = current_session_command(unknown);
+    assert_eq!(
+        store
+            .reserve_session_run(unknown_current.clone(), RESERVATION_TTL_MS)
+            .await
+            .expect("SR10 unknown rejection left no row"),
+        SessionRunReservationOutcome::Reserved,
+        "SR10/E1"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(unknown_current.run_id())
+            .await
+            .expect("SR10 remove unknown-version probe")
+    );
+
     let invalid_thread = thread_id(ns, "reservation-invalid-thread");
     assert!(
         store
             .reserve_session_run(
-                dispatch(ns, "reservation-no-affinity", "reservation-invalid-thread"),
+                current_session_command(dispatch(
+                    ns,
+                    "reservation-no-affinity",
+                    "reservation-invalid-thread",
+                )),
                 RESERVATION_TTL_MS,
             )
             .await
@@ -187,9 +274,11 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     assert!(
         store
             .reserve_session_run(
-                dispatch(ns, "reservation-preactivated", "reservation-invalid-thread",)
-                    .for_session(invalid_thread.clone())
-                    .with_session_activity_epoch(1),
+                current_session_command(
+                    dispatch(ns, "reservation-preactivated", "reservation-invalid-thread",)
+                        .for_session(invalid_thread.clone())
+                        .with_session_activity_epoch(1),
+                ),
                 RESERVATION_TTL_MS,
             )
             .await
@@ -199,12 +288,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     assert!(
         store
             .reserve_session_run(
-                dispatch(
-                    ns,
-                    "reservation-zero-deadline",
-                    "reservation-invalid-thread",
-                )
-                .for_session(invalid_thread),
+                current_session_command(
+                    dispatch(
+                        ns,
+                        "reservation-zero-deadline",
+                        "reservation-invalid-thread",
+                    )
+                    .for_session(invalid_thread),
+                ),
                 0,
             )
             .await
@@ -213,8 +304,9 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
 
     let session = thread_id(ns, "reservation-session");
-    let request =
-        dispatch(ns, "reservation-activate", "reservation-session").for_session(session.clone());
+    let request = current_session_command(
+        dispatch(ns, "reservation-activate", "reservation-session").for_session(session.clone()),
+    );
     let run = request.run_id().clone();
     clock.set(70_000);
     assert_eq!(
@@ -249,7 +341,22 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     let mut reprojected = request.clone();
     reprojected.activation.snapshot.resolved_spec.instructions =
         "a newer current projection that must not replace the reservation".into();
+    reprojected.activation.snapshot.id = ExecutableAgentSnapshotId("current-snapshot".into());
+    reprojected.activation.input = vec![Message::text(
+        MessageId("expanded-skill-input".into()),
+        Role::User,
+        "expanded by the current Skill projection",
+    )];
     reprojected.activation.model_ref_override = Some("current-model-route".into());
+    reprojected.traceparent =
+        Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
+    reprojected.session_resources = Some(
+        awaken_run_ingress_contract::SessionResourceEnvelope::at_revision(
+            "current-workspace",
+            9,
+            r#"{"inputs":[]}"#,
+        ),
+    );
     reprojected.placement = PlacementRequirements::remote_required();
     assert_eq!(
         store
@@ -265,6 +372,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         awaken_agent_contract::agent::message::Role::User,
         "different Session command",
     )];
+    let changed_input = current_session_command(changed_input);
     assert_eq!(
         store
             .reserve_session_run(changed_input, RESERVATION_TTL_MS)
@@ -273,8 +381,34 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationOutcome::Conflict,
         "SR2/E2"
     );
-    let conflicting = dispatch(ns, "reservation-activate", "reservation-other")
-        .for_session(thread_id(ns, "reservation-other"));
+    let changed_operation =
+        current_session_command_with_operation(request.clone(), "changed-operation");
+    assert_eq!(
+        store
+            .reserve_session_run(changed_operation, RESERVATION_TTL_MS)
+            .await
+            .expect("SR10 operation conflict classification"),
+        SessionRunReservationOutcome::Conflict,
+        "SR10/E2 operation identity is immutable"
+    );
+    let mut changed_capabilities = request.clone();
+    changed_capabilities
+        .placement
+        .required_capabilities
+        .insert("new-required-capability".into());
+    let changed_capabilities = current_session_command(changed_capabilities);
+    assert_eq!(
+        store
+            .reserve_session_run(changed_capabilities, RESERVATION_TTL_MS)
+            .await
+            .expect("SR10 capability conflict classification"),
+        SessionRunReservationOutcome::Conflict,
+        "SR10/E2 empty-to-present required capability is immutable"
+    );
+    let conflicting = current_session_command(
+        dispatch(ns, "reservation-activate", "reservation-other")
+            .for_session(thread_id(ns, "reservation-other")),
+    );
     assert_eq!(
         store
             .reserve_session_run(conflicting, RESERVATION_TTL_MS)
@@ -338,6 +472,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     assert!(!activated.session_activity_admission_required, "SR3/E5");
     assert_eq!(activated.request.session_activity_epoch, Some(7), "SR3/E5");
     assert_eq!(
+        activated.request,
+        request
+            .clone()
+            .with_session_command_identity()
+            .with_session_activity_epoch(7),
+        "SR2/E14 projection replay never overwrites the first dispatch"
+    );
+    assert_eq!(
         store
             .settle(&run, activated.lease.epoch, DispatchOutcome::Done, &[])
             .await
@@ -353,6 +495,51 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationOutcome::Completed,
         "SR6/E8"
     );
+    let completed_changed_operation =
+        current_session_command_with_operation(request.clone(), "changed-completed-operation");
+    assert_eq!(
+        store
+            .reserve_session_run(completed_changed_operation, RESERVATION_TTL_MS)
+            .await
+            .expect("SR10 completed operation conflict classification"),
+        SessionRunReservationOutcome::Conflict,
+        "SR10/E2 completed operation identity is immutable"
+    );
+    assert!(
+        request.placement.required_capabilities.is_empty(),
+        "SR10 empty-to-present completed capability precondition"
+    );
+    let mut completed_changed_capabilities = request.clone();
+    completed_changed_capabilities
+        .placement
+        .required_capabilities
+        .insert("new-required-capability-after-completion".into());
+    let completed_changed_capabilities = current_session_command(completed_changed_capabilities);
+    assert_eq!(
+        store
+            .reserve_session_run(completed_changed_capabilities, RESERVATION_TTL_MS)
+            .await
+            .expect("SR10 completed capability conflict classification"),
+        SessionRunReservationOutcome::Conflict,
+        "SR10/E2 completed empty-to-present required capability is immutable"
+    );
+    if capabilities.completion_events {
+        let completion = store
+            .completion_events_after(0, usize::MAX)
+            .await
+            .expect("SR6 completion fingerprint query")
+            .into_iter()
+            .find(|completion| completion.run_id == run)
+            .expect("SR6 current completion exists");
+        assert_eq!(
+            completion.request_fingerprint.as_deref(),
+            request
+                .session_command_fingerprint
+                .as_ref()
+                .map(SessionRunCommandFingerprint::as_str),
+            "SR6/E8 current completion stores the compact current identity"
+        );
+    }
     assert_eq!(
         store
             .activate_session_run_reservation(&run, &session, 7)
@@ -370,6 +557,149 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         "SR6/E3"
     );
 
+    // Stored-evidence compatibility table. Causes: L1 a stored live row has a
+    // current, absent-legacy, or unknown fingerprint; L2 a completion carries
+    // current, old sha256, or unknown identity; L3 the incoming command is
+    // current and legacy-equivalent. Effects: LE1 current and stored-legacy
+    // equivalents replay their exact durable phase; LE2 unknown evidence fails
+    // closed in both live and completed phases. Rules L1=absent+L3=>LE1,
+    // L2=old-sha256+L3=>LE1, L3=unknown live/completion=>LE2. The stored row,
+    // never the incoming request, selects the legacy branch.
+    let legacy_session = thread_id(ns, "reservation-legacy-session");
+    let legacy_stored = dispatch(ns, "reservation-legacy", "reservation-legacy-session")
+        .for_session(legacy_session.clone())
+        .with_session_command_identity()
+        .with_session_activity_epoch(31);
+    store
+        .enqueue(legacy_stored.clone())
+        .await
+        .expect("L1 insert pre-fingerprint live row");
+    let legacy_current = current_session_command(
+        dispatch(ns, "reservation-legacy", "reservation-legacy-session")
+            .for_session(legacy_session),
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(legacy_current.clone(), RESERVATION_TTL_MS)
+            .await
+            .expect("L1 legacy live replay"),
+        SessionRunReservationOutcome::AlreadyActivated {
+            session_activity_epoch: 31,
+        },
+        "L1/LE1"
+    );
+    let legacy_claim = store
+        .claim_run(
+            legacy_stored.run_id(),
+            "reservation-legacy-worker",
+            LEASE_MS,
+            70_002,
+            &Default::default(),
+        )
+        .await
+        .expect("L2 claim legacy row")
+        .expect("L2 legacy row is Pending");
+    settle_done(store, &legacy_claim).await;
+    if capabilities.completion_events {
+        let completion = store
+            .completion_events_after(0, usize::MAX)
+            .await
+            .expect("L2 legacy completion fingerprint query")
+            .into_iter()
+            .find(|completion| completion.run_id == *legacy_stored.run_id())
+            .expect("L2 legacy completion exists");
+        assert!(
+            completion
+                .request_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| {
+                    fingerprint.starts_with("sha256:")
+                        && !fingerprint.starts_with(SessionRunCommandFingerprint::CURRENT_PREFIX)
+                }),
+            "L2/LE1 old completion retains its legacy sha256 evidence"
+        );
+    }
+    assert_eq!(
+        store
+            .reserve_session_run(legacy_current, RESERVATION_TTL_MS)
+            .await
+            .expect("L2 legacy completion replay"),
+        SessionRunReservationOutcome::Completed,
+        "L2/LE1"
+    );
+
+    let unknown_session = thread_id(ns, "reservation-unknown-stored-session");
+    let mut unknown_stored = current_session_command(
+        dispatch(
+            ns,
+            "reservation-unknown-stored",
+            "reservation-unknown-stored-session",
+        )
+        .for_session(unknown_session.clone()),
+    )
+    .with_session_command_identity()
+    .with_session_activity_epoch(32);
+    unknown_stored.session_command_fingerprint = Some(
+        serde_json::from_value(serde_json::Value::String(
+            "session-command-v2:sha256:future".into(),
+        ))
+        .expect("L3 unknown durable value remains inspectable"),
+    );
+    store
+        .enqueue(unknown_stored.clone())
+        .await
+        .expect("L3 insert unknown-version live row");
+    let unknown_current = current_session_command(
+        dispatch(
+            ns,
+            "reservation-unknown-stored",
+            "reservation-unknown-stored-session",
+        )
+        .for_session(unknown_session),
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(unknown_current.clone(), RESERVATION_TTL_MS)
+            .await
+            .expect("L3 unknown live classification"),
+        SessionRunReservationOutcome::Conflict,
+        "L3/LE2"
+    );
+    let unknown_claim = store
+        .claim_run(
+            unknown_stored.run_id(),
+            "reservation-unknown-stored-worker",
+            LEASE_MS,
+            70_003,
+            &Default::default(),
+        )
+        .await
+        .expect("L3 claim unknown stored row")
+        .expect("L3 unknown row is Pending");
+    settle_done(store, &unknown_claim).await;
+    if capabilities.completion_events {
+        let completion = store
+            .completion_events_after(0, usize::MAX)
+            .await
+            .expect("L3 unknown completion fingerprint query")
+            .into_iter()
+            .find(|completion| completion.run_id == *unknown_stored.run_id())
+            .expect("L3 unknown completion exists");
+        assert_eq!(
+            completion.request_fingerprint.as_deref(),
+            Some("session-command-v2:sha256:future"),
+            "L3/LE2 unknown evidence stays inspectable but grants no replay"
+        );
+    }
+    assert_eq!(
+        store
+            .reserve_session_run(unknown_current, RESERVATION_TTL_MS)
+            .await
+            .expect("L3 unknown completion classification"),
+        SessionRunReservationOutcome::Conflict,
+        "L3/LE2"
+    );
+
     // SR9 exercises the typed replacement axis independently of activity
     // admission. Causes: C1 one older Session Run has reached Awaiting; C2 a
     // second reservation says PreservePrior or SupersedePrior; C3 the exact
@@ -381,12 +711,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     // Session activity-settlement boundary; every other live phase may still
     // own activity and is therefore unsafe to replace in queue storage.
     let replacement_session = thread_id(ns, "reservation-replacement-session");
-    let prior = dispatch(
-        ns,
-        "reservation-replacement-prior",
-        "reservation-replacement-session",
-    )
-    .for_session(replacement_session.clone());
+    let prior = current_session_command(
+        dispatch(
+            ns,
+            "reservation-replacement-prior",
+            "reservation-replacement-session",
+        )
+        .for_session(replacement_session.clone()),
+    );
     store
         .reserve_session_run(prior.clone(), RESERVATION_TTL_MS)
         .await
@@ -420,12 +752,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         "SR9/C1"
     );
 
-    let preserved = dispatch(
-        ns,
-        "reservation-replacement-preserve",
-        "reservation-replacement-session",
-    )
-    .for_session(replacement_session.clone());
+    let preserved = current_session_command(
+        dispatch(
+            ns,
+            "reservation-replacement-preserve",
+            "reservation-replacement-session",
+        )
+        .for_session(replacement_session.clone()),
+    );
     store
         .reserve_session_run(preserved.clone(), RESERVATION_TTL_MS)
         .await
@@ -445,13 +779,15 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .expect("SR9 remove preserve probe")
     );
 
-    let replacement = dispatch(
-        ns,
-        "reservation-replacement-newest",
-        "reservation-replacement-session",
-    )
-    .for_session(replacement_session.clone())
-    .with_session_run_replacement(SessionRunReplacement::SupersedePrior);
+    let replacement = current_session_command(
+        dispatch(
+            ns,
+            "reservation-replacement-newest",
+            "reservation-replacement-session",
+        )
+        .for_session(replacement_session.clone())
+        .with_session_run_replacement(SessionRunReplacement::SupersedePrior),
+    );
     assert_eq!(
         store
             .reserve_session_run(replacement.clone(), RESERVATION_TTL_MS)
@@ -491,12 +827,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
 
     let unsafe_session = thread_id(ns, "reservation-replacement-unsafe-session");
-    let unsafe_prior = dispatch(
-        ns,
-        "reservation-replacement-unsafe-prior",
-        "reservation-replacement-unsafe-session",
-    )
-    .for_session(unsafe_session.clone());
+    let unsafe_prior = current_session_command(
+        dispatch(
+            ns,
+            "reservation-replacement-unsafe-prior",
+            "reservation-replacement-unsafe-session",
+        )
+        .for_session(unsafe_session.clone()),
+    );
     store
         .reserve_session_run(unsafe_prior.clone(), RESERVATION_TTL_MS)
         .await
@@ -505,13 +843,15 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .activate_session_run_reservation(unsafe_prior.run_id(), &unsafe_session, 22)
         .await
         .expect("SR9 activate unsafe prior");
-    let unsafe_replacement = dispatch(
-        ns,
-        "reservation-replacement-unsafe-new",
-        "reservation-replacement-unsafe-session",
-    )
-    .for_session(unsafe_session)
-    .with_session_run_replacement(SessionRunReplacement::SupersedePrior);
+    let unsafe_replacement = current_session_command(
+        dispatch(
+            ns,
+            "reservation-replacement-unsafe-new",
+            "reservation-replacement-unsafe-session",
+        )
+        .for_session(unsafe_session)
+        .with_session_run_replacement(SessionRunReplacement::SupersedePrior),
+    );
     assert!(
         store
             .reserve_session_run(unsafe_replacement.clone(), RESERVATION_TTL_MS)
@@ -548,12 +888,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     // SR7 models the initial caller's crash window without inventing a second
     // admission owner: cancellation records terminal intent, but the original
     // caller can still commit its Session CAS and activate before the deadline.
-    let cancelled_request = dispatch(
-        ns,
-        "reservation-cancel-window",
-        "reservation-cancel-window-thread",
-    )
-    .for_session(thread_id(ns, "reservation-cancel-window-thread"));
+    let cancelled_request = current_session_command(
+        dispatch(
+            ns,
+            "reservation-cancel-window",
+            "reservation-cancel-window-thread",
+        )
+        .for_session(thread_id(ns, "reservation-cancel-window-thread")),
+    );
     let cancelled_run = cancelled_request.run_id().clone();
     let cancelled_session = cancelled_request.thread_id().clone();
     store
@@ -610,9 +952,11 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     repair_placement
         .required_capabilities
         .insert(repair_capability.clone());
-    let repair_request = dispatch(ns, "reservation-repair", "reservation-repair-thread")
-        .for_session(thread_id(ns, "reservation-repair-thread"))
-        .with_placement(repair_placement);
+    let repair_request = current_session_command(
+        dispatch(ns, "reservation-repair", "reservation-repair-thread")
+            .for_session(thread_id(ns, "reservation-repair-thread"))
+            .with_placement(repair_placement),
+    );
     let repair_run = repair_request.run_id().clone();
     let repair_session = repair_request.thread_id().clone();
     clock.set(80_000);
@@ -883,8 +1227,10 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .await
         .expect("SR5 settle repaired Run");
 
-    let rejected_request = dispatch(ns, "reservation-reject", "reservation-reject-thread")
-        .for_session(thread_id(ns, "reservation-reject-thread"));
+    let rejected_request = current_session_command(
+        dispatch(ns, "reservation-reject", "reservation-reject-thread")
+            .for_session(thread_id(ns, "reservation-reject-thread")),
+    );
     let rejected_run = rejected_request.run_id().clone();
     let rejected_session = rejected_request.thread_id().clone();
     clock.set(90_000);
@@ -925,12 +1271,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         "SR6/E7"
     );
 
-    let direct_request = dispatch(
-        ns,
-        "reservation-direct-reject",
-        "reservation-direct-reject-thread",
-    )
-    .for_session(thread_id(ns, "reservation-direct-reject-thread"));
+    let direct_request = current_session_command(
+        dispatch(
+            ns,
+            "reservation-direct-reject",
+            "reservation-direct-reject-thread",
+        )
+        .for_session(thread_id(ns, "reservation-direct-reject-thread")),
+    );
     let direct_run = direct_request.run_id().clone();
     let direct_session = direct_request.thread_id().clone();
     store

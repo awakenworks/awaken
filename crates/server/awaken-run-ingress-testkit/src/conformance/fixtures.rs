@@ -33,6 +33,45 @@ fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {
     ))
 }
 
+/// Attach the current Session command identity after the fixture has applied
+/// every application-owned requirement and before tests mutate Runtime
+/// projections. The deterministic operation id is test-only input, not a
+/// second production identity implementation.
+fn current_session_command(request: RunDispatch) -> RunDispatch {
+    let operation_id = format!("{}-operation", request.run_id().0);
+    current_session_command_with_operation(request, operation_id)
+}
+
+fn current_session_command_with_operation(
+    request: RunDispatch,
+    operation_id: impl Into<String>,
+) -> RunDispatch {
+    let command = AdmitSessionRun {
+        session_id: request
+            .session_thread_id
+            .as_ref()
+            .unwrap_or_else(|| request.thread_id())
+            .0
+            .clone(),
+        agent_id: request.activation.snapshot.root_agent_id.0.clone(),
+        operation_id: operation_id.into(),
+        run_id: request.run_id().clone(),
+        messages: request.activation.input.clone(),
+        data_subject_id: request
+            .activation
+            .data_subject_id
+            .as_ref()
+            .map(|subject| subject.0.clone()),
+        traceparent: request.traceparent.clone(),
+        execution_requirements: SessionRunExecutionRequirements {
+            tool_capability_narrowing: request.activation.tool_capability_narrowing,
+            required_worker_capabilities: request.placement.required_capabilities.clone(),
+        },
+        replacement: request.session_run_replacement,
+    };
+    request.with_session_command_fingerprint(SessionRunCommandFingerprint::current(&command))
+}
+
 fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHolder) -> RunDispatch {
     let mut request = dispatch(ns, run, thread);
     request.activation.snapshot.resolved_spec.model_binding =

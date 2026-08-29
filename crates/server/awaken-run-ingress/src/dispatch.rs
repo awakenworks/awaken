@@ -5,7 +5,7 @@
 pub use awaken_run_ingress_contract::dispatch::*;
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-use awaken_run_ingress_contract::{DispatchAdmissionShape, RunDispatch};
+use awaken_run_ingress_contract::{DispatchAdmissionShape, DispatchIdentityScope, RunDispatch};
 
 /// Backend-neutral shape read while locking one claimed dispatch epoch. SQLite
 /// stores the request as JSON text and PostgreSQL decodes it through `Json<T>`,
@@ -38,9 +38,18 @@ pub(crate) fn decide_run_identity(
     let replay = match stored {
         StoredRunIdentity::Absent => return Ok(RunIdentityDecision::New),
         StoredRunIdentity::Live(existing) => existing.same_admission_dispatch(incoming),
-        StoredRunIdentity::Completed(Some(existing)) => {
-            existing == incoming.admission_fingerprint()
-        }
+        StoredRunIdentity::Completed(Some(existing)) => match incoming.identity_scope {
+            DispatchIdentityScope::SessionCommand => incoming
+                .session_command_fingerprint
+                .as_ref()
+                .filter(|fingerprint| fingerprint.is_current())
+                .is_some_and(|fingerprint| {
+                    existing == fingerprint.as_str()
+                        || (existing.starts_with("sha256:")
+                            && existing == incoming.legacy_session_reservation_fingerprint())
+                }),
+            DispatchIdentityScope::FullDispatch => existing == incoming.canonical_fingerprint(),
+        },
         StoredRunIdentity::Completed(None) => false,
     };
     if replay {
@@ -95,6 +104,15 @@ pub(crate) fn validate_session_run_reservation_request(
     request: RunDispatch,
     reservation_ttl_ms: u64,
 ) -> Result<(RunDispatch, u64), DispatchError> {
+    if !request
+        .session_command_fingerprint
+        .as_ref()
+        .is_some_and(awaken_session_contract::SessionRunCommandFingerprint::is_current)
+    {
+        return Err(DispatchError::Rejected(
+            "Session Run reservation requires a current command fingerprint".to_string(),
+        ));
+    }
     if request.admission_shape() != DispatchAdmissionShape::SessionRootAwaitingActivity {
         return Err(DispatchError::Rejected(
             "Session Run reservation requires self-affinity and no activity epoch".to_string(),
