@@ -40,6 +40,9 @@ use crate::{
     SandboxControlBindingRequest,
 };
 
+#[cfg(test)]
+pub(crate) type PodSpecMutation = (&'static str, fn(&mut PodSpec));
+
 mod channel;
 mod client;
 mod continuation;

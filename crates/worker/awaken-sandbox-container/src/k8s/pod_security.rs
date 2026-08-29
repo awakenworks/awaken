@@ -164,7 +164,7 @@ mod tests {
             "PS4/E2"
         );
 
-        let mutations: [(&str, fn(&mut PodSpec)); 5] = [
+        let mutations: [crate::k8s::PodSpecMutation; 5] = [
             ("host network", |spec| spec.host_network = Some(true)),
             ("host PID", |spec| spec.host_pid = Some(true)),
             ("host IPC", |spec| spec.host_ipc = Some(true)),

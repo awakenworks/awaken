@@ -1177,6 +1177,13 @@ fn normalize_volume(volume: &mut Volume) {
 }
 
 fn normalize_container(container: &mut Container) {
+    if container
+        .resources
+        .as_ref()
+        .is_some_and(|resources| resources == &Default::default())
+    {
+        container.resources = None;
+    }
     if container.termination_message_path.as_deref() == Some("/dev/termination-log") {
         container.termination_message_path = None;
     }
@@ -1220,6 +1227,16 @@ fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
     if spec.preemption_policy.as_deref() == Some("PreemptLowerPriority") {
         spec.preemption_policy = None;
     }
+    if spec.image_pull_secrets.as_ref().is_some_and(Vec::is_empty) {
+        spec.image_pull_secrets = None;
+    }
+    if spec
+        .security_context
+        .as_ref()
+        .is_some_and(|context| context == &Default::default())
+    {
+        spec.security_context = None;
+    }
     if observed_pod {
         spec.node_name = None;
         if spec.priority == Some(0) {
@@ -1242,13 +1259,6 @@ fn normalize_pod_spec(spec: &mut PodSpec, observed_pod: bool) {
         }
         if spec.host_ipc == Some(false) {
             spec.host_ipc = None;
-        }
-        if spec
-            .security_context
-            .as_ref()
-            .is_some_and(|context| context == &Default::default())
-        {
-            spec.security_context = None;
         }
         if let Some(tolerations) = spec.tolerations.as_mut() {
             tolerations.retain(|toleration| !default_no_execute_toleration(toleration));

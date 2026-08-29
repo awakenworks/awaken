@@ -575,7 +575,7 @@ mod tests {
             "K3/E3 LimitRange resources and known API message defaults"
         );
 
-        let namespace_mutations: [(&str, fn(&mut k8s_openapi::api::core::v1::PodSpec)); 5] = [
+        let namespace_mutations: [crate::k8s::PodSpecMutation; 5] = [
             ("host network", |spec| spec.host_network = Some(true)),
             ("host PID", |spec| spec.host_pid = Some(true)),
             ("host IPC", |spec| spec.host_ipc = Some(true)),
