@@ -8,8 +8,11 @@
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
+mod expanded;
+
 /// Namespaced bundle id — the split/merge unit for the skill-store domain.
 pub const BUNDLE_ID: &str = "awaken.skill_store";
+pub(crate) const CONVERGED_BUNDLE_ID: &str = "awaken.skill_store.converged";
 
 /// Embedded migration files, in apply order (`(name, contents)`).
 const FILES: &[(&str, &str)] = &[(
@@ -52,9 +55,36 @@ pub fn skill_store_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
+pub(crate) fn selected_skill_store_bundle(
+    v1_checksum: Option<&str>,
+) -> Result<MigrationBundle, MigrationError> {
+    if v1_checksum == Some(expanded::V1_CHECKSUM) {
+        expanded::bundle()
+    } else {
+        skill_store_bundle()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn expanded_skill_store_bundle() -> Result<MigrationBundle, MigrationError> {
+    expanded::bundle()
+}
+
+pub(crate) fn converged_skill_store_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        CONVERGED_BUNDLE_ID,
+        vec![Migration::new(
+            1,
+            "seal the converged skill-store migration history",
+            "SELECT 1",
+        )?],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_scoped_migration::{Dialect, MigrationError, plan};
 
     #[test]
     fn skill_store_bundle_lints() {
@@ -70,5 +100,43 @@ mod tests {
                 .sql_for(awaken_scoped_migration::Dialect::Sqlite)
                 .contains("_skill ")
         );
+    }
+
+    #[test]
+    fn published_histories_select_exact_v1_and_converge() {
+        // Causes: H1 no/current V1, H2 exact expanded V1, H3 unknown V1.
+        // Effects: E1 compact aggregate baseline, E2 exact projection+aggregate
+        // history, E3 ordinary checksum rejection, E4 one common append stream.
+        // Decision rules: H1=>E1+E4; H2=>E2+E4; H3=>E3.
+        let compact = skill_store_bundle().expect("compact");
+        let expanded = expanded::bundle().expect("expanded");
+        let compact_v1 = compact.migrations()[0].checksum_for(Dialect::Sqlite);
+        assert_eq!(selected_skill_store_bundle(None).expect("H1"), compact);
+        assert_eq!(
+            selected_skill_store_bundle(Some(&compact_v1)).expect("H1 current"),
+            compact
+        );
+        assert_eq!(
+            selected_skill_store_bundle(Some(expanded::V1_CHECKSUM)).expect("H2"),
+            expanded
+        );
+        assert_eq!(
+            expanded.migrations()[1].checksum_for(Dialect::Sqlite),
+            expanded::V2_CHECKSUM,
+            "H2 exact published V2"
+        );
+        awaken_scoped_migration::lint(std::slice::from_ref(
+            &converged_skill_store_bundle().expect("converged"),
+        ))
+        .expect("convergence lints");
+        let unknown = std::collections::BTreeMap::from([(1, "f".repeat(64))]);
+        assert!(matches!(
+            plan(
+                &selected_skill_store_bundle(Some(&"f".repeat(64))).expect("H3 select"),
+                &unknown,
+                Dialect::Sqlite,
+            ),
+            Err(MigrationError::ChecksumMismatch { version: 1, .. })
+        ));
     }
 }
