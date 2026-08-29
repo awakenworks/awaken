@@ -762,6 +762,16 @@ pub awaken_runtime_contract::plugin::BoundViolation::ToolConstraint::plugin: all
 pub awaken_runtime_contract::plugin::BoundViolation::ToolGate
 pub awaken_runtime_contract::plugin::BoundViolation::ToolGate::id: alloc::string::String
 pub awaken_runtime_contract::plugin::BoundViolation::ToolGate::plugin: alloc::string::String
+pub enum awaken_runtime_contract::plugin::ContextWindowPlan
+pub awaken_runtime_contract::plugin::ContextWindowPlan::Anchored
+pub awaken_runtime_contract::plugin::ContextWindowPlan::Anchored::conversation_len: usize
+pub awaken_runtime_contract::plugin::ContextWindowPlan::Anchored::keep_last: usize
+pub awaken_runtime_contract::plugin::ContextWindowPlan::Legacy(core::option::Option<usize>)
+impl awaken_runtime_contract::plugin::ContextWindowPlan
+pub const fn awaken_runtime_contract::plugin::ContextWindowPlan::anchored(usize, usize) -> Self
+pub const fn awaken_runtime_contract::plugin::ContextWindowPlan::keep_last_at(&self, usize) -> core::option::Option<usize>
+impl core::default::Default for awaken_runtime_contract::plugin::ContextWindowPlan
+pub fn awaken_runtime_contract::plugin::ContextWindowPlan::default() -> Self
 pub enum awaken_runtime_contract::plugin::DynamicToolError
 pub awaken_runtime_contract::plugin::DynamicToolError::IdentityMismatch
 pub awaken_runtime_contract::plugin::DynamicToolError::IdentityMismatch::descriptor: alloc::string::String
@@ -841,7 +851,7 @@ pub const awaken_runtime_contract::plugin::ContextMessages::MERGE: awaken_agent_
 pub const awaken_runtime_contract::plugin::ContextMessages::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_runtime_contract::plugin::ContextWindow
 impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::plugin::ContextWindow
-pub type awaken_runtime_contract::plugin::ContextWindow::Value = core::option::Option<usize>
+pub type awaken_runtime_contract::plugin::ContextWindow::Value = awaken_runtime_contract::plugin::ContextWindowPlan
 pub const awaken_runtime_contract::plugin::ContextWindow::KEY: &'static str
 pub const awaken_runtime_contract::plugin::ContextWindow::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::plugin::ContextWindow::SCOPE: awaken_agent_contract::agent::state::Scope
