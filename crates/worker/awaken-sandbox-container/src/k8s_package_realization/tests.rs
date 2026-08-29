@@ -355,11 +355,13 @@ async fn fresh_and_recovered_realizations_return_one_secret_free_typed_proof() {
 async fn exact_reuse_accepts_only_api_defaults_and_rejects_copied_digests() {
     /* 409 decision table:
      * C1 same realization+projection with only UID/resourceVersion/controller
-     * defaults; C2 same name and copied annotations but changed ConfigMap data;
+     * defaults, including the version-gated Job pod replacement default;
+     * C2 same name and copied annotations but changed ConfigMap data;
      * C3 copied annotations but changed Job executable spec; C4 changed generic
-     * realization digest; C5 an ownerRef changes direct-object lifecycle.
+     * realization digest; C5 an ownerRef changes direct-object lifecycle; C6 a
+     * non-default Job replacement policy changes execution semantics.
      * Effects: E1 reuse the exact API object; E2 reject the 409 without
-     * deleting/replacing it. R1=C1=>E1; R2=C2|C3|C4|C5=>E2.
+     * deleting/replacing it. R1=C1=>E1; R2=C2|C3|C4|C5|C6=>E2.
      */
     let builder = test_builder();
     let (desired_config, mut desired_job, destination) = builder
@@ -406,6 +408,7 @@ async fn exact_reuse_accepts_only_api_defaults_and_rejects_copied_digests() {
     job_spec.completion_mode = Some("NonIndexed".into());
     job_spec.manual_selector = Some(false);
     job_spec.suspend = Some(false);
+    job_spec.pod_replacement_policy = Some("TerminatingOrFailed".into());
     let selector_labels = BTreeMap::from([("controller-uid".into(), "build-job-uid".into())]);
     job_spec.selector = Some(LabelSelector {
         match_labels: Some(selector_labels.clone()),
@@ -440,6 +443,17 @@ async fn exact_reuse_accepts_only_api_defaults_and_rejects_copied_digests() {
     assert!(
         verify_exact_package_job(&desired_job, &wrong_spec).is_err(),
         "R2/C3"
+    );
+
+    let mut wrong_replacement_policy = observed_job.clone();
+    wrong_replacement_policy
+        .spec
+        .as_mut()
+        .unwrap()
+        .pod_replacement_policy = Some("Failed".into());
+    assert!(
+        verify_exact_package_job(&desired_job, &wrong_replacement_policy).is_err(),
+        "R2/C6"
     );
 
     let mut wrong_owner_job = observed_job.clone();
