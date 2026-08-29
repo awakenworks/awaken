@@ -36,7 +36,7 @@ use crate::dispatch::{
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
     verify_credential_realization_receipt,
 };
-use crate::dispatch_schema::dispatch_bundle;
+use crate::dispatch_schema::{BUNDLE_ID, converged_dispatch_bundle, selected_dispatch_bundle};
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, DispatchPlacement, LeaseLossReason, PlacementPolicy, WorkerAssignment,
@@ -64,6 +64,28 @@ pub enum StoreError {
 /// The component namespace for this runtime's tables (see the Postgres store).
 /// Built in, not configured — one runtime is one component.
 const NS: &str = "runtime";
+
+fn published_v15_checksum(conn: &Connection) -> Result<Option<String>, StoreError> {
+    let ledger_exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            params![format!("{NS}_schema_migrations")],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    if !ledger_exists {
+        return Ok(None);
+    }
+    conn.query_row(
+        &format!(
+            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 15"
+        ),
+        params![BUNDLE_ID],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| StoreError::Migrate(error.to_string()))
+}
 
 /// Shared SQLite claim predicate for a candidate `d`. Ordinary wake/fresh work
 /// waits behind every other Running or Awaiting Run on its Thread. Cancellation
@@ -298,10 +320,15 @@ impl SqliteDispatchStore {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, StoreError> {
-        let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
-        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
-            .map_err(|err| StoreError::Migrate(err.to_string()))?
-            .run_bundle(&conn, &bundle)
+        let published = selected_dispatch_bundle(published_v15_checksum(&conn)?.as_deref())
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let converged =
+            converged_dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        runner
+            .run_bundle(&conn, &published)
+            .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -428,6 +455,63 @@ impl SqliteDispatchStore {
 include!("sqlite/dispatch_queue.rs");
 include!("sqlite/message_ports.rs");
 include!("sqlite/pending_rows.rs");
+
 fn reject(err: rusqlite::Error) -> DispatchError {
     DispatchError::Rejected(err.to_string())
+}
+
+#[cfg(test)]
+mod migration_history_tests {
+    use awaken_scoped_migration::MigrationBundle;
+    use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+    use rusqlite::Connection;
+
+    use super::{NS, SqliteDispatchStore};
+    use crate::dispatch_schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, expanded_dispatch_bundle};
+
+    #[test]
+    fn store_open_selects_and_converges_the_durable_expanded_history() {
+        /* Adapter-selection cause/effect table:
+         * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
+         * with V1..V24 -> finish expanded V25..V29 then write one converged
+         * receipt; Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
+         * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
+         */
+        let connection = Connection::open_in_memory().expect("seed database");
+        let expanded = expanded_dispatch_bundle().expect("expanded history");
+        let published = MigrationBundle::new(BUNDLE_ID, expanded.migrations()[..24].to_vec())
+            .expect("expanded prefix");
+        SqliteMigrationRunner::with_prefix(NS)
+            .expect("runner")
+            .run_bundle(&connection, &published)
+            .expect("seed expanded history");
+        let migrated =
+            SqliteDispatchStore::from_connection(connection).expect("Q2 selected migration");
+        let connection = std::sync::Arc::try_unwrap(migrated.conn)
+            .expect("Q2 sole connection owner")
+            .into_inner()
+            .expect("Q2 unlocked connection");
+        let reopened =
+            SqliteDispatchStore::from_connection(connection).expect("Q3 idempotent reopen");
+        let connection = std::sync::Arc::try_unwrap(reopened.conn)
+            .expect("Q3 sole connection owner")
+            .into_inner()
+            .expect("Q3 unlocked connection");
+        let published_max: i64 = connection
+            .query_row(
+                "SELECT MAX(version) FROM runtime_schema_migrations WHERE bundle_id = ?1",
+                [BUNDLE_ID],
+                |row| row.get(0),
+            )
+            .expect("Q2 published terminal");
+        let converged_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id = ?1",
+                [CONVERGED_BUNDLE_ID],
+                |row| row.get(0),
+            )
+            .expect("Q2 convergence receipt");
+        assert_eq!(published_max, 29, "Q2 expanded terminal");
+        assert_eq!(converged_count, 1, "Q2/Q3 exactly one convergence receipt");
+    }
 }
