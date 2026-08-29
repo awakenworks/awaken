@@ -4,7 +4,6 @@
 
 use awaken_iam_contract::PrincipalRef;
 use axum::extract::{Request, State};
-use axum::http::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -26,15 +25,6 @@ pub(super) fn memory_actor(
     awaken_protocol_managed::types::memory::AuthenticatedMemoryActor(actor)
 }
 
-pub(super) fn with_workspace_header(mut response: Response, workspace: &str) -> Response {
-    if let Ok(value) = HeaderValue::from_str(workspace) {
-        response
-            .headers_mut()
-            .insert("anthropic-workspace-id", value);
-    }
-    response
-}
-
 /// No-login projection of the same response contract. In this deployment mode
 /// there is no authenticated IAM workspace to stamp, so composition supplies
 /// its one configured workspace authority.
@@ -43,7 +33,7 @@ pub(crate) async fn fixed_workspace_header_guard(
     req: Request,
     next: Next,
 ) -> Response {
-    with_workspace_header(next.run(req).await, &workspace)
+    awaken_protocol_managed::with_managed_workspace_header(next.run(req).await, &workspace)
 }
 
 #[cfg(test)]

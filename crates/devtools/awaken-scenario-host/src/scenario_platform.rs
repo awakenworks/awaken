@@ -130,6 +130,7 @@ pub(super) fn mount_with_environments_and_agent_source(
 ) -> Router {
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
+    let local_workspace = host.local_workspace().to_owned();
     let catalog = resources.authorities().resource_registry();
     let (environment_authoring, environment_execution) =
         awaken_protocol_managed::test_support::environment_components();
@@ -150,17 +151,24 @@ pub(super) fn mount_with_environments_and_agent_source(
         environment_execution.clone(),
         managed.clone(),
     );
+    // Environment routes are composed outside the Coordinator's already-layered
+    // Managed router. Give that one adjacent sub-router the same scenario ingress
+    // contract before merging, avoiding a redundant second layer on every
+    // existing Managed route.
+    let environments = awaken_protocol_managed::with_managed_response_context(
+        awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
+            awaken_protocol_managed::environment_work_router(environment_execution),
+        ),
+    )
+    .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+        local_workspace,
+    )))
+    .merge(awaken_protocol_awaken::environment_extensions_router(
+        environment_authoring.application(),
+        environment_authoring.sandbox_policy_store(),
+    ));
     awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
-        .merge(awaken_protocol_managed::environment_authoring_router(
-            environment_authoring.clone(),
-        ))
-        .merge(awaken_protocol_managed::environment_work_router(
-            environment_execution,
-        ))
-        .merge(awaken_protocol_awaken::environment_extensions_router(
-            environment_authoring.application(),
-            environment_authoring.sandbox_policy_store(),
-        ))
+        .merge(environments)
         .layer(axum::middleware::from_fn_with_state(
             work_session_access,
             awaken_protocol_managed::work_session_guard,

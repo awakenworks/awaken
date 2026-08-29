@@ -7,6 +7,14 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const anchorsPath = path.join(packageRoot, 'config/anchors.json');
+const workspaceResponseProjectionVersions = new Set(['0.121.0', '0.122.0']);
+
+// This is a reviewed official-SDK capability boundary, not server version
+// routing. Candidate admission fails closed until its response projection has
+// been classified alongside the exact package anchor.
+export function projectsWorkspaceResponseContext(version) {
+  return workspaceResponseProjectionVersions.has(version);
+}
 
 export function readSdkMatrix() {
   const matrix = JSON.parse(fs.readFileSync(anchorsPath, 'utf8'));

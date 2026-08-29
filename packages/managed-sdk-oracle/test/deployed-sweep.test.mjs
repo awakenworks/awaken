@@ -79,9 +79,11 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
   // Cause/effect graph: collection reads use a valid empty query; mutations use
   // a syntax-invalid JSON witness independent of optional SDK fields; item
   // reads use absent ids. Every negative response must cross the Anthropic
-  // envelope boundary. Decision table: collection+200+page => accept;
-  // negative+4xx+Anthropic envelope => accept; mutation without exact malformed
-  // witness, negative+5xx, or malformed envelope => fail closed.
+  // envelope and response-context boundaries. Decision table:
+  // collection+200+page+both context headers => accept;
+  // negative+4xx+Anthropic envelope+both context headers => accept;
+  // mutation without exact malformed witness, negative+5xx, malformed envelope,
+  // or either missing context coordinate => fail closed.
   const target = { name: 'actual', baseURL: 'https://actual.invalid', apiKey: 'key', tunnelAccessToken: 'token' };
   const validFetch = async (url, init) => {
     const operation = buildDeployedProbePlan(coverage).find(
@@ -95,13 +97,25 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
     }
     if (operation.expectedClass === 'collection') {
       return new Response(JSON.stringify({ data: [], has_more: false, next_page: null }), {
-        status: 200, headers: { 'content-type': 'application/json' },
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'request-id': 'req_fixture',
+          'anthropic-workspace-id': 'workspace_fixture',
+        },
       });
     }
     assert.ok(init.headers['x-api-key'] || init.headers.authorization, 'one explicit auth policy');
     return new Response(JSON.stringify({
       type: 'error', error: { type: 'not_found_error', message: 'missing' },
-    }), { status: 404, headers: { 'content-type': 'application/json' } });
+    }), {
+      status: 404,
+      headers: {
+        'content-type': 'application/json',
+        'request-id': 'req_fixture',
+        'anthropic-workspace-id': 'workspace_fixture',
+      },
+    });
   };
   const results = await exerciseDeployedOperationSweep({
     actual: target,
@@ -109,6 +123,33 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
     fetchImpl: validFetch,
   });
   assert.equal(results.length, operations.length);
+  assert.ok(results.every(({ responseContext }) => (
+    responseContext.requestID && responseContext.workspaceID
+  )));
+
+  for (const missing of ['request-id', 'anthropic-workspace-id']) {
+    await assert.rejects(
+      () => exerciseDeployedOperationSweep({
+        actual: target,
+        coverage,
+        fetchImpl: async () => new Response(JSON.stringify({
+          data: [], has_more: false, next_page: null,
+        }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            ...Object.fromEntries(
+              ['request-id', 'anthropic-workspace-id']
+                .filter((name) => name !== missing)
+                .map((name) => [name, `${name}-fixture`]),
+            ),
+          },
+        }),
+      }),
+      /official SDK response context/u,
+      `${missing} is required for every operation partition`,
+    );
+  }
 
   await assert.rejects(
     () => exerciseDeployedOperationSweep({
@@ -139,7 +180,13 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
         const body = operation.expectedClass === 'collection'
           ? { data: [], has_more: false, next_page: null }
           : { type: 'error', error: { type: 'not_found_error', message: 'missing' } };
-        return new Response(JSON.stringify(body), { status: operation.expectedClass === 'collection' ? 200 : 404 });
+        return new Response(JSON.stringify(body), {
+          status: operation.expectedClass === 'collection' ? 200 : 404,
+          headers: {
+            'request-id': 'req_fixture',
+            'anthropic-workspace-id': 'workspace_fixture',
+          },
+        });
       },
     }),
     /expected JSON media type/u,
@@ -149,7 +196,12 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
 
 function jsonResponse(body, status) {
   return new Response(JSON.stringify(body), {
-    status, headers: { 'content-type': 'application/json' },
+    status,
+    headers: {
+      'content-type': 'application/json',
+      'request-id': 'req_fixture',
+      'anthropic-workspace-id': 'workspace_fixture',
+    },
   });
 }
 
@@ -157,7 +209,11 @@ test('official reference differential compares status and stable response shape'
   // Causes: C1 nondeterministic values are absent from the shape evidence; C2
   // status, pagination fields, or error kind drift. Effect: C1 compares equal,
   // while every C2 partition fails with the exact operation id.
-  const actual = [{ id: 'beta.sessions.retrieve', status: 404, shape: {
+  const actual = [{
+    id: 'beta.sessions.retrieve',
+    status: 404,
+    responseContext: { requestID: true, workspaceID: true },
+    shape: {
     keys: ['error', 'type'], error: {
       keys: ['message', 'type'], type: 'not_found_error', message: 'missing session',
     },

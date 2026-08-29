@@ -163,10 +163,13 @@ pub async fn work_session_guard(
         }
     };
     if !permits(req.method(), req.uri().path(), &access, &scope) {
-        return error(
-            StatusCode::FORBIDDEN,
-            "permission_error",
-            "Work sessions token does not authorize this resource",
+        return crate::with_managed_workspace_header(
+            error(
+                StatusCode::FORBIDDEN,
+                "permission_error",
+                "Work sessions token does not authorize this resource",
+            ),
+            &scope.workspace_id,
         );
     }
     req.extensions_mut()

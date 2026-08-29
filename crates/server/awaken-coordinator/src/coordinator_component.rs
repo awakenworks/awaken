@@ -286,6 +286,7 @@ pub async fn build_coordinator_component(
                 worker_directory,
             },
         )?;
+    let managed = crate::with_local_workspace_scope(managed, default_workspace.clone());
     let private_router = match service_authenticator {
         Some(authenticator) => private_router.merge(
             awaken_protocol_managed::credential_rollout_router_with_authenticator(
@@ -298,19 +299,23 @@ pub async fn build_coordinator_component(
     let private_router = private_router.merge(worker_transport);
     let work_session_access =
         awaken_protocol_managed::ManagedWorkSessionAccess::new(environments.clone(), managed_state);
-    let management_router =
-        awaken_protocol_managed::deployments_router(deployment_application.clone())
+    let managed_management = awaken_protocol_managed::with_managed_response_context(
+        awaken_protocol_managed::deployments_router(deployment_application.clone()).merge(
+            awaken_protocol_managed::environment_work_router(environments),
+        ),
+    );
+    let management_router = crate::with_local_workspace_scope(
+        managed_management
             .merge(awaken_protocol_awaken::dream_policy_router(
                 dream_application.clone(),
-            ))
-            .merge(awaken_protocol_managed::environment_work_router(
-                environments,
             ))
             .merge(crate::application_access::router(
                 application_access,
                 sessions,
-                default_workspace,
-            ));
+                default_workspace.clone(),
+            )),
+        default_workspace,
+    );
 
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.

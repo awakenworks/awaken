@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import {
   loadConformanceClients,
+  projectsWorkspaceResponseContext,
   qualifiedClient,
 } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { managedTsSdkHelperMethods } from './managed_ts_sdk_method_manifest.mjs';
@@ -140,6 +141,20 @@ async function exercise(version, Client, baseURL, options) {
     assert.equal(error.error?.error?.type, kind, `${version}: error discriminator`);
     assert.equal(typeof error.error?.error?.message, 'string', `${version}: error message`);
     assert.ok(error.error.error.message.length > 0, `${version}: non-empty error message`);
+    const requestID = error.headers?.get('request-id');
+    const workspaceID = error.headers?.get('anthropic-workspace-id');
+    assert.match(requestID ?? '', /^req_[0-9a-f]{32}$/u, `${version}: error request id`);
+    assert.equal(error.requestID, requestID, `${version}: promoted error request id`);
+    assert.ok(workspaceID, `${version}: error workspace id`);
+    const projectsWorkspace = projectsWorkspaceResponseContext(version);
+    assert.equal(
+      'workspaceID' in error,
+      projectsWorkspace,
+      `${version}: reviewed error workspace capability`,
+    );
+    if (projectsWorkspace) {
+      assert.equal(error.workspaceID, workspaceID, `${version}: promoted error workspace id`);
+    }
     return true;
   };
   await assert.rejects(

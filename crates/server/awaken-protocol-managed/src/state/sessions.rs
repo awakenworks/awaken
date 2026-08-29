@@ -9,6 +9,7 @@ use super::session_mcp_projection::typed_mcp_servers;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RehydrationPurpose {
     Interactive,
+    CollectionRead,
     TerminalCleanup,
 }
 
@@ -16,14 +17,16 @@ enum RehydrationPurpose {
 enum RehydrationPublicationDecision {
     Available,
     InteractiveUnpinned,
+    CollectionReadBypass,
     TerminalCleanupUnpinned,
     TerminalCleanupBypass,
     RejectMissingExact,
 }
 
 /// Decide whether projection recovery may proceed without a catalog profile.
-/// The sole bypass of an unavailable pinned publication is the non-interactive
-/// terminal-cleanup path; ordinary recovery remains fail-closed.
+/// Interactive recovery remains fail-closed. Collection reads and terminal
+/// cleanup may project only the Session's frozen durable baseline; neither path
+/// restores a Runtime or makes the missing publication executable.
 #[must_use]
 const fn rehydration_publication_decision(
     purpose: RehydrationPurpose,
@@ -37,10 +40,16 @@ const fn rehydration_publication_decision(
             (RehydrationPurpose::Interactive, true) => {
                 RehydrationPublicationDecision::RejectMissingExact
             }
+            (RehydrationPurpose::CollectionRead, true) => {
+                RehydrationPublicationDecision::CollectionReadBypass
+            }
             (RehydrationPurpose::TerminalCleanup, true) => {
                 RehydrationPublicationDecision::TerminalCleanupBypass
             }
             (RehydrationPurpose::Interactive, false) => {
+                RehydrationPublicationDecision::InteractiveUnpinned
+            }
+            (RehydrationPurpose::CollectionRead, false) => {
                 RehydrationPublicationDecision::InteractiveUnpinned
             }
             (RehydrationPurpose::TerminalCleanup, false) => {
@@ -52,32 +61,31 @@ const fn rehydration_publication_decision(
 
 #[cfg(kani)]
 #[kani::proof]
-fn retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup() {
-    let terminal_cleanup: bool = kani::any();
+fn missing_agent_publication_is_available_only_to_noninteractive_projection() {
+    let purpose_discriminant: u8 = kani::any();
+    kani::assume(purpose_discriminant < 3);
     let has_frozen_revision: bool = kani::any();
     let profile_available: bool = kani::any();
-    let purpose = if terminal_cleanup {
-        RehydrationPurpose::TerminalCleanup
-    } else {
-        RehydrationPurpose::Interactive
+    let purpose = match purpose_discriminant {
+        0 => RehydrationPurpose::Interactive,
+        1 => RehydrationPurpose::CollectionRead,
+        _ => RehydrationPurpose::TerminalCleanup,
     };
     let decision =
         rehydration_publication_decision(purpose, has_frozen_revision, profile_available);
 
     assert_eq!(
         decision == RehydrationPublicationDecision::TerminalCleanupBypass,
-        terminal_cleanup && has_frozen_revision && !profile_available
+        purpose == RehydrationPurpose::TerminalCleanup && has_frozen_revision && !profile_available
+    );
+    assert_eq!(
+        decision == RehydrationPublicationDecision::CollectionReadBypass,
+        purpose == RehydrationPurpose::CollectionRead && has_frozen_revision && !profile_available
     );
     assert_eq!(
         decision == RehydrationPublicationDecision::RejectMissingExact,
-        !terminal_cleanup && has_frozen_revision && !profile_available
+        purpose == RehydrationPurpose::Interactive && has_frozen_revision && !profile_available
     );
-    if has_frozen_revision && !profile_available {
-        assert_eq!(
-            decision != RehydrationPublicationDecision::RejectMissingExact,
-            terminal_cleanup
-        );
-    }
 }
 
 impl ManagedState {
@@ -1117,7 +1125,8 @@ impl ManagedState {
             ))));
         }
         let multiagent = match publication_decision {
-            RehydrationPublicationDecision::TerminalCleanupBypass
+            RehydrationPublicationDecision::CollectionReadBypass
+            | RehydrationPublicationDecision::TerminalCleanupBypass
             | RehydrationPublicationDecision::TerminalCleanupUnpinned => None,
             RehydrationPublicationDecision::Available
             | RehydrationPublicationDecision::InteractiveUnpinned => {
@@ -1297,7 +1306,12 @@ impl ManagedState {
             if let Some(record) = cached.get(&session_id) {
                 out.push(record.session_projection());
             } else {
-                out.push(self.rehydrated_session(&session_id, scope, session)?);
+                out.push(self.rehydrated_session_for(
+                    &session_id,
+                    scope,
+                    session,
+                    RehydrationPurpose::CollectionRead,
+                )?);
             }
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1371,10 +1385,14 @@ mod rehydration_publication_policy_tests {
     use super::*;
 
     #[test]
-    fn missing_exact_publication_has_one_noninteractive_bypass() {
+    fn missing_exact_publication_is_readable_but_not_interactively_recoverable() {
         assert_eq!(
             rehydration_publication_decision(RehydrationPurpose::Interactive, true, false),
             RehydrationPublicationDecision::RejectMissingExact
+        );
+        assert_eq!(
+            rehydration_publication_decision(RehydrationPurpose::CollectionRead, true, false),
+            RehydrationPublicationDecision::CollectionReadBypass
         );
         assert_eq!(
             rehydration_publication_decision(RehydrationPurpose::TerminalCleanup, true, false),
@@ -1382,6 +1400,7 @@ mod rehydration_publication_policy_tests {
         );
         for purpose in [
             RehydrationPurpose::Interactive,
+            RehydrationPurpose::CollectionRead,
             RehydrationPurpose::TerminalCleanup,
         ] {
             assert_eq!(
