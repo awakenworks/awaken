@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_tenancy::ScopeId;
 
+use crate::codec::decode_publication;
 use crate::schema::{BUNDLE_ID, converged_config_bundle, selected_config_bundle};
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
@@ -718,7 +719,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 let mut existing = Vec::new();
                 for row in rows {
                     existing.push(
-                        serde_json::from_str::<StoredPublication>(&row.map_err(reject)?)
+                        decode_publication(&row.map_err(reject)?, &ScopeId::from(scope.as_str()))
                             .map_err(reject)?,
                     );
                 }
@@ -775,8 +776,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .optional()
                 .map_err(reject)?;
             record
-                .map(|s| serde_json::from_str(&s).map_err(reject))
+                .map(|record| decode_publication(&record, &ScopeId::from(scope.as_str())))
                 .transpose()
+                .map_err(reject)
         })
         .await
     }
@@ -798,7 +800,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .map_err(reject)?;
             let mut out = Vec::new();
             for row in rows {
-                out.push(serde_json::from_str(&row.map_err(reject)?).map_err(reject)?);
+                out.push(
+                    decode_publication(&row.map_err(reject)?, &ScopeId::from(scope.as_str()))
+                        .map_err(reject)?,
+                );
             }
             Ok(out)
         })

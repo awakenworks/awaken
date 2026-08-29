@@ -227,6 +227,53 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
 }
 
 #[tokio::test]
+async fn legacy_publication_inherits_its_durable_configuration_scope() {
+    // Causes: L1 a valid immutable publication row predates the explicit
+    // execution_workspace field; L2 its SQL row remains owned by one scope.
+    // Effects: E1 reload succeeds through the shared store codec; E2 the exact
+    // row scope becomes its execution target. Rule D1=L1+L2=>E1+E2. Current
+    // explicit targets and malformed records are covered by the codec table.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-config-legacy-workspace-{}-{nonce}.db",
+        std::process::id()
+    ));
+    let scope = ScopeId::from("workspace-legacy-owner");
+    let publication = compile(&agent_config(), &tool_catalog()).expect("compile");
+    let fingerprint = publication.fingerprint.0.clone();
+    {
+        let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("store");
+        store
+            .put_publication_scoped(
+                &scope,
+                &StoredPublication::published(publication, "support-agent", "old-target"),
+            )
+            .await
+            .expect("seed current record");
+    }
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE config_publication \
+             SET record=json_remove(record,'$.execution_workspace') \
+             WHERE scope_id=?1 AND fingerprint=?2",
+            (&scope.0, &fingerprint),
+        )
+        .expect("project historical bytes");
+    let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("reopen");
+    let loaded = store
+        .get_publication_scoped(&scope, &fingerprint)
+        .await
+        .expect("E1")
+        .expect("publication");
+    assert_eq!(loaded.execution_workspace, scope, "E2");
+    std::fs::remove_file(path).ok();
+}
+
+#[tokio::test]
 async fn config_and_runtime_tables_coexist_in_one_database() {
     use awaken_store_sqlite::SqliteCommitCoordinator;
 
