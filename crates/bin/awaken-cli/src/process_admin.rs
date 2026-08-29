@@ -6,9 +6,10 @@
 //! - `active_streams` — a gauge of in-flight requests (dominated by long-lived
 //!   SSE/event streams), scraped by the KEDA prometheus trigger to autoscale.
 //! - `POST /admin/drain` — flip the Brain to draining: `/readyz` then reports 503, so
-//!   the Service/gateway stops routing new work to it while existing streams finish
-//!   (a `preStop` hook calls this before SIGTERM; interrupted clients reconnect and
-//!   resume from durable truth).
+//!   the Service/gateway stops routing new work to it. The public request gate also
+//!   rejects new requests on retained HTTP/1.1 or HTTP/2 connections while requests
+//!   admitted before the drain continue to completion (a `preStop` hook calls this
+//!   before SIGTERM; interrupted clients reconnect and resume from durable truth).
 //! - `GET /readyz` — readiness for the Service: 200 normally, 503 while draining.
 //!   A Coordinator backed by PostgreSQL also executes one bounded `SELECT 1`
 //!   against its process-owned pool; it never opens a probe-only connection pool.
@@ -19,7 +20,7 @@
 //!   Session lifecycle supervisor.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -35,7 +36,7 @@ struct ActiveRequestGuard(Arc<DrainController>);
 
 impl Drop for ActiveRequestGuard {
     fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::Relaxed);
+        self.0.active.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -69,6 +70,7 @@ impl http_body::Body for ActiveResponseBody {
 pub struct DrainController {
     draining: AtomicBool,
     active: AtomicUsize,
+    public_admission_fence: Mutex<()>,
     registration_supervisor: RwLock<Option<Arc<awaken_control::StaticRegistrationSupervisor>>>,
     registration_health: RwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
     service_lifecycle: RwLock<Option<awaken_service_lifecycle::ServiceLifecycle>>,
@@ -86,13 +88,13 @@ impl DrainController {
     /// In-flight requests right now (the autoscaling signal).
     #[must_use]
     pub fn active_streams(&self) -> usize {
-        self.active.load(Ordering::Relaxed)
+        self.active.load(Ordering::Acquire)
     }
 
     /// Whether the Coordinator has been asked to drain for scale-in/shutdown.
     #[must_use]
     pub fn is_draining(&self) -> bool {
-        self.draining.load(Ordering::Relaxed)
+        self.draining.load(Ordering::Acquire)
     }
 
     /// Retain the Control-owned supervisor for the complete process lifetime and
@@ -211,8 +213,24 @@ impl DrainController {
             .and_then(|source| source.snapshot())
     }
 
+    fn admit_public_request(ctrl: &Arc<Self>) -> Option<ActiveRequestGuard> {
+        let _fence = ctrl
+            .public_admission_fence
+            .lock()
+            .expect("public request admission fence poisoned");
+        if ctrl.is_draining() {
+            return None;
+        }
+        ctrl.active.fetch_add(1, Ordering::AcqRel);
+        Some(ActiveRequestGuard(ctrl.clone()))
+    }
+
     fn begin_drain(&self) {
-        self.draining.store(true, Ordering::Relaxed);
+        let _fence = self
+            .public_admission_fence
+            .lock()
+            .expect("public request admission fence poisoned");
+        self.draining.store(true, Ordering::Release);
     }
 }
 
@@ -225,8 +243,9 @@ async fn count_active(
     req: Request,
     next: Next,
 ) -> Response {
-    ctrl.active.fetch_add(1, Ordering::Relaxed);
-    let guard = ActiveRequestGuard(ctrl);
+    let Some(guard) = DrainController::admit_public_request(&ctrl) else {
+        return awaken_coordinator::admin::readyz(false).into_response();
+    };
     let response = next.run(req).await;
     let (parts, body) = response.into_parts();
     Response::from_parts(
@@ -479,6 +498,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retained_http1_connection_is_rejected_after_drain() {
+        // Causes: C1 one real HTTP/1.1 connection completes a public request
+        // with keep-alive; C2 drain then linearizes; C3 the client sends another
+        // business request on that exact socket. Effects: E1 C1 is 200; E2 C3
+        // crosses the per-request gate and is 503 rather than bypassing drain.
+        // Rule K1=C1+!C2=>E1; K2=C1+C2+C3=>E2.
+        fn read_response_status(stream: &mut std::net::TcpStream) -> u16 {
+            use std::io::Read;
+
+            let mut response = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !response.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                response.push(byte[0]);
+            }
+            let headers = String::from_utf8(response).unwrap();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(str::trim)
+                        .map(str::parse::<usize>)
+                })
+                .transpose()
+                .unwrap()
+                .unwrap_or_default();
+            let mut body = vec![0_u8; content_length];
+            stream.read_exact(&mut body).unwrap();
+            headers
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+
+        let ctrl = DrainController::new();
+        let app = with_connection_metric(
+            Router::new().route("/business", axum::routing::get(|| async { "completed" })),
+            ctrl.clone(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        let (first_status, first_observed) = tokio::sync::oneshot::channel();
+        let (continue_request, continue_after_drain) = std::sync::mpsc::channel();
+        let (second_status, second_observed) = tokio::sync::oneshot::channel();
+        let client = tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            for (sequence, observed) in [(1, first_status), (2, second_status)] {
+                if sequence == 2 {
+                    continue_after_drain.recv().unwrap();
+                }
+                write!(
+                    stream,
+                    "GET /business HTTP/1.1\r\nHost: {address}\r\nConnection: keep-alive\r\n\r\n"
+                )
+                .unwrap();
+                observed.send(read_response_status(&mut stream)).unwrap();
+            }
+        });
+
+        assert_eq!(first_observed.await.unwrap(), 200, "K1/E1");
+        ctrl.begin_drain();
+        continue_request.send(()).unwrap();
+        assert_eq!(second_observed.await.unwrap(), 503, "K2/E2");
+        client.await.unwrap();
+        shutdown.send(()).unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_completes_inflight_rejects_http2_and_preserves_private_settlement() {
+        // Cause/effect graph: C1 one public request entered before drain; C2
+        // drain linearizes while C1 is in flight; C3 a later HTTP/2 stream
+        // reaches the same public middleware; C4 the private Worker
+        // settle/registry surface uses its distinct Router. Effects: E1 C1 stays
+        // counted and completes normally; E2 C3 is rejected with 503 before its
+        // handler and is never counted; E3 C4 remains usable.
+        //
+        // | Rule | Surface | Admission time/version | Effect |
+        // |---|---|---|---|
+        // | D1 | public | before drain, in flight | E1 complete and count |
+        // | D2 | public | after drain, HTTP/2 stream | E2 503 |
+        // | D3 | private | after drain, settle/register | E3 204 |
+        let ctrl = DrainController::new();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let public = with_connection_metric(
+            Router::new().route(
+                "/business",
+                axum::routing::get({
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    move || {
+                        let entered = entered.clone();
+                        let release = release.clone();
+                        async move {
+                            entered.notify_one();
+                            release.notified().await;
+                            "completed"
+                        }
+                    }
+                }),
+            ),
+            ctrl.clone(),
+        );
+        let private = Router::new()
+            .route(
+                "/private/workers/settle",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/private/workers/register",
+                post(|| async { StatusCode::NO_CONTENT }),
+            );
+
+        let in_flight = tokio::spawn(
+            public
+                .clone()
+                .oneshot(HttpRequest::get("/business").body(Body::empty()).unwrap()),
+        );
+        entered.notified().await;
+        assert_eq!(ctrl.active_streams(), 1, "D1/E1");
+        ctrl.begin_drain();
+
+        let http2 = public
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/business")
+                    .version(axum::http::Version::HTTP_2)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(http2.status(), StatusCode::SERVICE_UNAVAILABLE, "D2/E2");
+        assert_eq!(ctrl.active_streams(), 1, "rejected requests are not active");
+
+        for path in ["/private/workers/settle", "/private/workers/register"] {
+            let response = private
+                .clone()
+                .oneshot(HttpRequest::post(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT, "D3/E3 {path}");
+        }
+
+        release.notify_one();
+        let admitted = in_flight.await.unwrap().unwrap();
+        assert_eq!(admitted.status(), StatusCode::OK, "D1/E1");
+        assert_eq!(ctrl.active_streams(), 1, "D1 response body retains guard");
+        drop(admitted);
+        assert_eq!(ctrl.active_streams(), 0, "D1/E1 completed");
+    }
+
+    #[tokio::test]
     async fn readyz_flips_to_503_after_drain() {
         // Cause/effect decision table: R1 no registration source and not
         // draining -> ready; R2 drain requested -> unavailable. Registration
@@ -508,13 +702,13 @@ mod tests {
         // Cause/effect graph: C1 this process has not completed an authoritative
         // final Session scan; C2 it has one published snapshot. Effects: E1 C1
         // returns 503 with a stable pending classification; E2 C2 returns 200
-        // with exactly generation and the three aggregate counts. Session IDs,
+        // with exactly generation and the four aggregate counts. Session IDs,
         // quarantine reasons, clocks, and repository details are never inputs.
         //
         // | Rule | Snapshot | Status | Body |
         // |---|---|---|---|
         // | A1 | absent | 503 | pending classification only |
-        // | A2 | present | 200 | exact four-field snapshot |
+        // | A2 | present | 200 | exact five-field snapshot |
         let (app, _) = app();
         let (status, body) = get(&app, "/admin/session-event-batch-cutover-validation").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "A1/E1");
@@ -530,6 +724,7 @@ mod tests {
                 terminal_with_incomplete_event_batches: 1,
                 event_batch_failures: 2,
                 quarantined: 3,
+                restoring_sessions: 4,
             },
         ));
         assert_eq!(response.status(), StatusCode::OK, "A2/E2");
@@ -543,6 +738,7 @@ mod tests {
                 "terminal_with_incomplete_event_batches": 1,
                 "event_batch_failures": 2,
                 "quarantined": 3,
+                "restoring_sessions": 4,
             }),
             "A2/E2"
         );

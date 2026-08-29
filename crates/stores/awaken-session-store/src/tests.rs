@@ -52,6 +52,13 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         postgres.reconcilable_sessions().await.is_err(),
         "R1 typed reconciliation"
     );
+    assert!(
+        postgres
+            .count_environment_phase(SessionEnvironmentPhase::Restoring)
+            .await
+            .is_err(),
+        "R1 typed global Environment count"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let sqlite =
@@ -83,6 +90,15 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     let scan = sqlite.reconcilable_sessions().await.unwrap();
     assert_eq!(scan.sessions.len(), 1, "R3/E4 healthy work continues");
     assert_eq!(scan.sessions[0].session.session_id, "sesn_healthy");
+    assert!(
+        matches!(
+            sqlite
+                .count_environment_phase(SessionEnvironmentPhase::Restoring)
+                .await,
+            Err(SessionRepositoryError::Corrupt(_))
+        ),
+        "R3 a corrupt canonical root fails the global barrier closed"
+    );
     assert_eq!(
         scan.quarantined,
         vec![SessionRecoveryQuarantine {
@@ -1572,6 +1588,14 @@ async fn environment_state_survives_sqlite_reopen() {
         Some("opaque-binding".to_string())
     );
     assert_eq!(reopened.owner("sesn_bound").await.as_deref(), Ok("ws_a"));
+    assert_eq!(
+        reopened
+            .count_environment_phase(SessionEnvironmentPhase::Resident)
+            .await
+            .unwrap(),
+        1,
+        "the file-backed SQLite canonical store owns the phase count"
+    );
 }
 
 #[tokio::test]

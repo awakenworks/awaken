@@ -173,6 +173,18 @@ pub struct SandboxCheckpointRequest {
     pub max_bytes: u64,
 }
 
+/// Typed selector for a global count over the canonical Session environment
+/// state. This is a read projection only; [`SessionEnvironmentState`] remains
+/// the sole durable lifecycle authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionEnvironmentPhase {
+    Unmaterialized,
+    Resident,
+    Suspending,
+    Hibernated,
+    Restoring,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum SessionEnvironmentState {

@@ -464,19 +464,20 @@ Event-batch cutover validation is a read-only projection of that same
 supervisor, not a general Session-health claim or Cloud-side scan. After
 Resource, continuation, realization, Event-batch, and Outcome repair, the
 supervisor performs one final authoritative
-`reconcilable_sessions()` scan. Each successful final scan atomically publishes
-a process-local generation plus only three aggregate counts: terminal Sessions
+`reconcilable_sessions()` scan. Each successful final scan followed by the
+ADR-0074 canonical global Environment-phase count atomically publishes a
+process-local generation plus only four aggregate counts: terminal Sessions
 with incomplete Event batches, Event-batch failures observed by that recovery
-cycle, and quarantined rows returned by the same scan. A failed final scan does
-not advance or replace the preceding generation and remains a retryable recovery
-failure. The projection contains no Session ids, quarantine reasons, clocks,
-credentials, or database details.
+cycle, quarantined rows returned by the same scan, and Restoring Environments.
+A failed final scan or global count does not advance or replace the preceding
+generation and remains a retryable recovery failure. The projection contains no
+Session ids, quarantine reasons, clocks, credentials, or database details.
 
 The existing Coordinator admin listener exposes this snapshot at
 `GET /admin/session-event-batch-cutover-validation`; it returns `503` until the
 first successful final scan. After every old writer is stopped, deployment automation
 records each exact candidate Pod's baseline generation, then requires a strictly
-newer generation with all three counts zero from every candidate before reopening
+newer generation with all four counts zero from every candidate before reopening
 admission. A missing Pod, stale generation, failed scan, or nonzero count is
 diagnostic no-proof and keeps the forward-only cutover closed. No readiness
 probe, log timestamp, second scheduler, migration store, or Cloud database read

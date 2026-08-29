@@ -100,9 +100,9 @@ pub use dream::{
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
     SandboxCheckpointRequest, SandboxGeneration, SessionEnvironmentEffectKind,
-    SessionEnvironmentOperation, SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
-    SessionEnvironmentState, SessionEnvironmentTransitionError, SourceDisposedReceipt,
-    SuspendPhase, checkpoint_source_disposal_authorized,
+    SessionEnvironmentOperation, SessionEnvironmentPhase, SessionEnvironmentReceipt,
+    SessionEnvironmentReceiptError, SessionEnvironmentState, SessionEnvironmentTransitionError,
+    SourceDisposedReceipt, SuspendPhase, checkpoint_source_disposal_authorized,
 };
 pub use event_batches::{
     MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchError,

@@ -811,6 +811,32 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         Ok(scan)
     }
 
+    async fn count_environment_phase(
+        &self,
+        phase: SessionEnvironmentPhase,
+    ) -> Result<u64, SessionRepositoryError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    EncodedSessionRow {
+                        aggregate_json: row.get(1)?,
+                        revision: row.get(2)?,
+                    },
+                ))
+            })
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        count_environment_phase(rows, phase)
+    }
+
     async fn sessions_referencing_vault(
         &self,
         workspace_id: &str,

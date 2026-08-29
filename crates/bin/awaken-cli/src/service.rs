@@ -862,7 +862,7 @@ mod tests {
         // Event-batch cutover source; C2 the canonical service/controller
         // assembly consumes that exact Arc; C3 the same source publishes one
         // complete scan. Effects: E1 a real admin TCP GET before C3 is 503;
-        // E2 after C3 the same listener returns 200 and the exact four public
+        // E2 after C3 the same listener returns 200 and the exact five public
         // fields. No test-only route or second projection is allowed.
         //
         // | Rule | Prepared source | Published scan | HTTP effect |
@@ -904,7 +904,11 @@ mod tests {
             "W1/E1"
         );
 
-        source.complete_scan_for_test(&awaken_session_contract::SessionRecoveryScan::default(), 0);
+        source.complete_scan_for_test(
+            &awaken_session_contract::SessionRecoveryScan::default(),
+            0,
+            0,
+        );
         let (status, body) = tcp_get_json(address, path).await;
         assert_eq!(status, 200, "W2/E2");
         assert_eq!(
@@ -914,6 +918,7 @@ mod tests {
                 "terminal_with_incomplete_event_batches": 0,
                 "event_batch_failures": 0,
                 "quarantined": 0,
+                "restoring_sessions": 0,
             }),
             "W2/E2"
         );

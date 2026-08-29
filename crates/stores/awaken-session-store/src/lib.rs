@@ -20,9 +20,10 @@ use async_trait::async_trait;
 use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    ScopedPersistedSession, SessionCreateResult, SessionIdempotencyReceipt, SessionMutation,
-    SessionMutationPayload, SessionMutationResult, SessionRecoveryQuarantine, SessionRecoveryScan,
-    SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
+    ScopedPersistedSession, SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionRecoveryQuarantine, SessionRecoveryScan, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRevision,
 };
 
 mod deployments;
@@ -92,6 +93,42 @@ fn storage(error: impl std::fmt::Display) -> SessionRepositoryError {
 
 fn corrupt(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::Corrupt(error.to_string())
+}
+
+fn count_environment_phase(
+    rows: impl IntoIterator<Item = (String, EncodedSessionRow)>,
+    phase: SessionEnvironmentPhase,
+) -> Result<u64, SessionRepositoryError> {
+    rows.into_iter().try_fold(0_u64, |count, (stored_id, row)| {
+        let session = decode(row).map_err(corrupt)?;
+        if session.session_id != stored_id {
+            return Err(corrupt(
+                "managed Session aggregate id does not match its global phase-count index",
+            ));
+        }
+        let selected = matches!(
+            (phase, &session.environment),
+            (
+                SessionEnvironmentPhase::Unmaterialized,
+                SessionEnvironmentState::Unmaterialized
+            ) | (
+                SessionEnvironmentPhase::Resident,
+                SessionEnvironmentState::Resident { .. }
+            ) | (
+                SessionEnvironmentPhase::Suspending,
+                SessionEnvironmentState::Suspending { .. }
+            ) | (
+                SessionEnvironmentPhase::Hibernated,
+                SessionEnvironmentState::Hibernated { .. }
+            ) | (
+                SessionEnvironmentPhase::Restoring,
+                SessionEnvironmentState::Restoring { .. }
+            )
+        );
+        count
+            .checked_add(u64::from(selected))
+            .ok_or_else(|| corrupt("Session Environment phase count overflow"))
+    })
 }
 
 /// One transaction's complete view of a Session identity. Backends populate

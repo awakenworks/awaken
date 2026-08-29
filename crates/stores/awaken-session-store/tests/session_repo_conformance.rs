@@ -14,8 +14,9 @@ use awaken_deployment_contract::{
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
     McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession, SessionCreateResult,
-    SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRepositoryConflict, SessionRepositoryError, SessionRevision, SessionTombstone,
+    SessionEnvironmentPhase, SessionExecutionState, SessionMutation, SessionMutationPayload,
+    SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
+    SessionTombstone,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
@@ -126,6 +127,38 @@ fn session(id: &str, title: &str) -> PersistedSession {
         execution: SessionExecutionState::Idle,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),
+    }
+}
+
+fn hibernated_environment(id: &str) -> awaken_session_contract::SessionEnvironmentState {
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        id,
+        1,
+        100_000,
+        "environment",
+        "base-image",
+    );
+    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
+        id,
+        "suspend",
+        &generation.id,
+        0,
+        None,
+    );
+    awaken_session_contract::SessionEnvironmentState::Hibernated {
+        checkpoint: awaken_session_contract::SandboxCheckpointRef {
+            id: format!("checkpoint-{id}"),
+            format: "awaken-fs-tar-v1".into(),
+            digest: format!("digest-{id}"),
+            size_bytes: 1,
+            created_at_unix_ms: 1,
+            expires_at_unix_ms: 100_000,
+            environment_fingerprint: generation.environment_fingerprint.clone(),
+            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: suspend.effect_id,
+        },
+        generation,
     }
 }
 
@@ -308,6 +341,112 @@ async fn environment_state_is_atomic_and_non_destructive<R: ManagedSessionReposi
     got.revision = Default::default();
     assert_eq!(got, want, "binding update preserves every other field");
     assert_eq!(r.owner("sesn_bound").await.as_deref(), Ok("ws_a"));
+}
+
+async fn global_environment_phase_count_has_no_recovery_batch_limit<R: ManagedSessionRepository>(
+    repo: &R,
+) {
+    // Cause/effect graph: C1 the canonical store has 257 live Session roots;
+    // C2 the lexically last root moves from Hibernated to Restoring; C3 the
+    // recovery work scan is bounded to 256. Effects: E1 the global count reads
+    // all 257 canonical roots rather than the recovery batch; E2 it reports the
+    // exact typed Restoring phase and no JSON/tag-specific parallel query.
+    //
+    // | Rule | Live roots | Last root | Selected phase | Effect |
+    // |---|---:|---|---|---|
+    // | P1 | 257 | Hibernated | Unmaterialized | 256 |
+    // | P2 | 257 | Restoring | Restoring | 1 |
+    let mut last = None;
+    for index in 0..257 {
+        let id = format!("phase-{index:03}");
+        let created = create_session(repo, "ws_a", session(&id, &id), Vec::new()).await;
+        if index == 256 {
+            last = Some(created);
+        }
+    }
+    let mut last = last.expect("P1 lexically last root");
+    let last_id = last.session_id.clone();
+    last.environment = hibernated_environment(&last_id);
+    last.environment
+        .begin_restore(&last_id, 0, None, 1)
+        .expect("P2 valid restore intent");
+    replace_session(repo, "ws_a", last, "test:phase-count:restoring", Vec::new()).await;
+
+    assert_eq!(
+        repo.count_environment_phase(SessionEnvironmentPhase::Unmaterialized)
+            .await
+            .unwrap(),
+        256,
+        "P1/E1"
+    );
+    assert_eq!(
+        repo.count_environment_phase(SessionEnvironmentPhase::Restoring)
+            .await
+            .unwrap(),
+        1,
+        "P2/E2"
+    );
+}
+
+async fn concurrent_phase_transition_has_one_count_snapshot<R>(repo: std::sync::Arc<R>)
+where
+    R: ManagedSessionRepository + 'static,
+{
+    // Causes: C1 one Hibernated root; C2 its root-CAS transition to Restoring
+    // races one global count statement. Effects: E1 the count observes either
+    // the complete before or after snapshot (baseline or baseline+1), never a
+    // mixed/error result; E2 the later count observes the committed increment.
+    // Decision rules: S1=count<CAS => baseline; S2=CAS<count => baseline+1;
+    // both => E2 final baseline+1.
+    let baseline = repo
+        .count_environment_phase(SessionEnvironmentPhase::Restoring)
+        .await
+        .unwrap();
+    let id = "phase-concurrent";
+    let mut current = session(id, id);
+    current.environment = hibernated_environment(id);
+    let current = create_session(repo.as_ref(), "ws_a", current, Vec::new()).await;
+    let mut restoring = current.clone();
+    restoring
+        .environment
+        .begin_restore(id, 0, None, 1)
+        .expect("C2 valid restore intent");
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let count = {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        async move {
+            barrier.wait().await;
+            repo.count_environment_phase(SessionEnvironmentPhase::Restoring)
+                .await
+        }
+    };
+    let transition = {
+        let repo = repo.clone();
+        async move {
+            barrier.wait().await;
+            replace_session(
+                repo.as_ref(),
+                "ws_a",
+                restoring,
+                "test:phase-count:concurrent",
+                Vec::new(),
+            )
+            .await
+        }
+    };
+    let (observed, _) = tokio::join!(count, transition);
+    assert!(
+        matches!(observed, Ok(count) if count == baseline || count == baseline + 1),
+        "S1/S2/E1: {observed:?}"
+    );
+    assert_eq!(
+        repo.count_environment_phase(SessionEnvironmentPhase::Restoring)
+            .await
+            .unwrap(),
+        baseline + 1,
+        "E2"
+    );
 }
 
 async fn vault_reference_index_returns_only_live_scoped_sessions<R: ManagedSessionRepository>(
@@ -1302,6 +1441,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_is_idempotent_upsert(&fresh()).await;
     ownership_is_one_atomic_repository_fact(&fresh()).await;
     environment_state_is_atomic_and_non_destructive(&fresh()).await;
+    global_environment_phase_count_has_no_recovery_batch_limit(&fresh()).await;
     vault_reference_index_returns_only_live_scoped_sessions(&fresh()).await;
     credential_source_dependency_decision_table(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
@@ -1530,6 +1670,10 @@ fn sqlite_backend_conforms() {
             SqliteManagedSessionRepository::open_in_memory().expect("sqlite create-race repo"),
         ))
         .await;
+        concurrent_phase_transition_has_one_count_snapshot(std::sync::Arc::new(
+            SqliteManagedSessionRepository::open_in_memory().expect("sqlite phase-count repo"),
+        ))
+        .await;
         deployment_cas_decision_table(
             &SqliteManagedSessionRepository::open_in_memory().expect("sqlite deployment repo"),
         )
@@ -1647,9 +1791,11 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
             .await
             .expect("open Postgres Session repository"),
     );
+    global_environment_phase_count_has_no_recovery_batch_limit(repo.as_ref()).await;
     root_cas_decision_table(repo.as_ref()).await;
     create_receipt_decision_table(repo.as_ref()).await;
     create_receipt_race_decision_table(repo.clone()).await;
+    concurrent_phase_transition_has_one_count_snapshot(repo.clone()).await;
     credential_source_dependency_decision_table(repo.as_ref()).await;
     deployment_cas_decision_table(repo.as_ref()).await;
 }

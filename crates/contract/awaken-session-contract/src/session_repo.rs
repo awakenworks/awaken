@@ -1017,6 +1017,17 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// One index avoids parallel per-feature recovery registries and scans.
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError>;
 
+    /// Count one typed Environment phase across every canonical live Session
+    /// row. Unsupported adapters fail closed; a recovery batch is not global.
+    async fn count_environment_phase(
+        &self,
+        _phase: crate::SessionEnvironmentPhase,
+    ) -> Result<u64, SessionRepositoryError> {
+        Err(SessionRepositoryError::Unavailable(
+            "Session repository does not support global Environment phase counts".into(),
+        ))
+    }
+
     /// Healthy Sessions whose immutable authoring baseline references a Vault.
     /// This is the durable index used by credential rollout controllers; an
     /// in-memory cache or one process's active-runtime list is never complete in

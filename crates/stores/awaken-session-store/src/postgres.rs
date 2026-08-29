@@ -857,6 +857,30 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(scan)
     }
 
+    async fn count_environment_phase(
+        &self,
+        phase: SessionEnvironmentPhase,
+    ) -> Result<u64, SessionRepositoryError> {
+        let rows = sqlx::query(
+            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                row.try_get("session_id").map_err(storage)?,
+                EncodedSessionRow {
+                    aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                    revision: row.try_get("revision").map_err(storage)?,
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, SessionRepositoryError>>()?;
+        count_environment_phase(rows, phase)
+    }
+
     async fn sessions_referencing_vault(
         &self,
         workspace_id: &str,
