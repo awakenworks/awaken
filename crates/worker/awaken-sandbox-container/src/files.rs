@@ -256,6 +256,7 @@ mod tests {
             sandbox_control_incarnation: None,
             control_publication: Arc::new(Default::default()),
             continuation_excluded_paths: Vec::new(),
+            adopted_handle: None,
             realized: Vec::new(),
             recovered: false,
             lifecycle: Arc::new(crate::ContainerCleanupState::completed(None)),

@@ -74,6 +74,49 @@ fn spec(scope: &str) -> pc::SandboxSpec {
     }
 }
 
+fn add_future_restoration(handle: &pc::SandboxHandle) -> pc::SandboxHandle {
+    let mut wire = serde_json::to_value(handle).unwrap();
+    wire.as_object_mut().unwrap().insert(
+        "restoration".into(),
+        serde_json::json!({
+            "effect_id": "effect-a",
+            "generation_id": "generation-a",
+            "checkpoint_id": "checkpoint-a",
+            "checkpoint_digest": "sha256:digest-a",
+            "sandbox_spec_fingerprint": "spec-a",
+            "checkpoint_exclusions_fingerprint": "exclusions-a"
+        }),
+    );
+    serde_json::from_value(wire).unwrap()
+}
+
+fn future_host_bind_handle() -> pc::SandboxHandle {
+    serde_json::from_value(serde_json::json!({
+        "sandbox_id": "future-container",
+        "restoration": {
+            "effect_id": "effect-a",
+            "generation_id": "generation-a",
+            "checkpoint_id": "checkpoint-a",
+            "checkpoint_digest": "sha256:digest-a",
+            "sandbox_spec_fingerprint": "spec-a",
+            "checkpoint_exclusions_fingerprint": "exclusions-a"
+        },
+        "payload": {
+            "schema": "container_v1",
+            "container_id": "future-container",
+            "outputs_path": "/outputs",
+            "base_env": [],
+            "live_input_projection": false,
+            "continuation_excluded_paths": [],
+            "runtime_handle": {
+                "kind": "host_bind_restoration",
+                "staging_root": "/provider/staging/a"
+            }
+        }
+    }))
+    .unwrap()
+}
+
 // ── Pure planners ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -749,6 +792,7 @@ struct FakeState {
     control_channel_opens: usize,
     control_peers: Vec<tokio::io::DuplexStream>,
     removals: Vec<(String, usize)>,
+    inspections: usize,
 }
 
 #[derive(Default)]
@@ -1062,7 +1106,9 @@ impl ContainerRuntime for FakeRuntime {
         Ok(Box::new(ours))
     }
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
-        match self.st.lock().unwrap().alive.get(container_id) {
+        let mut state = self.st.lock().unwrap();
+        state.inspections += 1;
+        match state.alive.get(container_id) {
             Some(true) => Ok(ContainerState::Running),
             Some(false) => Ok(ContainerState::Gone),
             None => Err(RuntimeError::NotFound(container_id.into())),
@@ -1736,6 +1782,66 @@ async fn handle_round_trips_and_adopt_reconnects() {
     assert_eq!(proc.id(), "main");
     // late attach fails closed on this tier
     assert!(adopted.attach(spec("x").mounts.remove(0)).await.is_err());
+}
+
+#[tokio::test]
+async fn adopted_container_reader_preserves_future_restoration_exactly() {
+    // Provider reader rule R13: C1 a live container and C2 a future complete
+    // Some handle reach Phase A. C1+C2 => E1 ordinary adoption (not restore)
+    // joins the existing object and E2 handle() returns the exact input wire.
+    let runtime = Arc::new(FakeRuntime::default());
+    let node_a = provider(runtime.clone());
+    let created = node_a.create(&spec("reader-adopt")).await.unwrap();
+    let future = add_future_restoration(&created.handle());
+    drop(created);
+    drop(node_a);
+    let node_b = provider(runtime);
+    let adopted = node_b.adopt(&future).await.unwrap();
+    assert_eq!(adopted.handle(), future, "R13/E2");
+}
+
+#[tokio::test]
+async fn container_provider_rejects_host_bind_before_runtime_inspection() {
+    // Unsupported-provider rule R16: C1 Some+HostBind reaches the ordinary
+    // container adopter. C1 => E1 reject before inspect/status/spawn/remove and
+    // E2 leave every fake-runtime effect counter unchanged.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = provider(runtime.clone());
+    assert!(
+        provider.adopt(&future_host_bind_handle()).await.is_err(),
+        "R16/E1"
+    );
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.inspections, 0, "R16/E2");
+    assert!(state.alive.is_empty(), "R16/E2");
+    assert!(state.created_command.is_empty(), "R16/E2");
+    assert!(state.control_binding_calls.is_empty(), "R16/E2");
+    assert!(state.spawned.is_empty(), "R16/E2");
+    assert!(state.removals.is_empty(), "R16/E2");
+    assert_eq!(state.lease_touches, 0, "R16/E2");
+}
+
+#[tokio::test]
+async fn default_runtime_rejects_future_handle_before_remove() {
+    // Adapter rule R17 covers Docker and Podman, which inherit the sole default
+    // remove_with_handle path: C1 any provider-owned continuation value reaches
+    // an unaware runtime. C1 => E1 reject and E2 never call remove/delete.
+    let runtime = FakeRuntime::default();
+    let handle = future_host_bind_handle();
+    let runtime_handle = handle
+        .container_payload()
+        .unwrap()
+        .runtime_handle
+        .as_ref()
+        .unwrap();
+    assert!(
+        runtime
+            .remove_with_handle("future-container", Some(runtime_handle))
+            .await
+            .is_err(),
+        "R17/E1"
+    );
+    assert!(runtime.st.lock().unwrap().removals.is_empty(), "R17/E2");
 }
 
 #[tokio::test]

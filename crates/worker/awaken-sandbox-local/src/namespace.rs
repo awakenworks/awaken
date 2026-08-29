@@ -685,6 +685,7 @@ impl NamespaceProvider {
             secret_paths,
             memory_mounts: std::sync::Mutex::new(memory_mounts),
             memory_mounter: self.memory_mounter.clone(),
+            adopted_handle: None,
         })
     }
 }
@@ -712,6 +713,9 @@ pub struct NamespaceSandbox {
     /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
     memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    /// Exact reader-owned wire handle retained only across adoption. Phase A
+    /// never constructs restoration evidence or a host-bind runtime locator.
+    adopted_handle: Option<pc::SandboxHandle>,
 }
 
 impl NamespaceSandbox {
@@ -1020,6 +1024,9 @@ impl pc::Sandbox for NamespaceSandbox {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
+        if let Some(handle) = &self.adopted_handle {
+            return handle.clone();
+        }
         pc::SandboxHandle::namespace(
             if cfg!(target_os = "macos") {
                 pc::NamespaceProviderKind::Seatbelt

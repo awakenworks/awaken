@@ -373,6 +373,40 @@ async fn handle_serializes_and_adopt_reconnects() {
 }
 
 #[tokio::test]
+async fn adopted_local_reader_preserves_future_restoration_exactly() {
+    // Provider reader rule R11: C1 an existing local directory and C2 a future
+    // complete Some handle are presented to Phase A. C1+C2 => E1 adoption does
+    // not restore or rewrite bytes and E2 handle() returns the exact input wire.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let created = provider.create(&spec("t-reader-adopt")).await.unwrap();
+    let future = common::add_future_restoration(&created.handle());
+    drop(created);
+    drop(provider);
+    let replacement = LocalProvider::new(tmp.path());
+    let adopted = replacement.adopt(&future).await.unwrap();
+    assert_eq!(adopted.handle(), future, "R11/E2");
+}
+
+#[tokio::test]
+async fn local_provider_rejects_future_host_bind_before_filesystem_effects() {
+    // Unsupported-provider rule R14: C1 a HostBind container locator reaches the
+    // local reader. C1 => E1 reject at typed payload admission and E2 leave the
+    // provider root byte-for-byte absent (no create/status/spawn/delete effect).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("local-root");
+    let provider = LocalProvider::new(&root);
+    assert!(
+        provider
+            .adopt(&common::future_host_bind_handle())
+            .await
+            .is_err(),
+        "R14/E1"
+    );
+    assert!(!root.exists(), "R14/E2");
+}
+
+#[tokio::test]
 async fn adopt_rejects_a_handle_owned_by_another_provider_kind() {
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path());

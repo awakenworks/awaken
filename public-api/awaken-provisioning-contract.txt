@@ -19,8 +19,11 @@ pub awaken_provisioning_contract::CacheVolumeLocation::HostPath::path: alloc::st
 pub awaken_provisioning_contract::CacheVolumeLocation::PersistentVolumeClaim
 pub awaken_provisioning_contract::CacheVolumeLocation::PersistentVolumeClaim::claim_name: alloc::string::String
 pub enum awaken_provisioning_contract::ContainerContinuationHandle
+pub awaken_provisioning_contract::ContainerContinuationHandle::HostBindRestoration(awaken_provisioning_contract::HostBindRestorationHandle)
 pub awaken_provisioning_contract::ContainerContinuationHandle::KubernetesContinuation
 pub awaken_provisioning_contract::ContainerContinuationHandle::KubernetesContinuation::claim_uid: alloc::string::String
+impl awaken_provisioning_contract::ContainerContinuationHandle
+pub const fn awaken_provisioning_contract::ContainerContinuationHandle::is_host_bind_restoration(&self) -> bool
 pub enum awaken_provisioning_contract::EnvValue
 pub awaken_provisioning_contract::EnvValue::Inline
 pub awaken_provisioning_contract::EnvValue::Inline::value: alloc::string::String
@@ -236,6 +239,9 @@ pub awaken_provisioning_contract::EnvironmentPlan::scope: alloc::string::String
 pub struct awaken_provisioning_contract::ExitStatus
 pub awaken_provisioning_contract::ExitStatus::code: core::option::Option<i32>
 pub awaken_provisioning_contract::ExitStatus::signaled: bool
+#[non_exhaustive] pub struct awaken_provisioning_contract::HostBindRestorationHandle
+impl awaken_provisioning_contract::HostBindRestorationHandle
+pub fn awaken_provisioning_contract::HostBindRestorationHandle::staging_root(&self) -> &str
 pub struct awaken_provisioning_contract::IsolationPolicy
 pub awaken_provisioning_contract::IsolationPolicy::on_unmet: awaken_provisioning_contract::OnUnmet
 pub awaken_provisioning_contract::IsolationPolicy::prefer: awaken_provisioning_contract::IsolationClass
@@ -434,6 +440,7 @@ pub fn awaken_provisioning_contract::SandboxHandle::namespace(awaken_provisionin
 pub fn awaken_provisioning_contract::SandboxHandle::namespace_payload(&self, awaken_provisioning_contract::NamespaceProviderKind) -> core::result::Result<&awaken_provisioning_contract::NamespaceSandboxHandleV1, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::SandboxHandle::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_provisioning_contract::SandboxHandle::provider_kind(&self) -> &str
+pub const fn awaken_provisioning_contract::SandboxHandle::restoration(&self) -> core::option::Option<&awaken_provisioning_contract::SandboxRestorationEvidence>
 pub struct awaken_provisioning_contract::SandboxIdleRetentionPolicy
 pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::checkpoint_after_secs: u64
 pub awaken_provisioning_contract::SandboxIdleRetentionPolicy::checkpoint_format: alloc::string::String
@@ -468,6 +475,14 @@ pub awaken_provisioning_contract::SandboxRequirements::resource_limits: bool
 pub awaken_provisioning_contract::SandboxRequirements::tool_transparent: bool
 impl awaken_provisioning_contract::SandboxRequirements
 pub fn awaken_provisioning_contract::SandboxRequirements::from_spec(&awaken_provisioning_contract::SandboxSpec, bool) -> Self
+#[non_exhaustive] pub struct awaken_provisioning_contract::SandboxRestorationEvidence
+impl awaken_provisioning_contract::SandboxRestorationEvidence
+pub fn awaken_provisioning_contract::SandboxRestorationEvidence::checkpoint_digest(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxRestorationEvidence::checkpoint_exclusions_fingerprint(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxRestorationEvidence::checkpoint_id(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxRestorationEvidence::effect_id(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxRestorationEvidence::generation_id(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxRestorationEvidence::sandbox_spec_fingerprint(&self) -> &str
 pub struct awaken_provisioning_contract::SandboxSpec
 pub awaken_provisioning_contract::SandboxSpec::command: alloc::vec::Vec<alloc::string::String>
 pub awaken_provisioning_contract::SandboxSpec::control_services: alloc::collections::btree::set::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>

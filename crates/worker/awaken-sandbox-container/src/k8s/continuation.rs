@@ -144,6 +144,20 @@ pub(super) fn handle_extra(
     }
 }
 
+pub(super) fn cleanup_claim_uid(
+    runtime_handle: Option<&ContainerContinuationHandle>,
+) -> Result<Option<&str>, RuntimeError> {
+    match runtime_handle {
+        None => Ok(None),
+        Some(ContainerContinuationHandle::KubernetesContinuation { claim_uid }) => {
+            Ok(Some(claim_uid))
+        }
+        Some(ContainerContinuationHandle::HostBindRestoration(_)) => Err(backend(
+            "Kubernetes cleanup received a host-bind continuation handle",
+        )),
+    }
+}
+
 pub(super) fn build_claim(
     id: &str,
     config: &crate::K8sContinuationVolume,
@@ -387,6 +401,30 @@ mod tests {
         let mut orphaned = ephemeral;
         bind_claim_uid(&mut orphaned, "orphaned-incarnation");
         assert!(handle_extra(&orphaned).is_err(), "H5");
+    }
+
+    #[test]
+    fn cleanup_rejects_future_host_bind_before_kubernetes_delete() {
+        /* Adapter rule R18: C1 the canonical Kubernetes claim-UID locator reaches
+         * cleanup, or C2 a future host-bind locator reaches this Phase-A adapter.
+         * C1 => E1 return the exact UID fence; C2 => E2 reject in the pure selector
+         * before remove_bound can issue a Pod/PVC delete. No alternate discovery
+         * or same-name fallback exists.
+         */
+        let kubernetes = ContainerContinuationHandle::KubernetesContinuation {
+            claim_uid: "claim-a".into(),
+        };
+        assert_eq!(
+            cleanup_claim_uid(Some(&kubernetes)).unwrap(),
+            Some("claim-a"),
+            "R18/E1"
+        );
+        let host_bind: ContainerContinuationHandle = serde_json::from_value(serde_json::json!({
+            "kind": "host_bind_restoration",
+            "staging_root": "/provider/staging/a"
+        }))
+        .unwrap();
+        assert!(cleanup_claim_uid(Some(&host_bind)).is_err(), "R18/E2");
     }
 
     #[tokio::test]

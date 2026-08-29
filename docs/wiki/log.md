@@ -682,3 +682,12 @@
   legacy compatibility and no new schema.
 - Restored the complete public Session projection fact and added a distinct
   ADR-owned retrieval fact for the typed profiled Run leaf.
+
+## 2026-08-30 — Raise the restore-handle reader floor before writers
+
+- Added only backward-compatible `SandboxHandle` readers and exact adoption
+  pass-through in Phase A; current constructors still emit the legacy shape.
+- Required unsupported physical locators to fail before provider effects and
+  kept portable checkpoint bytes in the existing deployment composition.
+- Made Phase A the rollback floor before the gated Phase-B writer can activate,
+  with zero durable `Restoring` operations as the deployment barrier.

@@ -299,6 +299,7 @@ impl LocalProvider {
             .iter()
             .map(|path| sandbox.root.resolve(path).map_err(err))
             .collect::<Result<_, _>>()?;
+        sandbox.adopted_handle = Some(handle.clone());
         Ok(sandbox)
     }
 
@@ -450,6 +451,7 @@ impl LocalProvider {
             secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
             continuation_excluded_paths: Vec::new(),
+            adopted_handle: None,
         }
     }
 }
@@ -520,6 +522,9 @@ pub struct LocalSandbox {
     /// Host paths whose contents have an independent durable authority or carry
     /// credentials. They are rematerialized from that authority after restore.
     continuation_excluded_paths: Vec<PathBuf>,
+    /// Exact reader-owned wire handle retained only across adoption. Create and
+    /// restore continue to emit the current legacy-None constructor shape.
+    adopted_handle: Option<pc::SandboxHandle>,
 }
 
 impl LocalSandbox {
@@ -758,6 +763,9 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
+        if let Some(handle) = &self.adopted_handle {
+            return handle.clone();
+        }
         let continuation_excluded_paths = self
             .continuation_excluded_paths
             .iter()

@@ -27,10 +27,10 @@ use std::sync::Arc;
 mod cache_volume;
 mod control;
 use control::ContainerControlPublicationRegistry;
-mod environment_owned;
-use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
 mod egress;
+mod environment_owned;
+use environment_owned::EnvironmentOwnedProcess;
 mod files;
 mod live_inputs;
 mod packages;
@@ -54,8 +54,8 @@ pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
-    ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
-    EnvironmentFile,
+    AgentContainerProvider, AgentContainerSession, ContainerEnvironment,
+    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, EnvironmentFile,
 };
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
@@ -1409,6 +1409,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .iter()
                 .map(|mount| mount.mount_path.clone())
                 .collect(),
+            adopted_handle: None,
             realized,
             recovered: false,
             lifecycle: Arc::new(ContainerCleanupState {
@@ -1435,12 +1436,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         spec: Option<&pc::SandboxSpec>,
         handle: &pc::SandboxHandle,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        let payload = recovery::decode_handle(handle)?;
         let capabilities = self.runtime_sandbox_capabilities();
         if let Some(spec) = spec {
             pc::prepare_environment(spec, &capabilities)
                 .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
         }
-        let payload = recovery::decode_handle(handle)?;
         let control_services = pc::validate_adopted_sandbox_control_services(
             spec.map(|spec| &spec.control_services),
             &payload.control_services,
@@ -1492,6 +1493,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             live_input_projection: payload.live_input_projection,
             runtime_handle: payload.runtime_handle,
             continuation_excluded_paths: payload.continuation_excluded_paths,
+            adopted_handle: Some(handle.clone()),
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(ContainerCleanupState::completed(
@@ -1500,61 +1502,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .expect("container secret broker lock poisoned")
                     .clone(),
             )),
-        })
-    }
-}
-
-/// A running agent exec, handed to the host's ACP agent-channel source: the duplex
-/// channel, the exact exec process handle, and the environment handle for reattach.
-pub struct AgentContainerSession {
-    pub channel: Box<dyn AgentChannel>,
-    pub process: Box<dyn pc::ProcessHandle>,
-    pub handle: pc::SandboxHandle,
-}
-
-/// Object-safe container seam for the host: realize a Session environment, execute
-/// the ACP agent inside it, and open its channel, with the backend chosen
-/// behind the `dyn` by **worker config** — so one host binary drives whichever backend
-/// a given worker is configured for. The counterpart of the Workdir/namespace
-/// `spawn_agent` path, for a user-supplied container image.
-#[async_trait]
-pub trait AgentContainerProvider: Send + Sync {
-    /// Create the container from the typed image and command in `spec` and open its
-    /// ACP channel, returning the channel + process handle for one run.
-    async fn open_agent(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<AgentContainerSession, pc::SandboxError>;
-}
-
-#[async_trait]
-impl<R: ContainerRuntime + 'static> AgentContainerProvider for ContainerProvider<R> {
-    async fn open_agent(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<AgentContainerSession, pc::SandboxError> {
-        let environment: Arc<dyn ContainerEnvironment> =
-            Arc::new(self.create_container(spec).await?);
-        let argv = command_of(spec);
-        if argv.is_empty() {
-            return Err(pc::SandboxError::new("agent command argv is empty"));
-        }
-        let handle = environment.handle();
-        let RuntimeAgentProcess { process, channel } = environment
-            .spawn_agent_process(pc::Command {
-                argv,
-                cwd: String::new(),
-                env: Vec::new(),
-                stdio: pc::Stdio::Piped,
-            })
-            .await?;
-        Ok(AgentContainerSession {
-            channel,
-            process: Box::new(EnvironmentOwnedProcess {
-                inner: process,
-                environment,
-            }),
-            handle,
         })
     }
 }
@@ -1643,6 +1590,9 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     runtime_handle: Option<pc::ContainerContinuationHandle>,
     /// Exact independently governed paths retained only for checkpoint safety.
     continuation_excluded_paths: Vec<String>,
+    /// Exact reader-owned wire handle retained only across adoption. Current
+    /// creation paths continue to emit restoration None.
+    adopted_handle: Option<pc::SandboxHandle>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1830,6 +1780,9 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
     }
 
     fn handle(&self) -> pc::SandboxHandle {
+        if let Some(handle) = &self.adopted_handle {
+            return handle.clone();
+        }
         pc::SandboxHandle::container(
             &self.id,
             pc::ContainerSandboxHandleV1 {

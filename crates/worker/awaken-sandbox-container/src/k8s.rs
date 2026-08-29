@@ -910,11 +910,7 @@ impl ContainerRuntime for K8sRuntime {
         container_id: &str,
         runtime_handle: Option<&pc::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
-        let claim_uid = runtime_handle.map(|handle| match handle {
-            pc::ContainerContinuationHandle::KubernetesContinuation { claim_uid } => {
-                claim_uid.as_str()
-            }
-        });
+        let claim_uid = continuation::cleanup_claim_uid(runtime_handle)?;
         self.remove_bound(container_id, claim_uid).await
     }
 }

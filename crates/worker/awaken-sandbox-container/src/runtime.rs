@@ -329,8 +329,13 @@ pub trait ContainerRuntime: Send + Sync {
     async fn remove_with_handle(
         &self,
         container_id: &str,
-        _runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        runtime_handle: Option<&pc::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
+        if runtime_handle.is_some() {
+            return Err(RuntimeError::Backend(
+                "container runtime cannot remove an unrecognized continuation handle".into(),
+            ));
+        }
         self.remove(container_id).await
     }
 }
