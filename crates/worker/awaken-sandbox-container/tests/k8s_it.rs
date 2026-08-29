@@ -19,6 +19,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
             .unwrap_or_else(|_| "awaken-bb:1".to_string()),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
+        control_services: Default::default(),
         packages: Default::default(),
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),

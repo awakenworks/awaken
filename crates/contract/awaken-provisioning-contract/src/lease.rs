@@ -704,6 +704,7 @@ mod actuator_tests {
                 resource_limits: true,
                 custom_rootfs: true,
                 package_provisioning: false,
+                control_services: Default::default(),
             }
         }
         async fn create(&self, _s: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
@@ -814,6 +815,7 @@ mod actuator_tests {
             limits: Default::default(),
             filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
             environment: None,
             command: Vec::new(),
             deny_tool_egress: false,

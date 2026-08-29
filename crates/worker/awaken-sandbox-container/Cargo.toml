@@ -16,6 +16,7 @@ authority = "sandbox-container"
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-agent-channel.workspace = true
+awaken-sandbox-control.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -29,7 +30,8 @@ tar = "0.4"
 # awaken-scoped-migration) establishes the container-tier AgentChannel. Optional so
 # the default build stays dependency-light and daemon-free.
 awaken-connection = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "io-util", "time"] }
+tokio-util.workspace = true
 # Real Docker backend (Docker Engine API via the SDK, not the CLI). Optional.
 bollard = { version = "0.18", optional = true }
 futures-util = { version = "0.3", optional = true }

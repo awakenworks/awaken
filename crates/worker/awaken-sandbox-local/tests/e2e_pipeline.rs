@@ -56,6 +56,7 @@ async fn declared() -> (pc::EnvironmentDecl, pc::SandboxSpec, Arc<InMemoryFileSt
         limits: Default::default(),
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
+        control_services: Default::default(),
         environment: None,
         command: Vec::new(),
         deny_tool_egress: false,

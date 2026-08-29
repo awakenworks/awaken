@@ -45,6 +45,17 @@ fn streaming_config(mut config: kube::Config) -> kube::Config {
     config
 }
 
+impl super::K8sRuntime {
+    /// Probe the apiserver (for tests / health checks): `Ok` iff it responds.
+    pub async fn ping(&self) -> Result<(), RuntimeError> {
+        self.pods()
+            .list(&kube::api::ListParams::default().limit(1))
+            .await
+            .map(|_| ())
+            .map_err(backend)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

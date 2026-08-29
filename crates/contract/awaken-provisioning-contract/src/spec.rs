@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -381,6 +381,10 @@ pub struct SandboxSpec {
     /// mechanism must not allocate durable storage for it.
     #[serde(default)]
     pub filesystem_continuity: FilesystemContinuity,
+    /// Closed, provider-neutral control services this Sandbox must publish.
+    /// Empty preserves every pre-existing Pod/argv/fingerprint shape.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub control_services: BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
     /// Optional dead-man's-switch: the owner must `renew_lease` within this window
     /// or the sandbox self-reaps. `None` = no lease (a local child dies with its
     /// parent anyway); set it for remote sandboxes that outlive the owning host.
@@ -659,6 +663,7 @@ mod tests {
             limits: Default::default(),
             filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
         }
     }
 
@@ -860,6 +865,7 @@ mod sandbox_override_tests {
             limits: ResourceLimits::default(),
             filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
+            control_services: Default::default(),
         }
     }
 

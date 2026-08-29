@@ -1,0 +1,24 @@
+[package]
+name = "awaken-sandbox-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "worker"
+layer = "contract"
+authority = "sandbox-control"
+
+[dependencies]
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
+
+[lints]
+workspace = true

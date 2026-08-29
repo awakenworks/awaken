@@ -316,6 +316,7 @@ impl Default for WorkerManifest {
                 resource_limits: false,
                 custom_rootfs: false,
                 package_provisioning: false,
+                control_services: Default::default(),
             },
             sandbox_tool_recovery:
                 awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
@@ -1249,6 +1250,7 @@ mod tests {
                 resource_limits: true,
                 custom_rootfs: true,
                 package_provisioning: false,
+                control_services: Default::default(),
             },
             sandbox_backends: BTreeSet::from(["kubernetes".to_string()]),
             dispatch_contract: VersionRange { min: 1, max: 2 },
@@ -1290,6 +1292,7 @@ mod tests {
                 resource_limits: true,
                 custom_rootfs: true,
                 package_provisioning: false,
+                control_services: Default::default(),
             },
             sandbox_backend: Some("kubernetes".to_string()),
             dispatch_contract_version: 1,

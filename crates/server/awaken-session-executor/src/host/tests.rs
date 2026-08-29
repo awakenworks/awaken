@@ -7698,6 +7698,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
                 resource_limits: true,
                 custom_rootfs: true,
                 package_provisioning: false,
+                control_services: Default::default(),
             }
         }
 
