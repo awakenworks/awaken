@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import importlib
+import inspect
+import json
 import os
+import tempfile
+from pathlib import Path
 
 import anthropic
 
 from managed_python_sdk_request_contract import (
+    CREDENTIAL_PROVIDER_VERSIONS,
     projects_workspace_response_context,
 )
 
@@ -37,13 +43,19 @@ def main() -> None:
     # no Workspace; the same wheel + restricted Bearer + Vault create -> scoped
     # 403 -> exact PermissionDeniedError and token Workspace; admin Bearer ->
     # decoded page and exact Workspace. A final admin read proves denial wrote
-    # no resource.
+    # no resource. Wheels exposing the dynamic provider surface additionally
+    # resolve one AccessToken and carry the same authenticated facts through a
+    # real request. The same wheels also load an in-memory user-OAuth config and
+    # private token file through the SDK's own provider chain; 0.92 is the
+    # explicit pre-provider/config change point.
     #
     # Decision table:
     # | credential | action | Python result         | Workspace | side effect |
     # | invalid    | read   | AuthenticationError  | absent    | none        |
     # | restricted | write  | PermissionDeniedError| exact     | none        |
     # | admin      | read   | Vault page           | exact     | none        |
+    # | provider   | read   | Vault page, one lookup| exact    | none        |
+    # | config     | read   | Vault page, file token| exact    | none        |
     #
     # Constraints: the wheel is selected only by the generated Python anchor
     # matrix; retries are disabled; no caller-supplied Workspace is accepted as
@@ -89,6 +101,78 @@ def main() -> None:
         page = raw_page.parse()
         assert isinstance(page.data, list)
 
+    supports_credentials = "credentials" in inspect.signature(anthropic.Anthropic).parameters
+    assert supports_credentials is (version in CREDENTIAL_PROVIDER_VERSIONS), (
+        f"{label}: unreviewed credential-provider change point"
+    )
+    supports_config = "config" in inspect.signature(anthropic.Anthropic).parameters
+    assert supports_config is supports_credentials, (
+        f"{label}: provider/config capability boundary diverged"
+    )
+    provider_request_count = 0
+    if supports_credentials:
+        credential_module = importlib.import_module("anthropic.lib.credentials")
+        provider_calls: list[bool] = []
+
+        def credentials(*, force_refresh: bool = False) -> object:
+            provider_calls.append(force_refresh)
+            return credential_module.AccessToken(token=ADMIN_TOKEN, expires_at=None)
+
+        with anthropic.Anthropic(
+            api_key=None,
+            auth_token=None,
+            credentials=credentials,
+            base_url=BASE_URL,
+            max_retries=0,
+        ) as provider:
+            raw_provider_page = provider.beta.vaults.with_raw_response.list()
+            record_request_id(
+                request_ids,
+                raw_provider_page.headers.get("request-id"),
+                f"{label}: dynamic-provider response",
+            )
+            assert raw_provider_page.headers.get("anthropic-workspace-id") == WORKSPACE_ID
+            provider_page = raw_provider_page.parse()
+            assert isinstance(provider_page.data, list)
+        assert provider_calls == [False]
+        provider_request_count = 1
+
+        with tempfile.TemporaryDirectory(prefix="awaken-python-sdk-config-") as directory:
+            credentials_path = Path(directory) / "credentials.json"
+            credentials_path.write_text(json.dumps({
+                "version": "1.0",
+                "type": "oauth_token",
+                "access_token": ADMIN_TOKEN,
+            }))
+            credentials_path.chmod(0o600)
+            with anthropic.Anthropic(
+                api_key=None,
+                auth_token=None,
+                config={
+                    "authentication": {
+                        "type": "user_oauth",
+                        "credentials_path": str(credentials_path),
+                    },
+                    "base_url": BASE_URL,
+                    "workspace_id": WORKSPACE_ID,
+                },
+                # Keep the credential-bearing request pinned to the fixture.
+                # Python's config-host adoption is an upstream client concern;
+                # this cross-layer test owns config auth and Workspace headers.
+                base_url=BASE_URL,
+                max_retries=0,
+            ) as configured:
+                raw_config_page = configured.beta.vaults.with_raw_response.list()
+                record_request_id(
+                    request_ids,
+                    raw_config_page.headers.get("request-id"),
+                    f"{label}: configured-credential response",
+                )
+                assert raw_config_page.headers.get("anthropic-workspace-id") == WORKSPACE_ID
+                config_page = raw_config_page.parse()
+                assert isinstance(config_page.data, list)
+        provider_request_count = 2
+
     with anthropic.Anthropic(
         api_key=None,
         auth_token=RESTRICTED_TOKEN,
@@ -131,8 +215,12 @@ def main() -> None:
         verification = raw_verification.parse()
         assert all(vault.display_name != denied_name for vault in verification.data)
 
-    assert len(request_ids) == 4
-    print(f"PYTHON SDK AUTH CONTEXT PASS {version}: 401/403/200 and no denied side effect")
+    assert len(request_ids) == 4 + provider_request_count
+    auth_modes = "static/provider/config" if supports_credentials else "static"
+    print(
+        f"PYTHON SDK AUTH CONTEXT PASS {version}: "
+        f"{auth_modes} 401/403/200 and no denied side effect"
+    )
 
 
 if __name__ == "__main__":
