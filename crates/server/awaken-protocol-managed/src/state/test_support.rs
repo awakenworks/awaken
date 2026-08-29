@@ -9,9 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, SessionInit, ToolPermissionDecision,
-};
+use awaken_session_contract::{ManagedSessionRepository, PersistedSession, ToolPermissionDecision};
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::{DelegatedRun, OutcomeDrive, RunError, SessionRuntime, StepOutcome};
@@ -279,24 +277,19 @@ impl SessionRuntime for RehydrateFake {
         if let Some(init) =
             crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
         {
-            self.prepare_session(thread, init).await?;
+            self.order.lock().unwrap().push("runtime");
+            self.restored_runtimes.lock().unwrap().push((
+                thread.to_string(),
+                init.runtime,
+                0,
+                init.environment.network,
+                init.environment.sandbox,
+            ));
         }
         if adopts_environment && let Some(binding) = projection.environment.binding() {
             self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
                 .await?;
         }
-        Ok(())
-    }
-
-    async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
-        self.order.lock().unwrap().push("runtime");
-        self.restored_runtimes.lock().unwrap().push((
-            thread.to_string(),
-            init.runtime,
-            0,
-            init.environment.network,
-            init.environment.sandbox,
-        ));
         Ok(())
     }
 

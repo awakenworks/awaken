@@ -219,12 +219,17 @@ async function main(): Promise<void> {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    const submitted = await fetch(`${BASE}/v1/durable/threads/${session.id}/submit_background`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'research the answer through a durable child' }),
+    // Root-ingress decision row I1: this is a Managed Session aggregate, so the
+    // official Session event command owns admission and its Run reservation.
+    // Generic durable submit is reserved for ordinary Runtime Threads.
+    const submitted = await client.beta.sessions.events.send(session.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'research the answer through a durable child' }],
+      }],
+      betas: BETAS,
     });
-    assert.equal(submitted.status, 200, `parent background run accepted: ${await submitted.text()}`);
+    assert.equal(typeof submitted.data[0]?.id, 'string', 'I1 Session event batch is durably accepted');
 
     // Crash-window cause/effect graph: C1=the root may consume multiple model
     // Steps before delegation; C2=a distinct child dispatch exists and is

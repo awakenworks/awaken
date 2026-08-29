@@ -7,9 +7,10 @@
 //      are staged and projected into the adapter's `session/new` as a loopback relay URL.
 //      The adapter carries no vault secret; the host relay authenticates upstream and KIMI
 //      drives the tool. The upstream MCP fixture records the requests it actually served.
-//   2. CONFIG-HOME ISOLATION: the adapter is pointed at an isolated per-thread config
-//      home under SESSION_DEPLOYMENT_STORAGE_DIR; the host's real CLI homes are NEVER touched. We run
-//      the whole server under a throwaway $HOME so even a misbehaving CLI cannot reach it.
+//   2. CONFIG-HOME ISOLATION: the adapter is pointed at the bound Session
+//      Environment's isolated `.acp-config`; the host's real CLI homes are NEVER
+//      touched. We run the whole server under a throwaway $HOME so even a
+//      misbehaving CLI cannot reach it.
 //
 // Gated: skips unless a KIMI Anthropic-dialect key is discoverable in ~/.bashrc. It needs
 // network + an installed real ACP runtime + the real key, so it is NOT part of the default CI sweep.
@@ -22,7 +23,12 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  onlyChildDirectory,
+  pass,
+  waitForSessionEventReceipt,
+  withServer,
+} from './harness.mjs';
 import {
   applyAcpRuntimeProfile,
   parseAcpRuntimes,
@@ -67,6 +73,7 @@ async function main() {
     },
   });
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-home-'));
+  const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-sandboxes-'));
   const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-store-'));
   // The ACP adapter reads the shared resolver's model/credential projection
   // from the operator env (the ACP model-delivery path).
@@ -74,6 +81,7 @@ async function main() {
     CARGO_HOME: process.env.CARGO_HOME ?? path.join(realHome, '.cargo'),
     RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, '.rustup'),
     HOME: sandboxHome,
+    SESSION_DEPLOYMENT_SANDBOX_DIR: sandboxDir,
     SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
   });
   applyAcpRuntimeProfile(runtimeProfile, process.env);
@@ -91,7 +99,20 @@ async function main() {
         name: `${runtime} live ACP`,
         model: runtimeProfile.model,
         mcp_servers: noMcp ? [] : [{ name: 'calc', type: 'url', url: fixture.url }],
-        tools: noMcp ? [] : [{ type: 'mcp_toolset', mcp_server_name: 'calc' }],
+        // Permission decision table: C1 this paid unattended canary enables
+        // calc; C2 the authored MCP toolset explicitly owns AlwaysAllow.
+        // E1=C1+C2 executes the fixture-only call and can reach Agent Message;
+        // E2=C1+!C2 correctly stops at requires_action, which is covered by
+        // the dedicated permission-resume suites and cannot satisfy this gate.
+        tools: noMcp ? [] : [{
+          type: 'mcp_toolset',
+          mcp_server_name: 'calc',
+          configs: [],
+          default_config: {
+            enabled: true,
+            permission_policy: { type: 'always_allow' },
+          },
+        }],
         betas: BETAS,
       });
 
@@ -146,13 +167,21 @@ async function main() {
       console.log('agent messages:', JSON.stringify(texts));
       console.log('fixture methods:', JSON.stringify(fixture.calls.map((c) => c.method)));
 
-      // (1) Dynamic MCP injection reached the REAL adapter's own MCP client — not just the
-      // host's in-process `connect_staged`. Two independent MCP clients handshake with the
-      // fixture: the host (tool discovery/pre-auth) AND the launched catalog adapter (its own
-      // client, through the α relay injected into session/new). So ≥2 `initialize` proves
-      // the injected server reached the CLI. Every upstream request carries the vault token,
-      // but only the host relay materializes it; the sandboxed CLI receives a loopback URL.
-      const initializes = fixture.calls.filter((c) => c.method === 'initialize').length;
+      // (1) Dynamic MCP injection reached the REAL adapter's MCP client through
+      // the single α relay route. Flow decision table: C1 Host staging performs
+      // server/discover; C2 the launched adapter receives the loopback URL;
+      // C3 its MCP client completes initialize -> initialized -> list -> call.
+      // E1=C1+C2+C3 proves both stages without requiring a duplicate upstream
+      // client; E2 any missing/out-of-order method fails. Every upstream request
+      // carries the vault token, while the sandboxed CLI receives no credential.
+      const methods = fixture.calls.map((call) => call.method);
+      const requiredFlow = [
+        'server/discover',
+        'initialize',
+        'notifications/initialized',
+        'tools/list',
+        'tools/call',
+      ];
       if (noMcp) {
         const expected = multiTurn ? 'ACK' : 'OK';
         assert.ok(
@@ -200,28 +229,34 @@ async function main() {
         pass(`ACP ${runtime} completed a namespace turn without MCP`);
         return;
       }
+      const positions = requiredFlow.map((method) => methods.indexOf(method));
       assert.ok(
-        initializes >= 2,
-        `both the host and the real ACP CLI connected to the injected server (≥2 initialize), got ${initializes}`,
+        positions.every((position) => position >= 0)
+          && positions.every((position, index) => index === 0 || positions[index - 1] < position),
+        `host discovery and the relayed ACP MCP flow must be complete and ordered: ${JSON.stringify(methods)}`,
       );
       assert.ok(
         fixture.calls.every((c) => c.authorization === `Bearer ${CALC_TOKEN}`),
         `the host relay authenticated every upstream MCP request, got ${JSON.stringify(fixture.calls.map((c) => c.authorization))}`,
       );
       const calledAttest = fixture.calls.some((c) => c.method === 'tools/call');
-      pass(`dynamic MCP injection reached the real ${runtime} adapter + KIMI (host + α-relayed CLI both connected: ${initializes} initialize, tools/call=${calledAttest})`);
+      pass(`dynamic MCP injection reached the real ${runtime} adapter + KIMI (host discover + ordered α-relayed MCP flow, tools/call=${calledAttest})`);
 
-      // (2) Config-home isolation: the adapter used an isolated per-thread home
-      // under storage, and the throwaway HOME has no adapter-owned entry. Causes:
-      // C1 the fixture may own top-level .npm cache; C2 any other top-level entry
-      // was written outside the isolated config home. Effects: E1 C1-only is
-      // allowed; E2 C2 fails. This generic oracle covers every catalog runtime
-      // without maintaining a second table of vendor default-home names.
-      const threadsDir = path.join(storageDir, 'threads');
-      const homes = fs.existsSync(threadsDir)
-        ? fs.readdirSync(threadsDir).filter((t) => fs.existsSync(path.join(threadsDir, t, 'config_home')))
-        : [];
-      assert.ok(homes.length > 0, `an isolated per-thread config home was created under ${threadsDir}`);
+      // (2) Config-home isolation decision table: C1 one bound Session
+      // Environment exists; C2 its runtime-owned sentinel exists beneath the
+      // bound `.acp-config`; C3 the throwaway process HOME contains only fixture
+      // cache. E1=C1+C2+C3 proves the CLI used the Session boundary; zero/multiple
+      // provider directories or any host-home write fails. `onlyChildDirectory`
+      // remains the one oracle for the provider's private scope-name mapping.
+      const sessionRoot = onlyChildDirectory(
+        sandboxDir,
+        'one ACP Session Environment exists',
+      );
+      const configHome = path.join(sessionRoot, '.acp-config');
+      assert.ok(
+        fs.existsSync(path.join(configHome, '.awaken-config-home')),
+        `the bound Session Environment owns the ACP config home: ${configHome}`,
+      );
       const unexpectedHomeEntries = fs.readdirSync(sandboxHome)
         .filter((entry) => entry !== '.npm');
       assert.deepEqual(
@@ -250,6 +285,7 @@ async function main() {
   } finally {
     await fixture.close();
     fs.rmSync(sandboxHome, { recursive: true, force: true });
+    fs.rmSync(sandboxDir, { recursive: true, force: true });
     fs.rmSync(storageDir, { recursive: true, force: true });
   }
 }

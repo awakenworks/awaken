@@ -128,6 +128,10 @@ async function main() {
         kind: 'vault',
         env_key: null,
         secret: SEARCH_SECRET,
+        // Credential cause/effect row C0: an exact Web-provider descriptor binds
+        // the one opaque material to provider+target+usage at creation. Effect:
+        // later materialization may satisfy C6; a generic legacy provider source
+        // must fail before plaintext because it does not authorize this target.
         descriptor: {
           provider: SEARCH_PROVIDER,
           material: { kind: 'secret', type_id: 'awaken.secret/v1' },
@@ -263,7 +267,11 @@ async function main() {
       );
       const searchResult = eventText(search.result);
       const searchReply = eventText(search.message);
-      assert.equal(search.result.is_error, false, 'S1 paid provider executed successfully');
+      assert.equal(
+        search.result.is_error,
+        false,
+        `S1 paid provider executed successfully: ${searchResult}`,
+      );
       for (const text of [searchResult, searchReply]) {
         assert.match(text, /https:\/\/allowed\.test\/result/u, 'S1/E6 allowed result retained');
         assert.match(

@@ -6,6 +6,7 @@
 //   C3 profile logical id exists only in A    -> E3 B reads 404
 //   C4 B authors same profile logical id      -> E4 create independent B-owned profile
 //   C5 Agent logical id exists in A           -> E5 B creates an independent scoped row; A remains intact
+//   C6 each MCP server has one typed toolset   -> E6 valid Agent reaches the tenant fence
 //
 // Decision table:
 //   Rule  C1  C2  C3  C4  C5  Expected
@@ -13,7 +14,7 @@
 //   T2    N   Y   -   -   -   E2
 //   T3    N   N   Y   N   -   E3
 //   T4    N   N   Y   Y   -   E4; A and B may both use `shared-profile`
-//   T5    N   N   -   -   Y   E5; A and B may both use the same portable Agent id
+//   T5    N   N   -   -   Y+C6 E5+E6; A and B may both use the same portable Agent id
 //
 // The config authoring plane is tenant-fenced by an opaque scope_id (ADR-0051).
 // This drives the guarantee end to end through IAM + workspace addressing + the
@@ -130,8 +131,16 @@ async function main() {
         url: 'https://mcp.example.invalid/',
         credential: { id: credentialId, revision: credentialA.json.version },
       }],
+      tools: [{ type: 'mcp_toolset', mcp_server_name: 'shared-mcp' }],
     };
-    assert.equal((await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent', tokenA, agentMcpBody)).status, 200);
+    const putMcpAgentA = await req(
+      base,
+      'PUT',
+      '/v1/config/agents/shared-mcp-agent',
+      tokenA,
+      agentMcpBody,
+    );
+    assert.equal(putMcpAgentA.status, 200, `T2 Agent A: ${putMcpAgentA.text.slice(0, 200)}`);
 
     const hiddenFromB = [
       ['GET', `/v1/config/credentials/${encodeURIComponent(credentialId)}`, undefined, 404],

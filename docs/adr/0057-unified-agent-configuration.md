@@ -460,10 +460,10 @@ ACP wiring the Serve root has (`AcpWorkerProfile` + sandbox tier), and the A2A
 transport seam wires identically on both roots. A gateway-only (secretless)
 worker serves A2A only when the remote counterparty credential is
 gateway-brokered — a local-vault counterparty on a secretless worker fails
-closed. Kind-agnostic shared gap, tracked not solved here: thread resources are
-staged per-process at `prepare_session` and are not in the snapshot, so a
-db-less worker misses them for every kind (fix: carry rendered resource state in
-the snapshot, or fetch through an explicit resource-delivery port).
+closed. The later Session realization contract closes the former resource gap:
+Local and Worker runtimes now consume one complete frozen projection containing
+the exact Resource revision and resolved manifest; neither reconstructs fields
+from mutable Agent configuration or a process-local `prepare_session` path.
 
 A2A is not a fire-and-forget exception to this lifecycle. Its executor implements
 the same `RunAttemptExecutor` used by Native and ACP. Immediately after the first

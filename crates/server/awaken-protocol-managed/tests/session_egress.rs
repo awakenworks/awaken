@@ -11,7 +11,7 @@ use awaken_protocol_managed::{
     ManagedState, environment_authoring_router, environment_work_router, router,
 };
 use awaken_session_contract::{
-    OutcomeDrive, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;
@@ -20,7 +20,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// Records each `prepare_session`'s exact frozen network policy.
+/// Records each complete projection's exact frozen network policy.
 struct CapturingFake {
     egress: Arc<Mutex<Vec<awaken_session_contract::SessionNetworkPolicy>>>,
 }
@@ -38,13 +38,8 @@ impl SessionRuntime for CapturingFake {
             &projection,
             &mode,
         )? {
-            self.prepare_session(thread, init).await?;
+            self.egress.lock().unwrap().push(init.environment.network);
         }
-        Ok(())
-    }
-
-    async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
-        self.egress.lock().unwrap().push(init.environment.network);
         Ok(())
     }
     async fn run(

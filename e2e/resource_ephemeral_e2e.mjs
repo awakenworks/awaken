@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import {
+  FILES_BETA,
   managedFileUploadForm,
   spawnServer,
   stopServer,
@@ -18,7 +19,6 @@ const OTHER = `ephemeral-resource-other-${process.pid}`;
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const SKILLS_BETA = 'skills-2025-10-02';
-const FILES_BETA = 'files-api-2025-04-14';
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function start() {

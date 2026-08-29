@@ -16,7 +16,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import {
+  managedAgentWithAlwaysAskTools,
+  pass,
+  waitForSessionEventReceipt,
+  withServer,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38251);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -31,8 +36,13 @@ async function main() {
     await withServer('real', PORT, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      // Tool-loop decision T1: C1 exact prompt receipt and C2 model requests
+      const session = await client.beta.sessions.create({
+        agent: managedAgentWithAlwaysAskTools(['bash']),
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
+      // Tool-loop decision T1: C0 the Session owns bash=always_ask; C1 exact
+      // prompt receipt and C2 model requests
       // bash; E1 processed receipt, matching tool_use, and requires_action. K1
       // older tool calls cannot satisfy this turn. D1=C1+C2=>E1.
       const promptReceipt = (await client.beta.sessions.events.send(session.id, {

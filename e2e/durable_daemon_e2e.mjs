@@ -1,5 +1,5 @@
 // Autonomous dispatch daemon end-to-end (slice E follow-up, ADR-0011) via the
-// durable operations surface plus the Anthropic TS SDK.
+// durable operations surface for an ordinary Runtime Thread.
 //
 // With SESSION_DEPLOYMENT_INGRESS=durable + AWAKEN_DISPATCH_DAEMON=1 each durable session runs
 // a standing `DispatchService` daemon. We POST a run to
@@ -9,18 +9,16 @@
 // We observe completion purely by polling committed truth, proving the daemon —
 // not the request — did the work.
 //
-// Run: (from e2e/)  node managed_daemon_e2e.mjs
+// Run: (from e2e/)  node durable_daemon_e2e.mjs
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38179);
 const BASE = `http://127.0.0.1:${PORT}`;
-const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-daemon-e2e-${process.pid}`;
-const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
+const THREAD = 'durable-daemon-e2e';
 
 // Committed truth (not the session's in-memory event log): the only channel that
 // reflects an out-of-band, daemon-drained run.
@@ -43,11 +41,11 @@ async function main() {
   });
   await waitForPort(PORT);
   try {
-    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-
-    // Enqueue for the daemon. The call returns immediately — the run is queued,
-    // not driven by this request.
-    const res = await fetch(`${BASE}/v1/durable/threads/${session.id}/submit_background`, {
+    // Ownership decision row D1: an ordinary Runtime Thread enters through the
+    // generic durable command and the daemon owns delivery. A Managed Session
+    // root is excluded because its Session-owned Run reservation is the sole
+    // ingress. The call returns after queueing, without driving the Run.
+    const res = await fetch(`${BASE}/v1/durable/threads/${THREAD}/submit_background`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'DAEMON-DRAIN' }),
@@ -62,7 +60,7 @@ async function main() {
     // reply is committed out of band — no foreground request drives it.
     let assistant = [];
     for (let i = 0; i < 100; i++) {
-      const { messages } = await committed(session.id);
+      const { messages } = await committed(THREAD);
       assistant = messages.filter((m) => m.role === 'Assistant' && m.text.includes('DAEMON-DRAIN'));
       if (assistant.length >= 1) break;
       await sleep(50);

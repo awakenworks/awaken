@@ -4,14 +4,21 @@
 
 import assert from 'node:assert/strict';
 import { HttpAgent } from '@ag-ui/client';
-import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
+import {
+  createCrossProtocolApplicationThread,
+  pass,
+  publishAlwaysAskManagementProbeAgent,
+  RED_PNG_B64,
+  withRealServer,
+  withScenarioServer,
+} from './harness.mjs';
 
 /**
  * Causal graph (official `HttpAgent` boundary)
  *
  *   text/history ------------> invoke same thread ---> assistant message
  *   image + text ------------> neutral image block --> provider sees MIME
- *   awaiting tool + exact id -> resume exact run ----> completed reply
+ *   frozen AlwaysAsk + exact id -> resume exact run -> completed reply
  *   streamed tool -----------> ordered tool events --> awaiting terminal
  *   unsupported run context -> RUN_ERROR -----------> no successful result
  *
@@ -29,8 +36,8 @@ import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
  * request/response data can be decoded.
  */
 
-function newAgent(base) {
-  return new HttpAgent({ url: `${base}/v1/ag-ui/agents/assistant` });
+function newAgent(base, config = {}) {
+  return new HttpAgent({ url: `${base}/v1/ag-ui/agents/assistant`, ...config });
 }
 
 /// Run the agent's pending messages and return the assistant reply text (read from
@@ -78,8 +85,10 @@ async function main() {
 
   // --- HITL: a tool needing approval awaits; delivering its result (approval) as a
   // `role: "tool"` message resumes the run to completion ---
-  await withRealServer('probe', 38123, async (base) => {
-    const agent = newAgent(base);
+  await withScenarioServer('management-probe', 'probe', 38123, async (base) => {
+    await publishAlwaysAskManagementProbeAgent(base, 'assistant', ['write'], ['read']);
+    const { threadId, headers } = await createCrossProtocolApplicationThread(base);
+    const agent = newAgent(base, { threadId, headers });
     agent.messages = [{ id: 'u1', role: 'user', content: 'remember this note' }];
     const r1 = await agent.runAgent();
     const call = (r1.newMessages ?? []).flatMap((m) => m.toolCalls ?? [])[0];

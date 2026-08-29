@@ -367,6 +367,57 @@ async function sendText(
   return receipt;
 }
 
+async function submitManagedRun(
+  client: Anthropic,
+  sessionId: string,
+  text: string,
+  rule: string,
+): Promise<{ receipt: BetaManagedAgentsSessionEvent; runId: string }> {
+  // Managed-ingress cause/effect rule: C1=one official SDK User Event targets
+  // an active Session; C2=Session admission commits its one root reservation.
+  // E1=return the exact Event receipt; E2=observe the resulting canonical Run
+  // id through the read-only durable projection. K: generic durable submit is
+  // not a second Managed root ingress. Decision I1=C1+C2=>E1+E2.
+  const receipt = await sendText(client, sessionId, text);
+  const dispatch = await waitForValue(
+    () => api('GET', `/v1/durable/threads/${sessionId}/dispatches`),
+    (response: { status: number; body: any }) => response.status === 200
+      && (response.body.dispatches ?? []).some((entry: any) => typeof entry.run_id === 'string'),
+    `${rule} Session-owned Run dispatch publication`,
+    { timeoutMs: 20_000, pollMs: 25 },
+  );
+  const rows = dispatch.body.dispatches ?? [];
+  assert.equal(rows.length, 1, `${rule} has one canonical Session root dispatch`);
+  return { receipt, runId: rows[0].run_id };
+}
+
+async function interruptManagedRun(
+  client: Anthropic,
+  sessionId: string,
+  rule: string,
+): Promise<BetaManagedAgentsSessionEvent> {
+  // Managed-cancel rule: C1=one active/awaiting Session root; C2=one official
+  // SDK interrupt. E1=the Session aggregate durably accepts and processes the
+  // exact receipt; cancellation delivery remains downstream of that authority.
+  // Decision C1+C2=>E1; no generic durable cancel command is admitted here.
+  const response = await within(client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.interrupt' }],
+    betas: BETAS,
+  }), 30_000, `${rule} Managed interrupt admission`);
+  const receipt = response.data?.[0];
+  assert.ok(receipt && typeof receipt.id === 'string', `${rule} returns one exact interrupt receipt`);
+  await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receipt.id,
+    BETAS,
+    () => true,
+    `${rule} exact interrupt receipt to process`,
+    { timeoutMs: 30_000, pollMs: 25 },
+  );
+  return receipt;
+}
+
 function dispatchDatabases(root: string): string[] {
   const pending = [root];
   const found: string[] = [];
@@ -563,11 +614,7 @@ async function main(): Promise<void> {
     // 1) Crash after task-reference commit but during tasks/get. Replacement must
     // reattach to crash-task from the pinned snapshot and never message:send again.
     const crashThread = await createSession(client);
-    const submitted = await api('POST', `/v1/durable/threads/${crashThread}/submit_background`, {
-      agent: AGENT,
-      text: 'prove crash recovery',
-    });
-    assert.equal(submitted.status, 200);
+    await sendText(client, crashThread, 'prove crash recovery');
     // Cause graph: valid A2A discriminators -> task reference commit -> tasks/get
     // reaches the peer. A malformed response must fail this edge within 30s instead
     // of leaving the whole stage runner waiting on a promise that can never resolve.
@@ -631,16 +678,17 @@ async function main(): Promise<void> {
     assert.equal(resumeMessage?.contextId, 'input-context', 'resume retained remote context');
     assert.match(resumeMessage?.messageId ?? '', /^a2a-resume-/, 'resume used stable run/ticket identity');
 
-    // 3) An awaiting background root Run is cancelled through the durable API.
+    // 3) An awaiting Session root Run is cancelled through its Session Event API.
     // The cancellation resolver reconstructs the remote executor without model,
     // credential or sandbox dependencies and addresses the committed task id.
     const cancelThread = await createSession(client);
-    const cancelSubmit = await api('POST', `/v1/durable/threads/${cancelThread}/submit_background`, {
-      agent: AGENT,
-      text: 'cancel remote task',
-    });
-    assert.equal(cancelSubmit.status, 200);
-    await waitForAwaiting(cancelThread, cancelSubmit.body.run_id);
+    const cancelSubmit = await submitManagedRun(
+      client,
+      cancelThread,
+      'cancel remote task',
+      'cold cancellation',
+    );
+    await waitForAwaiting(cancelThread, cancelSubmit.runId);
     // Commit-boundary lookup cause/effect graph: C1=candidate is a SQLite DB
     // containing runtime_state_command; C2=it contains the exact Session thread.
     // Effects: E1 select the one authoritative boundary; E2 reject missing or
@@ -668,19 +716,17 @@ async function main(): Promise<void> {
     server = spawnServer('config', PORT, environment).server;
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE, maxRetries: 0, timeout: 30_000 });
     await waitForPort(PORT, 180_000, server);
-    const cancelled = await api('POST', `/v1/durable/threads/${cancelThread}/cancel`, {
-      run_id: cancelSubmit.body.run_id,
-    });
-    assert.equal(cancelled.status, 200, `durable remote cancel accepted: ${JSON.stringify(cancelled.body)}`);
-    // Another pool worker may win the cancellation-intent claim. The API confirms
-    // durable acceptance; delivery/settlement then completes asynchronously.
+    await interruptManagedRun(client, cancelThread, 'cold cancellation');
+    // Another pool worker may win the cancellation-intent claim. The processed
+    // Session receipt confirms durable acceptance; delivery/settlement then
+    // completes asynchronously.
     await waitForRemoteCancel(peer.cancels, 'cancel-task');
     assert.deepEqual(
       peer.cancels,
       ['cancel-task'],
       `cancel addressed the pinned remote task exactly once; sent=${JSON.stringify(peer.sent)} reads=${JSON.stringify(peer.reads)}`,
     );
-    await waitForDispatchGone(cancelThread, cancelSubmit.body.run_id);
+    await waitForDispatchGone(cancelThread, cancelSubmit.runId);
     await publishRemote(peer.endpoint);
 
     // A crash may expose old/corrupt continuation data written by a previous
@@ -761,17 +807,15 @@ async function main(): Promise<void> {
     // Cancellation observes an already-terminal task and remains idempotent at
     // the remote boundary (no unnecessary tasks/cancel request).
     const terminalCancelThread = await createSession(client);
-    const terminalSubmit = await api('POST', `/v1/durable/threads/${terminalCancelThread}/submit_background`, {
-      agent: AGENT,
-      text: 'cancel terminal remote',
-    });
-    assert.equal(terminalSubmit.status, 200);
-    await waitForAwaiting(terminalCancelThread, terminalSubmit.body.run_id);
-    const terminalCancel = await api('POST', `/v1/durable/threads/${terminalCancelThread}/cancel`, {
-      run_id: terminalSubmit.body.run_id,
-    });
-    assert.equal(terminalCancel.status, 200, JSON.stringify(terminalCancel.body));
-    await waitForDispatchGone(terminalCancelThread, terminalSubmit.body.run_id);
+    const terminalSubmit = await submitManagedRun(
+      client,
+      terminalCancelThread,
+      'cancel terminal remote',
+      'terminal cancellation',
+    );
+    await waitForAwaiting(terminalCancelThread, terminalSubmit.runId);
+    await interruptManagedRun(client, terminalCancelThread, 'terminal cancellation');
+    await waitForDispatchGone(terminalCancelThread, terminalSubmit.runId);
     assert.ok(!peer.cancels.includes('cancel-terminal-task'));
 
     // 5) Every terminal A2A state and every reply carrier is projected without

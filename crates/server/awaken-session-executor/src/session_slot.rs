@@ -101,6 +101,12 @@ pub(crate) struct SessionRuntimeSlot {
     /// Serializes first materialization/rebuild for this Session without a
     /// process-wide registry lock being held across I/O.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes one complete Resource-generation compare/realize/publish
+    /// transition. The global lock order is `realization -> lifecycle ->
+    /// resource_projection`; callers may acquire any suffix but never reverse
+    /// it. Keeping this separate lets projection installation remain atomic to
+    /// Runtime observers without re-entering `lifecycle` during Resource sync.
+    pub resource_projection: Arc<tokio::sync::Mutex<()>>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     /// Rebuildable model-only context materialized from the Session baseline's
     /// immutable transcript-prefix reference. Never committed to this Thread.

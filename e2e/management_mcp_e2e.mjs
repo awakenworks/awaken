@@ -32,6 +32,17 @@ const validators = Object.fromEntries(
 const BETAS = ['managed-agents-2026-04-01'];
 const CALC_TOKEN = 'calc-mgmt-bearer-token'; // awaken-allow: secret
 
+function mcpBearerDescriptor(audience) {
+  return {
+    provider: audience,
+    material: { kind: 'secret', type_id: 'awaken.secret/v1' },
+    targets: [{
+      target: { purpose: { type: 'mcp_authorization' }, audience },
+      usage: { type: 'http_header', name: 'authorization', scheme: 'Bearer' },
+    }],
+  };
+}
+
 /// Assert a value matches the generated schema `name`; throw with the Ajv errors.
 function checkContract(name, value) {
   const validate = validators[name];
@@ -97,10 +108,17 @@ async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38191, async (base) => {
       // --- author the binding through the admin config plane ---
+      // Credential decision rule C0: the canonical MCP audience plus Bearer
+      // usage authorizes only this target; an undescribed source must fail
+      // before plaintext materialization. The fixture URL's cosmetic trailing
+      // slash is removed by the same identity rule used by the MCP aggregate.
+      const calcAudience = fixture.url.replace(/\/+$/u, '');
       let r = await req(base, 'POST', '/v1/config/credentials', {
+        idempotency_key: 'management-mcp-primary',
         workspace_id: 'ws',
         kind: 'vault',
         secret: CALC_TOKEN,
+        descriptor: mcpBearerDescriptor(calcAudience),
       });
       assert.equal(r.status, 201, JSON.stringify(r.json));
       checkContract('CredentialSource', r.json);
@@ -124,6 +142,7 @@ async function main() {
           backend_ref: 'default',
         },
         mcp_servers: [calcServer],
+        tools: alwaysAllowMcpTools([calcServer]),
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'GET', '/v1/config/agents/calc-agent');
@@ -321,7 +340,11 @@ async function main() {
       // | F2   | yes          | no          | reject before activation  |
       // | F3   | no           | -           | 503 before activation     |
       const wrong = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
+        idempotency_key: 'management-mcp-wrong',
+        workspace_id: 'ws',
+        kind: 'vault',
+        secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
+        descriptor: mcpBearerDescriptor(calcAudience),
       });
       assert.equal(wrong.status, 201);
       const badAgent = 'calc-auth-failure-agent';
@@ -330,6 +353,7 @@ async function main() {
         system: 'Use the calculator tool.',
         model: { mode: 'pinned', provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
         mcp_servers: [{ name: 'calc', url: fixture.url, credential: { id: wrong.json.id, revision: wrong.json.version } }],
+        tools: alwaysAllowMcpTools([{ name: 'calc' }]),
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${badAgent}/publish`);
@@ -357,6 +381,7 @@ async function main() {
         system: 'Use the unavailable calculator tool.',
         model: { mode: 'pinned', provider_identity_ref: 'default', model_ref: 'management', backend_ref: 'default' },
         mcp_servers: [{ name: 'offline', url: 'http://127.0.0.1:1/mcp' }],
+        tools: alwaysAllowMcpTools([{ name: 'offline' }]),
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${offlineAgent}/publish`);

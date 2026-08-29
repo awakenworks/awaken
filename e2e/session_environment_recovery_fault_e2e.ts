@@ -15,6 +15,7 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   assertPendingReceiptHasNoRuntimeEffects,
   REPO_ROOT,
+  SKILLS_BETAS,
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
@@ -308,6 +309,7 @@ async function main(): Promise<void> {
       files: [await toFile(Buffer.from(
         '---\nname: delivered-container\ndescription: recovery fixture skill\n---\nRECOVERY-SKILL-OK',
       ), 'SKILL.md')],
+      betas: SKILLS_BETAS,
     });
 
     const cases = new Map<string, string>();

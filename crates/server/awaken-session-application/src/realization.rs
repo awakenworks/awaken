@@ -503,6 +503,7 @@ impl SessionApplication {
         let control = RefreshedSessionRealizationControl(self);
         awaken_session_contract::drive_session_realization(
             session_id,
+            None,
             &control,
             &LocalProjectionSynchronizer {
                 runtime: self.runtime(),
@@ -991,6 +992,7 @@ impl SessionApplication {
                         )
                     })?;
                 session.realization_progress.last_error = None;
+                session.realization_progress.failure_source_run_id = None;
             }
             session.realization = Some(lease);
             match self
@@ -1399,6 +1401,8 @@ impl SessionApplication {
                 .map_err(unavailable)?;
         }
         session.realization_progress.last_error = Some(command.reason.clone());
+        session.realization_progress.failure_source_run_id =
+            command.source_run_id.clone().map(Box::new);
         let initial_realization = session.execution != SessionExecutionState::Idle;
         if command.retryable
             && initial_realization

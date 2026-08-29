@@ -68,6 +68,11 @@ async function expectCorruptTicketFailure(
   database: string,
   runId: string,
 ): Promise<void> {
+  const isMissingAnswerableTicket = (error: any): boolean =>
+    error?.status === 400
+      && error?.error?.error?.type === 'invalid_request_error'
+      && error?.error?.error?.message
+        === 'Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it';
   const confirmation: BetaManagedAgentsUserToolConfirmationEventParams = {
     type: 'user.tool_confirmation',
     tool_use_id: toolId,
@@ -78,9 +83,28 @@ async function expectCorruptTicketFailure(
       events: [confirmation],
       betas: BETAS,
     }),
-    (error: any) => error?.status === 500,
+    isMissingAnswerableTicket,
   );
-  await assert.rejects(events(client, sessionId), (error: any) => error?.status === 500);
+  const observed = await events(client, sessionId);
+  assert.equal(
+    observed.filter((event) => event.type === 'agent.tool_use' && event.id === toolId).length,
+    1,
+    'the already-committed permission request remains historical Session truth',
+  );
+  assert.ok(
+    observed.some((event) => event.type === 'session.status_idle'
+      && event.stop_reason?.type === 'requires_action'
+      && event.stop_reason.event_ids.includes(toolId)),
+    'the already-committed requires_action boundary remains listable',
+  );
+  assert.ok(
+    !observed.some((event) => event.type === 'user.tool_confirmation'),
+    'the rejected confirmation command never becomes a Session Event',
+  );
+  assert.ok(
+    !JSON.stringify(observed).includes('ACP-PERMISSION-ALLOWED'),
+    'the historical projection never fabricates the pending tool effect',
+  );
   assert.equal(
     Number(
       sqliteRows(
@@ -115,9 +139,11 @@ async function main(): Promise<void> {
     // Cause/effect graph: C1 a closed ToolCall permission target is committed;
     // C2 its required nested tool is removed while the process is stopped; C3
     // the exact qualified public tool id is confirmed after restart. Effects:
-    // E1 the mutation changes retained bytes; E2 send/list both fail 500 before
-    // a confirmation receipt can commit; E3 the waiting row remains and the
-    // pending command never executes. Decision rule T1=C1+C2+C3=>E1+E2+E3.
+    // E1 the mutation changes retained bytes; E2 send returns the exact typed
+    // 400 recovery precondition while list retains only the already-committed
+    // requires_action bracket; E3 no confirmation commits, the waiting row
+    // remains, and the pending command never executes.
+    // Decision rule T1=C1+C2+C3=>E1+E2+E3.
     // Constraints/invariants: AwaitTarget serde/recovery is the only structural
     // authority; other missing nested fields belong to the same serde failure
     // class, so this system boundary keeps one representative instead of a

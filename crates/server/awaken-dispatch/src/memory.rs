@@ -801,8 +801,8 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let reservation_ttl_ms =
-            validate_session_run_reservation_request(&request, reservation_ttl_ms)?;
+        let (request, reservation_ttl_ms) =
+            validate_session_run_reservation_request(request, reservation_ttl_ms)?;
         let reservation_deadline_ms =
             crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
         let run_id = request.run_id().clone();
@@ -1479,7 +1479,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     (
                         row.request.thread_id().clone(),
                         row.request.session_thread_id.clone(),
-                        row.request.canonical_fingerprint(),
+                        row.request.admission_fingerprint(),
                     )
                 });
                 state.completions.push(DispatchCompletion {
