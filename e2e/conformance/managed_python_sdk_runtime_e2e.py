@@ -75,6 +75,15 @@ def wait_for_idle(client: anthropic.Anthropic, session_id: str, receipt_id: str)
     raise AssertionError("sync Python Session did not reach idle")
 
 
+def assert_error_response_context(error: anthropic.APIStatusError) -> str:
+    """Prove the real HTTP edge retains metadata promoted by the official SDK."""
+    assert error.request_id and error.request_id.startswith("req_")
+    workspace_id = error.response.headers.get("anthropic-workspace-id")
+    assert workspace_id
+    assert error.workspace_id == workspace_id
+    return workspace_id
+
+
 def exercise_sync_session() -> None:
     # Test design: current_python_sync_managed_error_and_lifecycle
     # Sync Session causal graph: create with SDK-default beta -> exact send
@@ -90,9 +99,24 @@ def exercise_sync_session() -> None:
             assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "invalid_request_error"
             assert error.body["error"]["message"]
+            assert_error_response_context(error)
         else:
             raise AssertionError("zero Session page limit did not raise BadRequestError")
-        session = client.beta.sessions.create(agent="assistant", environment_id="env_local")
+        # Composite response-context edge: unlike the mock-transport taxonomy
+        # suite, this crosses the real Awaken process. The official raw wrapper,
+        # parsed DTO and later typed error must all retain the same standard
+        # request/workspace headers.
+        raw_session = client.beta.sessions.with_raw_response.create(
+            agent="assistant",
+            environment_id="env_local",
+        )
+        request_id = raw_session.headers.get("request-id")
+        workspace_id = raw_session.headers.get("anthropic-workspace-id")
+        assert request_id and request_id.startswith("req_")
+        assert workspace_id
+        session = raw_session.parse()
+        assert session._request_id == request_id
+        assert session._workspace_id == workspace_id
         assert session.type == "session" and session.status == "idle"
         assert client.beta.sessions.retrieve(session.id).id == session.id
         receipt = client.beta.sessions.events.send(
@@ -124,6 +148,7 @@ def exercise_sync_session() -> None:
             assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "not_found_error"
             assert error.body["error"]["message"]
+            assert_error_response_context(error) == workspace_id
         else:
             raise AssertionError("missing Session did not raise NotFoundError")
         deleted = client.beta.sessions.delete(session.id)
@@ -168,6 +193,7 @@ async def exercise_async_session() -> None:
             assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "invalid_request_error"
             assert error.body["error"]["message"]
+            assert_error_response_context(error)
         else:
             raise AssertionError("async zero Session page limit was accepted")
         try:
@@ -177,6 +203,7 @@ async def exercise_async_session() -> None:
             assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "not_found_error"
             assert error.body["error"]["message"]
+            assert_error_response_context(error)
         else:
             raise AssertionError("async absent Session was accepted")
         session = await client.beta.sessions.create(agent="assistant", environment_id="env_local")
@@ -402,6 +429,7 @@ def verify_recovery(state_path: Path) -> None:
                 "type": "invalid_request_error",
                 "message": "file is not downloadable",
             }
+            assert_error_response_context(error)
         else:
             raise AssertionError("ordinary Managed File became downloadable after restart")
         skill = client.skills.retrieve(state["skill_id"])

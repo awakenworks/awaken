@@ -23,6 +23,37 @@ TRANSPORT_PARAMETERS = frozenset(
     {"betas", "extra_headers", "extra_query", "extra_body", "timeout"}
 )
 UPLOAD_MARKER = "__managed_python_upload_kind__"
+MANAGED_SDK_ANCHOR_VERSIONS = frozenset({
+    "0.92.0",
+    "0.100.0",
+    "0.109.0",
+    "0.115.0",
+    "0.116.0",
+    "0.117.1",
+    "0.118.0",
+    "0.121.0",
+    "0.124.0",
+    "0.125.0",
+    "1.0.0",
+    "1.1.0",
+    "1.2.0",
+})
+WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
+    "0.124.0",
+    "0.125.0",
+    "1.0.0",
+    "1.1.0",
+    "1.2.0",
+})
+
+
+def projects_workspace_response_context(version: str) -> bool:
+    """Return the reviewed official-wheel response projection boundary."""
+    if version not in MANAGED_SDK_ANCHOR_VERSIONS:
+        raise AssertionError(f"unreviewed Python Managed SDK version: {version}")
+    return version in WORKSPACE_RESPONSE_CONTEXT_VERSIONS
+
+
 PATHLIKE_REJECTING_VERSIONS = frozenset(
     {
         "0.92.0",
@@ -965,7 +996,10 @@ async def _exercise_error_and_retry_contract_for_mode(
                 status,
                 request=request,
                 json=canonical_error(status, error_type),
-                headers={"request-id": f"req_header_{status}"},
+                headers={
+                    "request-id": f"req_header_{status}",
+                    "anthropic-workspace-id": f"workspace_header_{status}",
+                },
             )
 
         try:
@@ -981,6 +1015,15 @@ async def _exercise_error_and_retry_contract_for_mode(
             assert error.status_code == status
             assert error.body["error"]["type"] == error_type
             assert error.request_id == f"req_header_{status}"
+            assert error.response.headers["anthropic-workspace-id"] == (
+                f"workspace_header_{status}"
+            )
+            projects_workspace = projects_workspace_response_context(
+                anthropic_module.__version__
+            )
+            assert hasattr(error, "workspace_id") is projects_workspace
+            if projects_workspace:
+                assert error.workspace_id == f"workspace_header_{status}"
         else:
             raise AssertionError(f"{status}: Python SDK accepted a Managed error")
         assert len(requests) == 1, f"{status}: client fault retried"

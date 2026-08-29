@@ -16,6 +16,7 @@ from managed_python_sdk_request_contract import (
     exercise_async_error_and_retry_contract,
     exercise_error_and_retry_contract,
     exercise_pathlike_upload_change_point,
+    projects_workspace_response_context,
 )
 from managed_python_sdk_installed_evidence import assert_installed_evidence
 from managed_python_sdk_response_contract_e2e import exercise_async, exercise_sync
@@ -27,6 +28,12 @@ RESPONSE_CONTRACTS_PATH = Path(
     os.environ["AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS"]
 )
 SCOPE_PATH = REPO / "packages/managed-sdk-oracle/config/scope.json"
+PYTHON_ANCHORS = {
+    anchor["version"]
+    for anchor in json.loads(
+        (REPO / "packages/managed-sdk-oracle/config/python-anchors.json").read_text()
+    )["anchors"]
+}
 
 
 def extracted_evidence(version: str) -> tuple[dict[str, object], dict[str, object]]:
@@ -126,6 +133,20 @@ def wait_for_idle(client: object, session_id: str, receipt_id: str) -> list[obje
     raise AssertionError(f"{anthropic.__version__}: Session did not reach idle")
 
 
+def assert_real_error_response_context(error: object) -> str:
+    request_id = error.request_id
+    assert request_id and request_id.startswith("req_")
+    workspace_id = error.response.headers.get("anthropic-workspace-id")
+    assert workspace_id
+    version = anthropic.__version__
+    assert version in PYTHON_ANCHORS, f"unreviewed Python Managed SDK version: {version}"
+    projects_workspace = projects_workspace_response_context(version)
+    assert hasattr(error, "workspace_id") is projects_workspace
+    if projects_workspace:
+        assert error.workspace_id == workspace_id
+    return workspace_id
+
+
 def exercise_session(base_url: str, stream_event_names: list[str]) -> None:
     # Historical lifecycle graph: exact version defaults -> create -> exact
     # receipt -> limit=1 auto-pagination -> typed message+idle -> delete. Every
@@ -136,9 +157,11 @@ def exercise_session(base_url: str, stream_event_names: list[str]) -> None:
         # Test design: every_historical_python_sdk_decodes_real_error_boundaries
         # Cause/effect graph: exact wheel -> generated sync request -> real
         # Managed parser/domain boundary -> wheel-owned status subclass + nested
-        # Anthropic body. Decision table: zero page limit => 400/BadRequestError;
-        # absent Session => 404/NotFoundError; success, wrong class, plain-text,
-        # or wrong discriminator fails before the positive lifecycle can mask it.
+        # Anthropic body and response context. Decision table: zero page limit =>
+        # 400/BadRequestError; absent Session => 404/NotFoundError; successful
+        # create => raw headers + parsed DTO context. A wrong class, plain-text,
+        # missing context, or wrong discriminator fails before the positive
+        # lifecycle can mask it.
         try:
             client.beta.sessions.list(limit=0)
         except anthropic.BadRequestError as error:
@@ -146,6 +169,7 @@ def exercise_session(base_url: str, stream_event_names: list[str]) -> None:
             assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "invalid_request_error"
             assert error.body["error"]["message"]
+            assert_real_error_response_context(error)
         else:
             raise AssertionError(
                 f"{anthropic.__version__}: zero Session page limit was accepted"
@@ -157,12 +181,26 @@ def exercise_session(base_url: str, stream_event_names: list[str]) -> None:
             assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "not_found_error"
             assert error.body["error"]["message"]
+            assert_real_error_response_context(error)
         else:
             raise AssertionError(
                 f"{anthropic.__version__}: absent Session was accepted"
             )
 
-        session = client.beta.sessions.create(agent="assistant", environment_id="env_local")
+        raw_session = client.beta.sessions.with_raw_response.create(
+            agent="assistant",
+            environment_id="env_local",
+        )
+        request_id = raw_session.headers.get("request-id")
+        workspace_id = raw_session.headers.get("anthropic-workspace-id")
+        assert request_id and request_id.startswith("req_")
+        assert workspace_id
+        session = raw_session.parse()
+        assert session._request_id == request_id
+        projects_workspace = projects_workspace_response_context(anthropic.__version__)
+        assert hasattr(session, "_workspace_id") is projects_workspace
+        if projects_workspace:
+            assert session._workspace_id == workspace_id
         try:
             assert client.beta.sessions.retrieve(session.id).id == session.id
             receipt = client.beta.sessions.events.send(

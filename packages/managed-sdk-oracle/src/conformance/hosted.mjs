@@ -74,11 +74,22 @@ function ingressRequest(path, headerPairs) {
       headers: headerPairs.flatMap(([name, value]) => [name, value]),
     }, (response) => {
       response.resume();
-      response.on('end', () => resolve(response.statusCode));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        requestID: response.headers['request-id'],
+        workspaceID: response.headers['anthropic-workspace-id'],
+      }));
     });
     request.on('error', reject);
     request.end();
   });
+}
+
+async function assertIngressResponse(path, headerPairs, expectedStatus, label = path) {
+  const response = await ingressRequest(path, headerPairs);
+  assert.equal(response.status, expectedStatus, label);
+  assert.ok(response.requestID, `${label}: public ingress preserves request-id`);
+  assert.ok(response.workspaceID, `${label}: public ingress preserves anthropic-workspace-id`);
 }
 
 async function exerciseIngressHeaderFidelity() {
@@ -89,32 +100,36 @@ async function exerciseIngressHeaderFidelity() {
   const direct = '/v1/memory_stores?beta=true';
   const scoped = `/v1/workspaces/${encodeURIComponent(workspaceId)}/memory_stores?beta=true`;
   for (const path of [direct, scoped]) {
-    assert.equal(await ingressRequest(path, identity), 400, `${path}: missing beta`);
-    assert.equal(await ingressRequest(path, [...identity, ['anthropic-beta', 'agent-memory-2026-07-22']]), 200);
-    assert.equal(await ingressRequest(path, [...identity, ['anthropic-beta', BETAS[0]]]), 200);
+    await assertIngressResponse(path, identity, 400, `${path}: missing beta`);
+    await assertIngressResponse(
+      path,
+      [...identity, ['anthropic-beta', 'agent-memory-2026-07-22']],
+      200,
+    );
+    await assertIngressResponse(path, [...identity, ['anthropic-beta', BETAS[0]]], 200);
   }
-  assert.equal(await ingressRequest(direct, [
+  await assertIngressResponse(direct, [
     ...identity,
     ['anthropic-beta', 'agent-memory-2026-07-22'],
     ['anthropic-beta', 'agent-memory-2026-07-22'],
-  ]), 200, 'public ingress preserves repeated identical beta fields');
+  ], 200, 'public ingress preserves repeated identical beta fields');
   for (const values of [
     [BETAS[0], 'agent-memory-2026-07-22'],
     ['agent-memory-2026-07-22', BETAS[0]],
   ]) {
-    assert.equal(await ingressRequest(direct, [
+    await assertIngressResponse(direct, [
       ...identity,
       ...values.map((value) => ['anthropic-beta', value]),
-    ]), 400, 'public ingress cannot hide ambiguous capability order');
+    ], 400, 'public ingress cannot hide ambiguous capability order');
   }
-  assert.equal(await ingressRequest(direct, [
+  await assertIngressResponse(direct, [
     ...identity,
     ['anthropic-beta', '  agent-memory-2026-07-22, agent-memory-2026-07-22  '],
-  ]), 200, 'comma joining and optional whitespace preserve the Memory selector');
-  assert.equal(await ingressRequest(direct, [
+  ], 200, 'comma joining and optional whitespace preserve the Memory selector');
+  await assertIngressResponse(direct, [
     ...identity,
     ['anthropic-beta', 'future-memory-beta'],
-  ]), 400, 'unknown-only beta remains rejected after public ingress');
+  ], 400, 'unknown-only beta remains rejected after public ingress');
 }
 
 async function eventsUntilIdle(client, sessionId) {
