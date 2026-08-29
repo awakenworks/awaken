@@ -76,12 +76,22 @@ def wait_for_idle(client: anthropic.Anthropic, session_id: str, receipt_id: str)
 
 
 def exercise_sync_session() -> None:
+    # Test design: current_python_sync_managed_error_and_lifecycle
     # Sync Session causal graph: create with SDK-default beta -> exact send
     # receipt -> cursor pagination -> canonical lifecycle -> SSE replay -> 404
     # classification -> delete. Decision table: every edge must decode through
     # Python models; missing default selector, page loss, stream loss, malformed
     # error mapping, or stale deletion fails this single client-language owner.
     with anthropic.Anthropic(api_key="e2e-dummy", base_url=BASE_URL, max_retries=0) as client:
+        try:
+            client.beta.sessions.list(limit=0)
+        except anthropic.BadRequestError as error:
+            assert error.status_code == 400
+            assert error.body["type"] == "error"
+            assert error.body["error"]["type"] == "invalid_request_error"
+            assert error.body["error"]["message"]
+        else:
+            raise AssertionError("zero Session page limit did not raise BadRequestError")
         session = client.beta.sessions.create(agent="assistant", environment_id="env_local")
         assert session.type == "session" and session.status == "idle"
         assert client.beta.sessions.retrieve(session.id).id == session.id
@@ -111,7 +121,9 @@ def exercise_sync_session() -> None:
             client.beta.sessions.retrieve("sesn_python_missing")
         except anthropic.NotFoundError as error:
             assert error.status_code == 404
+            assert error.body["type"] == "error"
             assert error.body["error"]["type"] == "not_found_error"
+            assert error.body["error"]["message"]
         else:
             raise AssertionError("missing Session did not raise NotFoundError")
         deleted = client.beta.sessions.delete(session.id)
@@ -139,6 +151,7 @@ async def wait_for_async_idle(
 
 
 async def exercise_async_session() -> None:
+    # Test design: current_python_async_managed_error_and_lifecycle
     # Orthogonal async partition: repeat only the client-runtime edges whose
     # implementation differs—awaited CRUD/send, AsyncPageCursor and AsyncStream.
     # Service lifecycle assertions stay in the sync/shared owners, preventing a
@@ -148,6 +161,24 @@ async def exercise_async_session() -> None:
         base_url=BASE_URL,
         max_retries=0,
     ) as client:
+        try:
+            await client.beta.sessions.list(limit=0)
+        except anthropic.BadRequestError as error:
+            assert error.status_code == 400
+            assert error.body["type"] == "error"
+            assert error.body["error"]["type"] == "invalid_request_error"
+            assert error.body["error"]["message"]
+        else:
+            raise AssertionError("async zero Session page limit was accepted")
+        try:
+            await client.beta.sessions.retrieve("sesn_python_async_missing")
+        except anthropic.NotFoundError as error:
+            assert error.status_code == 404
+            assert error.body["type"] == "error"
+            assert error.body["error"]["type"] == "not_found_error"
+            assert error.body["error"]["message"]
+        else:
+            raise AssertionError("async absent Session was accepted")
         session = await client.beta.sessions.create(agent="assistant", environment_id="env_local")
         receipt = await client.beta.sessions.events.send(
             session.id,
@@ -286,6 +317,7 @@ def exercise_webhook_decoder() -> None:
 
 
 def prepare_recovery(state_path: Path) -> None:
+    # Test design: python_sdk_resource_recovery
     # Recovery causal graph, phase A: C1=the exact Python 1.2 projections create
     # four independently persisted aggregates; C2=the Session receipt reaches a
     # terminal durable event batch before shutdown. Effect E1=only stable ids

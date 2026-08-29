@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 
 import { canonicalPythonOperationID } from '../src/python-operation-identity.mjs';
+import { extractOperations } from '../src/extract-operations.mjs';
 
 const REPO = resolve(import.meta.dirname, '../../..');
 const python = JSON.parse(readFileSync(resolve(
@@ -17,6 +19,10 @@ const typescript = JSON.parse(readFileSync(resolve(
 const candidateQualifications = JSON.parse(readFileSync(resolve(
   REPO,
   'e2e/conformance/official_sdk_candidate_qualifications.json',
+), 'utf8'));
+const scope = JSON.parse(readFileSync(resolve(
+  REPO,
+  'packages/managed-sdk-oracle/config/scope.json',
 ), 'utf8'));
 const pythonRuntime = [
   readFileSync(resolve(REPO, 'e2e/conformance/managed_python_sdk_runtime_e2e.py'), 'utf8'),
@@ -46,26 +52,27 @@ test('Python current SDK has the exact TypeScript Managed operation identity set
 
 test('Python 1.2 beta-to-GA drift is exactly the reviewed TypeScript 0.122 delta', () => {
   // Selector cause/effect graph: C1=Python 1.2 removed dated selector pins from
-  // beta Files/Skills while retaining `beta=true`; C2=TypeScript 0.121 is the
-  // last pinned oracle; C3=the exact 0.122 candidate qualification owns every
+  // beta Files/Skills while retaining `beta=true`; C2=TypeScript 0.121 remains
+  // a pinned projection change point; C3=the exact 0.122 qualification owns every
   // changed operation. Effects: E1=method/path/query stay identical and only
   // the 14 reviewed beta-header coordinates differ; E2=any unreviewed
   // cross-language drift fails. Decision table: C1+C2+C3=>E1; a changed route,
   // verb, query, extra selector, or absent qualification=>E2.
-  const pythonByID = new Map(python.current.operations.map(
-    (operation) => [canonicalPythonOperationID(operation.id), operation],
+  const legacy = extractOperations('@anthropic-ai/sdk-beta-resources-legacy', scope);
+  const currentByID = new Map(typescript.current.operations.map(
+    (operation) => [operation.id, operation],
   ));
   const differences = [];
-  for (const operation of typescript.current.operations) {
-    const pythonOperation = pythonByID.get(operation.id);
-    assert.ok(pythonOperation, `${operation.id}: Python operation`);
-    if (JSON.stringify(withoutID(pythonOperation)) !== JSON.stringify(withoutID(operation))) {
-      differences.push(operation.id);
+  for (const operation of legacy.operations) {
+    const currentOperation = currentByID.get(operation.id);
+    assert.ok(currentOperation, `${operation.id}: TypeScript 0.122 operation`);
+    if (!isDeepStrictEqual(withoutID(currentOperation), withoutID(operation))) {
+      differences.push(currentOperation.id);
       assert.deepEqual(
         {
-          method: pythonOperation.method,
-          path: pythonOperation.path,
-          transport_query: pythonOperation.transport_query,
+          method: currentOperation.method,
+          path: currentOperation.path,
+          transport_query: currentOperation.transport_query,
         },
         {
           method: operation.method,
@@ -74,7 +81,7 @@ test('Python 1.2 beta-to-GA drift is exactly the reviewed TypeScript 0.122 delta
         },
         `${operation.id}: transport coordinate`,
       );
-      assert.deepEqual(pythonOperation.betas, [], `${operation.id}: Python 1.2 selector removal`);
+      assert.deepEqual(currentOperation.betas, [], `${operation.id}: TypeScript 0.122 selector removal`);
       assert.ok(operation.betas.length > 0, `${operation.id}: prior selector pin`);
     }
   }

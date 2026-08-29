@@ -24,7 +24,7 @@ import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package
 import {
   canonicalPythonOperationID,
 } from '../../packages/managed-sdk-oracle/src/python-operation-identity.mjs';
-import { buildRequestWitnessBundle } from './managed_sdk_request_contract_e2e.mjs';
+import { buildRequestWitnessBundle } from './managed_sdk_request_contract.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const LOCK = resolve(REPO, 'packages/managed-sdk-oracle/python/requirements.lock');

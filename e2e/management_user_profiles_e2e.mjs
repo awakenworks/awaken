@@ -28,6 +28,27 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { USER_PROFILES_BETA, withScenarioServer, pass } from './harness.mjs';
 
+const CURRENT_USER_PROFILES_BETA = 'user-profiles-2026-08-18';
+const USER_PROFILES_PROJECTION =
+  process.env.AWAKEN_MANAGED_SDK_USER_PROFILES_PROJECTION ?? 'current';
+assert.match(
+  USER_PROFILES_PROJECTION,
+  /^(?:legacy|current)$/u,
+  'invalid selected SDK User Profiles projection',
+);
+const currentUserProfiles = USER_PROFILES_PROJECTION === 'current';
+const selectedUserProfilesBeta = currentUserProfiles
+  ? CURRENT_USER_PROFILES_BETA
+  : USER_PROFILES_BETA;
+
+async function assertInvalidRequest(response, message, rule) {
+  assert.equal(response.status, 400, `${rule}: status`);
+  const body = await response.json();
+  assert.equal(body.type, 'error', `${rule}: envelope`);
+  assert.equal(body.error?.type, 'invalid_request_error', `${rule}: discriminator`);
+  assert.match(body.error?.message ?? '', message, `${rule}: cause`);
+}
+
 async function drain(pagePromise) {
   const items = [];
   for await (const item of pagePromise) items.push(item);
@@ -42,12 +63,16 @@ async function main() {
       const missingBeta = await fetch(`${baseUrl}/v1/user_profiles`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
       });
-      assert.equal(missingBeta.status, 400);
+      await assertInvalidRequest(
+        missingBeta,
+        /User Profiles beta is required/u,
+        'missing capability',
+      );
       const latestBeta = await fetch(`${baseUrl}/v1/user_profiles`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'anthropic-beta': 'user-profiles-2026-08-18',
+          'anthropic-beta': CURRENT_USER_PROFILES_BETA,
         },
         body: JSON.stringify({ access_type: 'application' }),
       });
@@ -63,6 +88,7 @@ async function main() {
       assert.equal(profile.type, 'user_profile');
       assert.ok(profile.id.startsWith('uprof_'), `id: ${profile.id}`);
       assert.equal(profile.relationship, 'resold');
+      assert.equal(profile.access_type, undefined);
       assert.ok(profile.trust_grants && typeof profile.trust_grants === 'object');
       pass('beta.userProfiles.create -> BetaUserProfile');
 
@@ -71,49 +97,86 @@ async function main() {
       // the matching legacy projection; a legacy-only write clears the access
       // projection; equivalent dual input is accepted and conflicting dual input
       // fails before revision/state mutation.
-      const accessProfile = await client.beta.userProfiles.create({
-        access_type: 'passthrough',
-        name: 'Resold Company',
-      });
-      assert.equal(accessProfile.access_type, 'passthrough');
-      assert.equal(accessProfile.relationship, 'resold');
-      const applicationProfile = await client.beta.userProfiles.update(accessProfile.id, {
-        access_type: 'application',
-      });
-      assert.equal(applicationProfile.access_type, 'application');
-      assert.equal(applicationProfile.relationship, 'external');
-      const legacyProfile = await client.beta.userProfiles.update(accessProfile.id, {
-        relationship: 'resold',
-      });
-      assert.equal(legacyProfile.access_type, undefined);
-      assert.equal(legacyProfile.relationship, 'resold');
-      const conflictingAccess = await fetch(`${baseUrl}/v1/user_profiles/${accessProfile.id}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
-        body: JSON.stringify({ access_type: 'application', relationship: 'resold' }),
-      });
-      assert.equal(conflictingAccess.status, 400);
-      const conflictingNullRelationship = await fetch(
-        `${baseUrl}/v1/user_profiles/${accessProfile.id}`,
-        {
+      if (currentUserProfiles) {
+        const accessProfile = await client.beta.userProfiles.create({
+          access_type: 'passthrough',
+          name: 'Resold Company',
+        });
+        assert.equal(accessProfile.access_type, 'passthrough');
+        assert.equal(accessProfile.relationship, 'resold');
+        const applicationProfile = await client.beta.userProfiles.update(accessProfile.id, {
+          access_type: 'application',
+        });
+        assert.equal(applicationProfile.access_type, 'application');
+        assert.equal(applicationProfile.relationship, 'external');
+        const legacyProfile = await client.beta.userProfiles.update(accessProfile.id, {
+          relationship: 'resold',
+        });
+        assert.equal(legacyProfile.access_type, undefined);
+        assert.equal(legacyProfile.relationship, 'resold');
+        const conflictingAccess = await fetch(`${baseUrl}/v1/user_profiles/${accessProfile.id}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-beta': CURRENT_USER_PROFILES_BETA,
+          },
+          body: JSON.stringify({ access_type: 'application', relationship: 'resold' }),
+        });
+        await assertInvalidRequest(
+          conflictingAccess,
+          /access_type and relationship describe different profile access models/u,
+          'conflicting dual vocabulary',
+        );
+        const conflictingNullRelationship = await fetch(
+          `${baseUrl}/v1/user_profiles/${accessProfile.id}`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'anthropic-beta': CURRENT_USER_PROFILES_BETA,
+            },
+            body: JSON.stringify({ access_type: 'passthrough', relationship: null }),
+          },
+        );
+        await assertInvalidRequest(
+          conflictingNullRelationship,
+          /access_type and relationship describe different profile access models/u,
+          'access with cleared relationship',
+        );
+        const afterConflictingAccess = await client.beta.userProfiles.retrieve(accessProfile.id);
+        assert.equal(afterConflictingAccess.access_type, undefined);
+        assert.equal(afterConflictingAccess.relationship, 'resold');
+      } else {
+        const rejectedLegacyAccess = await fetch(`${baseUrl}/v1/user_profiles`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
-          body: JSON.stringify({ access_type: 'passthrough', relationship: null }),
-        },
-      );
-      assert.equal(conflictingNullRelationship.status, 400);
-      const afterConflictingAccess = await client.beta.userProfiles.retrieve(accessProfile.id);
-      assert.equal(afterConflictingAccess.access_type, undefined);
-      assert.equal(afterConflictingAccess.relationship, 'resold');
-      for (const body of [{ access_type: null }, { relationship: null }]) {
+          body: JSON.stringify({ access_type: 'application' }),
+        });
+        await assertInvalidRequest(
+          rejectedLegacyAccess,
+          /access_type requires the user-profiles-2026-08-18 beta capability/u,
+          'legacy field fence',
+        );
+      }
+      for (const [body, cause] of [
+        [{ access_type: null }, /access_type: expected value/u],
+        [{ relationship: null }, /relationship: expected value/u],
+      ]) {
         const rejectedCreateNull = await fetch(`${baseUrl}/v1/user_profiles`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-beta': selectedUserProfilesBeta,
+          },
           body: JSON.stringify(body),
         });
-        assert.equal(rejectedCreateNull.status, 400, JSON.stringify(body));
+        await assertInvalidRequest(
+          rejectedCreateNull,
+          cause,
+          `non-null create field ${JSON.stringify(body)}`,
+        );
       }
-      pass('beta.userProfiles access_type/relationship decision table');
+      pass(`beta.userProfiles ${USER_PROFILES_PROJECTION} access vocabulary decision table`);
 
       const got = await client.beta.userProfiles.retrieve(profile.id);
       assert.equal(got.id, profile.id);
@@ -130,10 +193,17 @@ async function main() {
 
       const rejectedUpdate = await fetch(`${baseUrl}/v1/user_profiles/${profile.id}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
+        headers: {
+          'content-type': 'application/json',
+          'anthropic-beta': selectedUserProfilesBeta,
+        },
         body: JSON.stringify({ parallel_profile_config: true }),
       });
-      assert.equal(rejectedUpdate.status, 400);
+      await assertInvalidRequest(
+        rejectedUpdate,
+        /unknown field/u,
+        'unknown update field',
+      );
       const afterRejectedUpdate = await client.beta.userProfiles.retrieve(profile.id);
       assert.equal(afterRejectedUpdate.name, 'Acme Inc', 'rejected patch has no state effect');
 
@@ -164,9 +234,9 @@ async function main() {
       }))).map((p) => p.id);
       assert.deepEqual(nullOrder, ascending, 'TypeScript null query equals omission/asc');
       const invalidOrder = await fetch(`${baseUrl}/v1/user_profiles?order=newest`, {
-        headers: { 'anthropic-beta': USER_PROFILES_BETA },
+        headers: { 'anthropic-beta': selectedUserProfilesBeta },
       });
-      assert.equal(invalidOrder.status, 400);
+      await assertInvalidRequest(invalidOrder, /order/u, 'invalid order');
       pass(`beta.userProfiles.list order -> PageCursor<BetaUserProfile> (${ascending.length})`);
 
       const enroll = await client.beta.userProfiles.createEnrollmentURL(profile.id);

@@ -2,6 +2,67 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// One resource-level process-replacement owner complements the per-operation
+// transport/behavior owners below. Attaching this evidence to every operation
+// in the bounded context does not claim that every mutation is replayed; it
+// proves that the resource's public identity and durable projection survive a
+// fresh process. Stateless SDK helpers (Webhooks) are outside the HTTP operation
+// ledger and therefore correctly absent from this map.
+export const RESOURCE_RESTART_EVIDENCE = Object.freeze({
+  agents: Object.freeze({
+    case_id: 'public_management_projections_survive_process_replacement',
+    owner: 'e2e/management_persistence_e2e.mjs',
+  }),
+  deploymentRuns: Object.freeze({
+    case_id: 'deployment_run_survives_process_replacement',
+    owner: 'e2e/management_persistence_e2e.mjs',
+  }),
+  deployments: Object.freeze({
+    case_id: 'deployment_run_survives_process_replacement',
+    owner: 'e2e/management_persistence_e2e.mjs',
+  }),
+  dreams: Object.freeze({
+    case_id: 'official_sdk_dream_restart_interleaving',
+    owner: 'e2e/managed_dream_restart_sdk_e2e.ts',
+  }),
+  environments: Object.freeze({
+    case_id: 'environment_work_survives_process_replacement',
+    owner: 'e2e/management_env_work_persistence_e2e.mjs',
+  }),
+  files: Object.freeze({
+    case_id: 'python_sdk_resource_recovery',
+    owner: 'e2e/conformance/managed_python_sdk_runtime_e2e.py',
+  }),
+  memoryStores: Object.freeze({
+    case_id: 'memory_store_survives_process_replacement',
+    owner: 'e2e/managed_memory_store_durable_e2e.mjs',
+  }),
+  models: Object.freeze({
+    case_id: 'public_management_projections_survive_process_replacement',
+    owner: 'e2e/management_persistence_e2e.mjs',
+  }),
+  sessions: Object.freeze({
+    case_id: 'python_sdk_resource_recovery',
+    owner: 'e2e/conformance/managed_python_sdk_runtime_e2e.py',
+  }),
+  skills: Object.freeze({
+    case_id: 'skill_store_survives_process_replacement',
+    owner: 'e2e/managed_skill_store_durable_e2e.mjs',
+  }),
+  tunnels: Object.freeze({
+    case_id: 'active_tunnel_and_rotated_secret_survive_process_replacement',
+    owner: 'packages/managed-sdk-oracle/src/conformance/recovery.mjs',
+  }),
+  userProfiles: Object.freeze({
+    case_id: 'public_management_projections_survive_process_replacement',
+    owner: 'e2e/management_persistence_e2e.mjs',
+  }),
+  vaults: Object.freeze({
+    case_id: 'public_management_projections_survive_process_replacement',
+    owner: 'e2e/management_persistence_e2e.mjs',
+  }),
+});
+
 export function resourceOf(operation) {
   const parts = operation.id.split('.');
   if (parts[0] === 'beta') return parts[1];
@@ -32,6 +93,12 @@ export function operationCoverage({
 }) {
   assert.equal(config.schema_version, 2, 'unsupported coverage config schema');
   const knownResources = new Set(Object.keys(config.resources));
+  for (const resource of knownResources) {
+    assert.ok(
+      RESOURCE_RESTART_EVIDENCE[resource],
+      `${resource} has no process-replacement owner`,
+    );
+  }
   const current = extracted.find(({ role }) => role === 'current_oracle');
   assert.ok(current, 'current oracle is required for operation coverage');
   const operations = [...current.operations, ...documentedRoutes];
@@ -53,6 +120,23 @@ export function operationCoverage({
       'u',
     );
     assert.match(source, testFunction, `${owner} contains no behavior test ${caseId}`);
+    const testIndex = source.search(testFunction);
+    const design = source.slice(Math.max(0, testIndex - 4_000), testIndex);
+    assert.match(
+      design,
+      new RegExp(String.raw`Test design:\s*${escapeRegex(caseId)}\b`, 'u'),
+      `${owner} behavior test ${caseId} has no adjacent named test design`,
+    );
+    assert.match(
+      design,
+      /Cause\/effect graph:/u,
+      `${owner} behavior test ${caseId} has no cause/effect graph`,
+    );
+    assert.match(
+      design,
+      /Decision table:/u,
+      `${owner} behavior test ${caseId} has no decision table`,
+    );
   };
 
   const rows = operations.map((operation) => {
@@ -93,11 +177,16 @@ export function operationCoverage({
       resource,
       sdk_anchors: sdkAnchors,
       evidence: {
+        local_route_boundary: {
+          case_id: `${operation.id}.local.real-process-boundary`,
+          owner: 'e2e/conformance/managed_local_operation_sweep_e2e.mjs',
+        },
         deployed_route_semantics: {
           case_id: `${operation.id}.deployed.actual-reference`,
           owner: 'packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs',
         },
         route_inventory: 'scripts/ci/_managed_protocol_boundary.py',
+        resource_restart_semantics: RESOURCE_RESTART_EVIDENCE[resource],
         rust_behavior: {
           case_id: rustBehavior.test,
           owner: rustBehavior.path,

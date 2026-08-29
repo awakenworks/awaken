@@ -5,12 +5,17 @@
 //   C4 restored Agent uses restored MCP binding    -> E4 authenticated tool call works
 //   C5 session explicitly allows the MCP tool      -> E5 transport proof is not paused by HITL
 //   C6 bootstrap identity and platform scope persist -> E6 every durable read/write stays authorized
+//   C7 public Agent/Profile ids survive restart    -> E7 official SDK reads the same aggregates
+//   C8 provider catalog survives restart           -> E8 SDK Models projects the restored supply
+//   C9 Deployment/Run commit before restart         -> E9 both public SDK aggregates are restored
 //
 // Decision table:
 //   Rule  C1  C2  C3  C4  C5  C6  Expected
 //   T1    Y   -   -   -   -   Y   E1 + E6 (catalog/pool/normalized profile/Agent)
 //   T2    Y   Y   -   Y   Y   Y   E2 + E4 + E5 + E6
 //   T3    -   -   Y   -   -   Y   E3 + E6 (secret-free SDK projections)
+//   T4    Y   -   Y   -   -   Y   E7 + E8 (public SDK projections after restart)
+//   T5    Y   -   -   -   -   Y   E9 (Deployment/Run and linked Session survive)
 //
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
 // awaken-server in `management` mode with a fixed typed data_dir + seal key,
@@ -118,14 +123,30 @@ async function main() {
     assert.equal(wireCred.auth.type, 'mcp_oauth');
     assert.ok(!JSON.stringify(wireCred).includes(CALC_TOKEN), 'wire credential is secret-free');
 
+    const userProfile = await client.beta.userProfiles.create({
+      external_id: 'management-persistence-profile',
+      name: 'Persistent User Profile',
+      relationship: 'external',
+      metadata: { lifecycle: 'before-restart' },
+    });
+    assert.equal(userProfile.type, 'user_profile');
+
     // The domain row the SDK entry created. The wire vault id is only a container
     // id; the durable row is owned by the platform-resolved local workspace.
     r = await request('GET', `/v1/config/credentials?workspace_id=${workspace}`);
     assert.equal(r.status, 200);
-    const mcpCredentials = r.json.filter((credential) => credential.provider_id === 'mcp');
+    const mcpCredentials = r.json.filter((credential) => credential.descriptor?.targets?.some(
+      ({ target }) => target?.purpose?.type === 'mcp_authorization',
+    ));
     assert.equal(mcpCredentials.length, 1, `exactly one normalized MCP credential is present: ${JSON.stringify(r.json)}`);
     const [mcpCredential] = mcpCredentials;
-    assert.equal(mcpCredential.provider_id, 'mcp', 'the vault front door normalizes MCP ownership');
+    assert.equal(
+      new URL(mcpCredential.descriptor.provider).origin,
+      new URL(fixture.url).origin,
+      'the descriptor retains the canonical MCP authority',
+    );
+    assert.equal(mcpCredential.descriptor.material.kind, 'secret');
+    assert.equal(mcpCredential.descriptor.targets[0].target.purpose.type, 'mcp_authorization');
     assert.equal(mcpCredential.kind, 'vault', 'the secret remains backed by the canonical vault kind');
     const credId = mcpCredential.id;
     pass(`SDK vault mcp_oauth credential entered -> domain row ${credId} (secret-free)`);
@@ -173,6 +194,48 @@ async function main() {
     assert.equal(r.status, 200, JSON.stringify(r.json));
     pass('authored pool + profile + published typed Agent MCP binding');
 
+    // Test design: deployment_run_survives_process_replacement
+    // Cause/effect graph: durable Agent + Environment -> Deployment commit ->
+    // manual trigger -> DeploymentRun + linked Session commits -> process loss
+    // -> a fresh SDK client reconstructs all four identities from durable facts.
+    // Decision table:
+    // | Deployment | Run | same data root | expected after restart |
+    // | committed  | committed | yes      | retrieve/list exact IDs |
+    // | committed  | absent    | yes      | Deployment only         |
+    // | any        | any       | no       | no recovery claim       |
+    // The test waits for the linked Session to become terminal before stopping
+    // the process, separating durable recovery from in-flight crash recovery.
+    const deploymentEnvironment = await client.beta.environments.create({
+      name: 'management-persistence-deployment',
+      config: { type: 'cloud' },
+      betas: BETAS,
+    });
+    const deployment = await client.beta.deployments.create({
+      agent: 'calc-agent',
+      environment_id: deploymentEnvironment.id,
+      name: 'management-persistence-deployment',
+      initial_events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'Return a short persistence acknowledgement.' }],
+      }],
+      betas: BETAS,
+    });
+    const deploymentRun = await client.beta.deployments.run(deployment.id, { betas: BETAS });
+    assert.equal(deploymentRun.deployment_id, deployment.id);
+    assert.ok(deploymentRun.session_id, 'manual DeploymentRun links a Session before restart');
+    const runDeadline = Date.now() + 60_000;
+    let linkedSession;
+    while (Date.now() < runDeadline) {
+      linkedSession = await client.beta.sessions.retrieve(deploymentRun.session_id, { betas: BETAS });
+      if (['idle', 'failed'].includes(linkedSession.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(
+      linkedSession && ['idle', 'failed'].includes(linkedSession.status),
+      `linked Session settles before restart: ${JSON.stringify(linkedSession)}`,
+    );
+    pass('official SDK committed Deployment/Run/Session recovery fixture');
+
     // ---- restart: kill the process, respawn over the same dir + key -------
     await stopServer(server);
     server = null;
@@ -191,6 +254,57 @@ async function main() {
     assert.equal(restoredCredential.id, wireCred.id);
     assert.ok(!JSON.stringify(restoredCredential).includes(CALC_TOKEN));
     pass('official SDK Vault/Credential identities persist across restart without secret echo');
+
+    // Test design: public_management_projections_survive_process_replacement
+    // Cause/effect graph: durable Config/Profile/Provider rows -> fresh process
+    // composition -> Agent/UserProfile/Models protocol adapters -> official SDK
+    // typed projections. No internal config GET is accepted as substitute
+    // evidence for the public compatibility surface.
+    // Decision table: same data root+seal key => stable ids/metadata/model;
+    // empty cache or alternate store => missing SDK row and test failure.
+    const restoredAgent = await client2.beta.agents.retrieve('calc-agent', { betas: BETAS });
+    assert.equal(restoredAgent.id, 'calc-agent');
+    assert.equal(restoredAgent.name, 'Calculator');
+    assert.equal(restoredAgent.mcp_servers[0]?.url, fixture.url);
+    const restoredProfile = await client2.beta.userProfiles.retrieve(userProfile.id);
+    assert.equal(restoredProfile.id, userProfile.id);
+    assert.equal(restoredProfile.external_id, 'management-persistence-profile');
+    assert.equal(restoredProfile.metadata.lifecycle, 'before-restart');
+    const restoredProfiles = [];
+    for await (const profile of client2.beta.userProfiles.list()) restoredProfiles.push(profile.id);
+    assert.ok(restoredProfiles.includes(userProfile.id));
+    const restoredModels = [];
+    for await (const model of client2.beta.models.list()) restoredModels.push(model.id);
+    assert.ok(restoredModels.includes('fake-haiku'));
+    pass('official SDK Agent/UserProfile/Models projections survive process replacement');
+
+    const restoredDeploymentEnvironment = await client2.beta.environments.retrieve(
+      deploymentEnvironment.id,
+      { betas: BETAS },
+    );
+    assert.equal(restoredDeploymentEnvironment.id, deploymentEnvironment.id);
+    const restoredDeployment = await client2.beta.deployments.retrieve(deployment.id, {
+      betas: BETAS,
+    });
+    assert.equal(restoredDeployment.id, deployment.id);
+    assert.equal(restoredDeployment.agent.id, 'calc-agent');
+    const restoredRun = await client2.beta.deploymentRuns.retrieve(deploymentRun.id, {
+      betas: BETAS,
+    });
+    assert.equal(restoredRun.id, deploymentRun.id);
+    assert.equal(restoredRun.deployment_id, deployment.id);
+    assert.equal(restoredRun.session_id, deploymentRun.session_id);
+    const restoredRuns = [];
+    for await (const run of client2.beta.deploymentRuns.list({
+      deployment_id: deployment.id,
+      betas: BETAS,
+    })) restoredRuns.push(run.id);
+    assert.ok(restoredRuns.includes(deploymentRun.id));
+    assert.equal(
+      (await client2.beta.sessions.retrieve(deploymentRun.session_id, { betas: BETAS })).id,
+      deploymentRun.session_id,
+    );
+    pass('official SDK Environment/Deployment/DeploymentRun/Session identities survive restart');
 
     // The DOMAIN state persisted: every admin GET returns the authored object.
     r = await request('GET', '/v1/config/catalog');

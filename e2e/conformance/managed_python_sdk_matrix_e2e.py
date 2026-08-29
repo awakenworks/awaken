@@ -133,6 +133,35 @@ def exercise_session(base_url: str, stream_event_names: list[str]) -> None:
     # all rows therefore detects generated default and DTO regressions without
     # sampling redundant patch releases.
     with anthropic.Anthropic(api_key="e2e-dummy", base_url=base_url, max_retries=0) as client:
+        # Test design: every_historical_python_sdk_decodes_real_error_boundaries
+        # Cause/effect graph: exact wheel -> generated sync request -> real
+        # Managed parser/domain boundary -> wheel-owned status subclass + nested
+        # Anthropic body. Decision table: zero page limit => 400/BadRequestError;
+        # absent Session => 404/NotFoundError; success, wrong class, plain-text,
+        # or wrong discriminator fails before the positive lifecycle can mask it.
+        try:
+            client.beta.sessions.list(limit=0)
+        except anthropic.BadRequestError as error:
+            assert error.status_code == 400
+            assert error.body["type"] == "error"
+            assert error.body["error"]["type"] == "invalid_request_error"
+            assert error.body["error"]["message"]
+        else:
+            raise AssertionError(
+                f"{anthropic.__version__}: zero Session page limit was accepted"
+            )
+        try:
+            client.beta.sessions.retrieve("sesn_python_matrix_missing")
+        except anthropic.NotFoundError as error:
+            assert error.status_code == 404
+            assert error.body["type"] == "error"
+            assert error.body["error"]["type"] == "not_found_error"
+            assert error.body["error"]["message"]
+        else:
+            raise AssertionError(
+                f"{anthropic.__version__}: absent Session was accepted"
+            )
+
         session = client.beta.sessions.create(agent="assistant", environment_id="env_local")
         try:
             assert client.beta.sessions.retrieve(session.id).id == session.id

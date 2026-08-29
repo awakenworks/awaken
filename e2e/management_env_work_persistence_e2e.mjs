@@ -1,4 +1,5 @@
 // Durable-deployment persistence + lifecycle for the self-hosted environment
+// Test design: environment_work_survives_process_replacement
 // registry + work queue (the unify-work-lease durable backends). Spawn
 // awaken-server in `management` mode over one fixed typed deployment data_dir
 // (SQLite backends), drive the official Anthropic SDK, and assert:

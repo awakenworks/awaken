@@ -75,14 +75,14 @@ export function exerciseOfficialWebhookContract(Client) {
     'W2/E2 missing key',
   );
 
-  const parseUnverified = client.beta.webhooks.parseUnverified;
-  if (typeof parseUnverified === 'function') {
-    assert.deepEqual(parseUnverified.call(client.beta.webhooks, body), event, 'W3/E3');
+  const hasParseUnverified = typeof client.beta.webhooks.parseUnverified === 'function';
+  if (hasParseUnverified) {
+    assert.deepEqual(client.beta.webhooks.parseUnverified(body), event, 'W3/E3');
     assert.throws(
-      () => parseUnverified.call(client.beta.webhooks, '{'),
+      () => client.beta.webhooks.parseUnverified('{'),
       undefined,
       'W3/E3 malformed JSON',
     );
   }
-  return Object.freeze({ parseUnverified: typeof parseUnverified === 'function' });
+  return Object.freeze({ parseUnverified: hasParseUnverified });
 }

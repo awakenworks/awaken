@@ -188,6 +188,7 @@ execution graph, and owners that do not call the declared method.
 | `beta.vaults.list` | `/v1/vaults` | ✅ covered | `management_vaults_family_e2e.mjs` |
 | `beta.vaults.retrieve` | `/v1/vaults/{}` | ✅ covered | `management_vaults_e2e.mjs` |
 | `beta.vaults.update` | `/v1/vaults/{}` | ✅ covered | `management_vaults_family_e2e.mjs` |
+| `beta.webhooks.parseUnverified` | `offline-standard-webhooks` | ✅ covered | `managed_webhooks_official_sdk_e2e.mjs` via `conformance/official_webhook_contract.mjs#exerciseOfficialWebhookContract` |
 | `beta.webhooks.unwrap` | `offline-standard-webhooks` | ✅ covered | `managed_webhooks_official_sdk_e2e.mjs` via `conformance/official_webhook_contract.mjs#exerciseOfficialWebhookContract` |
 | `files.delete` | `/v1/files/{}` | ✅ covered | `management_files_models_e2e.mjs` |
 | `files.download` | `/v1/files/{}/content` | ✅ covered | `managed_dream_e2e.ts` |

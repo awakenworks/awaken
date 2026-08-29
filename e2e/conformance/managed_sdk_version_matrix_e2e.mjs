@@ -10,6 +10,7 @@ import {
   loadConformanceClients,
   qualifiedClient,
 } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
+import { managedTsSdkHelperMethods } from './managed_ts_sdk_method_manifest.mjs';
 import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38137);
@@ -38,12 +39,29 @@ function resourceMethods(resource, prefix = '', depth = 0, found = []) {
   return found.sort();
 }
 
+function generatedResourceMethods(surface, resourceName) {
+  const methods = resourceMethods(surface.beta[resourceName]);
+  const prefix = `beta.${resourceName}.`;
+  const helpers = new Set([...surface.helpers]
+    .filter((method) => method.startsWith(prefix))
+    .map((method) => method.slice(prefix.length)));
+  for (const helper of helpers) {
+    assert.ok(
+      methods.includes(helper),
+      `${prefix}${helper}: canonical helper is absent from the official SDK runtime surface`,
+    );
+  }
+  return methods.filter((method) => !helpers.has(method));
+}
+
 function assertSdkCapabilityBoundary() {
   const surface = (role) => {
     const anchor = qualifiedClient(QUALIFIED_CLIENTS, role);
-    const beta = new anchor.Client({ apiKey: 'surface-inventory' }).beta; // awaken-allow: secret
+    const client = new anchor.Client({ apiKey: 'surface-inventory' }); // awaken-allow: secret
+    const beta = client.beta;
     return {
       beta,
+      helpers: managedTsSdkHelperMethods(client),
       keys: Object.keys(beta).filter((key) => key !== '_client').sort(),
     };
   };
@@ -69,16 +87,21 @@ function assertSdkCapabilityBoundary() {
     'the current oracle retains every reviewed Managed Beta resource family',
   );
   const shared = oldest.keys.filter((key) => changePoint.keys.includes(key));
+  // Causal boundary: C1=official generated HTTP resources and C2=official
+  // local SDK helpers share the same runtime object graph. E1=only C1 must be
+  // invariant across supported versions; E2=C2 may evolve only through the
+  // canonical helper inventory. Subtracting exactly C2 preserves the strict
+  // failure for any unclassified callable addition, removal, or nesting change.
   for (const key of shared) {
     for (const candidate of [changePoint, current]) {
       assert.deepEqual(
-        resourceMethods(oldest.beta[key]),
-        resourceMethods(candidate.beta[key]),
+        generatedResourceMethods(oldest, key),
+        generatedResourceMethods(candidate, key),
         `${key}: generated method/nested-resource surface differs across supported SDKs`,
       );
     }
   }
-  pass(`${shared.length} shared Beta resource families have identical generated method surfaces`);
+  pass(`${shared.length} shared Beta resource families have identical generated HTTP method surfaces`);
   pass('Dreams and Tunnels remain tested as explicit current-SDK-only capabilities');
 }
 
@@ -102,6 +125,34 @@ async function rawMemoryPage(baseURL, options, storeID, beta, page) {
 
 async function exercise(version, Client, baseURL, options) {
   const client = new Client({ apiKey: options.apiKey, baseURL });
+
+  // Test design: every_supported_sdk_decodes_real_managed_error_boundaries
+  // Cause/effect graph: each exact official SDK anchor -> generated request ->
+  // real all-in-one Managed router -> shared JSON/domain error boundary -> the
+  // SDK's status-specific APIError subclass and nested Anthropic envelope.
+  // Decision table: missing required create field => 400/BadRequestError;
+  // absent Session identity => 404/NotFoundError; either successful mutation,
+  // plain-text body, wrong discriminator, or adjacent SDK class => failure.
+  const assertManagedError = (status, constructor, kind) => (error) => {
+    assert.equal(error.constructor, constructor, `${version}: exact SDK error class`);
+    assert.equal(error.status, status, `${version}: HTTP error status`);
+    assert.equal(error.error?.type, 'error', `${version}: Anthropic error envelope`);
+    assert.equal(error.error?.error?.type, kind, `${version}: error discriminator`);
+    assert.equal(typeof error.error?.error?.message, 'string', `${version}: error message`);
+    assert.ok(error.error.error.message.length > 0, `${version}: non-empty error message`);
+    return true;
+  };
+  await assert.rejects(
+    () => client.beta.sessions.create({ betas: BETAS }),
+    assertManagedError(400, Client.BadRequestError, 'invalid_request_error'),
+    `${version}: malformed create is SDK-decodable`,
+  );
+  await assert.rejects(
+    () => client.beta.sessions.retrieve('sesn_qualification_missing', { betas: BETAS }),
+    assertManagedError(404, Client.NotFoundError, 'not_found_error'),
+    `${version}: absent Session is SDK-decodable`,
+  );
+
   const create = { agent: options.agent, betas: BETAS };
   if (options.environmentId) create.environment_id = options.environmentId;
   const session = await client.beta.sessions.create(create);

@@ -70,8 +70,8 @@ evidence from drifting from the external expectation:
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
   real-process owner and records successful 2xx official-SDK HTTP exchanges.
   It projects the same owner graph over all 99/114/127 HTTP operations exposed
-  by the exact 0.105/0.117.1/0.121 anchors, and replays all 127 operations plus
-  four helpers for every admitted candidate. A package-selection hook resolves
+  by the exact 0.105/0.117.1/0.121/0.122 anchors, and replays all 127 operations
+  plus that exact SDK's four or five generated helpers. A package-selection hook resolves
   unchanged canonical imports inside the selected exact package root; each
   receipt must carry that package's exact `x-stainless-package-version`, method,
   route, Beta/GA selector, and capabilities. Operation-local capabilities
@@ -112,10 +112,13 @@ evidence from drifting from the external expectation:
   reference-owned Agent, Environment, Workspace, UserProfile, API, and WIF
   fixtures. The 139-route differential sweep remains single-owned and is not
   repeated in that lifecycle pass.
-- `src/conformance/recovery.mjs` splits a Session/File/idempotency scenario at a
-  process-replacement boundary. Product orchestration runs `prepare`, replaces
-  every serving process, then runs `verify` and `cleanup`; an in-memory cache
-  cannot satisfy this gate.
+- `src/conformance/recovery.mjs` splits a Session/File/idempotency and active
+  Tunnel/WIF scenario at a process-replacement boundary. Product orchestration
+  runs `prepare`, replaces every serving process, then runs `verify` and
+  `cleanup`; an in-memory cache cannot satisfy this gate. The private recovery
+  record contains the Tunnel id and a SHA-256 witness of the rotated token,
+  never the token itself, so verification proves secret persistence without
+  turning qualification artifacts into credentials.
 - `src/conformance/release.mjs` is the sole release-grade composition of those
   two drivers. It requires `AWAKEN_MANAGED_REPLACE_AND_WAIT_COMMAND` to replace
   the deployment and write versioned evidence to the injected

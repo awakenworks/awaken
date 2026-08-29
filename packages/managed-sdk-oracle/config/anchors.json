@@ -12,6 +12,11 @@
       "role": "protocol_change_point"
     },
     {
+      "id": "beta_resources_legacy",
+      "module": "@anthropic-ai/sdk-beta-resources-legacy",
+      "role": "beta_resource_projection_change_point"
+    },
+    {
       "id": "current",
       "module": "@anthropic-ai/sdk-current",
       "role": "current_oracle"

@@ -21,7 +21,12 @@ function page(values) {
 
 function recoveryFake() {
   const calls = [];
-  const state = { session: null, file: { id: 'file-1' } };
+  const state = {
+    session: null,
+    file: { id: 'file-1' },
+    tunnel: { id: 'tunnel-1', archived_at: null },
+    tunnelToken: 'rotated-tunnel-token', // awaken-allow: secret (fixture)
+  };
   const client = { beta: {
     files: {
       upload: async () => state.file,
@@ -46,6 +51,24 @@ function recoveryFake() {
         list: () => page([{ type: 'file', file_id: state.file.id }]),
       },
     },
+    tunnels: {
+      create: async () => {
+        calls.push(['tunnel.create', state.tunnel.id]);
+        return state.tunnel;
+      },
+      rotateToken: async (id) => {
+        calls.push(['tunnel.rotate', id]);
+        return { tunnel_token: state.tunnelToken };
+      },
+      retrieve: async () => state.tunnel,
+      list: () => page([state.tunnel]),
+      revealToken: async () => ({ tunnel_token: state.tunnelToken }),
+      archive: async (id) => {
+        calls.push(['tunnel.archive', id]);
+        state.tunnel = { ...state.tunnel, archived_at: '2026-08-29T00:00:00Z' };
+        return state.tunnel;
+      },
+    },
   } };
   return { calls, client };
 }
@@ -59,17 +82,19 @@ test('recovery protocol proves concurrent convergence and post-restart replay', 
   const { calls, client } = recoveryFake();
   const state = await prepareRecovery({
     client,
+    tunnelClient: client,
     toFile: async (value, name) => ({ value, name }),
     agent: 'agent-1',
     environmentId: 'environment-1',
     marker: 'marker-1',
   });
   assert.equal(calls.filter(([name]) => name === 'session.create').length, 2, 'C1/E1');
-  await verifyRecovery({ client, state });
-  await cleanupRecovery({ client, state });
-  assert.deepEqual(calls.slice(-2), [
+  await verifyRecovery({ client, tunnelClient: client, state });
+  await cleanupRecovery({ client, tunnelClient: client, state });
+  assert.deepEqual(calls.slice(-3), [
     ['session.delete', 'session-1'],
     ['file.delete', 'file-1'],
+    ['tunnel.archive', 'tunnel-1'],
   ], 'C4/E4');
 });
 
@@ -96,6 +121,7 @@ test('failed concurrent prepare compensates every partially created resource', a
   await assert.rejects(
     () => prepareRecovery({
       client,
+      tunnelClient: { beta: { tunnels: {} } },
       toFile: async () => ({}),
       agent: 'agent',
       environmentId: 'environment',
@@ -129,6 +155,7 @@ test('failed concurrent prepare preserves both primary and compensation failures
   await assert.rejects(
     () => prepareRecovery({
       client,
+      tunnelClient: { beta: { tunnels: {} } },
       toFile: async () => ({}),
       agent: 'agent',
       environmentId: 'environment',
@@ -141,6 +168,45 @@ test('failed concurrent prepare preserves both primary and compensation failures
       && error.errors[1].errors.map(({ message }) => message).sort().join(',')
         === 'file cleanup failure,session cleanup failure',
   );
+});
+
+test('Tunnel prepare failure compensates the Session, File, and active Tunnel', async () => {
+  // FMECA: Session/File commits succeed, Tunnel create succeeds, then token
+  // rotation fails. The release harness must archive the capability and remove
+  // both ordinary resources; otherwise a failed qualification leaks an active
+  // ingress credential or leaves staging state that can satisfy a later run.
+  const compensated = [];
+  const client = { beta: {
+    files: {
+      upload: async () => ({ id: 'file-tunnel-failure' }),
+      delete: async (id) => compensated.push(['file', id]),
+    },
+    sessions: {
+      create: async () => ({ id: 'session-tunnel-failure' }),
+      delete: async (id) => compensated.push(['session', id]),
+    },
+  } };
+  const tunnelClient = { beta: { tunnels: {
+    create: async () => ({ id: 'tunnel-failure' }),
+    rotateToken: async () => { throw new Error('rotation failure'); },
+    archive: async (id) => compensated.push(['tunnel', id]),
+  } } };
+  await assert.rejects(
+    () => prepareRecovery({
+      client,
+      tunnelClient,
+      toFile: async () => ({}),
+      agent: 'agent',
+      environmentId: 'environment',
+      marker: 'tunnel-failure',
+    }),
+    /rotation failure/u,
+  );
+  assert.deepEqual(new Set(compensated.map(([kind]) => kind)), new Set([
+    'session',
+    'file',
+    'tunnel',
+  ]));
 });
 
 test('recovery evidence is bound to the exact admitted SDK', () => {
@@ -166,6 +232,8 @@ function completeRecoveryState() {
     command_key: 'managed-recovery-marker-1',
     session_id: 'session-1',
     file_id: 'file-1',
+    tunnel_id: 'tunnel-1',
+    tunnel_token_sha256: 'a'.repeat(64),
     agent: 'agent-1',
     environment_id: 'environment-1',
     sdk_version: '0.122.0',
@@ -174,7 +242,7 @@ function completeRecoveryState() {
 }
 
 test('recovery state has one closed, atomic, private wire format', () => {
-  // Grammar/commit table: the exact nine-field v1 record is admitted; missing,
+  // Grammar/commit table: the exact eleven-field v1 record is admitted; missing,
   // extra, blank, wrong-version, or wrong-role states fail before any service
   // read. Persistence publishes the whole 0600 file by an atomic no-replace
   // hard link and refuses to
@@ -187,6 +255,7 @@ test('recovery state has one closed, atomic, private wire format', () => {
     [(value) => { value.marker = ' '; }, /marker/u],
     [(value) => { value.sdk_version = 'latest'; }, /SDK version/u],
     [(value) => { value.sdk_role = 'oldest_supported'; }, /SDK role/u],
+    [(value) => { value.tunnel_token_sha256 = 'raw-secret'; }, /SHA-256 witness/u],
   ];
   for (const [mutate, pattern] of mutations) {
     const invalid = structuredClone(state);
@@ -208,13 +277,14 @@ test('recovery state has one closed, atomic, private wire format', () => {
 
 test('failed recovery-state commit compensates prepared resources without hiding failures', async () => {
   // FMECA: resource prepare commits, then local evidence write fails. Both
-  // Session and File are deleted before the write error escapes. If compensation
+  // Session, File, and Tunnel are removed before the write error escapes. If compensation
   // also fails, AggregateError retains the primary and cleanup causes.
   const { calls, client } = recoveryFake();
   const state = completeRecoveryState();
   await assert.rejects(
     () => persistPreparedRecovery({
       client,
+      tunnelClient: client,
       stateFile: '/not-written',
       state,
       write: () => { throw new Error('write failure'); },
@@ -224,15 +294,20 @@ test('failed recovery-state commit compensates prepared resources without hiding
   assert.deepEqual(calls, [
     ['session.delete', 'session-1'],
     ['file.delete', 'file-1'],
+    ['tunnel.archive', 'tunnel-1'],
   ]);
 
   const failingCleanup = { beta: {
     sessions: { delete: async () => { throw new Error('session cleanup failure'); } },
     files: { delete: async () => { throw new Error('file cleanup failure'); } },
   } };
+  const failingTunnelCleanup = { beta: {
+    tunnels: { archive: async () => { throw new Error('tunnel cleanup failure'); } },
+  } };
   await assert.rejects(
     () => persistPreparedRecovery({
       client: failingCleanup,
+      tunnelClient: failingTunnelCleanup,
       stateFile: '/not-written',
       state,
       write: () => { throw new Error('write failure'); },

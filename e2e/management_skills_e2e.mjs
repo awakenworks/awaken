@@ -20,7 +20,11 @@ import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = [];
 const SKILLS_BETA = 'skills-2025-10-02';
-const SKILLS_PROJECTION = process.env.AWAKEN_MANAGED_SDK_SKILLS_PROJECTION ?? 'beta';
+// The workspace's ordinary `@anthropic-ai/sdk` dependency is the current SDK;
+// the anchor runner overrides this for historical packages. Keeping the
+// standalone default current avoids silently asserting the legacy projection
+// against 0.122+ requests.
+const SKILLS_PROJECTION = process.env.AWAKEN_MANAGED_SDK_SKILLS_PROJECTION ?? 'ga';
 assert.match(SKILLS_PROJECTION, /^(?:beta|ga)$/u, 'invalid selected SDK Skills projection');
 const legacyBetaSkills = SKILLS_PROJECTION === 'beta';
 const gaSkillsMode = process.env.AWAKEN_MANAGED_SDK_HAS_GA_SKILLS ?? '1';

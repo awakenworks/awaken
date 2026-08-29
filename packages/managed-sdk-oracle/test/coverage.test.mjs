@@ -4,7 +4,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { operationCoverage, resourceOf, surfaceFixture } from '../src/coverage.mjs';
+import {
+  operationCoverage,
+  RESOURCE_RESTART_EVIDENCE,
+  resourceOf,
+  surfaceFixture,
+} from '../src/coverage.mjs';
 import { extractOperations } from '../src/extract-operations.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,6 +42,11 @@ test('coverage ledger closes every current and documented operation exactly once
     new Set(Object.keys(config.resources)),
     'every configured resource owns live operations',
   );
+  assert.deepEqual(
+    new Set(Object.keys(RESOURCE_RESTART_EVIDENCE)),
+    new Set(Object.keys(config.resources)),
+    'every operation resource has exactly one process-replacement owner',
+  );
   for (const row of rows) {
     assert.equal(
       row.evidence.deployed_route_semantics.case_id,
@@ -45,6 +55,10 @@ test('coverage ledger closes every current and documented operation exactly once
     assert.match(
       row.evidence.deployed_route_semantics.owner,
       /conformance\/deployed-sweep\.mjs$/u,
+    );
+    assert.match(
+      row.evidence.local_route_boundary.owner,
+      /conformance\/managed_local_operation_sweep_e2e\.mjs$/u,
     );
     if (!row.id.startsWith('documented.')) {
       assert.equal(row.evidence.sdk_transport.case_id, `${row.id}.transport.current`);
@@ -57,6 +71,19 @@ test('coverage ledger closes every current and documented operation exactly once
     }
     assert.match(row.evidence.rust_behavior.owner, /\.rs$/u);
     assert.match(row.evidence.rust_behavior.case_id, /^[a-z][a-z0-9_]+$/u);
+    assert.deepEqual(
+      row.evidence.resource_restart_semantics,
+      RESOURCE_RESTART_EVIDENCE[row.resource],
+    );
+  }
+
+  for (const [resource, evidence] of Object.entries(RESOURCE_RESTART_EVIDENCE)) {
+    const source = fs.readFileSync(path.join(repoRoot, evidence.owner), 'utf8');
+    assert.match(
+      source,
+      new RegExp(`Test design: ${evidence.case_id}\\b`, 'u'),
+      `${resource} recovery owner contains its named test design`,
+    );
   }
 
   assert.throws(
@@ -92,7 +119,11 @@ test('each operation owns one exact executable Rust behavior case', () => {
   const oneOperation = [{
     id: 'beta.files.list', method: 'GET', path: '/v1/files',
   }];
-  const run = (resources, readText = () => '#[tokio::test]\nasync fn list_files() {}') =>
+  const designed = (name) => `// Test design: ${name}\n`
+    + '// Cause/effect graph: operation -> observable behavior.\n'
+    + '// Decision table: valid -> accept; invalid -> reject.\n'
+    + `#[tokio::test]\nasync fn ${name}() {}`;
+  const run = (resources, readText = () => designed('list_files')) =>
     operationCoverage({
       extracted: [{ role: 'current_oracle', operations: oneOperation }],
       documentedRoutes: [],
@@ -112,7 +143,7 @@ test('each operation owns one exact executable Rust behavior case', () => {
     () => run({ files: { rust_behavior_cases: [
       { path: 'files.rs', test: 'list_files', operations: ['beta.files.*'] },
       { path: 'files.rs', test: 'list_files_again', operations: ['beta.files.list'] },
-    ] } }, () => '#[test]\nfn list_files() {}\n#[test]\nfn list_files_again() {}'),
+    ] } }, () => `${designed('list_files')}\n${designed('list_files_again')}`),
     /must have exactly one Rust behavior case; found 2/u,
     'C2',
   );
@@ -131,6 +162,13 @@ test('each operation owns one exact executable Rust behavior case', () => {
     }] } }),
     /dead operation pattern beta\.files\.upload/u,
     'C4',
+  );
+  assert.throws(
+    () => run({ files: { rust_behavior_cases: [{
+      path: 'files.rs', test: 'list_files', operations: ['beta.files.list'],
+    }] } }, () => '#[test]\nfn list_files() {}'),
+    /has no adjacent named test design/u,
+    'a behavior owner without its causal design cannot certify an operation',
   );
 });
 

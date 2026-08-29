@@ -50,10 +50,15 @@ export function validateSdkMatrix(entries) {
     modules.add(entry.module);
     roles.add(entry.role);
   }
-  for (const role of ['oldest_supported', 'protocol_change_point', 'current_oracle']) {
+  for (const role of [
+    'oldest_supported',
+    'protocol_change_point',
+    'beta_resource_projection_change_point',
+    'current_oracle',
+  ]) {
     assert.ok(roles.has(role), `SDK matrix is missing ${role}`);
   }
-  assert.equal(roles.size, 3, 'SDK matrix contains an unreviewed parallel role');
+  assert.equal(roles.size, 4, 'SDK matrix contains an unreviewed parallel role');
   return entries;
 }
 

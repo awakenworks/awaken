@@ -1,4 +1,5 @@
 // Memory_store RESOURCE durability across a real process restart (ADR-0038).
+// Test design: memory_store_survives_process_replacement
 //
 // The ADR-0038 MemoryStore family gives a session a stable, mutable id it mounts
 // read-write: the agent edits the realized file and the MemoryMount guard reconciles

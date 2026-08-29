@@ -25,7 +25,7 @@ test('static Managed helper exports equal every exact executable anchor surface'
       allowMissing: anchor.role !== 'current_oracle',
     });
     assert.match(extracted.fingerprint, /^[0-9a-f]{64}$/u);
-    if (anchor.role === 'current_oracle') assert.equal(extracted.export_count, 33);
+    if (anchor.role === 'current_oracle') assert.equal(extracted.export_count, 32);
     for (const entrypoint of scope.managed_export_entrypoints) {
       const filename = path.join(sdk.root, entrypoint);
       if (!fs.existsSync(filename)) continue;
@@ -72,19 +72,19 @@ test('0.122 helper removal is one explicit source-compatibility change point', (
   // 0.122 removed only that symbol from the configured Managed helper surface.
   // Exact set subtraction prevents this breaking developer-facing change from
   // hiding inside the already-owned node.mjs content coordinate.
+  const legacy = managedExportFingerprintFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-beta-resources-legacy').root,
+    scope,
+  );
   const current = managedExportFingerprintFromPackageRoot(
     resolveSdkPackage('@anthropic-ai/sdk-current').root,
     scope,
   );
-  const candidate = managedExportFingerprintFromPackageRoot(
-    resolveSdkPackage('@anthropic-ai/sdk-candidate').root,
-    scope,
-  );
+  const legacyIDs = new Set(legacy.exports.map(({ id }) => id));
   const currentIDs = new Set(current.exports.map(({ id }) => id));
-  const candidateIDs = new Set(candidate.exports.map(({ id }) => id));
   assert.deepEqual(
-    [...currentIDs].filter((id) => !candidateIDs.has(id)),
+    [...legacyIDs].filter((id) => !currentIDs.has(id)),
     ['tools/agent-toolset/node.mjs#resolveSkillVersion'],
   );
-  assert.deepEqual([...candidateIDs].filter((id) => !currentIDs.has(id)), []);
+  assert.deepEqual([...currentIDs].filter((id) => !legacyIDs.has(id)), []);
 });

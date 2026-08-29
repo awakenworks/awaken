@@ -9,6 +9,14 @@
           "case_id": "beta.agents.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.agents.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
@@ -17,6 +25,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -31,6 +40,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -44,6 +54,14 @@
           "case_id": "beta.agents.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.agents.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
@@ -52,6 +70,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -66,6 +85,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -79,6 +99,14 @@
           "case_id": "beta.agents.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.agents.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
@@ -87,6 +115,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -101,6 +130,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -114,6 +144,14 @@
           "case_id": "beta.agents.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.agents.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
@@ -122,6 +160,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -136,6 +175,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -149,6 +189,14 @@
           "case_id": "beta.agents.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.agents.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
@@ -157,6 +205,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -171,6 +220,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -184,6 +234,14 @@
           "case_id": "beta.agents.versions.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.agents.versions.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
@@ -192,6 +250,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -206,6 +265,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -219,6 +279,14 @@
           "case_id": "beta.deploymentRuns.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deploymentRuns.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -227,6 +295,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -241,6 +310,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -254,6 +324,14 @@
           "case_id": "beta.deploymentRuns.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deploymentRuns.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -262,6 +340,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -276,6 +355,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -289,6 +369,14 @@
           "case_id": "beta.deployments.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -297,6 +385,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -311,6 +400,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -324,6 +414,14 @@
           "case_id": "beta.deployments.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -332,6 +430,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -346,6 +445,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -359,6 +459,14 @@
           "case_id": "beta.deployments.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -367,6 +475,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -381,6 +490,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -394,6 +504,14 @@
           "case_id": "beta.deployments.pause.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.pause.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -402,6 +520,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -416,6 +535,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -429,6 +549,14 @@
           "case_id": "beta.deployments.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -437,6 +565,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -451,6 +580,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -464,6 +594,14 @@
           "case_id": "beta.deployments.run.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.run.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -472,6 +610,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -486,6 +625,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -499,6 +639,14 @@
           "case_id": "beta.deployments.unpause.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.unpause.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -507,6 +655,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -521,6 +670,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -534,6 +684,14 @@
           "case_id": "beta.deployments.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.deployments.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "deployment_run_survives_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "deployment_lifecycle_and_runs",
@@ -542,6 +700,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -556,6 +715,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -569,6 +729,14 @@
           "case_id": "beta.dreams.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.dreams.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "official_sdk_dream_restart_interleaving",
+          "owner": "e2e/managed_dream_restart_sdk_e2e.ts"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
@@ -576,6 +744,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -589,6 +758,7 @@
       "resource": "dreams",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -602,6 +772,14 @@
           "case_id": "beta.dreams.cancel.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.dreams.cancel.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "official_sdk_dream_restart_interleaving",
+          "owner": "e2e/managed_dream_restart_sdk_e2e.ts"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "cancellation_is_immediate_idempotent_and_retains_prepared_output",
@@ -609,6 +787,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -622,6 +801,7 @@
       "resource": "dreams",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -635,6 +815,14 @@
           "case_id": "beta.dreams.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.dreams.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "official_sdk_dream_restart_interleaving",
+          "owner": "e2e/managed_dream_restart_sdk_e2e.ts"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
@@ -642,6 +830,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -655,6 +844,7 @@
       "resource": "dreams",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -668,6 +858,14 @@
           "case_id": "beta.dreams.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.dreams.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "official_sdk_dream_restart_interleaving",
+          "owner": "e2e/managed_dream_restart_sdk_e2e.ts"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
@@ -675,6 +873,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -688,6 +887,7 @@
       "resource": "dreams",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -701,6 +901,14 @@
           "case_id": "beta.dreams.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.dreams.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "official_sdk_dream_restart_interleaving",
+          "owner": "e2e/managed_dream_restart_sdk_e2e.ts"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
@@ -708,6 +916,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -721,6 +930,7 @@
       "resource": "dreams",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -734,6 +944,14 @@
           "case_id": "beta.environments.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -742,6 +960,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -756,6 +975,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -769,6 +989,14 @@
           "case_id": "beta.environments.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -777,6 +1005,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -791,6 +1020,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -804,6 +1034,14 @@
           "case_id": "beta.environments.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -812,6 +1050,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -826,6 +1065,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -839,6 +1079,14 @@
           "case_id": "beta.environments.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -847,6 +1095,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -861,6 +1110,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -874,6 +1124,14 @@
           "case_id": "beta.environments.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -882,6 +1140,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -896,6 +1155,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -909,6 +1169,14 @@
           "case_id": "beta.environments.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -917,6 +1185,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -931,6 +1200,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -944,6 +1214,14 @@
           "case_id": "beta.environments.work.ack.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.ack.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -952,6 +1230,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -966,6 +1245,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -979,6 +1259,14 @@
           "case_id": "beta.environments.work.heartbeat.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.heartbeat.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -987,6 +1275,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1001,6 +1290,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1014,6 +1304,14 @@
           "case_id": "beta.environments.work.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -1022,6 +1320,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1036,6 +1335,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1049,6 +1349,14 @@
           "case_id": "beta.environments.work.poll.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.poll.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -1057,6 +1365,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1071,6 +1380,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1084,6 +1394,14 @@
           "case_id": "beta.environments.work.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -1092,6 +1410,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1106,6 +1425,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1119,6 +1439,14 @@
           "case_id": "beta.environments.work.stats.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.stats.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -1127,6 +1455,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1141,6 +1470,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1154,6 +1484,14 @@
           "case_id": "beta.environments.work.stop.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.stop.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -1162,6 +1500,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1176,6 +1515,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1189,6 +1529,14 @@
           "case_id": "beta.environments.work.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.environments.work.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "environment_work_survives_process_replacement",
+          "owner": "e2e/management_env_work_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "environment_crud_and_work_lifecycle",
@@ -1197,6 +1545,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1211,18 +1560,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "files-api-2025-04-14"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.files.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.files.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -1232,6 +1588,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1246,18 +1603,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "files-api-2025-04-14"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.files.download.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.files.download.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -1267,6 +1631,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1281,18 +1646,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "files-api-2025-04-14"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.files.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.files.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -1302,6 +1674,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1316,18 +1689,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "files-api-2025-04-14"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.files.retrieveMetadata.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.files.retrieveMetadata.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -1337,6 +1717,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1351,18 +1732,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "files-api-2025-04-14"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.files.upload.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.files.upload.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -1372,6 +1760,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1386,6 +1775,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1399,6 +1789,14 @@
           "case_id": "beta.memoryStores.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "store_lifecycle_create_get_list_update_archive_delete",
@@ -1407,6 +1805,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1421,6 +1820,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1434,6 +1834,14 @@
           "case_id": "beta.memoryStores.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "store_lifecycle_create_get_list_update_archive_delete",
@@ -1442,6 +1850,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1456,6 +1865,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1469,6 +1879,14 @@
           "case_id": "beta.memoryStores.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "store_lifecycle_create_get_list_update_archive_delete",
@@ -1477,6 +1895,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1491,6 +1910,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1504,6 +1924,14 @@
           "case_id": "beta.memoryStores.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "store_lifecycle_create_get_list_update_archive_delete",
@@ -1512,6 +1940,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1526,6 +1955,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1539,6 +1969,14 @@
           "case_id": "beta.memoryStores.memories.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memories.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1547,6 +1985,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1561,6 +2000,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1574,6 +2014,14 @@
           "case_id": "beta.memoryStores.memories.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memories.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1582,6 +2030,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1596,6 +2045,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1609,6 +2059,14 @@
           "case_id": "beta.memoryStores.memories.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memories.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1617,6 +2075,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1631,6 +2090,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1644,6 +2104,14 @@
           "case_id": "beta.memoryStores.memories.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memories.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1652,6 +2120,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1666,6 +2135,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1679,6 +2149,14 @@
           "case_id": "beta.memoryStores.memories.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memories.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1687,6 +2165,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1701,6 +2180,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1714,6 +2194,14 @@
           "case_id": "beta.memoryStores.memoryVersions.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memoryVersions.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1722,6 +2210,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1736,6 +2225,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1749,6 +2239,14 @@
           "case_id": "beta.memoryStores.memoryVersions.redact.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memoryVersions.redact.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1757,6 +2255,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1771,6 +2270,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1784,6 +2284,14 @@
           "case_id": "beta.memoryStores.memoryVersions.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.memoryVersions.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -1792,6 +2300,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1806,6 +2315,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1819,6 +2329,14 @@
           "case_id": "beta.memoryStores.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "store_lifecycle_create_get_list_update_archive_delete",
@@ -1827,6 +2345,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1841,6 +2360,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1854,6 +2374,14 @@
           "case_id": "beta.memoryStores.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.memoryStores.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "store_lifecycle_create_get_list_update_archive_delete",
@@ -1862,6 +2390,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1876,6 +2405,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1887,6 +2417,14 @@
           "case_id": "beta.models.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.models.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "models_route_uses_the_canonical_header_flavor_without_splitting_inventory",
@@ -1895,6 +2433,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1909,6 +2448,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1920,6 +2460,14 @@
           "case_id": "beta.models.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.models.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "retrieve_accepts_complete_slash_bearing_model_id",
@@ -1928,6 +2476,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1942,6 +2491,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1955,6 +2505,14 @@
           "case_id": "beta.sessions.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "archive_session_commits_the_terminated_fact_once",
@@ -1963,6 +2521,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -1977,6 +2536,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -1990,6 +2550,14 @@
           "case_id": "beta.sessions.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "session_create_idempotency_replays_one_canonical_session",
@@ -1998,6 +2566,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2012,6 +2581,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2025,6 +2595,14 @@
           "case_id": "beta.sessions.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "delete_session_commits_the_deleted_fact_with_the_owner",
@@ -2033,6 +2611,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2047,6 +2626,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2060,6 +2640,14 @@
           "case_id": "beta.sessions.events.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.events.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "events_are_paged_by_cursor",
@@ -2068,6 +2656,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2082,6 +2671,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2095,6 +2685,14 @@
           "case_id": "beta.sessions.events.send.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.events.send.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "happy_path_projects_message_and_idle",
@@ -2103,6 +2701,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2117,6 +2716,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2130,6 +2730,14 @@
           "case_id": "beta.sessions.events.stream.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.events.stream.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "retrieve_session_and_sse_event_names",
@@ -2138,6 +2746,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2152,6 +2761,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2165,6 +2775,14 @@
           "case_id": "beta.sessions.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "session_create_idempotency_replays_one_canonical_session",
@@ -2173,6 +2791,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2187,6 +2806,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2200,6 +2820,14 @@
           "case_id": "beta.sessions.resources.add.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.resources.add.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "file_resource_attaches_to_a_live_session",
@@ -2208,6 +2836,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2222,6 +2851,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2235,6 +2865,14 @@
           "case_id": "beta.sessions.resources.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.resources.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "a_file_resource_can_be_detached_from_a_live_session",
@@ -2243,6 +2881,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2257,6 +2896,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2270,6 +2910,14 @@
           "case_id": "beta.sessions.resources.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.resources.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "create_time_resources_are_backfilled_and_addressable",
@@ -2278,6 +2926,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2292,6 +2941,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2305,6 +2955,14 @@
           "case_id": "beta.sessions.resources.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.resources.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "create_time_resources_are_backfilled_and_addressable",
@@ -2313,6 +2971,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2327,6 +2986,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2340,6 +3000,14 @@
           "case_id": "beta.sessions.resources.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.resources.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "repository_authorization_is_sealed_pinned_and_rotated_without_echo",
@@ -2348,6 +3016,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2362,6 +3031,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2375,6 +3045,14 @@
           "case_id": "beta.sessions.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "session_get_projects_the_durable_activity_lifecycle",
@@ -2383,6 +3061,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2397,6 +3076,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2410,6 +3090,14 @@
           "case_id": "beta.sessions.threads.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.threads.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "child_thread_sse_is_isolated_and_archive_projects_durable_terminal",
@@ -2418,6 +3106,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2432,6 +3121,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2445,6 +3135,14 @@
           "case_id": "beta.sessions.threads.events.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.threads.events.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "a_delegation_projects_the_child_thread_lifecycle",
@@ -2453,6 +3151,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2467,6 +3166,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2480,6 +3180,14 @@
           "case_id": "beta.sessions.threads.events.stream.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.threads.events.stream.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "stream_thread_events_backfills_the_primary_thread",
@@ -2488,6 +3196,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2502,6 +3211,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2515,6 +3225,14 @@
           "case_id": "beta.sessions.threads.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.threads.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "a_delegation_projects_the_child_thread_lifecycle",
@@ -2523,6 +3241,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2537,6 +3256,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2550,6 +3270,14 @@
           "case_id": "beta.sessions.threads.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.threads.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "a_delegation_projects_the_child_thread_lifecycle",
@@ -2558,6 +3286,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2572,6 +3301,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2585,6 +3315,14 @@
           "case_id": "beta.sessions.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.sessions.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "updating_a_session_commits_a_session_updated_event",
@@ -2593,6 +3331,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2607,18 +3346,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2628,6 +3374,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2642,18 +3389,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2663,6 +3417,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2677,18 +3432,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2698,6 +3460,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2712,18 +3475,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2733,6 +3503,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2747,18 +3518,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.versions.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.versions.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2768,6 +3546,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2782,18 +3561,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.versions.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.versions.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2803,6 +3589,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2817,18 +3604,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.versions.download.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.versions.download.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2838,6 +3632,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2852,18 +3647,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.versions.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.versions.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2873,6 +3675,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2887,18 +3690,25 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
     },
     {
-      "betas": [
-        "skills-2025-10-02"
-      ],
+      "betas": [],
       "evidence": {
         "deployed_route_semantics": {
           "case_id": "beta.skills.versions.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "beta.skills.versions.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -2908,6 +3718,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2922,6 +3733,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2935,6 +3747,14 @@
           "case_id": "beta.tunnels.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -2942,6 +3762,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2955,6 +3776,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -2968,6 +3790,14 @@
           "case_id": "beta.tunnels.certificates.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.certificates.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -2975,6 +3805,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -2988,6 +3819,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3001,6 +3833,14 @@
           "case_id": "beta.tunnels.certificates.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.certificates.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3008,6 +3848,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3021,6 +3862,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3034,6 +3876,14 @@
           "case_id": "beta.tunnels.certificates.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.certificates.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3041,6 +3891,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3054,6 +3905,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3067,6 +3919,14 @@
           "case_id": "beta.tunnels.certificates.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.certificates.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3074,6 +3934,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3087,6 +3948,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3100,6 +3962,14 @@
           "case_id": "beta.tunnels.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3107,6 +3977,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3120,6 +3991,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3133,6 +4005,14 @@
           "case_id": "beta.tunnels.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3140,6 +4020,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3153,6 +4034,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3166,6 +4048,14 @@
           "case_id": "beta.tunnels.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3173,6 +4063,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3186,6 +4077,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3199,6 +4091,14 @@
           "case_id": "beta.tunnels.revealToken.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.revealToken.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3206,6 +4106,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3219,6 +4120,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3232,6 +4134,14 @@
           "case_id": "beta.tunnels.rotateToken.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.tunnels.rotateToken.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -3239,6 +4149,7 @@
         },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3252,6 +4163,7 @@
       "resource": "tunnels",
       "sdk_anchors": [
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3265,6 +4177,14 @@
           "case_id": "beta.userProfiles.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.userProfiles.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "user_profile_crud_and_metadata_merge",
@@ -3273,6 +4193,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3287,6 +4208,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3300,6 +4222,14 @@
           "case_id": "beta.userProfiles.createEnrollmentURL.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.userProfiles.createEnrollmentURL.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "user_profile_crud_and_metadata_merge",
@@ -3308,6 +4238,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3322,6 +4253,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3335,6 +4267,14 @@
           "case_id": "beta.userProfiles.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.userProfiles.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "user_profile_crud_and_metadata_merge",
@@ -3343,6 +4283,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3357,6 +4298,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3370,6 +4312,14 @@
           "case_id": "beta.userProfiles.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.userProfiles.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "user_profile_crud_and_metadata_merge",
@@ -3378,6 +4328,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3392,6 +4343,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3405,6 +4357,14 @@
           "case_id": "beta.userProfiles.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.userProfiles.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "user_profile_crud_and_metadata_merge",
@@ -3413,6 +4373,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3427,6 +4388,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3440,6 +4402,14 @@
           "case_id": "beta.vaults.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "archive_vault_soft_deletes_and_hides_from_default_list",
@@ -3448,6 +4418,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3462,6 +4433,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3475,6 +4447,14 @@
           "case_id": "beta.vaults.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "vault_credential_lifecycle_and_resolution",
@@ -3483,6 +4463,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3497,6 +4478,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3510,6 +4492,14 @@
           "case_id": "beta.vaults.credentials.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "archive_credential_soft_deletes_and_hides_from_list",
@@ -3518,6 +4508,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3532,6 +4523,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3545,6 +4537,14 @@
           "case_id": "beta.vaults.credentials.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "vault_credential_lifecycle_and_resolution",
@@ -3553,6 +4553,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3567,6 +4568,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3580,6 +4582,14 @@
           "case_id": "beta.vaults.credentials.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "delete_credential_removes_one_and_scopes_by_vault",
@@ -3588,6 +4598,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3602,6 +4613,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3615,6 +4627,14 @@
           "case_id": "beta.vaults.credentials.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "list_credentials_is_scoped_to_the_vault_and_404s_unknown",
@@ -3623,6 +4643,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3637,6 +4658,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3650,6 +4672,14 @@
           "case_id": "beta.vaults.credentials.mcpOAuthValidate.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.mcpOAuthValidate.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "vault_credential_lifecycle_and_resolution",
@@ -3658,6 +4688,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3672,6 +4703,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3685,6 +4717,14 @@
           "case_id": "beta.vaults.credentials.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "vault_credential_lifecycle_and_resolution",
@@ -3693,6 +4733,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3707,6 +4748,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3720,6 +4762,14 @@
           "case_id": "beta.vaults.credentials.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.credentials.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "update_credential_patches_fields_reseals_secret_and_rejects_type_change",
@@ -3728,6 +4778,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3742,6 +4793,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3755,6 +4807,14 @@
           "case_id": "beta.vaults.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "delete_vault_fences_children_and_converges_after_rollout_ack",
@@ -3763,6 +4823,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3777,6 +4838,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3790,6 +4852,14 @@
           "case_id": "beta.vaults.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "list_vaults_returns_one_full_page_sorted_by_id",
@@ -3798,6 +4868,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3812,6 +4883,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3825,6 +4897,14 @@
           "case_id": "beta.vaults.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "replacement_control_instance_reads_the_same_vault_authority",
@@ -3833,6 +4913,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3847,6 +4928,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3860,6 +4942,14 @@
           "case_id": "beta.vaults.update.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "beta.vaults.update.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "update_vault_replaces_name_and_patches_metadata",
@@ -3868,6 +4958,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3882,6 +4973,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ],
       "transport_query": "beta=true"
@@ -3893,12 +4985,21 @@
           "case_id": "files.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "files.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3911,6 +5012,7 @@
       "path": "/v1/files/{}",
       "resource": "files",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -3921,12 +5023,21 @@
           "case_id": "files.download.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "files.download.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3939,6 +5050,7 @@
       "path": "/v1/files/{}/content",
       "resource": "files",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -3949,12 +5061,21 @@
           "case_id": "files.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "files.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3967,6 +5088,7 @@
       "path": "/v1/files",
       "resource": "files",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -3977,12 +5099,21 @@
           "case_id": "files.retrieveMetadata.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "files.retrieveMetadata.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -3995,6 +5126,7 @@
       "path": "/v1/files/{}",
       "resource": "files",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4005,12 +5137,21 @@
           "case_id": "files.upload.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "files.upload.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "python_sdk_resource_recovery",
+          "owner": "e2e/conformance/managed_python_sdk_runtime_e2e.py"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4023,6 +5164,7 @@
       "path": "/v1/files",
       "resource": "files",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4033,6 +5175,14 @@
           "case_id": "models.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "models.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "models_route_uses_the_canonical_header_flavor_without_splitting_inventory",
@@ -4041,6 +5191,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4055,6 +5206,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4065,6 +5217,14 @@
           "case_id": "models.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "models.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "public_management_projections_survive_process_replacement",
+          "owner": "e2e/management_persistence_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "retrieve_accepts_complete_slash_bearing_model_id",
@@ -4073,6 +5233,7 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4087,6 +5248,7 @@
       "sdk_anchors": [
         "oldest",
         "user_profiles_legacy",
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4097,12 +5259,21 @@
           "case_id": "skills.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4115,6 +5286,7 @@
       "path": "/v1/skills",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4125,12 +5297,21 @@
           "case_id": "skills.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4143,6 +5324,7 @@
       "path": "/v1/skills/{}",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4153,12 +5335,21 @@
           "case_id": "skills.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4171,6 +5362,7 @@
       "path": "/v1/skills",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4181,12 +5373,21 @@
           "case_id": "skills.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4199,6 +5400,7 @@
       "path": "/v1/skills/{}",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4209,12 +5411,21 @@
           "case_id": "skills.versions.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.versions.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4227,6 +5438,7 @@
       "path": "/v1/skills/{}/versions",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4237,12 +5449,21 @@
           "case_id": "skills.versions.delete.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.versions.delete.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4255,6 +5476,7 @@
       "path": "/v1/skills/{}/versions/{}",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4265,12 +5487,21 @@
           "case_id": "skills.versions.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.versions.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4283,6 +5514,7 @@
       "path": "/v1/skills/{}/versions",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4293,12 +5525,21 @@
           "case_id": "skills.versions.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "skills.versions.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/beta_resources_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
         "sdk_transport": {
@@ -4311,6 +5552,7 @@
       "path": "/v1/skills/{}/versions/{}",
       "resource": "skills",
       "sdk_anchors": [
+        "beta_resources_legacy",
         "current"
       ]
     },
@@ -4322,6 +5564,14 @@
         "deployed_route_semantics": {
           "case_id": "documented.skills.versions.retrieveFile.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "documented.skills.versions.retrieveFile.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "skill_store_survives_process_replacement",
+          "owner": "e2e/managed_skill_store_durable_e2e.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -4349,6 +5599,14 @@
           "case_id": "documented.memoryStores.memories.patch.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "documented.memoryStores.memories.patch.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "memory_store_survives_process_replacement",
+          "owner": "e2e/managed_memory_store_durable_e2e.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "memory_crud_with_precondition_and_version_log",
@@ -4375,6 +5633,14 @@
           "case_id": "documented.organizationTunnels.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -4399,6 +5665,14 @@
         "deployed_route_semantics": {
           "case_id": "documented.organizationTunnels.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -4425,6 +5699,14 @@
           "case_id": "documented.organizationTunnels.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -4449,6 +5731,14 @@
         "deployed_route_semantics": {
           "case_id": "documented.organizationTunnels.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -4475,6 +5765,14 @@
           "case_id": "documented.organizationTunnels.revealToken.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.revealToken.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -4499,6 +5797,14 @@
         "deployed_route_semantics": {
           "case_id": "documented.organizationTunnels.rotateToken.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.rotateToken.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -4525,6 +5831,14 @@
           "case_id": "documented.organizationTunnels.certificates.create.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.certificates.create.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -4549,6 +5863,14 @@
         "deployed_route_semantics": {
           "case_id": "documented.organizationTunnels.certificates.list.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.certificates.list.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
@@ -4575,6 +5897,14 @@
           "case_id": "documented.organizationTunnels.certificates.retrieve.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.certificates.retrieve.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
           "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
@@ -4599,6 +5929,14 @@
         "deployed_route_semantics": {
           "case_id": "documented.organizationTunnels.certificates.archive.deployed.actual-reference",
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "local_route_boundary": {
+          "case_id": "documented.organizationTunnels.certificates.archive.local.real-process-boundary",
+          "owner": "e2e/conformance/managed_local_operation_sweep_e2e.mjs"
+        },
+        "resource_restart_semantics": {
+          "case_id": "active_tunnel_and_rotated_secret_survive_process_replacement",
+          "owner": "packages/managed-sdk-oracle/src/conformance/recovery.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
