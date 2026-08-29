@@ -1303,6 +1303,15 @@ fn normalized_job_spec(job: &Job) -> Result<JobSpec, RuntimeError> {
     if spec.manual_selector == Some(false) {
         spec.manual_selector = None;
     }
+    // Kubernetes 1.31+ defaults Jobs without a podFailurePolicy to
+    // TerminatingOrFailed. It is API-owned serialization noise, just like the
+    // controller selector and NonIndexed defaults above, and must not make an
+    // otherwise identical deterministic package Job fail its 409 reuse fence.
+    if spec.pod_replacement_policy.as_deref() == Some("TerminatingOrFailed")
+        && spec.pod_failure_policy.is_none()
+    {
+        spec.pod_replacement_policy = None;
+    }
     normalize_controller_labels(
         &mut spec
             .template
