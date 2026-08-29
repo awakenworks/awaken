@@ -101,10 +101,14 @@ evidence from drifting from the external expectation:
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
   negative/error probes, pagination, concurrent idempotency, retry identity,
-  and SSE full-replay/deduplication. For every release client it also compares
-  successful create/retrieve/update Session, Agent, Stats, and Usage field sets
-  directly with Anthropic-owned reference fixtures, so two independently
-  successful lifecycles cannot hide an extra or missing response field. The
+  and SSE full-replay/deduplication. Every ingress and all-operation response
+  must carry one scalar, run-unique request id and the exact authenticated
+  Workspace identity; the runner compares those values only in memory and
+  retains booleans in differential evidence. For every release client it also
+  compares successful create/retrieve/update Session, Agent, Stats, and Usage
+  field sets directly with Anthropic-owned reference fixtures, so two
+  independently successful lifecycles cannot hide an extra or missing response
+  field. The
   ordinary command permits an optional
   official-service differential for developer diagnostics; the release command
   requires all official-reference credentials and fails closed when they are

@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertManagedResponseContext,
   buildDeployedProbePlan,
   compareDeployedResults,
   exerciseDeployedOperationSweep,
@@ -22,6 +23,53 @@ const operations = [
 ];
 const coverage = { schema_version: 2, operations };
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+test('response context is scalar, workspace-exact, unique, and non-retaining', () => {
+  // Cause/effect graph:
+  // one authenticated Workspace + one completed response
+  //   -> exactly one request-id and one matching Workspace response field.
+  //
+  // Decision table:
+  // | request field | workspace field | expected scope | prior id | effect |
+  // | scalar        | exact           | configured     | absent   | accept |
+  // | absent/joined | any             | any            | any      | reject |
+  // | scalar        | absent/joined   | any            | any      | reject |
+  // | scalar        | foreign         | configured     | absent   | reject |
+  // | scalar        | exact           | configured     | present  | reject |
+  // Only booleans leave the assertion, so successful evidence retains neither
+  // response coordinate.
+  const seenRequestIDs = new Set();
+  const accepted = assertManagedResponseContext({
+    requestID: ' req_one ',
+    workspaceID: ' workspace_expected ',
+    expectedWorkspaceID: 'workspace_expected',
+    seenRequestIDs,
+    label: 'accepted',
+  });
+  assert.deepEqual(accepted, { requestID: true, workspaceID: true });
+  assert.ok(!JSON.stringify(accepted).includes('req_one'));
+  assert.ok(!JSON.stringify(accepted).includes('workspace_expected'));
+  for (const [label, requestID, workspaceID, expectedWorkspaceID, seen] of [
+    ['missing request', undefined, 'workspace_expected', 'workspace_expected', new Set()],
+    ['joined request', 'req_one, req_two', 'workspace_expected', 'workspace_expected', new Set()],
+    ['missing workspace', 'req_two', undefined, 'workspace_expected', new Set()],
+    ['joined workspace', 'req_two', 'workspace_expected, workspace_other', 'workspace_expected', new Set()],
+    ['foreign workspace', 'req_two', 'workspace_other', 'workspace_expected', new Set()],
+    ['reused request', 'req_one', 'workspace_expected', 'workspace_expected', seenRequestIDs],
+  ]) {
+    assert.throws(
+      () => assertManagedResponseContext({
+        requestID,
+        workspaceID,
+        expectedWorkspaceID,
+        seenRequestIDs: seen,
+        label,
+      }),
+      /official SDK response context|authenticated workspace|exactly one response/u,
+      label,
+    );
+  }
+});
 
 test('deployed probe plan closes operations with one auth and beta policy', () => {
   // Cause/effect graph: C1 every generated operation enters the public sweep;
@@ -83,8 +131,17 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
   // collection+200+page+both context headers => accept;
   // negative+4xx+Anthropic envelope+both context headers => accept;
   // mutation without exact malformed witness, negative+5xx, malformed envelope,
-  // or either missing context coordinate => fail closed.
-  const target = { name: 'actual', baseURL: 'https://actual.invalid', apiKey: 'key', tunnelAccessToken: 'token' };
+  // either missing context coordinate, wrong Workspace, or a reused request id
+  // => fail closed. Exact identifiers are compared in memory and deliberately
+  // excluded from the returned qualification evidence.
+  const target = {
+    name: 'actual',
+    baseURL: 'https://actual.invalid',
+    apiKey: 'key',
+    tunnelAccessToken: 'token',
+    workspaceId: 'workspace_fixture',
+  };
+  let requestSequence = 0;
   const validFetch = async (url, init) => {
     const operation = buildDeployedProbePlan(coverage).find(
       ({ method, path }) => init.method === method
@@ -95,12 +152,13 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
       assert.equal(init.headers['content-type'], 'application/json');
       assert.equal(init.body, '{', `${operation.id}: operation-independent malformed witness`);
     }
+    requestSequence += 1;
     if (operation.expectedClass === 'collection') {
       return new Response(JSON.stringify({ data: [], has_more: false, next_page: null }), {
         status: 200,
         headers: {
           'content-type': 'application/json',
-          'request-id': 'req_fixture',
+          'request-id': `req_fixture_${requestSequence}`,
           'anthropic-workspace-id': 'workspace_fixture',
         },
       });
@@ -112,7 +170,7 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
       status: 404,
       headers: {
         'content-type': 'application/json',
-        'request-id': 'req_fixture',
+        'request-id': `req_fixture_${requestSequence}`,
         'anthropic-workspace-id': 'workspace_fixture',
       },
     });
@@ -126,6 +184,53 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
   assert.ok(results.every(({ responseContext }) => (
     responseContext.requestID && responseContext.workspaceID
   )));
+  assert.ok(!JSON.stringify(results).includes('req_fixture_'));
+  assert.ok(!JSON.stringify(results).includes(target.workspaceId));
+
+  await assert.rejects(
+    () => exerciseDeployedOperationSweep({
+      actual: { ...target, workspaceId: ` ${target.workspaceId} ` },
+      coverage,
+      fetchImpl: validFetch,
+    }),
+    /Workspace identity/u,
+    'an ambiguous configured Workspace cannot weaken exact response binding',
+  );
+  await assert.rejects(
+    () => exerciseDeployedOperationSweep({
+      actual: target,
+      coverage,
+      fetchImpl: validFetch,
+      actualSeenRequestIDs: [],
+    }),
+    /request identity ledger/u,
+    'the cross-phase uniqueness ledger has one closed representation',
+  );
+
+  // Metamorphic relation: splitting the same qualification run into ingress
+  // and operation-sweep phases cannot reset request identity ownership. The
+  // caller-provided ledger therefore accepts one sweep and rejects an
+  // otherwise valid second sweep whose response ids restart from the same
+  // sequence.
+  const qualificationRequestIDs = new Set();
+  requestSequence = 0;
+  await exerciseDeployedOperationSweep({
+    actual: target,
+    coverage,
+    fetchImpl: validFetch,
+    actualSeenRequestIDs: qualificationRequestIDs,
+  });
+  requestSequence = 0;
+  await assert.rejects(
+    () => exerciseDeployedOperationSweep({
+      actual: target,
+      coverage,
+      fetchImpl: validFetch,
+      actualSeenRequestIDs: qualificationRequestIDs,
+    }),
+    /request-id must identify exactly one response/u,
+    'request identity uniqueness spans every phase in one qualification run',
+  );
 
   for (const missing of ['request-id', 'anthropic-workspace-id']) {
     await assert.rejects(
@@ -155,6 +260,21 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
     () => exerciseDeployedOperationSweep({
       actual: target,
       coverage,
+      fetchImpl: async () => jsonResponse(
+        { data: [], has_more: false, next_page: null },
+        200,
+        { 'anthropic-workspace-id': 'workspace_foreign' },
+      ),
+    }),
+    /response workspace must equal authenticated workspace/u,
+    'a valid but foreign Workspace header cannot satisfy deployed compatibility',
+  );
+
+  let malformedSequence = 0;
+  await assert.rejects(
+    () => exerciseDeployedOperationSweep({
+      actual: target,
+      coverage,
       fetchImpl: async (url, init) => {
         const operation = buildDeployedProbePlan(coverage).find(
           ({ method, path }) => init.method === method
@@ -162,12 +282,38 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
         );
         return operation.expectedClass === 'collection'
           ? jsonResponse({ data: [], has_more: false, next_page: null }, 200)
-          : jsonResponse({}, 404);
+          : jsonResponse({
+            type: 'error', error: { type: 'not_found_error', message: 'missing' },
+          }, 404);
+      },
+    }),
+    /request-id must identify exactly one response/u,
+    'a proxy-wide constant request id cannot satisfy deployed compatibility',
+  );
+
+  await assert.rejects(
+    () => exerciseDeployedOperationSweep({
+      actual: target,
+      coverage,
+      fetchImpl: async (url, init) => {
+        const operation = buildDeployedProbePlan(coverage).find(
+          ({ method, path }) => init.method === method
+            && url.pathname === new URL(path, target.baseURL).pathname,
+        );
+        malformedSequence += 1;
+        return operation.expectedClass === 'collection'
+          ? jsonResponse(
+            { data: [], has_more: false, next_page: null },
+            200,
+            { 'request-id': `req_malformed_${malformedSequence}` },
+          )
+          : jsonResponse({}, 404, { 'request-id': `req_malformed_${malformedSequence}` });
       },
     }),
     /error envelope type/u,
   );
 
+  let mediaSequence = 0;
   await assert.rejects(
     () => exerciseDeployedOperationSweep({
       actual: target,
@@ -180,10 +326,11 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
         const body = operation.expectedClass === 'collection'
           ? { data: [], has_more: false, next_page: null }
           : { type: 'error', error: { type: 'not_found_error', message: 'missing' } };
+        mediaSequence += 1;
         return new Response(JSON.stringify(body), {
           status: operation.expectedClass === 'collection' ? 200 : 404,
           headers: {
-            'request-id': 'req_fixture',
+            'request-id': `req_media_${mediaSequence}`,
             'anthropic-workspace-id': 'workspace_fixture',
           },
         });
@@ -194,13 +341,14 @@ test('deployed sweep rejects malformed errors before compatibility is claimed', 
   );
 });
 
-function jsonResponse(body, status) {
+function jsonResponse(body, status, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       'content-type': 'application/json',
       'request-id': 'req_fixture',
       'anthropic-workspace-id': 'workspace_fixture',
+      ...headers,
     },
   });
 }
