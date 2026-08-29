@@ -139,7 +139,9 @@ The named harnesses in the strict gate invoke production pure functions directly
   - hosted admin, workspace member, and runtime member grants equal their exact
     closed sets; legacy workspace migration is idempotent and authority exact.
 - `awaken-protocol-managed` / `awaken-runtime-host`
-  - only terminal cleanup bypasses a retired Agent publication, and MCP
+  - only non-interactive collection projection and terminal cleanup may use a
+    frozen baseline when an Agent publication is unavailable; interactive
+    recovery remains fail-closed. MCP
     credential realization preserves the authored target exactly.
   - a Session Hand can become ready only through a tracked `Starting` phase;
     cancellation of the waiting request does not transfer process ownership.
