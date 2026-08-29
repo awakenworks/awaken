@@ -903,10 +903,9 @@ mod query_tests {
         // states, but TS emits empty query pairs and Python omits them. Cross
         // deployments/runs and every timestamp/id branch; populated RFC-3339
         // values prove the adapter does not collapse valid filters.
-        let deployments: DeploymentListParams = serde_urlencoded::from_str(concat!(
-            "agent_id=&page=&created_at%5Bgte%5D=&created_at%5Blte%5D="
-        ))
-        .unwrap();
+        let deployments: DeploymentListParams =
+            serde_urlencoded::from_str("agent_id=&page=&created_at%5Bgte%5D=&created_at%5Blte%5D=")
+                .unwrap();
         assert!(deployments.agent_id.is_none());
         assert!(deployments.page.page.is_none());
         assert!(deployments.created_at_gte.is_none());
