@@ -221,7 +221,7 @@ fn generated_session(id: &str) -> PersistedSession {
     session
 }
 
-fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> PersistedSession {
+pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> PersistedSession {
     let mut session = generated_session(id);
     let generation = session.environment.generation().unwrap().clone();
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(

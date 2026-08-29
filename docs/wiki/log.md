@@ -1,5 +1,19 @@
 # Wiki Update Log
 
+## 2026-08-30 — Reuse the Session cutover proof for continuation rollout
+
+- Extended the existing Coordinator public drain gate so requests admitted
+  before drain finish and stay counted, while later HTTP/1.1 keep-alive and
+  HTTP/2 requests fail `503`; the distinct private Worker convergence surface
+  remains available.
+- Added one typed global Environment-phase count to the existing Managed Session
+  repository. SQLite and PostgreSQL decode every canonical live root without a
+  recovery-batch limit, table, phase index, route, or parallel decoder.
+- Extended the existing cutover snapshot with `restoring_sessions`. Its
+  generation advances only after both the final recovery scan and global count
+  succeed; failure, corruption, a stale generation, or any nonzero count keeps
+  the Phase A to Phase B rollout closed.
+
 ## 2026-08-29 — Add dormant provider-neutral Sandbox control transport
 
 - Extended the existing provisioning/provider authority with one typed,
