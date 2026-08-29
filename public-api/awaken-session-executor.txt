@@ -453,7 +453,6 @@ pub async fn awaken_session_executor::SharedHost::list_dispatches(&self, &str) -
 pub async fn awaken_session_executor::SharedHost::pending_tool(&self, &str) -> core::result::Result<core::option::Option<awaken_session_contract::session::Pending>, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::purge_dead_letters(&self, &str) -> core::result::Result<usize, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::quarantine_retry_exhausted(&self, &str, u64, u64) -> core::result::Result<usize, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::quiesce_terminal_delegations(&self, &str) -> core::result::Result<awaken_session_contract::session::DelegatedRunSnapshot, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::reconcile(&self, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::requeue_dead_letter(&self, &str, &str) -> core::result::Result<bool, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::resume(&self, &str, &str, awaken_session_executor::HostResume) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
@@ -480,6 +479,8 @@ pub async fn awaken_session_executor::SharedHost::renew_due_session_realizations
 pub async fn awaken_session_executor::SharedHost::revoke_all_session_realizations(&self) -> core::result::Result<usize, awaken_session_executor::HostError>
 impl awaken_session_executor::SharedHost
 pub async fn awaken_session_executor::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+impl awaken_session_executor::SharedHost
+pub async fn awaken_session_executor::SharedHost::quiesce_terminal_delegations(&self, &str) -> core::result::Result<awaken_session_contract::session::DelegatedRunSnapshot, awaken_session_executor::HostError>
 impl awaken_session_executor::SharedHost
 pub fn awaken_session_executor::SharedHost::worker_artifact_publisher(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_dispatch_contract::dispatch::RunClaim>>
 pub fn awaken_session_executor::SharedHost::worker_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_dispatch::pool::CompletionSink>

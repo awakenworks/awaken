@@ -118,20 +118,22 @@ async fn background_protocol_uses_the_canonical_session_admission_without_observ
         .await
         .expect("B1 background admission");
 
-    let reservations = runtime.reservations.lock().unwrap();
-    assert_eq!(reservations.len(), 1, "B1/E1");
-    assert_eq!(reservations[0].run_id, run_id, "B1/E1 exact Run");
-    assert_eq!(
-        reservations[0].replacement,
-        awaken_session_contract::SessionRunReplacement::PreservePrior,
-        "B1/E1 append semantics",
-    );
-    drop(reservations);
-    let deliveries = runtime.deliveries.lock().unwrap();
-    assert_eq!(deliveries.len(), 1, "B1/E2");
-    assert_eq!(deliveries[0].run_id, run_id, "B1/E2 exact Run");
-    assert!(deliveries[0].session_activity_epoch > 0, "B1/E2 receipt");
-    drop(deliveries);
+    {
+        let reservations = runtime.reservations.lock().unwrap();
+        assert_eq!(reservations.len(), 1, "B1/E1");
+        assert_eq!(reservations[0].run_id, run_id, "B1/E1 exact Run");
+        assert_eq!(
+            reservations[0].replacement,
+            awaken_session_contract::SessionRunReplacement::PreservePrior,
+            "B1/E1 append semantics",
+        );
+    }
+    {
+        let deliveries = runtime.deliveries.lock().unwrap();
+        assert_eq!(deliveries.len(), 1, "B1/E2");
+        assert_eq!(deliveries[0].run_id, run_id, "B1/E2 exact Run");
+        assert!(deliveries[0].session_activity_epoch > 0, "B1/E2 receipt");
+    }
     assert_eq!(
         repository
             .get("background-protocol")
