@@ -49,6 +49,18 @@ evidence from drifting from the external expectation:
   the exact 400/401/403/404/409/413/422/429/500/529 subclasses and headers,
   retry decision table including `x-should-retry`, byte-identical mutation
   identity, opaque cursor traversal, and caller-abort fencing.
+- `e2e/conformance/managed_sdk_auth_context_e2e.mjs` composes those SDK
+  projections with a real self-managed IAM process. Every supported TypeScript
+  anchor must decode an invalid credential as its exact `AuthenticationError`
+  without a Workspace, decode an authenticated policy denial as its exact
+  `PermissionDeniedError` with the token Workspace, decode an admitted page,
+  retain one globally unique request id per response, and prove denied writes
+  leave no persisted resource.
+- The Python runtime matrix projects the same real 401/403/200 authentication
+  graph through `managed_python_sdk_auth_context_e2e.py` for the current wheel
+  and every reviewed historical wheel. It reuses the matrix's hash-qualified
+  installations and one self-managed process, so a permissive mock transport or
+  an ambient Python package cannot satisfy the proof.
 - The declaration oracle includes the Managed helper entrypoints in addition
   to HTTP resource types. A separate pre-import ESM export inventory is checked
   against the executable current modules; adding or removing a helper inside

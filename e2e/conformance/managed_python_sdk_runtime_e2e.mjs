@@ -37,6 +37,10 @@ const SCOPE = resolve(REPO, 'packages/managed-sdk-oracle/config/scope.json');
 const DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_runtime_e2e.py');
 const HELPER_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_helpers_e2e.py');
 const MATRIX_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_matrix_e2e.py');
+const AUTH_CONTEXT_DRIVER = resolve(
+  import.meta.dirname,
+  'managed_python_sdk_auth_context_e2e.py',
+);
 const RESPONSE_CONTRACT_DRIVER = resolve(
   import.meta.dirname,
   'managed_python_sdk_response_contract_e2e.py',
@@ -46,6 +50,8 @@ const REQUEST_CONTRACT_DRIVER = resolve(
   'managed_python_sdk_request_contract_e2e.py',
 );
 const PORT = Number(process.env.E2E_PORT ?? 38199);
+const AUTH_CONTEXT_SEAL_KEY =
+  'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
 
 function commandSucceeds(command, args) {
   const result = spawnSync(command, args, { stdio: 'ignore' });
@@ -304,6 +310,60 @@ async function exerciseHistoricalMatrix(
       });
     }
   });
+
+  // Reuse the exact current venv plus every already provisioned historical
+  // wheel against one real self-managed IAM process. The Python driver owns all
+  // SDK calls; Node owns only process topology and one-time fixture credentials.
+  const authStorage = resolve(temporary, 'auth-context-storage');
+  mkdirSync(authStorage, { recursive: true });
+  const authPort = await availablePort(PORT + 4);
+  const authEnvironment = deploymentEnv(authStorage, {
+    identityMode: 'self-managed',
+    controlSealKey: AUTH_CONTEXT_SEAL_KEY,
+  });
+  let authServer;
+  try {
+    const running = spawnServer('management', authPort, authEnvironment);
+    authServer = running.server;
+    await waitForPort(authPort, 900_000, authServer);
+    const adminToken = readFileSync(resolve(authStorage, 'admin-token'), 'utf8').trim();
+    const workspace = readFileSync(
+      resolve(authStorage, 'platform-workspace-id'),
+      'utf8',
+    ).trim();
+    const minted = await fetch(`${running.baseUrl}/v1/config/iam/tokens`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        workspace_id: workspace,
+        role: 'workspace_restricted_developer',
+      }),
+    });
+    const issued = await minted.json();
+    assert.equal(minted.status, 201, 'mint Python restricted fixture');
+    assert.equal(typeof issued.token, 'string', 'Python restricted fixture token');
+    const authEnvironmentVariables = {
+      AWAKEN_MANAGED_ADMIN_TOKEN: adminToken,
+      AWAKEN_MANAGED_RESTRICTED_TOKEN: issued.token,
+      AWAKEN_MANAGED_WORKSPACE_ID: workspace,
+    };
+    await runDriver(python, AUTH_CONTEXT_DRIVER, running.baseUrl, {
+      extraEnv: authEnvironmentVariables,
+    });
+    for (const anchor of anchors) {
+      await runDriver(python, AUTH_CONTEXT_DRIVER, running.baseUrl, {
+        extraEnv: {
+          ...authEnvironmentVariables,
+          PYTHONPATH: roots.get(anchor.version),
+        },
+      });
+    }
+  } finally {
+    if (authServer) await stopServer(authServer);
+  }
 }
 
 // Multi-language runtime cause/effect graph:

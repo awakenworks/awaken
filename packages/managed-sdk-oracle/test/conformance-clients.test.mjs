@@ -69,6 +69,7 @@ test('every multi-version Managed E2E consumes the canonical anchor matrix', () 
   );
 
   const matrixSuites = [
+    'e2e/conformance/managed_sdk_auth_context_e2e.mjs',
     'e2e/conformance/managed_sdk_memory_depth_e2e.mjs',
     'e2e/conformance/managed_sdk_resource_handoff_e2e.mjs',
     'e2e/conformance/managed_sdk_runtime_matrix_e2e.mjs',
@@ -141,6 +142,7 @@ test('a reviewed candidate joins every shared conformance suite without becoming
     'sdk-transport-resilience.test.mjs',
     'managed_sdk_version_matrix_e2e.mjs',
     'managed_sdk_runtime_matrix_e2e.mjs',
+    'managed_sdk_auth_context_e2e.mjs',
     'managed_sdk_resource_handoff_e2e.mjs',
     'managed_sdk_memory_depth_e2e.mjs',
     'managed_webhooks_official_sdk_e2e.mjs',
