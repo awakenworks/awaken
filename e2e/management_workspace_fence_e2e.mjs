@@ -38,13 +38,22 @@ async function req(base, method, uri, token, body) {
   } catch {
     /* non-JSON */
   }
-  return { status: res.status, json, text };
+  return { status: res.status, json, text, headers: res.headers };
 }
 
 function assertForbidden(r, where) {
   assert.equal(r.status, 403, `${where}: cross-workspace naming -> 403 (got ${r.status}: ${r.text.slice(0, 200)})`);
   assert.equal(r.json?.type, 'error', `${where}: Managed error envelope`);
   assert.equal(r.json?.error?.type, 'permission_error', `${where}: permission_error (got ${r.json?.error?.type})`);
+  assert.match(
+    r.headers.get('request-id') ?? '',
+    /^req_[0-9a-f]{32}$/u,
+    `${where}: authenticated rejection retains request identity`,
+  );
+  assert.ok(
+    r.headers.get('anthropic-workspace-id'),
+    `${where}: authenticated rejection retains trusted workspace identity`,
+  );
 }
 
 async function main() {
@@ -57,6 +66,11 @@ async function main() {
     const own = fs.readFileSync(path.join(dir, 'platform-workspace-id'), 'utf8').trim();
     assert.ok(token.startsWith('sk-awaken-'), 'bootstrap admin token present');
     assert.ok(own.startsWith('workspace_local_'), 'platform-owned local workspace present');
+
+    // Response-context decision rule: once the token has authenticated its own
+    // Workspace, every path/query/body rejection retains that trusted response
+    // coordinate plus a fresh request-id. Missing/invalid credentials remain a
+    // different partition and cannot disclose a Workspace.
 
     // ---- Query-string fence -----------------------------------------------
     const okQuery = await req(base, 'GET', `/v1/config/credentials?workspace_id=${own}`, token);

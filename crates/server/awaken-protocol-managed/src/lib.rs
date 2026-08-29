@@ -41,6 +41,8 @@ pub use common::headers::{
     ANTHROPIC_API_VERSION, DREAMING_BETA, LEGACY_TUNNELS_BETA, MANAGED_BETA, MEMORY_BETA,
     ManagedCapability, SKILLS_BETA, TUNNELS_BETA, USER_PROFILES_BETA, parse_idempotency_key_header,
 };
+pub use common::with_managed_response_context;
+pub use common::with_managed_workspace_header;
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
 pub use resources::{

@@ -1397,6 +1397,7 @@ fn mount_with_managed_over_and_models(
         awaken_protocol_managed::models_router_with_inventory,
     );
     let managed = managed.merge(resource_management_router).merge(models);
+    let managed = awaken_protocol_managed::with_managed_response_context(managed);
     let local_workspace = host.local_workspace().to_string();
     let router = a2a.merge(durable_ops);
     let router = with_local_workspace_scope(router, local_workspace);

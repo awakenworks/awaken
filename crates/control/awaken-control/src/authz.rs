@@ -149,7 +149,7 @@ use credentials::{
     query_workspace_id,
 };
 pub(crate) use managed_context::fixed_workspace_header_guard;
-use managed_context::{memory_actor, with_workspace_header};
+use managed_context::memory_actor;
 mod remote;
 use remote::{RemoteAuthenticationFailure, authenticate_off_event_loop};
 
@@ -1305,7 +1305,10 @@ pub async fn management_guard(
             let workspace_id = workspace.0;
             req.extensions_mut()
                 .insert(awaken_tenancy::WorkspaceScope(workspace_id.clone()));
-            return with_workspace_header(next.run(req).await, &workspace_id);
+            return awaken_protocol_managed::with_managed_workspace_header(
+                next.run(req).await,
+                &workspace_id,
+            );
         }
     };
 
@@ -1320,20 +1323,26 @@ pub async fn management_guard(
         .get::<awaken_authz_enforce::RequestTenancy>()
         && tenancy.workspace_id != workspace.0
     {
-        return forbidden("workspace path does not match the API token's workspace");
+        return awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("workspace path does not match the API token's workspace"),
+            &workspace.0,
+        );
     }
     // Workspace fence: wherever the request names a workspace_id (query string
     // or a top-level JSON body field), it must equal the token's workspace.
     if let Some(named) = query_workspace_id(req.uri().query())
         && named != workspace.0
     {
-        return forbidden("workspace_id does not match the API token's workspace");
+        return awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("workspace_id does not match the API token's workspace"),
+            &workspace.0,
+        );
     }
     let (parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return (
+            let response = (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(ErrorResponse::new(
                     "invalid_request_error",
@@ -1341,13 +1350,17 @@ pub async fn management_guard(
                 )),
             )
                 .into_response();
+            return awaken_protocol_managed::with_managed_workspace_header(response, &workspace.0);
         }
     };
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice(&bytes)
         && let Some(serde_json::Value::String(named)) = map.get("workspace_id")
         && *named != workspace.0
     {
-        return forbidden("workspace_id does not match the API token's workspace");
+        return awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("workspace_id does not match the API token's workspace"),
+            &workspace.0,
+        );
     }
     let mut req = Request::from_parts(parts, Body::from(bytes));
     // Publish the authenticated authority to inner ownership and durable-audit
@@ -1357,7 +1370,10 @@ pub async fn management_guard(
         .insert(awaken_tenancy::WorkspaceScope(workspace.0.clone()));
 
     let Some(target_scope) = target_scope(scope_class, &workspace.0, req.uri().path()) else {
-        return forbidden("the route has no resolvable authorization target");
+        return awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("the route has no resolvable authorization target"),
+            &workspace.0,
+        );
     };
 
     let decision =
@@ -1366,16 +1382,25 @@ pub async fn management_guard(
         AuthorizationDecision::Allow => {
             req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(AuthedPrincipal(principal));
-            with_workspace_header(next.run(req).await, &workspace.0)
+            awaken_protocol_managed::with_managed_workspace_header(
+                next.run(req).await,
+                &workspace.0,
+            )
         }
         // P1 has no approval flow to discharge the obligation, so an
         // approval-gated action is refused with its own message (documented).
         AuthorizationDecision::RequireApproval => {
-            forbidden("this action requires approval, which the embedded P1 plane cannot grant")
+            awaken_protocol_managed::with_managed_workspace_header(
+                forbidden(
+                    "this action requires approval, which the embedded P1 plane cannot grant",
+                ),
+                &workspace.0,
+            )
         }
-        AuthorizationDecision::Deny => {
-            forbidden("the API token's role does not authorize this action")
-        }
+        AuthorizationDecision::Deny => awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("the API token's role does not authorize this action"),
+            &workspace.0,
+        ),
     }
 }
 
@@ -1458,7 +1483,10 @@ pub async fn cloud_management_guard(
     };
 
     let Some(target_scope) = target_scope(scope_class, &workspace, req.uri().path()) else {
-        return forbidden("the route has no resolvable authorization target");
+        return awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("the route has no resolvable authorization target"),
+            &workspace,
+        );
     };
     let denial_detail = remote::cloud_authorization_denial_detail(
         &qualified_action(action_namespace, action),
@@ -1472,7 +1500,12 @@ pub async fn cloud_management_guard(
     .await
     {
         Ok(decision) => decision,
-        Err(_) => return forbidden("cloud IAM authorization transport failed"),
+        Err(_) => {
+            return awaken_protocol_managed::with_managed_workspace_header(
+                forbidden("cloud IAM authorization transport failed"),
+                &workspace,
+            );
+        }
     };
     match decision {
         AuthorizationDecision::Allow => {
@@ -1480,12 +1513,18 @@ pub async fn cloud_management_guard(
             req.extensions_mut().insert(principal);
             req.extensions_mut()
                 .insert(awaken_tenancy::WorkspaceScope(workspace.clone()));
-            with_workspace_header(next.run(req).await, &workspace)
+            awaken_protocol_managed::with_managed_workspace_header(next.run(req).await, &workspace)
         }
         AuthorizationDecision::RequireApproval => {
-            forbidden(&format!("{denial_detail}; approval is required"))
+            awaken_protocol_managed::with_managed_workspace_header(
+                forbidden(&format!("{denial_detail}; approval is required")),
+                &workspace,
+            )
         }
-        AuthorizationDecision::Deny => forbidden(&denial_detail),
+        AuthorizationDecision::Deny => awaken_protocol_managed::with_managed_workspace_header(
+            forbidden(&denial_detail),
+            &workspace,
+        ),
     }
 }
 

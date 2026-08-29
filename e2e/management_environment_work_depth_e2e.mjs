@@ -1,9 +1,11 @@
 // Every public TypeScript Environment Work method with state/CAS negatives.
 //
 // Cause/effect graph: queue state + lease owner + heartbeat precondition +
-// request mutation -> DTO/status + one durable state transition.
+// request mutation -> DTO/status + one durable state transition + official
+// response context on the complete scenario-host composition.
 // Decision table: queued work is retrievable/updatable/claimable; one owner may
-// ack/heartbeat/stop; stale CAS, unknown ids, invalid poll bounds never mutate.
+// ack/heartbeat/stop; stale CAS, unknown ids, invalid poll bounds never mutate;
+// every successful operation must retain request/workspace response headers.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
@@ -33,10 +35,13 @@ try {
     betas: BETAS,
   });
 
-  const initial = await drain(admin.beta.environments.work.list(environment.id, {
+  const initialResponse = await admin.beta.environments.work.list(environment.id, {
     limit: 1,
     betas: BETAS,
-  }));
+  }).withResponse();
+  assert.match(initialResponse.response.headers.get('request-id') ?? '', /^req_[0-9a-f]{32}$/u);
+  assert.ok(initialResponse.response.headers.get('anthropic-workspace-id'));
+  const initial = await drain(initialResponse.data);
   assert.equal(initial.length, 1);
   const work = initial[0];
 
