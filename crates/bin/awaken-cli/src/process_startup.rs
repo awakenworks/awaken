@@ -1,5 +1,7 @@
 //! Typed services selected before a Control or Coordinator process starts.
 
+use std::future::Future;
+use std::mem;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,6 +9,27 @@ use super::{
     config, executable_agent_registration, executable_environment_registration,
     worker_observation_wiring,
 };
+
+/// Run a service future on the canonical process runtime.
+///
+/// Credential-backed Managed MCP realization crosses the durable ingress,
+/// materializer, and connector stacks in one poll. The Tokio default worker
+/// stack (2 MiB) is insufficient for that valid debug/recovery path and aborts
+/// the whole process before an error can be projected. Keep one explicit
+/// process-level stack budget for every launcher instead of relying on an
+/// operator-only environment-variable workaround.
+pub fn block_on_service<F: Future>(future: F) -> F::Output {
+    const SERVICE_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+    const { assert!(SERVICE_WORKER_STACK_BYTES >= 4 * 1024 * 1024) };
+    const { assert!(SERVICE_WORKER_STACK_BYTES.is_multiple_of(mem::size_of::<usize>())) };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("awaken-runtime")
+        .thread_stack_size(SERVICE_WORKER_STACK_BYTES)
+        .build()
+        .expect("build Awaken service runtime")
+        .block_on(future)
+}
 
 #[derive(Default)]
 pub(super) struct ProcessStartup {
@@ -58,5 +81,20 @@ pub(super) fn local_model_supply(
     awaken_admin_config_api::ModelSupplyCapabilityView {
         cloud_models_enabled,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_on_service;
+
+    #[test]
+    fn canonical_service_runtime_polls_the_launcher_future() {
+        // Cause/effect graph: C1=the launcher supplies a Future; C2=the
+        // process-owned runtime builds with its compile-time stack constraints.
+        // R1(C1+C2)->the Future is polled and its exact output is returned.
+        // Runtime-construction failure is terminal by contract, so no fallback
+        // builder or parallel launcher path is permitted.
+        assert_eq!(block_on_service(async { "service-ready" }), "service-ready");
     }
 }
