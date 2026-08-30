@@ -113,3 +113,39 @@ pub use terminal::{
 
 #[cfg(test)]
 mod tests;
+
+
+
+/// Drain the repository's one typed keyset index before any reconciler starts
+/// effects. The cursor is process-local loop state only: the repository remains
+/// the sole durable scheduling and row authority.
+async fn scan_all_reconcilable_sessions(
+    repository: &dyn ManagedSessionRepository,
+) -> Result<SessionRecoveryScan, awaken_session_contract::SessionRepositoryError> {
+    let mut complete = SessionRecoveryScan::default();
+    let mut quarantined = std::collections::BTreeMap::new();
+    let mut cursor = None;
+    loop {
+        let page = repository
+            .reconcilable_sessions_page(cursor.as_ref())
+            .await?;
+        let next_cursor = page.next_cursor;
+        if let (Some(current), Some(next)) = (cursor.as_ref(), next_cursor.as_ref())
+            && next.session_id() <= current.session_id()
+        {
+            return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
+                "Session reconciliation cursor did not advance".into(),
+            ));
+        }
+        complete.sessions.extend(page.sessions);
+        for isolation in page.quarantined {
+            quarantined.insert(isolation.session_id.clone(), isolation);
+        }
+        let Some(next_cursor) = next_cursor else {
+            break;
+        };
+        cursor = Some(next_cursor);
+    }
+    complete.quarantined = quarantined.into_values().collect();
+    Ok(complete)
+}

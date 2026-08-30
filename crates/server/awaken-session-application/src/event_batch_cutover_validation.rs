@@ -108,7 +108,7 @@ impl SessionApplication {
         &self,
         event_batch_failures: usize,
     ) -> Result<SessionEventBatchCutoverValidationSnapshot, SessionRepositoryError> {
-        let scan = self.session_repository().reconcilable_sessions().await?;
+        let scan = crate::scan_all_reconcilable_sessions(self.session_repository()).await?;
         let restoring_sessions = self
             .session_repository()
             .count_environment_phase(SessionEnvironmentPhase::Restoring)
@@ -150,6 +150,7 @@ mod tests {
                     session_id: "not-projected".into(),
                     reason: "not-projected".into(),
                 }],
+                next_cursor: None,
             },
             0,
             2,

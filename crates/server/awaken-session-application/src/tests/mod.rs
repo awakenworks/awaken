@@ -1732,8 +1732,9 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         self.inner.get(session_id).await
     }
 
-    async fn reconcilable_sessions(
+    async fn reconcilable_sessions_page(
         &self,
+        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
     ) -> Result<
         awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,
@@ -1746,7 +1747,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
                 ),
             );
         }
-        self.inner.reconcilable_sessions().await
+        self.inner.reconcilable_sessions_page(after).await
     }
 
     async fn count_environment_phase(
