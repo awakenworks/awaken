@@ -43,7 +43,7 @@ export default defineConfig({
       // Browser E2E owns no human who can consume the one-time setup handoff.
       // Exercise application behavior in the explicit no-login deployment mode;
       // local-browser authentication has its own control-plane integration tests.
-      command: `CARGO_TARGET_DIR="${cargoTargetDir}" cargo run --quiet -p awaken-cli --bin awaken -- all-in-one --config web/e2e/browser-e2e.toml --port ${backendPort} --data-dir "${backendDataDir}" --no-browser --identity-mode no-login`,
+      command: `CARGO_TARGET_DIR="${cargoTargetDir}" cargo run --release --quiet -p awaken-cli --bin awaken -- all-in-one --config web/e2e/browser-e2e.toml --port ${backendPort} --data-dir "${backendDataDir}" --no-browser --identity-mode no-login`,
       cwd: "..",
       url: `${backendUrl}/v1/config/catalog`,
       // A cold Rust build on constrained CI runners can exceed four minutes;

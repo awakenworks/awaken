@@ -2,8 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MANAGED_HEADERS, MEMORY_HEADERS, SKILLS_HEADERS } from "./betas";
+import { FILES_HEADERS, MANAGED_HEADERS, MEMORY_HEADERS, SKILLS_HEADERS } from "./betas";
 import { SyntheticModelDirectory } from "./synthetic-model";
+import { logicalApiPath, workspaceApiPath } from "./workspace";
+import { skillFilesFromTar } from "../src/surfaces/skills";
 
 const syntheticModels = new SyntheticModelDirectory();
 
@@ -24,13 +26,22 @@ async function openBuild(page: Page, section: "Tools & permissions" | "Skills & 
 // (memory / skills / environments / deployments): drive the real UI against the
 // real management backend and prove the create/read reaches the endpoint.
 
-test("Memory store: create in the UI and see it listed", async ({ page }) => {
+test("Memory store: create in the UI and see it listed", async ({ page, request }) => {
   const name = `mem-${Date.now()}`;
+  const description = `Browser-created ${name}`;
   await page.goto("/w/default/memory");
   await page.getByRole("button", { name: /New memory store/ }).click();
   await page.getByPlaceholder("project-memory").fill(name);
+  await page.getByPlaceholder("What this store remembers").fill(description);
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.getByText(name)).toBeVisible();
+  await expect(page.locator("tr", { hasText: description })).toBeVisible();
+  const catalogResponse = await request.get(await workspaceApiPath(request, "/v1/memory_stores"), {
+    headers: MEMORY_HEADERS,
+  });
+  expect(catalogResponse.ok(), await catalogResponse.text()).toBe(true);
+  const catalog = await catalogResponse.json();
+  expect(catalog.data.some((store: { name: string; description?: string }) =>
+    store.name === name && store.description === description)).toBe(true);
 });
 
 test("Environment: create in the UI and see it listed", async ({ page }) => {
@@ -53,10 +64,10 @@ test("Environment: configure native Sandbox creation on the first Hand tool", as
 
   const row = page.locator("tr", { hasText: name });
   await expect(row).toContainText(/first Hand tool|首次 Hand 工具/);
-  const environmentId = (await row.locator("td").first().textContent())?.trim();
+  const environmentId = (await row.locator("td").first().locator("code").textContent())?.trim();
   expect(environmentId).toBeTruthy();
   const bindingResponse = await request.get(
-    `/v1/awaken/environments/${environmentId}/sandbox-execution-policy`,
+    await workspaceApiPath(request, `/v1/awaken/environments/${environmentId}/sandbox-execution-policy`),
   );
   expect(bindingResponse.ok()).toBeTruthy();
   expect(await bindingResponse.json()).toMatchObject({
@@ -95,7 +106,7 @@ test("Skills: the surface reads the delivered-skill catalog", async ({ page, req
   await page.goto("/w/default/skills");
   // The backend may be reused locally and already contain a delivered Skill. Assert
   // the UI mirrors the live catalog in either state instead of assuming isolation.
-  const catalog = await (await request.get("/v1/skills", { headers: SKILLS_HEADERS })).json();
+  const catalog = await (await request.get(await workspaceApiPath(request, "/v1/skills"), { headers: SKILLS_HEADERS })).json();
   if (catalog.data.length === 0) {
     await expect(page.getByText(/No Skills yet|还没有技能/)).toBeVisible();
   } else {
@@ -134,25 +145,26 @@ test("Skills: import a bundle and publish an online edit as a new version", asyn
   await page.getByRole("button", { name: /Publish new version|发布新版本/ }).click();
   await expect(row).toContainText("2");
 
-  const catalog = await (await request.get("/v1/skills", { headers: SKILLS_HEADERS })).json();
+  const catalog = await (await request.get(await workspaceApiPath(request, "/v1/skills"), { headers: SKILLS_HEADERS })).json();
   const skill = catalog.data.find((candidate: { display_title?: string }) => candidate.display_title === marker);
   expect(skill).toBeTruthy();
-  const content = await (await request.get(`/v1/skills/${skill.id}/versions/latest/content`, { headers: SKILLS_HEADERS })).text();
-  expect(content).toContain("version two");
-  const latest = await (await request.get(`/v1/skills/${skill.id}/versions/latest`, { headers: SKILLS_HEADERS })).json();
-  expect(latest.file_entries.find((file: { path: string }) => file.path === "helper.bin").executable).toBe(true);
+  const archiveResponse = await request.get(await workspaceApiPath(request, `/v1/skills/${skill.id}/versions/latest/content`), { headers: SKILLS_HEADERS });
+  expect(archiveResponse.ok(), await archiveResponse.text()).toBe(true);
+  const archiveEntries = skillFilesFromTar(new Uint8Array(await archiveResponse.body()));
+  expect(new TextDecoder().decode(archiveEntries.find((file) => file.path === "SKILL.md")?.bytes)).toContain("version two");
+  expect(archiveEntries.find((file) => file.path === "helper.bin")?.executable).toBe(true);
 });
 
 test("Agent Resources: bind a memory store to an agent and persist it", async ({ page, request }) => {
   const store = `store-${Date.now()}`;
   const agent = `res-agent-${Date.now()}`;
-  const storeResponse = await request.post("/v1/memory_stores", {
+  const storeResponse = await request.post(await workspaceApiPath(request, "/v1/memory_stores"), {
     headers: MEMORY_HEADERS,
     data: { name: store },
   });
   expect(storeResponse.ok()).toBe(true);
   const storeRecord = await storeResponse.json();
-  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, system: "hi", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, system: "hi", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
 
   await page.goto(`/w/default/agents/${agent}`);
   await openBuild(page, "Memory & resources");
@@ -175,7 +187,7 @@ const MIN_AGENT = { system: "hi", tools: [], plugins: [], plugin_config: {}, con
 
 test("Agent Resources: attach a file to an agent and persist it", async ({ page, request }) => {
   const agent = `file-agent-${Date.now()}`;
-  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, ...MIN_AGENT } });
 
   await page.goto(`/w/default/agents/${agent}`);
   await openBuild(page, "Memory & resources");
@@ -196,10 +208,9 @@ test("Agent Resources: attach a file to an agent and persist it", async ({ page,
 });
 
 test("Files: upload an input through the global resource library and keep it out of Artifacts", async ({ page, request }) => {
-  // File view decision table: input+tree shows hierarchy only; input+list shows
-  // the authoritative purpose; artifact query must exclude that same id. Switch
-  // to the list projection before asserting purpose rather than duplicating the
-  // purpose column in the tree view.
+  // File view decision table: workspace inputs have no Session scope; artifacts
+  // carry a Session scope. The API exposes one inventory and the two Console
+  // surfaces project it by scope, so the test must not invent a `purpose` query.
   const filename = `global-input-${Date.now()}.txt`;
   await page.goto("/w/default/files");
   const chooser = page.waitForEvent("filechooser");
@@ -214,11 +225,13 @@ test("Files: upload an input through the global resource library and keep it out
   await expect(row).toBeVisible();
   await expect(row).toContainText(/Agent input|Agent 输入/);
 
-  const inputs = await (await request.get("/v1/files?purpose=input&limit=1000")).json();
-  const artifacts = await (await request.get("/v1/files?purpose=artifact&limit=1000")).json();
-  expect(inputs.data.some((file: { filename: string; purpose: string }) =>
-    file.filename === filename && file.purpose === "input")).toBe(true);
-  expect(artifacts.data.some((file: { filename: string }) => file.filename === filename)).toBe(false);
+  const inventoryResponse = await request.get(await workspaceApiPath(request, "/v1/files?limit=1000"), { headers: FILES_HEADERS });
+  expect(inventoryResponse.ok(), await inventoryResponse.text()).toBe(true);
+  const inventory = await inventoryResponse.json();
+  expect(inventory.data.some((file: { filename: string; scope?: unknown }) =>
+    file.filename === filename && file.scope == null)).toBe(true);
+  expect(inventory.data.some((file: { filename: string; scope?: unknown }) =>
+    file.filename === filename && file.scope != null)).toBe(false);
 
   await page.goto("/w/default/artifacts");
   await page.getByRole("button", { name: /List|列表/, exact: true }).click();
@@ -228,7 +241,7 @@ test("Files: upload an input through the global resource library and keep it out
 
 test("Agent Resources: connect a GitHub repo to an agent and persist it", async ({ page, request }) => {
   const agent = `repo-agent-${Date.now()}`;
-  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, ...MIN_AGENT } });
   const repositoryId = `repo-${Date.now()}`;
 
   await page.goto(`/w/default/agents/${agent}`);
@@ -245,29 +258,28 @@ test("Agent Resources: connect a GitHub repo to an agent and persist it", async 
 
 test("Agent Resources: add a skill to an agent and persist it", async ({ page, request }) => {
   const agent = `skill-agent-${Date.now()}`;
-  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, ...MIN_AGENT } });
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, ...MIN_AGENT } });
   // Seed a skill via the multipart Skills API (the durable skill store is wired in
   // management mode, so create persists) so there's one to pick.
   const skillName = `e2e-skill-${Date.now()}`;
-  await request.post("/v1/skills", {
+  const createSkill = await request.post(await workspaceApiPath(request, "/v1/skills"), {
     headers: SKILLS_HEADERS,
     multipart: {
       file: {
         name: "SKILL.md",
         mimeType: "text/markdown",
-        buffer: Buffer.from("---\nname: greeter\ndescription: Say hello.\n---\n# Greeter"),
+        buffer: Buffer.from(`---\nname: ${skillName}\ndescription: Say hello.\n---\n# Greeter`),
       },
       display_title: skillName,
     },
   });
-  const catalog = await (await request.get("/v1/skills", { headers: SKILLS_HEADERS })).json();
-  const skill = catalog.data.find((candidate: { display_title?: string; id: string }) =>
-    candidate.display_title === skillName);
-  expect(skill).toBeTruthy();
+  expect(createSkill.ok(), await createSkill.text()).toBe(true);
+  const skill = await createSkill.json() as { id: string; display_title?: string };
+  expect(skill.display_title).toBe(skillName);
 
   const hydrated = page.waitForResponse((response) =>
     response.request().method() === "GET"
-      && response.url().endsWith(`/v1/config/agents/${agent}`));
+      && logicalApiPath(response.url()) === `/v1/config/agents/${agent}`);
   await page.goto(`/w/default/agents/${agent}`);
   expect((await hydrated).ok()).toBe(true);
   await openBuild(page, "Skills & MCP");
@@ -289,7 +301,7 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
 test("Tool presentation: alias a tool in the editor and persist it", async ({ page, request }) => {
   const agent = `tools-agent-${Date.now()}`;
   // Seed an agent with a static tool selected, so the override target picker has one.
-  await request.put(`/v1/config/agents/${agent}`, { data: { id: agent, system: "hi", tools: ["read"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, system: "hi", tools: ["read"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
 
   await page.goto(`/w/default/agents/${agent}`);
   await openBuild(page, "Tools & permissions");
@@ -314,36 +326,39 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
   // to the outputs mount (covered by real-llm.spec harvest), so here that list is the
   // live empty-state, proving the artifacts read reached the endpoint.
   const store = `sfstore-${Date.now()}`;
-  const storeId = (await (await request.post("/v1/memory_stores", {
+  const storeId = (await (await request.post(await workspaceApiPath(request, "/v1/memory_stores"), {
     headers: MEMORY_HEADERS,
     data: { name: store },
   })).json()).id as string;
   const stamp = Date.now();
   const agent = `session-files-agent-${stamp}`;
   const model = `session-files-model-${stamp}`;
-  await syntheticModels.configure(request, model);
-  const authored = await request.put(`/v1/config/agents/${agent}`, {
+  await syntheticModels.configure(request, model, await workspaceApiPath(request, "/v1/config"));
+  const authored = await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), {
     data: { id: agent, model: { id: model }, ...MIN_AGENT },
   });
   expect(authored.ok(), await authored.text()).toBe(true);
-  const published = await request.post(`/v1/config/agents/${agent}/publish`);
+  const published = await request.post(await workspaceApiPath(request, `/v1/config/agents/${agent}/publish`));
   expect(published.ok(), await published.text()).toBe(true);
   // A memory_store binds at session creation (Managed Agents contract — it can't be
   // attached to a running session), so mount it via the create body's resources[].
-  const sid = (await (await request.post("/v1/sessions", {
+  const sessionResponse = await request.post(await workspaceApiPath(request, "/v1/sessions"), {
     headers: MANAGED_HEADERS,
     data: {
       agent,
+      environment_id: "env_local",
       title: "files-e2e",
       resources: [{ type: "memory_store", memory_store_id: storeId, mount_path: "/mnt/memory/notes" }],
     },
-  })).json()).id as string;
+  });
+  expect(sessionResponse.ok(), await sessionResponse.text()).toBe(true);
+  const sid = ((await sessionResponse.json()).id) as string;
 
   // Resource projection decision table: create+no Worker effect leaves the
   // generation Prepared and must not label it mounted; a successful claimed run
   // activates the exact frozen generation, after which Inputs shows mount/id.
   // Artifacts remain independently empty until output bytes are published.
-  const run = await request.post(`/v1/sessions/${sid}/events`, {
+  const run = await request.post(await workspaceApiPath(request, `/v1/sessions/${sid}/events`), {
     headers: MANAGED_HEADERS,
     data: { events: [{ type: "user.message", content: [{ type: "text", text: "activate inputs" }] }] },
   });
@@ -352,22 +367,32 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
   await page.goto(`/w/default/sessions/${sid}`);
   await page.getByRole("button", { name: "Inputs", exact: true }).click();
   await expect(page.getByText("/mnt/memory/notes")).toBeVisible(); // mounted resource path
-  await expect(page.getByText(storeId)).toBeVisible(); // backing reference
+  await expect(page.getByRole("main").getByText("Memory", { exact: true })).toBeVisible();
+  const resourcesResponse = await request.get(await workspaceApiPath(request, `/v1/sessions/${sid}/resources`), {
+    headers: MANAGED_HEADERS,
+  });
+  expect(resourcesResponse.ok(), await resourcesResponse.text()).toBe(true);
+  const resources = await resourcesResponse.json();
+  expect(resources.data).toContainEqual(expect.objectContaining({
+    type: "memory_store",
+    memory_store_id: storeId,
+    mount_path: "/mnt/memory/notes",
+  }));
   await expect(page.getByText(/stay the same for the life|本次 Session 中保持不变/)).toBeVisible();
   await page.locator(".segmented").getByRole("button", { name: "Artifacts", exact: true }).click();
   await expect(page.getByText(/No artifacts yet|还没有产物/)).toBeVisible(); // live artifacts read
 });
 
-test("Deployment: create in the UI (agent + environment) and see it listed", async ({ page, request }) => {
-  const name = `dep-${Date.now()}`;
+test("Deployment: create in the UI, run once, and open its resulting Session", async ({ page, request }) => {
+  const name = `Scheduled maintenance ${Date.now()}`;
   // A deployment needs a published agent + an environment — seed both via the API.
   const agent = `dep-agent-${Date.now()}`;
   const model = `dep-model-${Date.now()}`;
-  await syntheticModels.configure(request, model);
-  await request.put(`/v1/config/agents/${agent}`, {
+  await syntheticModels.configure(request, model, await workspaceApiPath(request, "/v1/config"));
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), {
     data: {
       id: agent,
-      name: agent,
+      name: "Scheduled maintenance agent",
       system: "hi",
       model: { id: model },
       tools: [],
@@ -377,19 +402,30 @@ test("Deployment: create in the UI (agent + environment) and see it listed", asy
       max_steps: 8,
     },
   });
-  const publish = await request.post(`/v1/config/agents/${agent}/publish`);
+  const publish = await request.post(await workspaceApiPath(request, `/v1/config/agents/${agent}/publish`));
   expect(publish.ok(), await publish.text()).toBe(true);
-  await request.post("/v1/environments", {
+  const environment = await request.post(await workspaceApiPath(request, "/v1/environments"), {
     headers: MANAGED_HEADERS,
-    data: { name: `dep-env-${Date.now()}`, config: { type: "cloud", networking: { type: "unrestricted" } } },
+    data: { name: "Scheduled maintenance environment", config: { type: "cloud", networking: { type: "unrestricted" } } },
   });
+  expect(environment.ok(), await environment.text()).toBe(true);
+  const environmentId = (await environment.json()).id as string;
 
   await page.goto("/w/default/deployments");
   await page.getByRole("button", { name: /New deployment/ }).click();
-  await page.getByPlaceholder("nightly-report").fill(name);
-  await page.locator("select").nth(0).selectOption({ index: 1 }); // agent
-  await page.locator("select").nth(1).selectOption({ index: 1 }); // environment
-  await page.getByPlaceholder("0 20 * * 5").fill("0 20 * * 5");
-  await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.getByText(name)).toBeVisible();
+  const modal = page.locator(".modal");
+  await modal.getByPlaceholder("nightly-report").fill(name);
+  await modal.getByLabel("Agent", { exact: true }).selectOption(agent);
+  await modal.getByLabel("Environment", { exact: true }).selectOption(environmentId);
+  await modal.getByPlaceholder("0 20 * * 5").fill("0 20 * * 5");
+  await modal.getByRole("button", { name: "Create", exact: true }).click();
+  const row = page.locator("tr", { hasText: name });
+  await expect(row).toBeVisible();
+  await expect(row.getByRole("button", { name: "Run once", exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+  await row.getByRole("button", { name: "Run once", exact: true }).click();
+  await expect(page.getByText("Deployment run created.")).toBeVisible();
+  await page.getByRole("link", { name: "Open Session", exact: true }).click();
+  await expect(page).toHaveURL(/\/w\/default\/sessions\/[^/]+$/);
+  await expect(page.getByText("Run the scheduled task.", { exact: true })).toBeVisible();
 });

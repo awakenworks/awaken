@@ -3,7 +3,8 @@
 // prove the resource plane end-to-end with a live model across all three families:
 //   - File (stateful, read): `client.beta.files.upload` stores bytes; a session
 //     `resources[{type:"file"}]` realizes them into the sandbox; the model reads it.
-//   - Artifact (harvest, write): the model writes under `outputs/`; the host harvests
+//   - Artifact (harvest, write): the model writes under the runtime-owned
+//     `/mnt/session/outputs/` mount; the host harvests
 //     it; we retrieve it via `files.list(scope_id)` + `files.download`.
 //   - Memory (stateful, read+write, cross-session): a memory store has a stable id;
 //     session A writes through the governed mount, and a *new* session B reads
@@ -243,20 +244,20 @@ async function main() {
       assert.ok(fileRead.ok, 'model must reproduce the mounted file token by reading it');
       pass(`model read the mounted file and reproduced the token: ${TOKEN}`);
 
-      // ── 2. ARTIFACT: model writes under outputs/, host harvests, we retrieve ────
+      // ── 2. ARTIFACT: model writes under the runtime output mount, host harvests ──
       let artifact = null;
       const artWrite = await driveUntil(
         client,
         fileSession.id,
         `Using your tools, write the exact text ${ARTIFACT} into a new file at the path ` +
-          `outputs/result.txt. Reply with "written" when done.`,
+          `/mnt/session/outputs/result.txt. Reply with "written" when done.`,
         async () => {
           const fs = [];
           for await (const f of client.beta.files.list({ scope_id: fileSession.id, betas: BETAS })) fs.push(f);
           artifact = fs.find((f) => (f.filename ?? '').includes('result.txt')) ?? null;
           return !!artifact;
         },
-        { nudgeText: `You must call the write tool to create outputs/result.txt containing ${ARTIFACT}.` },
+        { nudgeText: `You must call the write tool to create /mnt/session/outputs/result.txt containing ${ARTIFACT}.` },
       );
       assert.ok(artWrite.approved.size > 0, 'the write tool should have awaiting for a confirmation');
       pass(`approved ${artWrite.approved.size} gated tool call(s) via user.tool_confirmation`);

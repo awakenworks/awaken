@@ -175,7 +175,7 @@ test("Agent reads a bound read-only file (real model)", async ({ request }) => {
   // Upload a file carrying the secret, author a read-capable agent, bind + publish.
   const file = await (
     await request.post("/v1/files", {
-      multipart: { file: { name: "config.txt", mimeType: "text/plain", buffer: Buffer.from(`the launch code is ${secret}`) }, purpose: "agent" },
+      multipart: { file: { name: "config.txt", mimeType: "text/plain", buffer: Buffer.from(`the launch code is ${secret}`) } },
     })
   ).json();
   await request.put(`/v1/config/agents/${agent}`, {
