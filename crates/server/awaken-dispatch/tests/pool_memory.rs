@@ -227,6 +227,56 @@ struct BlockingCancelAttemptExecutor {
     release: Arc<tokio::sync::Semaphore>,
 }
 
+struct OwnershipCancellationAttemptExecutor {
+    entered: Arc<tokio::sync::Notify>,
+    cancellation_observed: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for OwnershipCancellationAttemptExecutor {
+    async fn execute(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        let cancellation = context
+            .cancellation
+            .expect("a claimed attempt carries cooperative cancellation");
+        self.entered.notify_one();
+        cancellation.cancelled().await;
+        self.cancellation_observed.notify_one();
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "exact claim ownership was lost".into(),
+        ))
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::execution::RunAttemptExecutor
+    for OwnershipCancellationAttemptExecutor
+{
+    async fn resume(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _command: awaken_runtime_contract::resume::ResumeCommand,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "fresh-attempt cancellation test was asked to resume".into(),
+        ))
+    }
+
+    async fn cancel(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<()> {
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "fresh-attempt cancellation test was asked to cancel".into(),
+        ))
+    }
+}
+
 #[async_trait]
 impl awaken_runtime_contract::execution::RunExecutor for BlockingCancelAttemptExecutor {
     async fn execute(
@@ -381,10 +431,11 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
 
 /// Exact-claim renewal ownership cause/effect decision table. C1 is the Pool
 /// claim, C2 is resolver completion, C3 is the exact Worker drive, C4 is
-/// cancellation, C5 is resolver failure, and C6 is expiry/replacement. E1 is one
+/// cancellation, C5 is resolver failure, C6 is expiry/replacement, and C7 is an
+/// already-entered attempt. E1 is one
 /// renewal write per interval, E2 is guard transfer without a second Tokio task,
 /// E3 is guard shutdown, E4 is immediate relinquish, and E5 is fail-closed stale
-/// execution.
+/// execution. E6 is cooperative cancellation of the in-flight attempt.
 ///
 /// | Rule | Resolver | Exact operation | Authority | Expected effect |
 /// |---|---|---|---|---|
@@ -392,13 +443,14 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
 /// | RG2 | succeeds | cancel | current | E1+E2, then E3 |
 /// | RG3 | fails | none | current | E1+E4, then E3 |
 /// | RG4 | blocked | none | expired/replaced | one failed E1, E3+E5 |
+/// | RG5 | succeeds | C7 execute | expired/replaced | one failed E1, E5+E6 |
 ///
 /// The count is the observable task cardinality: the pre-fix Pool and Worker
 /// tasks both woke on the same interval, producing two renewal writes for RG1
 /// and RG2. One transferred guard produces exactly one.
 /// Constraint/Invariant: exactly one renewal guard follows the exact claim from
 /// Pool through Worker and stops at every terminal/failure exit. Decision rule:
-/// this test owns RG1; the adjacent tests own RG2-RG4.
+/// this test owns RG1; the adjacent tests own RG2-RG5.
 #[tokio::test(start_paused = true)]
 async fn pool_transfers_one_renewal_guard_into_a_normal_drive() {
     use std::sync::atomic::Ordering;
@@ -666,6 +718,61 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
     }
     assert_eq!(commit.commit_count(), 0, "RG4/E5");
     pool.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn lost_renewal_cancels_the_in_flight_attempt() {
+    // Test design — Rule RG5 from the adjacent decision table. Causes: C1 the
+    // exact claim has entered its attempt; C2 its lease expires; C3 a peer
+    // replaces the claim; C4 the old renewal observes authoritative loss.
+    // Effects: E1 the existing Runtime cancellation token fires immediately;
+    // E2 the stale attempt exits without a Thread commit; E3 no later renewal
+    // is emitted. Constraint: renewal/fencing remain the only ownership truth;
+    // cancellation is a signal projection, not another claim state machine.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
+            .with_lease_ms(90),
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let cancellation_observed = Arc::new(tokio::sync::Notify::new());
+    worker.install_attempt_executor(Arc::new(OwnershipCancellationAttemptExecutor {
+        entered: entered.clone(),
+        cancellation_observed: cancellation_observed.clone(),
+    }));
+    let clock = Arc::new(ManualClock::new(0));
+    store
+        .enqueue(RunDispatch::new(activation("renewal-loss-cancels-attempt")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 90, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("owner A claims the Run");
+    let entered_wait = entered.notified();
+    let observed_wait = cancellation_observed.notified();
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        let clock = clock.clone();
+        async move { worker.drive_claimed(claimed, clock).await }
+    });
+    entered_wait.await;
+
+    clock.set(91);
+    assert!(
+        store
+            .claim("owner-b", 90, 91, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
+        "RG5/C3 a peer replaces the expired exact claim"
+    );
+    tokio::time::advance(Duration::from_millis(30)).await;
+    observed_wait.await;
+    assert!(driven.await.expect("drive task joins").is_err(), "RG5/E1");
+    assert_eq!(commit.commit_count(), 0, "RG5/E2");
 }
 
 /// Durable cancellation uses the same exact-claim WorkerResolver as ordinary
