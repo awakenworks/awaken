@@ -3,9 +3,13 @@ EXTENDS Naturals, FiniteSets, Sequences, TLC
 
 CONSTANT MaxId, MaxVersion
 
-VARIABLE queue, retired, nextId, version, closed
+VARIABLE queue, retired, nextId, version, closed,
+         pauseRequested, drained, decision,
+         decisionSawPause, decisionHadInput
 
-vars == <<queue, retired, nextId, version, closed>>
+vars == <<queue, retired, nextId, version, closed,
+          pauseRequested, drained, decision,
+          decisionSawPause, decisionHadInput>>
 
 QueueIds(entries) == {entries[index] : index \in 1..Len(entries)}
 
@@ -22,6 +26,11 @@ Init == /\ queue = <<>>
         /\ nextId = 0
         /\ version = 0
         /\ closed = FALSE
+        /\ pauseRequested = FALSE
+        /\ drained = <<>>
+        /\ decision = "none"
+        /\ decisionSawPause = FALSE
+        /\ decisionHadInput = FALSE
 
 Offer == /\ ~closed
          /\ nextId < MaxId
@@ -29,12 +38,14 @@ Offer == /\ ~closed
          /\ nextId' = nextId + 1
          /\ queue' = Append(queue, nextId + 1)
          /\ version' = version + 1
-         /\ UNCHANGED <<retired, closed>>
+         /\ UNCHANGED <<retired, closed, pauseRequested, drained, decision,
+                         decisionSawPause, decisionHadInput>>
 
 Wake == /\ ~closed
         /\ version < MaxVersion
         /\ version' = version + 1
-        /\ UNCHANGED <<queue, retired, nextId, closed>>
+        /\ UNCHANGED <<queue, retired, nextId, closed, pauseRequested, drained,
+                        decision, decisionSawPause, decisionHadInput>>
 
 Remove(id) == /\ ~closed
               /\ id \in QueueIds(queue)
@@ -42,13 +53,16 @@ Remove(id) == /\ ~closed
               /\ queue' = SelectSeq(queue, LAMBDA queued: queued # id)
               /\ retired' = retired \cup {id}
               /\ version' = version + 1
-              /\ UNCHANGED <<nextId, closed>>
+              /\ UNCHANGED <<nextId, closed, pauseRequested, drained, decision,
+                              decisionSawPause, decisionHadInput>>
 
 Replace(id) == /\ ~closed
                /\ id \in QueueIds(queue)
                /\ version < MaxVersion
                /\ version' = version + 1
-               /\ UNCHANGED <<queue, retired, nextId, closed>>
+               /\ UNCHANGED <<queue, retired, nextId, closed, pauseRequested,
+                               drained, decision, decisionSawPause,
+                               decisionHadInput>>
 
 \* An accepted reorder is an exact permutation.  Every stale request is an
 \* explicit stuttering step: validation happens before the production queue is
@@ -60,13 +74,42 @@ Reorder(candidate) ==
     /\ IF ExactPermutation(candidate, queue) /\ version < MaxVersion
           THEN /\ queue' = candidate
                /\ version' = version + 1
-               /\ UNCHANGED <<retired, nextId, closed>>
+               /\ UNCHANGED <<retired, nextId, closed, pauseRequested, drained,
+                               decision, decisionSawPause, decisionHadInput>>
           ELSE UNCHANGED vars
 
-Drain == /\ queue # <<>>
-         /\ retired' = retired \cup QueueIds(queue)
-         /\ queue' = <<>>
-         /\ UNCHANGED <<nextId, version, closed>>
+RequestPause == /\ ~closed
+                /\ ~pauseRequested
+                /\ pauseRequested' = TRUE
+                /\ UNCHANGED <<queue, retired, nextId, version, closed, drained,
+                                decision, decisionSawPause, decisionHadInput>>
+
+\* The production boundary observes pause and the complete queue under one
+\* process-local drain. The drained entries are already retired from the
+\* editable inbox; only the caller's later ThreadCommit can make their content
+\* durable. That best-effort/durable distinction is intentional.
+EvaluateBoundary ==
+    /\ decision = "none"
+    /\ drained = <<>>
+    /\ drained' = queue
+    /\ retired' = retired \cup QueueIds(queue)
+    /\ queue' = <<>>
+    /\ decisionSawPause' = pauseRequested
+    /\ decisionHadInput' = (queue # <<>>)
+    /\ decision' = IF pauseRequested
+                      THEN "await"
+                      ELSE IF (queue # <<>>) THEN "continue" ELSE "idle"
+    /\ UNCHANGED <<nextId, version, closed, pauseRequested>>
+
+\* Success and caller failure both retire this process-local decision. Durable
+\* commit behavior is verified by ThreadCommit; this model deliberately does
+\* not turn LiveInbox into a second persistent ingress.
+FinishBoundary ==
+    /\ decision # "none"
+    /\ drained' = <<>>
+    /\ decision' = "none"
+    /\ UNCHANGED <<queue, retired, nextId, version, closed, pauseRequested,
+                    decisionSawPause, decisionHadInput>>
 
 Close == /\ ~closed
          /\ version < MaxVersion
@@ -74,20 +117,27 @@ Close == /\ ~closed
          /\ retired' = retired \cup QueueIds(queue)
          /\ queue' = <<>>
          /\ version' = version + 1
-         /\ UNCHANGED nextId
+         /\ UNCHANGED <<nextId, pauseRequested, drained, decision,
+                         decisionSawPause, decisionHadInput>>
 
 BoundedStutter == /\ closed \/ version = MaxVersion \/ nextId = MaxId
                   /\ UNCHANGED vars
 
 Next == Offer \/ Wake \/ (\E id \in 1..MaxId: Remove(id) \/ Replace(id))
      \/ (\E candidate \in BoundedOrders: Reorder(candidate))
-     \/ Drain \/ Close \/ BoundedStutter
+     \/ RequestPause \/ EvaluateBoundary \/ FinishBoundary \/ Close
+     \/ BoundedStutter
 
 TypeOK == /\ queue \in BoundedOrders
           /\ retired \subseteq 1..MaxId
           /\ nextId \in 0..MaxId
           /\ version \in 0..MaxVersion
           /\ closed \in BOOLEAN
+          /\ pauseRequested \in BOOLEAN
+          /\ drained \in BoundedOrders
+          /\ decision \in {"none", "continue", "await", "idle"}
+          /\ decisionSawPause \in BOOLEAN
+          /\ decisionHadInput \in BOOLEAN
 
 IdentityPartition == /\ QueueIds(queue) \cap retired = {}
                      /\ QueueIds(queue) \cup retired = 1..nextId
@@ -95,6 +145,14 @@ QueueIdentityIsUnique == Cardinality(QueueIds(queue)) = Len(queue)
 ClosedIsEmpty == closed => queue = <<>>
 NoFutureIdentityQueued == \A id \in QueueIds(queue): id <= nextId
 RetiredNeverQueued == retired \cap QueueIds(queue) = {}
+DrainedEntriesAreRetired == QueueIds(drained) \subseteq retired
+NoInactiveDrain == decision = "none" => drained = <<>>
+BoundaryDecisionIsExact ==
+    decision # "none" =>
+      /\ decisionHadInput = (drained # <<>>)
+      /\ decision = IF decisionSawPause
+                       THEN "await"
+                       ELSE IF decisionHadInput THEN "continue" ELSE "idle"
 
 Spec == Init /\ [][Next]_vars
 =============================================================================
