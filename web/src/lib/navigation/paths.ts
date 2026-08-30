@@ -103,6 +103,12 @@ export function navPath(item: NavItem, workspaceId: string): string {
   return item.path.replace(":ws", workspaceId || "default");
 }
 
+/** Preserve the durable Session route while adding presentational provenance
+ * for the one-time post-Quickstart integration hint. */
+export function quickstartSessionPath(workspaceId: string, sessionId: string): string {
+  return `/w/${workspaceId || "default"}/sessions/${sessionId}?from=quickstart`;
+}
+
 export function titleForPath(pathname: string): { scope: string; title: string } {
   const ws = pathname.match(/^\/w\/([^/]+)\//)?.[1] ?? "";
   if (pathname.match(/^\/w\/[^/]+\/sessions\/.+/)) return { scope: ws, title: "Session" };

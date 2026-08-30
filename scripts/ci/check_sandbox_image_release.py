@@ -43,9 +43,9 @@ PINNED_ACTION_RE = re.compile(r"uses:\s+\S+@[0-9a-f]{40}(?:\s+#.*)?")
 CANONICAL_WORKFLOW = ".github/workflows/release.yml"
 EXPECTED_REGISTRY_WRITE_OWNERS = {CANONICAL_WORKFLOW}
 EXPECTED_CANONICAL_WRITE_COUNTS = {
-    "registry-write workflow permission": 1,
-    "Docker registry write": 2,
-    "OCI publisher command": 2,
+    "registry-write workflow permission": 2,
+    "Docker registry write": 4,
+    "OCI publisher command": 3,
 }
 REGISTRY_WRITE_PATTERNS = (
     (
@@ -104,6 +104,17 @@ def validate(
     repository_sources: dict[str, str],
 ) -> list[str]:
     failures: list[str] = []
+    product_workflow = workflow
+    sandbox_start = workflow.find("  sandbox_image:\n")
+    sandbox_end = workflow.find("\n  management_image:\n", sandbox_start)
+    if sandbox_start < 0 or sandbox_end < 0:
+        return [".github/workflows/release.yml: missing bounded sandbox_image job"]
+    # Global trigger/environment policy plus the bounded Sandbox job form the
+    # Sandbox release contract. Other product jobs are checked by the product
+    # release checker and must not be mistaken for duplicate Sandbox writers.
+    workflow = workflow[: workflow.find("jobs:\n") + len("jobs:\n")] + workflow[
+        sandbox_start:sandbox_end
+    ]
 
     # Cause/effect graph:
     # protected exact tag/revision + canonical build owner -> one accepted image
@@ -124,7 +135,7 @@ def validate(
     #  1  |      1      |      1      | exact  | zero-write reuse; final read
     #  *  |    2+/bad   | 2+/bad/other |   *   | reject ambiguity/drift
     required = (
-        "name: release-awaken-sandbox-image",
+        "name: release-awaken",
         "tags:",
         '- "v*.*.*"',
         "if: github.repository == 'awakenworks/awaken' && github.ref_protected == true",
@@ -132,7 +143,7 @@ def validate(
         "packages: write",
         "id-token: write",
         "persist-credentials: false",
-        "group: release-awaken-sandbox-image-${{ github.ref }}",
+        "group: release-awaken-${{ github.ref }}",
         "cancel-in-progress: false",
         f"IMAGE_REPOSITORY: {IMAGE_REPOSITORY}",
         f"SOURCE_REPOSITORY: {SOURCE_REPOSITORY}",
@@ -417,7 +428,7 @@ def validate(
             f"{sorted(EXPECTED_REGISTRY_WRITE_OWNERS)}, got "
             f"{sorted(registry_write_owners)}"
         )
-    canonical_write_counts = _registry_write_capability_counts(workflow)
+    canonical_write_counts = _registry_write_capability_counts(product_workflow)
     if canonical_write_counts != EXPECTED_CANONICAL_WRITE_COUNTS:
         failures.append(
             f"{CANONICAL_WORKFLOW}: expected exact registry write primitives "
@@ -667,8 +678,8 @@ def self_test(
         (
             "non-serialized release identity",
             workflow.replace(
-                "group: release-awaken-sandbox-image-${{ github.ref }}",
-                "group: release-awaken-sandbox-image-${{ github.run_id }}",
+                "group: release-awaken-${{ github.ref }}",
+                "group: release-awaken-${{ github.run_id }}",
             ),
         ),
         (

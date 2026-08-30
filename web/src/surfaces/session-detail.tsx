@@ -131,6 +131,7 @@ export default function SessionDetailSurface() {
   const app = useApp();
   const { ws: wsId = "default", sid = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
+  const fromQuickstart = searchParams.get("from") === "quickstart";
   const qc = useQueryClient();
   const confirm = useConfirm();
   const toast = useToast();
@@ -294,6 +295,15 @@ export default function SessionDetailSurface() {
       )}
 
       {controlResult && <div className="banner info">{controlResult}</div>}
+      {fromQuickstart && (
+        <div className="banner info">
+          {app.t(
+            "Your Agent is published and this durable Session is ready. Send a message here, then connect your application with the SDK example in API & protocols.",
+            "Agent 已发布，这个持久 Session 已就绪。先在此发送消息，再通过 API 与协议页的 SDK 示例连接你的应用。",
+          )}{" "}
+          <Link to={`/w/${wsId}/protocols`}>{app.t("Open SDK example", "查看 SDK 示例")}</Link>
+        </div>
+      )}
       {sessionLog.sendError && <div className="banner err">{sessionLog.sendError.message}</div>}
       {view !== "chat" && sessionLog.projectionError && (
         <div className="banner err">

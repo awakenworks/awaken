@@ -68,6 +68,11 @@ describe("built-in protocol guide", () => {
   });
 
   it("documents the complete backend exchange and frontend AI SDK wiring", () => {
+    // Cause/effect decision table: application/browser clients -> minted,
+    // Session-bound short-lived credentials; trusted Managed Agents backends
+    // -> service key through either the official Anthropic SDK or equivalent
+    // HTTP. Both Managed examples must converge on /v1/sessions and the same
+    // beta contract; no browser example may expose the service key.
     expect(APPLICATION_TOKEN_CURL).toContain("/v1/application-access-tokens");
     expect(APPLICATION_TOKEN_CURL).toContain("$AWAKEN_URL");
     expect(APPLICATION_TOKEN_CURL).toContain("$AWAKEN_API_KEY");

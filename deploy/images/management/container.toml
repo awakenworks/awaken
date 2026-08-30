@@ -1,0 +1,13 @@
+# Canonical one-container evaluation preset. Product, model, credential, and
+# business configuration still belongs to Awaken's existing Control APIs.
+role = "all-in-one"
+mode = "local"
+bind = "0.0.0.0:8080"
+data_dir = "/var/lib/awaken"
+run_local_pool = true
+no_browser = true
+identity_mode = "self-managed"
+cloud_models = "disabled"
+sandbox_tier = "local"
+worker_request_credential_file = "/var/lib/awaken/worker-transport.json"
+worker_trust_credentials_file = "/var/lib/awaken/worker-transport.json"
