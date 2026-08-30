@@ -7,9 +7,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ws, type MultipartFile } from "../lib/api/client";
 import type { Page, Skill, SkillVersion } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { identifierLabel } from "../lib/presentation";
 
-interface DraftFile {
+export interface DraftFile {
   path: string;
   bytes: Uint8Array;
   executable: boolean;
@@ -21,10 +22,6 @@ const directoryInputAttributes = {
   webkitdirectory: "",
   directory: "",
 } as InputHTMLAttributes<HTMLInputElement>;
-
-function filePathUrl(path: string): string {
-  return path.split("/").map(encodeURIComponent).join("/");
-}
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -51,6 +48,51 @@ export function skillNeedsSandbox(paths: readonly string[], skillMd: string): bo
   if (supportFiles.length > 0) return true;
   const frontmatter = skillMd.match(/^---\s*\n([\s\S]*?)\n---(?:\s*\n|$)/)?.[1] ?? "";
   return /^environment\s*:\s*(filesystem|hand)\s*$/im.test(frontmatter);
+}
+
+function tarText(bytes: Uint8Array, start: number, length: number): string {
+  const end = bytes.indexOf(0, start);
+  return decoder.decode(bytes.subarray(start, end >= start && end < start + length ? end : start + length)).trim();
+}
+
+/** Inspect the official beta Skill content archive without depending on
+ * non-standard fields in the version metadata response. */
+export function skillFilesFromTar(archive: Uint8Array): DraftFile[] {
+  const files: DraftFile[] = [];
+  for (let offset = 0; offset + 512 <= archive.length;) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = tarText(header, 0, 100);
+    const prefix = tarText(header, 345, 155);
+    const rawSize = tarText(header, 124, 12);
+    const size = Number.parseInt(rawSize || "0", 8);
+    const mode = Number.parseInt(tarText(header, 100, 8) || "0", 8);
+    if (!Number.isSafeInteger(size) || size < 0 || offset + 512 + size > archive.length) {
+      throw new Error("Invalid Skill content archive");
+    }
+    const fullPath = prefix ? `${prefix}/${name}` : name;
+    const path = fullPath.split("/").slice(1).join("/") || fullPath;
+    const kind = header[156];
+    if (kind === 0 || kind === 48) {
+      files.push({
+        path,
+        bytes: archive.slice(offset + 512, offset + 512 + size),
+        executable: Number.isSafeInteger(mode) && (mode & 0o111) !== 0,
+      });
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  if (!files.some((file) => file.path.endsWith("SKILL.md"))) {
+    throw new Error("Skill content archive has no SKILL.md");
+  }
+  return files;
+}
+
+export function skillRuntimeFromTar(archive: Uint8Array): boolean {
+  const files = skillFilesFromTar(archive);
+  const skillMd = files.find((file) => file.path.endsWith("SKILL.md"));
+  if (!skillMd) throw new Error("Skill content archive has no SKILL.md");
+  return skillNeedsSandbox(files.map((file) => file.path), decoder.decode(skillMd.bytes));
 }
 
 function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -127,12 +169,8 @@ function SkillRuntimeCell({ skill }: { skill: Skill }) {
   const runtime = useQuery({
     queryKey: ["skill-runtime", skill.id, skill.latest_version],
     queryFn: async () => {
-      const version = await api.get<SkillVersion>(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/latest`));
-      const path = version.files.find((candidate) => candidate.endsWith("SKILL.md"));
-      const markdown = path
-        ? decoder.decode(await api.bytes(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/${encodeURIComponent(version.version)}/files/${filePathUrl(path)}`)))
-        : "";
-      return skillNeedsSandbox(version.files, markdown);
+      const archive = await api.bytes(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/latest/content`));
+      return skillRuntimeFromTar(new Uint8Array(archive));
     },
     staleTime: 60_000,
   });
@@ -212,13 +250,11 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
     let cancelled = false;
     void (async () => {
       try {
-        const version = await api.get<SkillVersion>(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/latest`));
-        const executable = new Map((version.file_entries ?? []).map((entry) => [entry.path, entry.executable]));
-        const loaded = await Promise.all(version.files.map(async (path) => ({
-          path,
-          bytes: new Uint8Array(await api.bytes(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/${encodeURIComponent(version.version)}/files/${filePathUrl(path)}`))),
-          executable: executable.get(path) ?? false,
-        })));
+        const [version, archive] = await Promise.all([
+          api.get<SkillVersion>(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/latest`)),
+          api.bytes(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/latest/content`)),
+        ]);
+        const loaded = skillFilesFromTar(new Uint8Array(archive));
         if (!cancelled) {
           setBase(version);
           setOriginal(loaded.map((file) => ({ ...file, bytes: file.bytes.slice() })));
@@ -393,17 +429,16 @@ export default function SkillsSurface() {
         title={app.t("Skills could not be loaded", "技能加载失败")}
         hint={skills.error.message}
         action={<Button onClick={() => void skills.refetch()}>{app.t("Try again", "重试")}</Button>}
-      /></Card> : <Card style={{ padding: 0 }}>
+      /></Card> : <Card className="responsive-table-card" style={{ padding: 0 }}>
         <table className="table">
-          <thead><tr><th>{app.t("Skill", "技能")}</th><th>{app.t("Title", "名称")}</th><th>{app.t("Version", "版本")}</th><th>{app.t("Sandbox", "Sandbox")}</th><th /></tr></thead>
-          {skills.isLoading ? <SkeletonRows rows={4} cols={5} /> : <tbody>
+          <thead><tr><th>{app.t("Skill", "技能")}</th><th>{app.t("Version", "版本")}</th><th>{app.t("Sandbox", "Sandbox")}</th><th /></tr></thead>
+          {skills.isLoading ? <SkeletonRows rows={4} cols={4} /> : <tbody>
             {rows.map((skill) => (
               <tr key={skill.id}>
-                <td className="mono">{skill.id}</td>
-                <td>{skill.display_title ?? skill.name ?? skill.display_name ?? skill.id}</td>
-                <td className="mut">{skill.latest_version ?? "—"}</td>
-                <td><SkillRuntimeCell skill={skill} /></td>
-                <td style={{ textAlign: "right" }}><div className="row" style={{ justifyContent: "flex-end", gap: 6 }}><Button onClick={() => setEditing(skill)}>{app.t("Edit", "编辑")}</Button><Button variant="danger" disabled={remove.isPending} onClick={async () => {
+                <td data-label={app.t("Skill", "技能")}><strong>{skill.display_title ?? skill.name ?? skill.display_name ?? identifierLabel(skill.id)}</strong><TechnicalId value={skill.id} /></td>
+                <td data-label={app.t("Version", "版本")} className="mut">{skill.latest_version ?? "—"}</td>
+                <td data-label={app.t("Sandbox", "Sandbox")}><SkillRuntimeCell skill={skill} /></td>
+                <td className="responsive-table-actions" style={{ textAlign: "right" }}><div className="row" style={{ justifyContent: "flex-end", gap: 6 }}><Button onClick={() => setEditing(skill)}>{app.t("Edit", "编辑")}</Button><Button variant="danger" disabled={remove.isPending} onClick={async () => {
                   const approved = await confirm({
                     title: app.t("Delete this Skill?", "删除该技能？"),
                     body: app.t("All published versions in this catalog entry will become unavailable to new sessions.", "该目录项中的所有已发布版本都将对新会话不可用。"),
@@ -414,7 +449,7 @@ export default function SkillsSurface() {
                 }}>{app.t("Delete", "删除")}</Button></div></td>
               </tr>
             ))}
-            {!skills.isLoading && rows.length === 0 && <tr><td colSpan={5} className="mut">{app.t("No Skills yet. Create one online or import a Skill folder.", "还没有技能。可在线创建，或导入技能目录。")}</td></tr>}
+            {!skills.isLoading && rows.length === 0 && <tr><td colSpan={4} className="mut">{app.t("No Skills yet. Create one online or import a Skill folder.", "还没有技能。可在线创建，或导入技能目录。")}</td></tr>}
           </tbody>}
         </table>
       </Card>}

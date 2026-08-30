@@ -47,7 +47,7 @@ import type {
   ValidationIssue,
   ValidationResult,
 } from "../lib/api/types";
-import { shouldEnableMemoryExtraction } from "../lib/agent-memory-binding";
+import { reconcileMemoryBinding, shouldEnableMemoryExtraction } from "../lib/agent-memory-binding";
 import {
   AUXILIARY_PARENT_KEY,
   AUXILIARY_ROLE_KEY,
@@ -497,6 +497,7 @@ export default function AgentEditorSurface() {
     <>
       <AgentEditorHeader
         id={id}
+        name={cfg.name}
         isNew={isNew}
         dirty={hasUnsavedChanges}
         status={review.status}
@@ -534,13 +535,15 @@ export default function AgentEditorSurface() {
           canRun={managedRuntime && canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
           readyModels={models} allModels={allModels} runtimes={caps.data?.runtimes ?? []}
           tools={caps.data?.tools ?? []} plugins={caps.data?.plugins ?? []} policies={caps.data?.policies ?? []}
+          toolsets={caps.data?.toolsets ?? []}
           credentials={credentials.data ?? []} changed={changed} onPatch={patch} onRawChange={replaceRaw}
           onManageModels={() => setManageModels(true)}
           onReviewRun={(environmentId, task) => { quickRun.reset(); setQuickRunIntent({ environmentId, task }); }}
           onBuilderSectionChange={setBuilderSection} onAdvancedSectionChange={setAdvancedSection}
           onResourcesChange={(inputs) => {
+            const memoryPatch = reconcileMemoryBinding(resourceInputs, inputs, cfg);
+            if (Object.keys(memoryPatch).length > 0) patch(memoryPatch);
             if (shouldEnableMemoryExtraction(resourceInputs, inputs, cfg.plugins)) {
-              patch({ plugins: [...cfg.plugins, "memory"] });
               toast.info(app.t("Memory settings enabled for the newly bound store.", "已为新绑定的记忆库启用 Memory 设置。"));
             }
             setResourceInputs(inputs); setResourcesDirty(true); review.onManualEdit(["resources"]);

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { buildDeferredSandboxPolicy, buildEnvironmentConfig, buildEnvironmentUpdateConfig, isolationLabel, networkingLabel } from "./environments";
+
+const environmentSource = readFileSync(new URL("./environments.tsx", import.meta.url), "utf8");
+
+describe("Environment product language", () => {
+  it("uses the canonical Awaken Agents name", () => {
+    expect(environmentSource).toContain("Awaken Agents deployment");
+    expect(environmentSource).not.toMatch(/Awaken platform|Harness Runtime Platform/i);
+  });
+});
 
 describe("buildEnvironmentConfig", () => {
   it("emits only the official cloud union fields", () => {

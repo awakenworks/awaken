@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   CredentialSource,
   InputBinding,
+  ManagedToolsetCap,
   PluginCap,
   PolicyCap,
   RuntimeCap,
@@ -30,6 +31,7 @@ interface Props {
   allModels: string[];
   runtimes: RuntimeCap[];
   tools: ToolCap[];
+  toolsets: ManagedToolsetCap[];
   plugins: PluginCap[];
   policies: PolicyCap[];
   credentials: CredentialSource[];
@@ -37,7 +39,7 @@ interface Props {
   onPatch: (value: Partial<AgentConfig>) => void;
   onRawChange: (value: AgentConfig) => void;
   onManageModels: () => void;
-  onReviewRun: (environmentId: string | undefined, task: string) => void;
+  onReviewRun: (environmentId: string, task: string) => void;
   onBuilderSectionChange: (section: BuilderSection) => void;
   onAdvancedSectionChange: (section: AdvancedSection) => void;
   onResourcesChange: (inputs: InputBinding[]) => void;
@@ -77,6 +79,7 @@ export default function AgentEditorStages(props: Props) {
         allModels={props.allModels}
         runtimes={props.runtimes}
         tools={props.tools}
+        toolsets={props.toolsets}
         plugins={props.plugins}
         policies={props.policies}
         credentials={props.credentials}
@@ -101,6 +104,7 @@ export default function AgentEditorStages(props: Props) {
       plugins={props.plugins}
       credentials={props.credentials}
       resourceRevision={props.resourceRevision}
+      isNew={props.isNew}
       published={props.published}
       publishPending={props.publishPending}
       changed={props.changed}

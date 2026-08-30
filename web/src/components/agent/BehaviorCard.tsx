@@ -7,7 +7,7 @@
 // unknown plugin falls back to its id (its config still renders).
 
 import { useState } from "react";
-import { Card, SchemaForm, Switch } from "../ui";
+import { Card, Pill, SchemaForm, Switch } from "../ui";
 import type { JsonSchema } from "../ui";
 import { useApp } from "../../lib/app-state";
 import StateMachineEditor from "./StateMachineEditor";
@@ -20,7 +20,7 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     title: "Auto-compaction",
     zh: "自动压缩",
     desc: "When the conversation gets long, summarize the older turns in the background so the model keeps the essentials without the full history.",
-    descZh: "对话变长时,在后台把较早的轮次总结压缩,让模型保留要点而不必带上全部历史。",
+    descZh: "对话变长时，在后台把较早的消息总结压缩，让模型保留要点而不必携带全部历史。",
   },
   memory: {
     title: "Memory extraction & recall tuning",
@@ -46,6 +46,12 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     desc: "Choose Awaken-hosted multi-provider routing or the exact model provider's server fetch tool.",
     descZh: "选择由 Awaken 执行的多供应商路由，或精确模型供应商提供的 Server Fetch 工具。",
   },
+  background_task: {
+    title: "Background tool execution",
+    zh: "后台工具执行",
+    desc: "Allow selected existing tools to continue after the current Run step; their original permission, concurrency, recovery, and resource policies still apply.",
+    descZh: "允许指定的已有工具在当前 Run 步骤结束后继续执行；工具原有的权限、并发、恢复与资源策略仍然生效。",
+  },
 };
 
 export default function BehaviorCard({
@@ -57,6 +63,7 @@ export default function BehaviorCard({
   onConfig,
   changed = false,
   credentials = [],
+  availability,
 }: {
   id: string;
   schema?: JsonSchema;
@@ -67,6 +74,7 @@ export default function BehaviorCard({
   /** The assistant changed this behavior since the operator last authored it. */
   changed?: boolean;
   credentials?: CredentialSource[];
+  availability?: { supported: boolean; detail: string };
 }) {
   const app = useApp();
   const meta = BEHAVIORS[id];
@@ -101,10 +109,13 @@ export default function BehaviorCard({
           <div className="behavior-title">
             {title}
             {changed && <span className="agent-change-label">✦ {app.t("Agent updated", "Agent 已更新")}</span>}
+            {availability && !availability.supported && (
+              <Pill tone="neutral">{app.t("Unavailable for this runtime", "当前 Runtime 不可用")}</Pill>
+            )}
           </div>
           <div className="behavior-desc">{desc}</div>
         </span>
-        <Switch aria-label={title} checked={enabled} onChange={(e) => {
+        <Switch aria-label={title} checked={enabled} disabled={availability?.supported === false && !enabled} onChange={(e) => {
           const next = e.target.checked;
           if (next && (id === "web_search" || id === "web_fetch") && schema && !config.provider_id) {
             onConfig(defaultWebSearchConfig(schema));
@@ -112,6 +123,15 @@ export default function BehaviorCard({
           onToggle(next);
         }} />
       </label>
+      {availability && !availability.supported && (
+        <div className={enabled ? "banner warn" : "banner info"} style={{ marginTop: 10 }}>
+          <span>!</span>
+          <span>{availability.detail}{enabled && app.t(
+            " Turn it off before publishing.",
+            " 请在发布前关闭该能力。",
+          )}</span>
+        </div>
+      )}
       {enabled && (
         <div style={{ marginTop: 10 }}>
           {id === "state_machine" ? (

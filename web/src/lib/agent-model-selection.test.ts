@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { acpModelChoices } from "./agent-model-selection";
+import {
+  acpModelChoices,
+  defaultSelectionForRuntime,
+  executionRuntimeId,
+  isAcpModelSelection,
+} from "./agent-model-selection";
 import type { RuntimeCap } from "./api/types";
 
 const runtime = (login_state: string, choices: string[]): RuntimeCap => ({
@@ -37,5 +42,22 @@ describe("ACP model choices", () => {
       ]);
     expect(acpModelChoices([runtime("login_required", ["gpt-a"])]), "U2").toEqual([]);
     expect(acpModelChoices([runtime("available", [])]), "U3").toHaveLength(1);
+  });
+
+  it("derives one execution root and resets ACP-specific configuration on a runtime change", () => {
+    const configured = {
+      mode: "backend_exact" as const,
+      backend_ref: "acp:codex",
+      model_ref: "gpt-a",
+      configuration: { mode: "plan", options: { reasoning_effort: "high" } },
+    };
+    expect(isAcpModelSelection(configured)).toBe(true);
+    expect(executionRuntimeId(configured)).toBe("acp:codex");
+    expect(executionRuntimeId({ mode: "auto" })).toBe("awaken");
+    expect(defaultSelectionForRuntime(runtime("available", ["gpt-a"]))).toEqual({
+      mode: "backend_default",
+      backend_ref: "acp:codex",
+    });
+    expect(defaultSelectionForRuntime(runtime("login_required", ["gpt-a"]))).toBeNull();
   });
 });

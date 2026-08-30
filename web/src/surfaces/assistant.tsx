@@ -6,6 +6,7 @@
 // when opened over an agent editor it targets that agent (patch), not a fresh draft.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { ChatComposer } from "@awaken/ui";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { TranscriptView } from "../components/session/Transcript";
@@ -143,13 +144,13 @@ function NoModel({ wsId }: { wsId: string }) {
       <span>ⓘ</span>
       <span className="assistant-prerequisite-copy">
         {app.t(
-          "The assistant needs a model to run on. Configure a provider + credential first.",
-          "助手需要一个模型才能运行。请先配置一个 provider + 凭证。",
+          "The Assistant needs a model. Connect a model provider and credential first.",
+          "助手需要模型才能运行。请先连接模型供应商与凭证。",
         )}
       </span>
       <div className="assistant-prerequisite-actions">
         <Button variant="ghost" onClick={() => nav(`/w/${wsId}/models`)}>
-          {app.t("Go to Models →", "去 Models →")}
+          {app.t("Go to Models & providers →", "前往模型与供应商 →")}
         </Button>
       </div>
     </div>
@@ -181,16 +182,16 @@ function AssistantGuide({
         </span>
         <span>
           <strong>{app.t("Review before activation", "生效前人工审阅")}</strong>
-          <small>{app.t("The Assistant never publishes Agents or reveals stored secrets.", "助手不会发布 Agent，也不会读取已保存的秘密。")}</small>
+          <small>{app.t("The Assistant never publishes Agents or reveals stored credentials.", "助手不会发布 Agent，也不会读取已保存的凭证内容。")}</small>
         </span>
       </div>
       <div className="assistant-current-context">
         <span className="mut">{app.t("Current context", "当前上下文")}</span>
-        <Pill tone="agent">{targetAgentId || context.label}</Pill>
+        <Pill tone="agent">{targetAgentId || (app.locale === "zh" ? context.labelZh : context.label)}</Pill>
         {targetAgentId && <span className="mut">{app.t("changes apply to this draft", "修改将应用到此草稿")}</span>}
       </div>
       <div className="assistant-suggestions" role="list" aria-label={app.t("Suggested questions", "建议问题")}>
-        {context.suggestions.map((suggestion) => (
+        {(app.locale === "zh" ? context.suggestionsZh : context.suggestions).map((suggestion) => (
           <span role="listitem" key={suggestion}>
             <Button variant="ghost" disabled={disabled} onClick={() => onPrompt(suggestion)}>
               {suggestion}
@@ -224,7 +225,10 @@ export function AssistantPanel({
   const models = useModels();
   const [sid, setSid] = useState<string | null>(null);
   const [promptRequest, setPromptRequest] = useState<{ id: string; text: string }>();
+  const [starterDraft, setStarterDraft] = useState("");
+  const pendingPrompt = useRef<{ id: string; text: string } | undefined>(undefined);
   const started = useRef(false);
+  const autoMessageStarted = useRef<string | undefined>(undefined);
   const ensureAttempted = useRef(false);
   const createIdentity = useRef(new IdempotencyScope("assistant-session-create"));
   const ensureAssistant = useMutation({
@@ -243,7 +247,12 @@ export function AssistantPanel({
     onSuccess: (s) => {
       createIdentity.current.complete();
       setSid(s.id);
+      if (pendingPrompt.current) {
+        setPromptRequest(pendingPrompt.current);
+        pendingPrompt.current = undefined;
+      }
     },
+    onError: () => { started.current = false; },
   });
   const session = useQuery({
     queryKey: ["assistant-session", sid],
@@ -251,12 +260,25 @@ export function AssistantPanel({
     queryFn: () => api.get<Session>(ws(`/v1/sessions/${sid}`)),
     refetchInterval: 4_000,
   });
-  useEffect(() => {
-    if (!started.current && models.ready.length > 0 && gate.status === "live") {
+  const beginPrompt = (text: string, requestId = `${Date.now()}-${text}`) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const request = { id: requestId, text: trimmed };
+    if (sid) {
+      setPromptRequest(request);
+      return;
+    }
+    pendingPrompt.current = request;
+    if (!started.current) {
       started.current = true;
       start.mutate();
     }
-  }, [start, models.ready.length, gate.status]);
+  };
+  useEffect(() => {
+    if (!autoMessage || autoMessageStarted.current === autoMessage.id || models.ready.length === 0 || gate.status !== "live") return;
+    autoMessageStarted.current = autoMessage.id;
+    beginPrompt(autoMessage.text, autoMessage.id);
+  }, [autoMessage, gate.status, models.ready.length, sid]);
   useEffect(() => {
     if (gate.status !== "absent" || models.ready.length === 0 || ensureAttempted.current) return;
     ensureAttempted.current = true;
@@ -294,7 +316,7 @@ export function AssistantPanel({
       context={surfaceContext}
       targetAgentId={targetAgentId}
       disabled={!assistantReady}
-      onPrompt={(text) => setPromptRequest({ id: `${Date.now()}-${text}`, text })}
+      onPrompt={beginPrompt}
     />
   );
 
@@ -337,14 +359,38 @@ export function AssistantPanel({
     <>
       {guide}
       {!sid ? (
-          start.error instanceof Error ? (
-            <div className="banner err">
-              <span>{start.error.message}</span>
-              <Button variant="ghost" disabled={start.isPending} onClick={() => start.mutate()}>
-                {start.isPending ? app.t("Retrying…", "正在重试…") : app.t("Try again", "重试")}
-              </Button>
-            </div>
-          ) : <Skeleton height={80} />
+          <>
+            {start.error instanceof Error && (
+              <div className="banner err">
+                <span>{start.error.message}</span>
+                <Button variant="ghost" disabled={start.isPending} onClick={() => {
+                  started.current = true;
+                  start.mutate();
+                }}>
+                  {start.isPending ? app.t("Retrying…", "正在重试…") : app.t("Try again", "重试")}
+                </Button>
+              </div>
+            )}
+            <ChatComposer
+              className="transcript-composer assistant-starter-composer"
+              sendMode="enter"
+              value={starterDraft}
+              onChange={setStarterDraft}
+              onSubmit={() => {
+                beginPrompt(starterDraft);
+                setStarterDraft("");
+              }}
+              busy={start.isPending}
+              ariaLabel={app.t("Message to Assistant", "给助手的消息")}
+              placeholder={placeholder}
+              sendLabel={start.isPending ? app.t("Starting…", "正在启动…") : app.t("Send", "发送")}
+              sendIcon={<span>{start.isPending ? app.t("Starting…", "正在启动…") : app.t("Send", "发送")}</span>}
+              hint={app.t(
+                "A Session is created only when you send your first message.",
+                "仅在发送第一条消息时创建会话。",
+              )}
+            />
+          </>
         ) : (
           <>
             <div className="assistant-context">

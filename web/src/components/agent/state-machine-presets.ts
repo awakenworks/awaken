@@ -78,18 +78,18 @@ export const PRESETS: Preset[] = [
     machine: {
       name: "read-before-write",
       scope: "thread",
-      key: "{path}",
+      key: "{file_path}",
       key_normalizer: "path",
       initial: "unread",
       terminal: ["written"],
       transitions: [
-        { on: 'read(path ~ "*")', from: ["unread", "read", "written"], to: "read" },
+        { on: 'read(file_path ~ "*")', from: ["unread", "read", "written"], to: "read" },
         {
-          on: 'write(path ~ "*")',
+          on: 'write(file_path ~ "*")',
           from: ["read", "written"],
           to: "written",
           when: { status: "success" },
-          on_violation: { action: "deny", reason: "Read {path} before writing it." },
+          on_violation: { action: "deny", reason: "Read {file_path} before writing it." },
         },
       ],
     },

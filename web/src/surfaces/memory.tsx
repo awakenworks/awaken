@@ -8,9 +8,10 @@ import { useSearchParams } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type { MemoryStore, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import MemoryStoreDrawer from "../components/memory/MemoryStoreDrawer";
 import DreamList from "../components/memory/DreamList";
+import { entityDisplayName, identifierLabel } from "../lib/presentation";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -119,23 +120,21 @@ export default function MemorySurface() {
             action={<Button onClick={() => void stores.refetch()}>{app.t("Try again", "重试")}</Button>}
           />
         </Card>
-      ) : <Card style={{ padding: 0 }}>
+      ) : <Card className="responsive-table-card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
-              <th>{app.t("Store", "记忆库")}</th>
-              <th>{app.t("Name", "名称")}</th>
+              <th>{app.t("Memory store", "记忆库")}</th>
               <th>{app.t("Description", "描述")}</th>
               <th />
             </tr>
           </thead>
-          {stores.isLoading ? <SkeletonRows rows={4} cols={4} /> : <tbody>
+          {stores.isLoading ? <SkeletonRows rows={4} cols={3} /> : <tbody>
             {rows.map((s) => (
               <tr key={s.id}>
-                <td className="mono">{s.id}</td>
-                <td>{s.name}</td>
-                <td className="mut">{s.description ?? "—"}</td>
-                <td style={{ textAlign: "right" }}>
+                <td data-label={app.t("Memory store", "记忆库")}><strong>{entityDisplayName(s.name, identifierLabel(s.id))}</strong><TechnicalId value={s.id} /></td>
+                <td data-label={app.t("Description", "描述")} className="mut">{s.description ?? "—"}</td>
+                <td className="responsive-table-actions" style={{ textAlign: "right" }}>
                   <div className="row" style={{ justifyContent: "flex-end" }}>
                     <Button variant="ghost" style={{ height: 22 }} onClick={() => setSelected(s)}>
                       {app.t("Open", "打开")}
@@ -181,8 +180,8 @@ export default function MemorySurface() {
             ))}
             {!stores.isLoading && rows.length === 0 && (
               <tr>
-                <td colSpan={4} className="mut">
-                  {app.t("No memory stores yet.", "还没有记忆库。")}
+                <td colSpan={3} className="mut">
+                  {app.t("No Memory Stores yet. Create one for knowledge that must remain editable across Sessions.", "还没有 Memory Store。需要跨会话保留且可编辑的知识时，请创建一个。")}
                 </td>
               </tr>
             )}

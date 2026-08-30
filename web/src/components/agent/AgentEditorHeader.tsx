@@ -1,9 +1,11 @@
-import { Button, Pill } from "../ui";
+import { Button, Pill, TechnicalId } from "../ui";
 import { useApp } from "../../lib/app-state";
+import { entityDisplayName, identifierLabel } from "../../lib/presentation";
 import type { ReviewStatus } from "./useAgentDraftReview";
 
 export default function AgentEditorHeader({
   id,
+  name,
   isNew,
   dirty,
   status,
@@ -17,6 +19,7 @@ export default function AgentEditorHeader({
   onPublish,
 }: {
   id: string;
+  name?: string | null;
   isNew: boolean;
   dirty: boolean;
   status: ReviewStatus;
@@ -35,7 +38,12 @@ export default function AgentEditorHeader({
     <div className="row" style={{ justifyContent: "space-between" }}>
       <span className="row">
         <Button variant="ghost" style={{ height: 26 }} onClick={onBack}>← {app.t("Agents", "Agent")}</Button>
-        <span className="crumb-title mono">{isNew ? app.t("New Agent", "新建 Agent") : id}</span>
+        <span className="crumb-title">
+          {isNew
+            ? app.t("New Agent", "新建 Agent")
+            : entityDisplayName(name, identifierLabel(id))}
+        </span>
+        {!isNew && <TechnicalId value={id} />}
         {dirty && <Pill tone="warn">{app.t("unsaved", "未保存")}</Pill>}
         {status === "saving" && <Pill tone="neutral">{app.t("Saving draft…", "正在保存草稿…")}</Pill>}
         {status === "validating" && <Pill tone="agent">{app.t("Validating…", "正在校验…")}</Pill>}

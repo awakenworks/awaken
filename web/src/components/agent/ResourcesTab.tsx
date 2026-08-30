@@ -70,7 +70,7 @@ export default function ResourcesTab({ inputs, onChange }: { inputs: InputBindin
     e.target.value = "";
     if (!file || i == null) return;
     try {
-      const meta = await api.upload<{ id: string; filename?: string }>(ws("/v1/files"), file, { purpose: "agent" });
+      const meta = await api.upload<{ id: string; filename?: string }>(ws("/v1/files"), file);
       const bindingId = rows[i]?.binding_id;
       if (bindingId) setFileLabels((current) => ({ ...current, [bindingId]: file.name }));
       setRow(i, { target: { kind: "file", id: meta.id }, mount_path: `/mnt/files/${file.name}` });

@@ -13,17 +13,31 @@ export default function ToolOverridesEditor({
   tools,
   value,
   onChange,
+  backgroundTools = [],
+  onBackgroundToolsChange,
+  backgroundUnavailable = false,
 }: {
   tools: string[];
   value: ToolOverride[];
   onChange: (next: ToolOverride[]) => void;
+  backgroundTools?: string[];
+  onBackgroundToolsChange?: (next: string[]) => void;
+  backgroundUnavailable?: boolean;
 }) {
   const app = useApp();
   const suggestionsId = `tool-targets-${useId().replaceAll(":", "")}`;
-  const set = (i: number, patch: Partial<ToolOverride>) =>
+  const set = (i: number, patch: Partial<ToolOverride>) => {
+    const previousTarget = value[i]?.target;
     onChange(value.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+    if (previousTarget && patch.target && backgroundTools.includes(previousTarget)) {
+      onBackgroundToolsChange?.(retargetBackgroundTool(backgroundTools, previousTarget, patch.target));
+    }
+  };
   const add = (target = tools[0] ?? "") =>
     onChange([...value, { target, alias: "", description: "" }]);
+  const setBackground = (target: string, enabled: boolean) => onBackgroundToolsChange?.(
+    updateBackgroundEligibility(backgroundTools, target, enabled),
+  );
   return (
     <>
       <datalist id={suggestionsId}>
@@ -44,16 +58,32 @@ export default function ToolOverridesEditor({
             <TextField label={app.t("Alias", "别名")} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
             <TextField label={app.t("Description", "描述")} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
             <div className="field">
-              <label>{app.t("On demand", "按需暴露")}</label>
+              <label>{app.t("Show to model on demand", "仅在需要时向模型展示")}</label>
               <div style={{ height: 30, display: "flex", alignItems: "center" }}>
                 <Switch
-                  aria-label={app.t("Expose this tool on demand", "按需暴露此工具")}
+                  aria-label={app.t("Show this tool to the model on demand", "仅在需要时向模型展示此工具")}
                   checked={r.exposure === "on_demand"}
                   onChange={(e) => set(i, { exposure: e.target.checked ? "on_demand" : undefined })}
                 />
               </div>
             </div>
-            <Button variant="ghost" style={{ height: 30 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>
+            {onBackgroundToolsChange && (
+              <div className="field">
+                <label>{app.t("Allow background execution", "允许后台执行")}</label>
+                <div style={{ height: 30, display: "flex", alignItems: "center" }}>
+                  <Switch
+                    aria-label={app.t("Allow this tool to run in the background", "允许此工具在后台执行")}
+                    checked={backgroundTools.includes(r.target)}
+                    disabled={backgroundUnavailable && !backgroundTools.includes(r.target)}
+                    onChange={(e) => setBackground(r.target, e.target.checked)}
+                  />
+                </div>
+              </div>
+            )}
+            <Button variant="ghost" style={{ height: 30 }} onClick={() => {
+              setBackground(r.target, false);
+              onChange(value.filter((_, j) => j !== i));
+            }}>
               ✕
             </Button>
           </div>
@@ -70,6 +100,14 @@ export default function ToolOverridesEditor({
         <Button onClick={() => add()}>+ {app.t("override a selected tool", "覆盖已选工具")}</Button>
         <Button onClick={() => add("mcp__server__tool")}>+ {app.t("override an MCP tool", "覆盖 MCP 工具")}</Button>
       </div>
+      {onBackgroundToolsChange && (
+        <span className="mut" style={{ display: "block", marginTop: 8, fontSize: 11 }}>
+          {app.t(
+            "Background execution does not grant a tool. Its ToolSet permission, state-machine guards, concurrency, recovery, and resource policies still apply.",
+            "后台执行不会授予工具；其 ToolSet 权限、状态机守卫、并发、恢复和资源策略仍然生效。",
+          )}
+        </span>
+      )}
     </>
   );
 }
@@ -81,4 +119,13 @@ export function isCanonicalMcpToolId(target: string): boolean {
   const rest = target.slice("mcp__".length);
   const separator = rest.indexOf("__");
   return separator > 0 && separator < rest.length - 2;
+}
+
+export function updateBackgroundEligibility(current: string[], target: string, enabled: boolean): string[] {
+  if (!enabled) return current.filter((tool) => tool !== target);
+  return target.trim() === "" ? current : Array.from(new Set([...current, target]));
+}
+
+export function retargetBackgroundTool(current: string[], previous: string, next: string): string[] {
+  return Array.from(new Set(current.map((tool) => tool === previous ? next : tool))).filter(Boolean);
 }
