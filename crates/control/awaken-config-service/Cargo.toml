@@ -25,6 +25,8 @@ awaken-tenancy = { workspace = true }
 awaken-config-resolver = { workspace = true }
 # Shared typed File/Memory/Repository binding vocabulary; contains no policy.
 awaken-resource-contract = { workspace = true }
+# Read-only projection of the provider-neutral Resource input mount defaults.
+awaken-provisioning-contract = { workspace = true }
 # Managed authoring normalization still consumes the Session tool policy helpers;
 # executable publication profiles live in awaken-executable-agent-contract.
 awaken-session-contract = { workspace = true }

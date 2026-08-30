@@ -11,6 +11,7 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::sync::Arc;
 
 fn compile(
     config: &AgentConfig,
@@ -45,6 +46,14 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
         call_id: "call_pg_1".into(),
         summary: "draft agent `agent-1`".into(),
     };
+    // Begin/final table (PostgreSQL parity): absent final fails closed; exact
+    // pending begin applies once; committed exact replay is a no-op. This keeps
+    // ON CONFLICT concurrency in the one record_management_audit owner.
+    let absent_error = store
+        .put_config_with_audit_effect_scoped(&scope, &agent_config(), 0, &audit, Some(&effect))
+        .await
+        .expect_err("A0 absent audit");
+    assert!(absent_error.to_string().contains("pre-recorded"), "A0");
     assert_eq!(
         store
             .record_management_audit_scoped(&scope, &audit)
@@ -55,7 +64,7 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
     let config = agent_config();
     assert_eq!(
         store
-            .put_config_with_audit_effect_scoped(&scope, &config, &audit, Some(&effect))
+            .put_config_with_audit_effect_scoped(&scope, &config, 0, &audit, Some(&effect))
             .await
             .unwrap(),
         AuditedConfigWrite::Applied
@@ -68,7 +77,7 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
         .revision;
     assert_eq!(
         store
-            .put_config_with_audit_scoped(&scope, &config, &audit)
+            .put_config_with_audit_scoped(&scope, &config, generation, &audit)
             .await
             .unwrap(),
         AuditedConfigWrite::Replayed
@@ -106,7 +115,7 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
         .unwrap();
     assert_eq!(
         store
-            .put_config_with_audit_scoped(&other, &config, &other_audit)
+            .put_config_with_audit_scoped(&other, &config, 0, &other_audit)
             .await
             .unwrap(),
         AuditedConfigWrite::Applied
@@ -118,6 +127,212 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
             .unwrap()
             .as_ref(),
         Some(&config)
+    );
+
+    // PostgreSQL parity for the shared generation/replay decision table:
+    // | rule | ordering | effect |
+    // | G1 | audited commit -> archive -> exact retry | Replayed; archive retained |
+    // | G3 | archive r2 -> stale audited r1          | Conflict; audit pending, zero config |
+    // | G4 | archive r2 -> stale audit+effect r1     | Conflict; audit pending, zero config/effect |
+    let replay_scope = ScopeId::from("pg_audit_replay_order");
+    store
+        .put_config_scoped(&replay_scope, &config)
+        .await
+        .unwrap();
+    let replay_audit = ManagementAuditRecord {
+        tool: "admin_patch_agent".into(),
+        call_id: "pg-response-lost".into(),
+        summary: "patch before archive".into(),
+    };
+    let mut first_patch = config.clone();
+    first_patch.instructions = "audited revision".into();
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&replay_scope, &replay_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G1 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&replay_scope, &first_patch, 1, &replay_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G1 initial commit"
+    );
+    let mut archived = first_patch.clone();
+    archived.archived_at = Some("2026-08-30T00:00:00Z".into());
+    assert!(matches!(
+        store
+            .put_config_if_revision_scoped(&replay_scope, &archived, 2)
+            .await
+            .unwrap(),
+        ConfigWrite::Applied { revision: 3 }
+    ));
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&replay_scope, &first_patch, 3, &replay_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Replayed,
+        "G1 replay must precede lifecycle admission"
+    );
+    assert!(
+        store
+            .get_config_revision_scoped(&replay_scope, &config.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .config
+            .archived_at
+            .is_some(),
+        "G1"
+    );
+
+    let conflict_scope = ScopeId::from("pg_archive_wins");
+    store
+        .put_config_scoped(&conflict_scope, &config)
+        .await
+        .unwrap();
+    let mut archive_winner = config.clone();
+    archive_winner.archived_at = Some("2026-08-30T00:00:00Z".into());
+    assert!(matches!(
+        store
+            .put_config_if_revision_scoped(&conflict_scope, &archive_winner, 1)
+            .await
+            .unwrap(),
+        ConfigWrite::Applied { revision: 2 }
+    ));
+    let mut late_patch = config.clone();
+    late_patch.instructions = "must not revive".into();
+    let late_audit = ManagementAuditRecord {
+        tool: "admin_patch_agent".into(),
+        call_id: "pg-late-audit".into(),
+        summary: "must conflict".into(),
+    };
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&conflict_scope, &late_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G3 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&conflict_scope, &late_patch, 1, &late_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Conflict {
+            current_revision: Some(2)
+        },
+        "G3"
+    );
+    assert!(
+        store
+            .get_management_audit_scoped(&conflict_scope, &late_audit.tool, &late_audit.call_id,)
+            .await
+            .unwrap()
+            .is_some_and(|entry| !entry.business_committed),
+        "G3 pending audit intent is not a business commit"
+    );
+    let effect_audit = ManagementAuditRecord {
+        call_id: "pg-late-effect".into(),
+        ..late_audit
+    };
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&conflict_scope, &effect_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G4 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_effect_scoped(
+                &conflict_scope,
+                &late_patch,
+                1,
+                &effect_audit,
+                Some(&effect),
+            )
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Conflict {
+            current_revision: Some(2)
+        },
+        "G4"
+    );
+    assert!(
+        store
+            .pending_management_effects_scoped(&conflict_scope)
+            .await
+            .unwrap()
+            .is_empty(),
+        "G4"
+    );
+}
+
+#[tokio::test]
+async fn postgres_audit_begin_serializes_concurrent_exact_and_conflicting_requests() {
+    // Concurrent begin decision table:
+    // | rule | same scoped call id | record content | outcomes |
+    // | B1   | yes                 | exact same     | one Applied + one Replayed |
+    // | B2   | yes                 | different      | one Applied + one conflict error |
+    // The ON CONFLICT audit-begin port is the only INSERT owner; the final
+    // config/effect transaction requires the winning pending row.
+    let Some(pool) = schema_pool("t_config_audit_begin_race").await else {
+        return;
+    };
+    let store = Arc::new(PostgresConfigStore::with_pool(pool).await.expect("store"));
+    let scope = ScopeId::from("audit-race");
+    let exact = ManagementAuditRecord {
+        tool: "admin_patch_agent".into(),
+        call_id: "same".into(),
+        summary: "same request".into(),
+    };
+    let (left, right) = tokio::join!(
+        store.record_management_audit_scoped(&scope, &exact),
+        store.record_management_audit_scoped(&scope, &exact),
+    );
+    let mut exact_outcomes = vec![left.unwrap(), right.unwrap()];
+    exact_outcomes.sort_by_key(|outcome| match outcome {
+        AuditedConfigWrite::Applied => 0,
+        AuditedConfigWrite::Replayed => 1,
+        AuditedConfigWrite::Conflict { .. } => 2,
+    });
+    assert_eq!(
+        exact_outcomes,
+        vec![AuditedConfigWrite::Applied, AuditedConfigWrite::Replayed],
+        "B1"
+    );
+
+    let first = ManagementAuditRecord {
+        call_id: "different".into(),
+        summary: "first request".into(),
+        ..exact.clone()
+    };
+    let second = ManagementAuditRecord {
+        summary: "second request".into(),
+        ..first.clone()
+    };
+    let (left, right) = tokio::join!(
+        store.record_management_audit_scoped(&scope, &first),
+        store.record_management_audit_scoped(&scope, &second),
+    );
+    assert_eq!(
+        usize::from(matches!(left, Ok(AuditedConfigWrite::Applied)))
+            + usize::from(matches!(right, Ok(AuditedConfigWrite::Applied))),
+        1,
+        "B2 one winner"
+    );
+    assert_eq!(
+        usize::from(left.is_err()) + usize::from(right.is_err()),
+        1,
+        "B2"
     );
 }
 

@@ -171,16 +171,9 @@ pub(super) fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), 
     config
         .validate_managed_tool_bindings()
         .map_err(ManagedAgentError::Invalid)?;
-    for toolset in &config.toolsets {
-        for entry in &toolset.overrides {
-            if toolset.source == ToolsetSource::Agent && !is_agent_toolset_member(&entry.name) {
-                return Err(ManagedAgentError::Invalid(format!(
-                    "unknown agent tool `{}`",
-                    entry.name
-                )));
-            }
-        }
-    }
+    // `validate_agent_tools` already closed incoming Managed wire membership.
+    // Runtime-only Agent overrides may still be present because the update owner
+    // preserved them from the versioned current config; they are not wire-authored.
     awaken_agent_contract::validate_agent_skills(&config.skills)
         .map_err(ManagedAgentError::Invalid)?;
     if let Some(multiagent) = &config.multiagent {

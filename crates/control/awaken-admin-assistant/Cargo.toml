@@ -16,6 +16,7 @@ async-trait.workspace = true
 tracing = "0.1"
 awaken-runtime-contract.workspace = true
 awaken-agent-config.workspace = true
+awaken-session-contract.workspace = true
 awaken-environment-contract.workspace = true
 
 [dev-dependencies]

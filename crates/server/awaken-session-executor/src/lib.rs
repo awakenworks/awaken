@@ -125,8 +125,7 @@ pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::commit_ingest::claimed_commit_service;
 pub use crate::config::{
-    advertised_tools, authorable_config_sections, authorable_config_sections_with_web_search,
-    authorable_tools, block_text, platform_plugin_capabilities,
+    advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
     platform_plugin_capabilities_with_web_search,
 };
 pub use crate::deployment_config::{

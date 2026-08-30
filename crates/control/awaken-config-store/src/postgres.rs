@@ -189,73 +189,18 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_generation: u64,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let audit_key = format!("{}:{}", audit.tool, audit.call_id);
-        let mut tx = self.pool.begin().await.map_err(reject)?;
-        let existing = sqlx::query(&format!(
-            "SELECT record, business_committed FROM {NS}_management_audit WHERE scope_id = $1 AND call_id = $2 FOR UPDATE"
-        ))
-        .bind(&scope.0)
-        .bind(&audit_key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(reject)?;
-        if let Some(row) = existing {
-            let Json(existing): Json<ManagementAuditRecord> =
-                row.try_get("record").map_err(reject)?;
-            if existing != *audit {
-                return Err(ConfigStoreError(
-                    "stable audit call id was reused with different content".into(),
-                ));
-            }
-            let committed: i64 = row.try_get("business_committed").map_err(reject)?;
-            if committed != 0 {
-                return Ok(AuditedConfigWrite::Replayed);
-            }
-        } else {
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_management_audit (scope_id, call_id, record) VALUES ($1, $2, $3)"
-            ))
-            .bind(&scope.0)
-            .bind(&audit_key)
-            .bind(Json(audit))
-            .execute(&mut *tx)
+        self.put_config_with_audit_effect_scoped(scope, config, expected_generation, audit, None)
             .await
-            .map_err(reject)?;
-        }
-        let changed = sqlx::query(&format!(
-            "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1"
-        ))
-        .bind(&config.id)
-        .bind(Json(config))
-        .bind(&scope.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
-        if changed.rows_affected() != 1 {
-            return Err(ConfigStoreError(
-                "audited config write was fenced by another scope".into(),
-            ));
-        }
-        sqlx::query(&format!(
-            "UPDATE {NS}_management_audit SET business_committed = 1 WHERE scope_id = $1 AND call_id = $2"
-        ))
-        .bind(&scope.0)
-        .bind(&audit_key)
-        .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
-        tx.commit().await.map_err(reject)?;
-        Ok(AuditedConfigWrite::Applied)
     }
 
     async fn put_config_with_audit_effect_scoped(
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_generation: u64,
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
@@ -281,18 +226,39 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             let committed: i64 = row.try_get("business_committed").map_err(reject)?;
             committed != 0
         } else {
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_management_audit (scope_id, call_id, record) \
-                 VALUES ($1, $2, $3)"
-            ))
-            .bind(&scope.0)
-            .bind(&audit_key)
-            .bind(Json(audit))
-            .execute(&mut *tx)
-            .await
-            .map_err(reject)?;
-            false
+            return Err(ConfigStoreError(
+                "audited config transaction requires a pre-recorded management audit".into(),
+            ));
         };
+        if replayed {
+            return Ok(AuditedConfigWrite::Replayed);
+        }
+        let current = sqlx::query(&format!(
+            "SELECT data, generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
+        ))
+        .bind(&config.id)
+        .bind(&scope.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let current_revision = current
+            .as_ref()
+            .map(|row| row.try_get::<i64, _>("generation").map_err(reject))
+            .transpose()?
+            .map(domain_generation)
+            .transpose()?;
+        if current_revision.unwrap_or(0) != expected_generation {
+            return Ok(AuditedConfigWrite::Conflict { current_revision });
+        }
+        let current_config = current
+            .map(|row| {
+                let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
+                Ok::<_, ConfigStoreError>(config)
+            })
+            .transpose()?;
+        let config = config
+            .canonicalize_mutable_authoring_against(current_config.as_ref())
+            .map_err(reject)?;
         if let Some(effect) = effect {
             let existing = sqlx::query(&format!(
                 "SELECT payload FROM {NS}_management_effect \
@@ -326,25 +292,31 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                 .map_err(reject)?;
             }
         }
-        if replayed {
-            tx.commit().await.map_err(reject)?;
-            return Ok(AuditedConfigWrite::Replayed);
-        }
-        let changed = sqlx::query(&format!(
+        let applied = sqlx::query_scalar::<_, i64>(&format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
              ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1"
+             generation = {NS}_agent.generation + 1 \
+             WHERE {NS}_agent.generation = $4 RETURNING generation"
         ))
         .bind(&config.id)
-        .bind(Json(config))
+        .bind(Json(&config))
         .bind(&scope.0)
-        .execute(&mut *tx)
+        .bind(database_generation(expected_generation)?)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
-        if changed.rows_affected() != 1 {
-            return Err(ConfigStoreError(
-                "audited config write was fenced by another scope".into(),
-            ));
+        if applied.is_none() {
+            let current_revision = sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
+            ))
+            .bind(&config.id)
+            .bind(&scope.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(reject)?
+            .map(domain_generation)
+            .transpose()?;
+            return Ok(AuditedConfigWrite::Conflict { current_revision });
         }
         sqlx::query(&format!(
             "UPDATE {NS}_management_audit SET business_committed = 1 \

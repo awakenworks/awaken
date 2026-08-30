@@ -251,6 +251,15 @@ async fn durable_management_audit(
             )
                 .into_response();
         }
+        Ok(AuditedConfigWrite::Conflict { current_revision }) => {
+            return (
+                StatusCode::CONFLICT,
+                format!(
+                    "management audit changed concurrently (current revision: {current_revision:?})"
+                ),
+            )
+                .into_response();
+        }
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -492,15 +501,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let agents = agents_router(Arc::new(agent_state));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
-    let capabilities = awaken_config_service::capabilities_router_with_source(
-        global_tools,
-        plugins,
-        vec![awaken_config_service::PolicyCapability::new(
-            "permission",
-            awaken_ext_permission::permission_config_schema(),
-        )],
-        runtimes,
-    );
+    let capabilities =
+        awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
     let fallback_workspace = platform_workspace.clone();
     let presentation_identity_mode = identity_mode;
     let workspace_context = Router::new().route(
