@@ -1,0 +1,55 @@
+pub mod awaken_sandbox_fs
+pub enum awaken_sandbox_fs::PathEntry
+pub awaken_sandbox_fs::PathEntry::Absent
+pub awaken_sandbox_fs::PathEntry::Directory(awaken_sandbox_fs::DirectoryIdentity)
+pub awaken_sandbox_fs::PathEntry::Other
+pub awaken_sandbox_fs::PathEntry::RegularFile
+pub awaken_sandbox_fs::PathEntry::Symlink
+pub struct awaken_sandbox_fs::DirectoryIdentity
+pub awaken_sandbox_fs::DirectoryIdentity::device: u64
+pub awaken_sandbox_fs::DirectoryIdentity::inode: u64
+pub struct awaken_sandbox_fs::ExclusiveFileLock
+impl awaken_sandbox_fs::ExclusiveFileLock
+pub fn awaken_sandbox_fs::ExclusiveFileLock::classify_sibling_nofollow(&self, &std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::PathEntry>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::clear_sibling_directory_contents_exact(&self, &std::path::Path, awaken_sandbox_fs::DirectoryIdentity) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::create_sibling_directory_noreplace(&self, &std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::DirectoryIdentity>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::publish_sibling_directory_noreplace(&self, &std::path::Path, &std::path::Path) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::publish_sibling_file_noreplace(&self, &std::path::Path, &[u8]) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::read_sibling_regular_file_nofollow(&self, &std::path::Path) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::remove_sibling_directory_tree_exact(&self, &std::path::Path, awaken_sandbox_fs::DirectoryIdentity) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::remove_sibling_regular_file_nofollow(&self, &std::path::Path) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::replace_sibling_regular_file_atomic(&self, &std::path::Path, &[u8]) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::sibling_names(&self) -> core::io::error::Result<alloc::vec::Vec<std::ffi::os_str::OsString>>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::validate_parent_path(&self) -> core::io::error::Result<()>
+impl core::ops::drop::Drop for awaken_sandbox_fs::ExclusiveFileLock
+pub fn awaken_sandbox_fs::ExclusiveFileLock::drop(&mut self)
+pub struct awaken_sandbox_fs::TreeDirectory
+pub awaken_sandbox_fs::TreeDirectory::mode: u32
+pub awaken_sandbox_fs::TreeDirectory::relative_path: std::path::PathBuf
+pub struct awaken_sandbox_fs::TreeFile
+pub awaken_sandbox_fs::TreeFile::bytes: alloc::vec::Vec<u8>
+pub awaken_sandbox_fs::TreeFile::mode: u32
+pub awaken_sandbox_fs::TreeFile::relative_path: std::path::PathBuf
+pub struct awaken_sandbox_fs::TreeSnapshot
+pub awaken_sandbox_fs::TreeSnapshot::directories: alloc::vec::Vec<awaken_sandbox_fs::TreeDirectory>
+pub awaken_sandbox_fs::TreeSnapshot::files: alloc::vec::Vec<awaken_sandbox_fs::TreeFile>
+pub fn awaken_sandbox_fs::classify_nofollow(&std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::PathEntry>
+pub fn awaken_sandbox_fs::clear_directory_contents_exact(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::create_directory_noreplace(&std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::DirectoryIdentity>
+pub fn awaken_sandbox_fs::create_private_directory_stage(&std::path::Path) -> core::io::error::Result<(std::path::PathBuf, awaken_sandbox_fs::DirectoryIdentity)>
+pub fn awaken_sandbox_fs::create_relative_directory_all(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::directory_identity_nofollow(&std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::DirectoryIdentity>
+pub fn awaken_sandbox_fs::publish_directory_noreplace(&std::path::Path, &std::path::Path) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::publish_file_noreplace(&std::path::Path, &[u8]) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::read_regular_file_nofollow(&std::path::Path) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn awaken_sandbox_fs::read_regular_tree_nofollow(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path) -> core::io::error::Result<alloc::vec::Vec<awaken_sandbox_fs::TreeFile>>
+pub fn awaken_sandbox_fs::read_tree_nofollow(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::TreeSnapshot>
+pub fn awaken_sandbox_fs::read_tree_nofollow_excluding(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path, &[std::path::PathBuf]) -> core::io::error::Result<awaken_sandbox_fs::TreeSnapshot>
+pub fn awaken_sandbox_fs::remove_directory_tree_exact(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::remove_regular_file_nofollow(&std::path::Path) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::remove_relative_entry_exact(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::replace_regular_file_atomic(&std::path::Path, &[u8]) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::set_relative_directory_mode(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path, u32) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::try_lock_exclusive(&std::path::Path) -> core::io::error::Result<awaken_sandbox_fs::ExclusiveFileLock>
+pub fn awaken_sandbox_fs::write_relative_file_atomic(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path, &[u8], u32) -> core::io::error::Result<()>
+pub fn awaken_sandbox_fs::zero_relative_regular_file_nofollow(&std::path::Path, awaken_sandbox_fs::DirectoryIdentity, &std::path::Path) -> core::io::error::Result<()>

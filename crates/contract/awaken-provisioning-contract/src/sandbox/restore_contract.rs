@@ -1,8 +1,7 @@
 //! Exact provider-neutral restore identity and physical-target contract.
 
-use super::{
-    SandboxCheckpointRef, SandboxError, SandboxHandle, SandboxRestorationEvidence, SandboxSpec,
-};
+use super::{SandboxCheckpointRef, SandboxError, SandboxHandle, SandboxRestorationEvidence};
+use crate::SandboxSpec;
 
 /// Exact provider-neutral identity of one idempotent restore effect.
 ///
@@ -40,7 +39,7 @@ impl SandboxRestoreRequest {
     pub fn bind_handle(
         &self,
         spec: &SandboxSpec,
-        mut handle: SandboxHandle,
+        handle: SandboxHandle,
     ) -> Result<SandboxHandle, SandboxError> {
         self.validate_for_spec(spec)?;
         if handle.sandbox_id != self.session_id {
@@ -48,8 +47,7 @@ impl SandboxRestoreRequest {
                 "restore target handle belongs to a different Session",
             ));
         }
-        handle.restoration = Some(self.evidence(spec));
-        Ok(handle)
+        handle.with_restoration_evidence(self.evidence(spec))
     }
 
     /// Provider-neutral opaque key for the one physical target owned by this

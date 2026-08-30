@@ -91,12 +91,13 @@ pub awaken_worker_contract::PlacementRequirements::required_sandbox_tool_recover
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::resources: awaken_provisioning_contract::vocab::ResourceRequests
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
-pub awaken_worker_contract::PlacementRequirements::sandbox: awaken_provisioning_contract::sandbox::SandboxRequirements
+pub awaken_worker_contract::PlacementRequirements::sandbox: awaken_provisioning_contract::sandbox::runtime::SandboxRequirements
 pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::PlacementRequirements
 pub fn awaken_worker_contract::PlacementRequirements::is_legacy_default(&self) -> bool
 pub fn awaken_worker_contract::PlacementRequirements::remote_preferred() -> Self
 pub fn awaken_worker_contract::PlacementRequirements::remote_required() -> Self
+pub fn awaken_worker_contract::PlacementRequirements::terminal_cleanup(bool, bool, core::option::Option<alloc::string::String>) -> Self
 impl core::default::Default for awaken_worker_contract::PlacementRequirements
 pub fn awaken_worker_contract::PlacementRequirements::default() -> Self
 pub struct awaken_worker_contract::RankedWorker
@@ -170,11 +171,12 @@ pub awaken_worker_contract::WorkerManifest::checkpoint_formats: alloc::collectio
 pub awaken_worker_contract::WorkerManifest::dispatch_contract: awaken_worker_contract::VersionRange
 pub awaken_worker_contract::WorkerManifest::manifest_version: u32
 pub awaken_worker_contract::WorkerManifest::runtime_protocol: awaken_worker_contract::VersionRange
-pub awaken_worker_contract::WorkerManifest::sandbox: awaken_provisioning_contract::sandbox::SandboxCapabilities
+pub awaken_worker_contract::WorkerManifest::sandbox: awaken_provisioning_contract::sandbox::runtime::SandboxCapabilities
 pub awaken_worker_contract::WorkerManifest::sandbox_backends: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::WorkerManifest::sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability
 pub awaken_worker_contract::WorkerManifest::zone: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::WorkerManifest
+pub const fn awaken_worker_contract::WorkerManifest::explicitly_supports_terminal_cleanup_v2(&self) -> bool
 pub fn awaken_worker_contract::WorkerManifest::fingerprint(&self) -> core::result::Result<alloc::string::String, awaken_worker_contract::FingerprintError>
 impl core::default::Default for awaken_worker_contract::WorkerManifest
 pub fn awaken_worker_contract::WorkerManifest::default() -> Self
