@@ -1,7 +1,7 @@
-# Awaken Runtime
+# Awaken Agents
 
-This repository hosts the `awaken-runtime` design corpus and guardrails. The
-runtime protocol/specification and conformance surface are licensed under
+This repository hosts Awaken Agents and its `awaken-runtime` execution core.
+The runtime protocol/specification and conformance surface are licensed under
 Apache-2.0; code packages may use their own file or package license metadata.
 
 Start with [docs/README.md](docs/README.md) for the bounded contexts, runtime
