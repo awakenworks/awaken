@@ -5,11 +5,9 @@
 //! reclaim, while the expected Thread version prevents an attempt built from a
 //! stale recovery prefix from appending new truth.
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
 use crate::agent::run::Id as RunId;
 use crate::thread::commit::staged::{CommitRecord, ThreadCommit};
+use serde::{Deserialize, Serialize};
 
 const CANONICAL_COMMIT_VERSION: &str = "awaken.thread-commit.v1";
 
@@ -24,59 +22,9 @@ pub enum CommitHashError {
 /// Every producer of [`CommitOperation`] uses this function so a durable
 /// receipt cannot depend on adapter JSON field order or a second hash format.
 pub fn commit_payload_hash(commit: &ThreadCommit) -> Result<CommitPayloadHash, CommitHashError> {
-    let value = serde_json::to_value(commit)
-        .map_err(|error| CommitHashError::Serialize(error.to_string()))?;
-    let mut canonical = String::new();
-    write_canonical_json(&value, &mut canonical);
-    let mut hasher = Sha256::new();
-    hasher.update((CANONICAL_COMMIT_VERSION.len() as u64).to_le_bytes());
-    hasher.update(CANONICAL_COMMIT_VERSION.as_bytes());
-    hasher.update((canonical.len() as u64).to_le_bytes());
-    hasher.update(canonical.as_bytes());
-    let digest = hasher.finalize();
-    let hex = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(CommitPayloadHash(format!("sha256:{hex}")))
-}
-
-fn write_canonical_json(value: &serde_json::Value, output: &mut String) {
-    match value {
-        serde_json::Value::Null => output.push_str("null"),
-        serde_json::Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        serde_json::Value::Number(value) => output.push_str(&value.to_string()),
-        serde_json::Value::String(value) => {
-            output
-                .push_str(&serde_json::to_string(value).expect("a JSON string always serializes"));
-        }
-        serde_json::Value::Array(values) => {
-            output.push('[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                write_canonical_json(value, output);
-            }
-            output.push(']');
-        }
-        serde_json::Value::Object(values) => {
-            output.push('{');
-            let mut keys = values.keys().collect::<Vec<_>>();
-            keys.sort_unstable();
-            for (index, key) in keys.into_iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                output.push_str(
-                    &serde_json::to_string(key).expect("a JSON object key always serializes"),
-                );
-                output.push(':');
-                write_canonical_json(&values[key], output);
-            }
-            output.push('}');
-        }
-    }
+    crate::canonical_json_sha256(CANONICAL_COMMIT_VERSION, commit)
+        .map(CommitPayloadHash)
+        .map_err(|error| CommitHashError::Serialize(error.to_string()))
 }
 
 /// Stable identity of one logical commit within a Run.
