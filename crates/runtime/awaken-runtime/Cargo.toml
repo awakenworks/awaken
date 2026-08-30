@@ -33,6 +33,7 @@ tempfile = "3"
 
 [dev-dependencies]
 awaken-ext-background-task.workspace = true
+awaken-ext-compact.workspace = true
 awaken-store-inmem.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 
