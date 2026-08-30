@@ -258,6 +258,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-ext-background-task \
     --harness cancellation_is_monotone_and_terminal_states_are_absorbing
   run_kani awaken-runtime-contract \
+    --harness max_token_continuation_requires_every_exact_guard \
     --harness anchored_context_window_never_moves_past_the_covered_prefix \
     --harness unanchored_legacy_context_never_hides_transcript_messages \
     --harness terminal_calls_are_never_reentered \

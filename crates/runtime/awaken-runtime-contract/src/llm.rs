@@ -92,6 +92,77 @@ pub enum StopReason {
     ContentFilter,
 }
 
+impl StopReason {
+    /// Whether this response may consume one more in-place continuation.
+    ///
+    /// This is the loop's single admission rule: only a text-bearing
+    /// `MaxTokens` response with no tool call and remaining budget may be
+    /// continued. Keeping the predicate beside the existing stop-reason type
+    /// prevents provider adapters and runtime callers from inventing parallel
+    /// interpretations of truncation.
+    #[must_use]
+    pub const fn admits_continuation(
+        self,
+        has_tool_calls: bool,
+        has_text: bool,
+        completed_continuations: usize,
+        max_continuations: usize,
+    ) -> bool {
+        matches!(self, Self::MaxTokens)
+            && !has_tool_calls
+            && has_text
+            && completed_continuations < max_continuations
+    }
+}
+
+#[cfg(kani)]
+mod stop_reason_verification {
+    use super::*;
+
+    #[kani::proof]
+    fn max_token_continuation_requires_every_exact_guard() {
+        let has_tool_calls: bool = kani::any();
+        let has_text: bool = kani::any();
+        let completed_continuations: usize = kani::any();
+        let max_continuations: usize = kani::any();
+
+        let expected = !has_tool_calls && has_text && completed_continuations < max_continuations;
+        assert_eq!(
+            StopReason::MaxTokens.admits_continuation(
+                has_tool_calls,
+                has_text,
+                completed_continuations,
+                max_continuations,
+            ),
+            expected,
+        );
+        assert!(!StopReason::NaturalEnd.admits_continuation(
+            has_tool_calls,
+            has_text,
+            completed_continuations,
+            max_continuations,
+        ));
+        assert!(!StopReason::ToolUse.admits_continuation(
+            has_tool_calls,
+            has_text,
+            completed_continuations,
+            max_continuations,
+        ));
+        assert!(!StopReason::StopSequence.admits_continuation(
+            has_tool_calls,
+            has_text,
+            completed_continuations,
+            max_continuations,
+        ));
+        assert!(!StopReason::ContentFilter.admits_continuation(
+            has_tool_calls,
+            has_text,
+            completed_continuations,
+            max_continuations,
+        ));
+    }
+}
+
 /// One assistant response as a list of content blocks. Text and tool requests may
 /// interleave (`vec![Text, ToolUse, Text]`); a text-only response is a natural end,
 /// a response with any `ToolUse` continues the Step loop.
