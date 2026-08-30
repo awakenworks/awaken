@@ -690,6 +690,14 @@ impl SharedHost {
                 "remote A2A execution cannot consume local Session Environment inputs",
             ));
         }
+        // A legacy/direct Environment has no encoded durable binding to feed
+        // through the ordinary adoption path. A new claimed attempt is the
+        // authority to reuse the exact Ready owner retained by realization
+        // revocation; unclaimed and remote-only paths remain fail-closed.
+        if claimed_attempt.is_some() && !a2a_only {
+            self.recover_claimed_legacy_environment_after_revocation(thread)
+                .await?;
+        }
         let retained = self
             .session_slots
             .read(thread, |slot| slot.environment_owner.resident())

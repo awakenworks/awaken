@@ -660,6 +660,133 @@ async fn only_recovery_and_revocation_retirements_can_reactivate() {
 }
 
 #[tokio::test]
+async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
+    use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
+
+    // Cross-protocol cause/effect table: C1 a first claimed Run creates one
+    // legacy/direct Resident while durable Session projection is still
+    // Unmaterialized; C2 realization revocation retains that exact Ready owner
+    // as Retiring; C3 an unclaimed context lookup arrives; C4 a new claimed
+    // attempt arrives with the immutable publication. Effects: E1 C3 fails
+    // closed and retains the exact Retiring owner; E2 C4 reactivates the same
+    // Arc without adoption or replacement and constructs the next Runtime.
+    // Rules CP1=C1+C2+C3=>E1, CP2=C1+C2+C4=>E2.
+    let thread = "claimed-legacy-revocation";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(root.path());
+    let snapshot = test_activation(thread, "claimed-legacy-publication").snapshot;
+    host.register_thread_workspace(thread, "workspace");
+    host.session_slots.update(thread, |slot| {
+        slot.published_snapshot = Some(snapshot.clone());
+    });
+    host.install_test_resident_session_environment(thread, environment.clone());
+
+    let lifecycle = host
+        .session_slots
+        .read(thread, |slot| slot.lifecycle.clone())
+        .unwrap();
+    {
+        let _lifecycle = lifecycle.lock().await;
+        assert!(
+            host.retire_session_environment_for_revocation(thread)
+                .await
+                .unwrap(),
+            "C2 exact revocation"
+        );
+    }
+    let retired = host
+        .session_slots
+        .read(thread, |slot| slot.environment_owner.clone())
+        .unwrap();
+    assert!(
+        matches!(
+            &retired,
+            SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                owned: RetiringEnvironmentOwner::Bound(owned),
+            }) if matches!(
+                owned.identity,
+                BoundSessionEnvironmentIdentity::LegacyDirect(
+                    LegacyDirectEnvironmentProvenance::Direct(_)
+                )
+            ) && Arc::ptr_eq(&owned.environment, &environment)
+        ),
+        "C2 exact legacy/direct owner"
+    );
+
+    let unclaimed = match host
+        .ctx_for_snapshot_with_sandbox(
+            thread,
+            Some(snapshot.root_agent_id.0.as_str()),
+            Some(snapshot.clone()),
+            None,
+        )
+        .await
+    {
+        Ok(_) => panic!("CP1 unclaimed lookup reactivated the Environment"),
+        Err(error) => error,
+    };
+    assert!(
+        unclaimed
+            .to_string()
+            .contains("Environment transition must be recovered"),
+        "CP1/E1"
+    );
+    assert!(
+        matches!(
+            host.session_slots
+                .read(thread, |slot| slot.environment_owner.clone()),
+            Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(
+                match &retired {
+                    SessionEnvironmentOwner::Retiring(current) => current,
+                    _ => unreachable!(),
+                }
+            )
+        ),
+        "CP1/E1 exact Retiring owner retained"
+    );
+
+    let effective_model_ref = snapshot.resolved_spec.model_binding.model_ref.clone();
+    let publications = Arc::new(
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
+            .unwrap(),
+    );
+    let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
+        identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
+            &snapshot,
+            &[],
+            &effective_model_ref,
+        ),
+        publications,
+        effective_model_ref,
+    };
+    let agent_id = snapshot.root_agent_id.0.clone();
+    let context = host
+        .ctx_for_claimed_snapshot_with_sandbox(
+            thread,
+            Some(agent_id.as_str()),
+            snapshot,
+            None,
+            attempt,
+        )
+        .await
+        .expect("CP2 claimed recovery");
+    let recovered = context.env.as_ref().expect("CP2 Environment");
+    assert!(Arc::ptr_eq(recovered, &environment), "CP2/E2 exact Arc");
+    assert!(
+        matches!(
+            host.session_slots
+                .read(thread, |slot| slot.environment_owner.clone()),
+            Some(SessionEnvironmentOwner::Resident(owned))
+                if Arc::ptr_eq(&owned.environment, &environment)
+        ),
+        "CP2/E2 Resident"
+    );
+}
+
+#[tokio::test]
 async fn recovery_status_gates_frozen_provider_validation_after_owner_retirement() {
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
 
@@ -1132,6 +1259,60 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         )
         .expect("C3 Store-read publication");
     assert!(Arc::ptr_eq(&published, &environment), "E2");
+}
+
+#[tokio::test]
+async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident() {
+    // Projection-order cause/effect decision table: C1 an Unmaterialized
+    // FrozenSessionProjection is read before the lifecycle guard; C2 the exact
+    // create Candidate is installed while C1 waits; C3 the binding sink commits
+    // and the same Candidate becomes Resident before C1 installs; C4 durable
+    // retirement has already moved the owner to Retiring/Vacant. Effects: E1
+    // C1+C2 retains the exact hidden Candidate and returns success; E2 C1+C3
+    // retains the exact Resident Arc/identity and returns success; E3 C1+C4 may
+    // confirm Vacant but never disposes a live owner. Rules S1=C1+C2=>E1,
+    // S2=C1+C3=>E2; the existing retirement tests own S3=C1+C4=>E3. This makes
+    // stale projection replay a no-write operation instead of an unrecoverable
+    // rescheduling loop.
+    let thread = "stale-unmaterialized-projection";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let candidate = host
+        .begin_session_environment_preparation(thread, environment.clone())
+        .expect("S1 Candidate");
+
+    host.install_session_environment_owner_projection(
+        thread,
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .expect("S1 stale projection is a no-write replay");
+    let retained = host
+        .prepared_session_environment(thread)
+        .expect("S1 Candidate retained");
+    assert!(candidate.exact_matches(&retained), "S1 exact Candidate");
+    assert!(
+        host.session_environment(thread).await.is_none(),
+        "S1 hidden"
+    );
+
+    let published = host
+        .publish_prepared_session_environment(thread, &candidate, identity(thread))
+        .expect("S2 publish exact Candidate");
+    host.install_session_environment_owner_projection(
+        thread,
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .expect("S2 stale projection is a no-write replay");
+    let resident = host
+        .session_environment(thread)
+        .await
+        .expect("S2 Resident retained");
+    assert!(Arc::ptr_eq(&published, &resident), "S2 exact Resident Arc");
+    assert!(Arc::ptr_eq(&environment, &resident), "S2 provider Arc");
 }
 
 #[tokio::test]
