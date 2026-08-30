@@ -411,16 +411,14 @@ pub(crate) fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String
         .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))
 }
 
-fn parse_if_match(
-    headers: &HeaderMap,
-) -> Result<Option<awaken_session_contract::SessionRevision>, WireErr> {
+fn parse_if_match(headers: &HeaderMap, representation: &str) -> Result<Option<u64>, WireErr> {
     headers
         .get(header::IF_MATCH)
         .map(|value| {
             let raw = value.to_str().map_err(|_| {
-                error_response(StateError::Run(RunError::bad_request(
-                    "If-Match must be a quoted Session revision",
-                )))
+                error_response(StateError::Run(RunError::bad_request(format!(
+                    "If-Match must be a quoted {representation} revision"
+                ))))
             })?;
             if raw == "*" {
                 return Ok(None);
@@ -430,11 +428,11 @@ fn parse_if_match(
                 .and_then(|value| value.strip_suffix('"'))
                 .and_then(|value| value.parse::<u64>().ok())
                 .ok_or_else(|| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "If-Match must be `*` or a quoted Session revision",
-                    )))
+                    error_response(StateError::Run(RunError::bad_request(format!(
+                        "If-Match must be `*` or a quoted {representation} revision"
+                    ))))
                 })?;
-            Ok(Some(awaken_session_contract::SessionRevision(revision)))
+            Ok(Some(revision))
         })
         .transpose()
         .map(Option::flatten)
@@ -539,7 +537,8 @@ async fn update_session(
         )),
     };
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let if_match = parse_if_match(&headers)?;
+    let if_match =
+        parse_if_match(&headers, "Session")?.map(awaken_session_contract::SessionRevision);
     let title = title.map(|value| match value {
         Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
         None => awaken_session_application::SessionFieldUpdate::Clear,
@@ -1125,7 +1124,7 @@ pub async fn replace_resource_manifest(
     )
     .await?;
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let if_match = parse_if_match(&headers)?;
+    let if_match = parse_if_match(&headers, "Resource manifest")?;
     let fingerprints = body
         .resources
         .iter()
@@ -1135,7 +1134,7 @@ pub async fn replace_resource_manifest(
     // The state owner composes Repository lowering, root CAS, realization, and
     // durable retirement. Keep that complete application future behind the one
     // HTTP-adapter boundary instead of embedding it in Axum's request future.
-    let (manifest, command_revision) = Box::pin(state.replace_resource_manifest(
+    let manifest = Box::pin(state.replace_resource_manifest(
         &id,
         body,
         idempotency_key,
@@ -1147,8 +1146,8 @@ pub async fn replace_resource_manifest(
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::ETAG,
-        HeaderValue::from_str(&format!("\"{}\"", command_revision.0))
-            .expect("numeric Session revision is a valid ETag"),
+        HeaderValue::from_str(&format!("\"{}\"", manifest.desired_revision))
+            .expect("numeric Resource manifest revision is a valid ETag"),
     );
     Ok((response_headers, Json(manifest)))
 }
@@ -1387,16 +1386,25 @@ async fn create_resource(
 async fn list_resources(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<PageCursor<crate::types::resource::SessionResource>>, WireErr> {
+) -> Result<
+    (
+        HeaderMap,
+        Json<PageCursor<crate::types::resource::SessionResource>>,
+    ),
+    WireErr,
+> {
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
-    state
-        .list_resources(&id)
-        .map(PageCursor::single)
-        .map(Json)
-        .map_err(error_response)
+    let (revision, resources) = state.list_resources(&id).map_err(error_response)?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{revision}\""))
+            .expect("numeric Resource manifest revision is a valid ETag"),
+    );
+    Ok((headers, Json(PageCursor::single(resources))))
 }
 
 async fn get_resource(
