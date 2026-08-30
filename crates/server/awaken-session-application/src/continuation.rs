@@ -11,6 +11,19 @@ use awaken_session_contract::{
 
 use super::{SessionApplication, SessionMutationError, SessionRecoveryCandidates};
 
+fn expected_mcp_generations(
+    session: &PersistedSession,
+) -> Result<Vec<awaken_session_contract::McpGenerationRef>, SessionContinuationError> {
+    session
+        .mcp
+        .active_generation_refs(&session.session_id)
+        .map_err(|error| {
+            SessionContinuationError::Runtime(RunError::internal(format!(
+                "durable MCP quiescence set is invalid: {error}"
+            )))
+        })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SessionContinuationError {
     #[error("Session continuation repository failed: {0}")]
@@ -140,6 +153,7 @@ impl SessionApplication {
                 suspend_phase: SuspendPhase::Quiescing,
                 ..
             } => {
+                let expected_mcp_generations = expected_mcp_generations(&session)?;
                 let receipt = self
                     .runtime()
                     .quiesce_session_environment(
@@ -148,9 +162,20 @@ impl SessionApplication {
                         &source_effect_id,
                         &source_binding,
                         &generation,
+                        &expected_mcp_generations,
                     )
                     .await?;
-                session.environment.record_quiescence(&receipt)?;
+                session
+                    .environment
+                    .record_quiescence(&receipt, &expected_mcp_generations)?;
+                session
+                    .mcp
+                    .require_reprojection_after_quiescence(session_id, &receipt.mcp_generations)
+                    .map_err(|error| {
+                        SessionContinuationError::Repository(format!(
+                            "MCP quiescence transition failed: {error}"
+                        ))
+                    })?;
                 self.commit_continuation(&owner_scope, session, "environment-quiesced")
                     .await?;
                 Ok(true)

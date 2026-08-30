@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, ManagedLifecycleFact, McpAttachmentState, McpGenerationRef,
-    PersistedSession, RunError, SessionExecutionState, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationLease, SessionRepositoryError, SessionRuntime,
+    PersistedSession, RunError, SessionEnvironmentState, SessionExecutionState,
+    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionRealizationLease, SessionRepositoryError, SessionRuntime,
     SessionTerminalCleanupAssignment, StageMcpAttachment,
 };
 
@@ -116,6 +116,16 @@ fn verify_lease(
 
 fn exact_generation_key(generation: &McpGenerationRef) -> String {
     awaken_session_contract::stable_fingerprint(generation)
+}
+
+/// One phase gate owns every nonterminal realization entry point. Continuation
+/// phases have closed Environment admission and must not stage, publish, or
+/// drain process-local effects until restore commits Resident again.
+fn environment_admits_realization_effects(environment: &SessionEnvironmentState) -> bool {
+    matches!(
+        environment,
+        SessionEnvironmentState::Unmaterialized | SessionEnvironmentState::Resident { .. }
+    )
 }
 
 fn generation_set_is_renewed_successor(
@@ -640,12 +650,7 @@ impl SessionApplication {
             if session.is_terminal() || self.requires_external_realization(&session) {
                 continue;
             }
-            if matches!(
-                session.environment,
-                awaken_session_contract::SessionEnvironmentState::Suspending { .. }
-                    | awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
-                    | awaken_session_contract::SessionEnvironmentState::Restoring { .. }
-            ) {
+            if !environment_admits_realization_effects(&session.environment) {
                 continue;
             }
             // Recovery cause/effect decision table:
@@ -811,6 +816,9 @@ impl SessionApplication {
             return Err(SessionRealizationControlFailure::Terminal);
         }
         if session.frozen_baseline().is_none() {
+            return Err(SessionRealizationControlFailure::NotReady);
+        }
+        if !environment_admits_realization_effects(&session.environment) {
             return Err(SessionRealizationControlFailure::NotReady);
         }
         let session = self

@@ -74,9 +74,14 @@ pub(crate) const fn quiescence_receipt_admitted(
     effect_matches: bool,
     generation_matches: bool,
     activity_epoch_matches: bool,
+    mcp_generations_match: bool,
     live_environment_effects: u32,
 ) -> bool {
-    effect_matches && generation_matches && activity_epoch_matches && live_environment_effects == 0
+    effect_matches
+        && generation_matches
+        && activity_epoch_matches
+        && mcp_generations_match
+        && live_environment_effects == 0
 }
 
 /// Closed admission rule for a checkpoint created by the exact operation over
@@ -460,6 +465,7 @@ impl SessionEnvironmentState {
     pub fn record_quiescence(
         &mut self,
         receipt: &QuiescenceReceipt,
+        expected_mcp_generations: &[crate::McpGenerationRef],
     ) -> Result<bool, SessionEnvironmentTransitionError> {
         let Self::Suspending {
             operation,
@@ -470,7 +476,7 @@ impl SessionEnvironmentState {
         else {
             return Err(SessionEnvironmentTransitionError::NotSuspending);
         };
-        receipt.verify(operation, generation)?;
+        receipt.verify(operation, generation, expected_mcp_generations)?;
         if *suspend_phase != SuspendPhase::Quiescing {
             return Ok(false);
         }
@@ -682,6 +688,11 @@ pub struct QuiescenceReceipt {
     pub generation_id: String,
     pub activity_epoch: u64,
     pub live_environment_effects: u32,
+    /// Exact durable MCP owners supplied by the Session application and proven
+    /// quiescent by Runtime. Runtime must echo this requested set; it may not
+    /// infer desired ownership from process-local projections.
+    #[serde(default)]
+    pub mcp_generations: Vec<crate::McpGenerationRef>,
 }
 
 impl QuiescenceReceipt {
@@ -689,11 +700,13 @@ impl QuiescenceReceipt {
         &self,
         operation: &SessionEnvironmentOperation,
         generation: &SandboxGeneration,
+        expected_mcp_generations: &[crate::McpGenerationRef],
     ) -> Result<(), SessionEnvironmentTransitionError> {
         if quiescence_receipt_admitted(
             self.effect_id == operation.effect_id,
             self.generation_id == generation.id,
             self.activity_epoch == operation.activity_epoch,
+            self.mcp_generations == expected_mcp_generations,
             self.live_environment_effects,
         ) {
             Ok(())
@@ -1313,12 +1326,16 @@ mod tests {
             }
         ));
         state
-            .record_quiescence(&QuiescenceReceipt {
-                effect_id: operation.effect_id.clone(),
-                generation_id: generation().id,
-                activity_epoch: 7,
-                live_environment_effects: 0,
-            })
+            .record_quiescence(
+                &QuiescenceReceipt {
+                    effect_id: operation.effect_id.clone(),
+                    generation_id: generation().id,
+                    activity_epoch: 7,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
             .unwrap();
         let checkpoint = checkpoint(&operation);
         state
@@ -1350,12 +1367,16 @@ mod tests {
             .unwrap()
             .clone();
         state
-            .record_quiescence(&QuiescenceReceipt {
-                effect_id: operation.effect_id.clone(),
-                generation_id: generation().id,
-                activity_epoch: 7,
-                live_environment_effects: 0,
-            })
+            .record_quiescence(
+                &QuiescenceReceipt {
+                    effect_id: operation.effect_id.clone(),
+                    generation_id: generation().id,
+                    activity_epoch: 7,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
             .unwrap();
         assert_eq!(
             state.complete_suspend(&SourceDisposedReceipt {
@@ -1380,12 +1401,16 @@ mod tests {
             .unwrap()
             .clone();
         state
-            .record_quiescence(&QuiescenceReceipt {
-                effect_id: suspend.effect_id.clone(),
-                generation_id: generation().id,
-                activity_epoch: 7,
-                live_environment_effects: 0,
-            })
+            .record_quiescence(
+                &QuiescenceReceipt {
+                    effect_id: suspend.effect_id.clone(),
+                    generation_id: generation().id,
+                    activity_epoch: 7,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
             .unwrap();
         let checkpoint = checkpoint(&suspend);
         state
@@ -1454,18 +1479,28 @@ mod tests {
         // Each row disables exactly one cause in the production admission
         // kernels. The external adapter may fabricate bytes, but no individual
         // identity/fence/completion axis is optional at durable settlement.
-        for missing in 0..4 {
-            let mut axes = [true; 4];
+        // Quiescence and checkpoint each have five axes; source disposal and
+        // restore each have four. Keeping the arities separate prevents a
+        // fifth unrelated cause from becoming a false mutation for a 4-axis
+        // kernel.
+        for missing in 0..5 {
+            let mut axes = [true; 5];
             axes[missing] = false;
             assert!(
                 !quiescence_receipt_admitted(
                     axes[0],
                     axes[1],
                     axes[2],
-                    if axes[3] { 0 } else { 1 },
+                    axes[3],
+                    if axes[4] { 0 } else { 1 },
                 ),
                 "quiescence axis {missing}"
             );
+        }
+
+        for missing in 0..4 {
+            let mut axes = [true; 4];
+            axes[missing] = false;
             assert!(
                 !source_disposal_receipt_admitted(axes[0], axes[1], axes[2], axes[3]),
                 "source-disposal axis {missing}"
@@ -1485,10 +1520,47 @@ mod tests {
             );
         }
 
-        assert!(quiescence_receipt_admitted(true, true, true, 0));
+        assert!(quiescence_receipt_admitted(true, true, true, true, 0));
         assert!(checkpoint_receipt_admitted(true, true, true, true, true));
         assert!(source_disposal_receipt_admitted(true, true, true, true));
         assert!(restore_receipt_admitted(true, true, true, true));
+    }
+
+    #[test]
+    fn quiescence_receipt_requires_the_exact_requested_mcp_generation_set() {
+        let expected = vec![crate::McpGenerationRef {
+            session_id: "s1".into(),
+            attachment_id: crate::McpAttachmentId("docs".into()),
+            generation: crate::McpGeneration(3),
+            runtime_incarnation: "runtime-1".into(),
+            lease_epoch: 4,
+            lease_expires_at_unix_ms: 5,
+        }];
+        let mut state = resident();
+        let operation = state
+            .begin_suspend("workspace-a", "s1", 7, None)
+            .unwrap()
+            .clone();
+        let receipt = QuiescenceReceipt {
+            effect_id: operation.effect_id,
+            generation_id: generation().id,
+            activity_epoch: 7,
+            live_environment_effects: 0,
+            mcp_generations: expected.clone(),
+        };
+
+        // Cause/effect decision table:
+        // | Rule | C2 requested set | receipt proof | Effect |
+        // | M1 | empty | one exact generation | reject, state unchanged |
+        // | M2 | same exact generation | same | advance to Uploading |
+        let before = state.clone();
+        assert_eq!(
+            state.record_quiescence(&receipt, &[]),
+            Err(SessionEnvironmentTransitionError::ReceiptMismatch),
+            "M1"
+        );
+        assert_eq!(state, before, "M1");
+        assert!(state.record_quiescence(&receipt, &expected).unwrap(), "M2");
     }
 
     proptest! {
@@ -1511,9 +1583,10 @@ mod tests {
                 generation_id: generation().id,
                 activity_epoch: if wrong_epoch == 7 { 8 } else { wrong_epoch },
                 live_environment_effects: wrong_live_count,
+                mcp_generations: Vec::new(),
             };
             prop_assert_eq!(
-                state.record_quiescence(&receipt),
+                state.record_quiescence(&receipt, &[]),
                 Err(SessionEnvironmentTransitionError::ReceiptMismatch)
             );
             prop_assert_eq!(state, before);
@@ -1544,11 +1617,13 @@ mod verification {
         let effect_matches = kani::any::<bool>();
         let generation_matches = kani::any::<bool>();
         let activity_epoch_matches = kani::any::<bool>();
+        let mcp_generations_match = kani::any::<bool>();
         let live_environment_effects = kani::any::<u32>();
         let admitted = quiescence_receipt_admitted(
             effect_matches,
             generation_matches,
             activity_epoch_matches,
+            mcp_generations_match,
             live_environment_effects,
         );
         assert_eq!(
@@ -1556,6 +1631,7 @@ mod verification {
             effect_matches
                 && generation_matches
                 && activity_epoch_matches
+                && mcp_generations_match
                 && live_environment_effects == 0
         );
     }

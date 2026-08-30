@@ -202,6 +202,14 @@ pub awaken_ext_mcp::transport::ListChangedKind::Tools
 pub struct awaken_ext_mcp::transport::McpCallFence(_)
 impl awaken_ext_mcp::transport::McpCallFence
 pub async fn awaken_ext_mcp::transport::McpCallFence::close_and_wait(&self)
+pub fn awaken_ext_mcp::transport::McpCallFence::open() -> Self
+pub fn awaken_ext_mcp::transport::McpCallFence::try_enter(&self) -> core::option::Option<awaken_ext_mcp::transport::McpCallPermit>
+pub struct awaken_ext_mcp::transport::McpCallPermit(_)
+impl awaken_ext_mcp::transport::McpCallPermit
+pub async fn awaken_ext_mcp::transport::McpCallPermit::cancelled(&self)
+pub fn awaken_ext_mcp::transport::McpCallPermit::is_cancelled(&self) -> bool
+impl core::ops::drop::Drop for awaken_ext_mcp::transport::McpCallPermit
+pub fn awaken_ext_mcp::transport::McpCallPermit::drop(&mut self)
 pub trait awaken_ext_mcp::transport::McpToolTransport: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

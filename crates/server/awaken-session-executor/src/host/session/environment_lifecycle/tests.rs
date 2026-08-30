@@ -25,6 +25,67 @@ fn identity(thread: &str) -> BoundSessionEnvironmentIdentity {
     }
 }
 
+async fn install_active_worker_relay(
+    host: &SharedHost,
+    thread: &str,
+) -> (
+    crate::mcp_relay::McpRelay,
+    awaken_session_contract::McpGenerationRef,
+) {
+    let generation = awaken_session_contract::McpGenerationRef {
+        session_id: thread.into(),
+        attachment_id: awaken_session_contract::McpAttachmentId("docs".into()),
+        generation: awaken_session_contract::McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let request = awaken_session_contract::StageMcpAttachment {
+        workspace_id: "workspace".into(),
+        generation: generation.clone(),
+        realization_id: "realization-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        name: "docs".into(),
+        target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test/sse")
+            .unwrap(),
+        prompts_as_skills: false,
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+    let server = crate::mcp::McpTransportMaterial {
+        name: "docs".into(),
+        prompts_as_skills: false,
+        transport: crate::mcp::McpTransportMaterialKind::Http {
+            url: "https://mcp.example.test/sse".into(),
+            bearer: Some(awaken_agent_contract::RedactedString::new("relay-secret")),
+            refresh: None,
+        },
+    };
+    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    assert!(host.mcp_relay.set(relay.clone()).is_ok());
+    relay.set_route(&generation, &server);
+    host.insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+        receipt: awaken_session_contract::McpRealizationReceipt {
+            generation: generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: None,
+            actual_realization_kind: Some(
+                awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+            ),
+            receipt_fingerprint: request.fingerprint(),
+        },
+        request,
+        server: Some(server),
+        native_wiring: None,
+        mcp_process: None,
+        staging: None,
+        drain: Arc::new(tokio::sync::Mutex::new(())),
+        state: crate::session_slot::McpProjectionState::Active,
+    })
+    .unwrap();
+    (relay, generation)
+}
+
 struct NonOwningEnvironmentBindingSink;
 
 #[async_trait::async_trait]
@@ -235,6 +296,74 @@ async fn cancelled_cleanup_keeps_the_exact_owner_retiring_and_hidden_from_tools(
             }) if effect_id == "terminal-effect"
         ),
         "R19/E3"
+    );
+}
+
+#[tokio::test]
+async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_disposed() {
+    // Cause/effect table for checkpoint-expiry ordering: Q1 a quiescence fence
+    // is closed while its source owner is Resident; Q2 cleanup has moved that
+    // owner to Retiring but physical disposal is incomplete; Q3 the durable
+    // projection is already source-free Unmaterialized; Q4 exact cleanup later
+    // proves Terminated/Vacant. Effects: E1 Q2+Q3 retains the fence; E2 only
+    // Q3+Q4 atomically consumes it, admitting the fresh realization generation.
+    let thread = "expiry-before-source-dispose";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    host.install_test_resident_session_environment(thread, environment.clone());
+    let generation = generation(thread);
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace",
+        thread,
+        "suspend",
+        &generation,
+        2,
+        None,
+        None,
+    );
+    host.session_slots
+        .close_mcp_realization_admission(
+            thread,
+            crate::session_slot::McpQuiescenceAdmissionFence::new(
+                &operation,
+                "source-effect",
+                "source-binding",
+                &generation,
+            ),
+        )
+        .unwrap();
+
+    assert!(
+        !host.discard_session_environment(thread, &environment).await,
+        "Q2 keeps a live source in Retiring"
+    );
+    host.install_session_environment_owner_projection(
+        thread,
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .unwrap();
+    assert!(
+        !host.session_slots.mcp_realization_admitted(thread),
+        "E1 expiry before disposal cannot reopen"
+    );
+
+    environment.dispose().await.unwrap();
+    assert!(
+        host.discard_session_environment(thread, &environment).await,
+        "Q4 exact retry confirms Terminated/Vacant"
+    );
+    host.install_session_environment_owner_projection(
+        thread,
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .unwrap();
+    assert!(
+        host.session_slots.mcp_realization_admitted(thread),
+        "E2 exact source-free+Vacant projection admits a new realization"
     );
 }
 
@@ -1006,6 +1135,319 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
 }
 
 #[tokio::test]
+async fn durable_activity_generation_is_the_only_background_quiescence_key() {
+    // Cause/effect table for the background-task/C2-b proof-sync overlap: C1 an
+    // exact durable Resident owns one Arc+handle; C2 its physical sandbox id is
+    // different from the aggregate Sandbox generation id; C3 SharedEnvironment
+    // work is active; C4 that work releases. Effects: E1 the owner projects only
+    // the durable id; E2 querying the physical id observes no false ownership;
+    // E3 durable-id quiescence cannot prove before C4; E4 it proves after C4.
+    // LegacyDirect retains the physical-id branch in the same owner method, and
+    // an Environment-free context retains the existing `brain` key.
+    let thread = "durable-background-generation";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let physical_id = environment.handle().sandbox_id;
+    let durable_generation = generation(thread);
+    assert_ne!(physical_id, durable_generation.id, "C2");
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    host.session_slots.update(thread, |slot| {
+        slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+            identity: BoundSessionEnvironmentIdentity::Durable {
+                effect_id: format!("effect-{thread}"),
+                generation: durable_generation.clone(),
+            },
+            binding: serde_json::to_string(&environment.handle()).unwrap(),
+            environment: environment.clone(),
+        });
+    });
+    let activity_generation = host
+        .resident_environment_activity_generation_id(thread, &environment)
+        .expect("C1 exact Resident activity projection");
+    assert_eq!(activity_generation, durable_generation.id, "E1");
+
+    let release = Arc::new(tokio::sync::Notify::new());
+    host.memory
+        .background()
+        .spawn(
+            crate::background::BackgroundWorkClass::SharedEnvironment {
+                session_id: thread.into(),
+                generation_id: activity_generation.clone(),
+            },
+            {
+                let release = release.clone();
+                async move { release.notified().await }
+            },
+        )
+        .await;
+    assert!(
+        host.memory
+            .background()
+            .quiesce_shared_environment(thread, &physical_id, std::time::Duration::from_millis(1),)
+            .await,
+        "E2 physical id is not the durable activity owner"
+    );
+    assert!(
+        !host
+            .memory
+            .background()
+            .quiesce_shared_environment(
+                thread,
+                &activity_generation,
+                std::time::Duration::from_millis(1),
+            )
+            .await,
+        "E3 no quiescence proof while exact durable activity remains"
+    );
+    release.notify_one();
+    assert!(
+        host.memory
+            .background()
+            .quiesce_shared_environment(
+                thread,
+                &activity_generation,
+                std::time::Duration::from_secs(1),
+            )
+            .await,
+        "E4 exact durable activity release admits quiescence"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_retry() {
+    use awaken_provisioning_contract::SandboxStatus;
+    use awaken_session_contract::SessionRuntime as _;
+
+    // Cause/effect table: C1 the sole owner is either Resident or a retryable
+    // Retiring::Bound; C2 identity is Durable or LegacyDirect and therefore
+    // selects the durable generation or physical sandbox key respectively; C3
+    // exact SharedEnvironment work remains active beyond the bounded wait; C4
+    // that work releases and the identical terminal command retries. Effects:
+    // E1 C3 returns classified Unavailable with zero Skill/Artifact harvest,
+    // zero physical disposal, and the exact owner retained; E2 the other
+    // identity key cannot substitute; E3 C4 performs one Skill/Artifact harvest
+    // and one disposal and removes the owner. Rules T1-T4 cross
+    // Resident/Retiring with Durable/Legacy under C3=>E1+E2, then C4=>E3 for
+    // every row.
+    for (thread, retiring, durable) in [
+        ("terminal-background-resident-durable", false, true),
+        ("terminal-background-retiring-durable", true, true),
+        ("terminal-background-resident-legacy", false, false),
+        ("terminal-background-retiring-legacy", true, false),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+        let environment = environment(&provider, thread).await;
+        let physical_id = environment.handle().sandbox_id;
+        let durable_generation = generation(thread);
+        assert_ne!(physical_id, durable_generation.id, "C2");
+        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let identity = if durable {
+            BoundSessionEnvironmentIdentity::Durable {
+                effect_id: format!("effect-{thread}"),
+                generation: durable_generation.clone(),
+            }
+        } else {
+            BoundSessionEnvironmentIdentity::LegacyDirect(
+                LegacyDirectEnvironmentProvenance::Direct(
+                    awaken_session_contract::SessionEnvironmentReceipt::new(
+                        thread,
+                        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                        binding.clone(),
+                        None,
+                    ),
+                ),
+            )
+        };
+        let (activity_generation_id, other_generation_id) = if durable {
+            (durable_generation.id.clone(), physical_id.clone())
+        } else {
+            (physical_id.clone(), durable_generation.id.clone())
+        };
+        let owned = BoundSessionEnvironment {
+            identity,
+            binding,
+            environment: environment.clone(),
+        };
+        let host = Arc::new(
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .with_skill_store(root.path().join("skill-store")),
+        );
+        host.register_thread_workspace(thread, "workspace");
+        host.session_slots.update(thread, |slot| {
+            slot.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
+        });
+
+        let spec = crate::provisioning::agent_run_sandbox_spec(thread);
+        let output = root
+            .path()
+            .join(thread)
+            .join(spec.outputs_path.trim_start_matches('/'))
+            .join("report.txt");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, format!("report-{thread}")).unwrap();
+        let skill_dir = root.path().join(thread).join("skills").join("notes");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: authored before terminal retry\n---\nretain me",
+        )
+        .unwrap();
+        let release = Arc::new(tokio::sync::Notify::new());
+        host.memory
+            .background()
+            .spawn(
+                crate::background::BackgroundWorkClass::SharedEnvironment {
+                    session_id: thread.into(),
+                    generation_id: activity_generation_id.clone(),
+                },
+                {
+                    let release = release.clone();
+                    async move { release.notified().await }
+                },
+            )
+            .await;
+        if retiring {
+            let realization = host.session_slots.realization_lock(thread);
+            let _realization = realization.lock().await;
+            let lifecycle = host
+                .session_slots
+                .read(thread, |slot| slot.lifecycle.clone())
+                .unwrap();
+            let _lifecycle = lifecycle.lock().await;
+            assert!(
+                host.retire_session_environment_for_revocation(thread)
+                    .await
+                    .unwrap(),
+                "C1 real revocation transition"
+            );
+            assert_eq!(
+                host.registered_thread_workspace(thread).as_deref(),
+                Some("workspace"),
+                "C1 Retiring owner keeps exact terminal harvest scope"
+            );
+        }
+
+        let mut operation = awaken_session_contract::SessionCleanupOperation::default();
+        assert!(operation.request(thread));
+        operation.freeze_targets(thread, [], 0, 0).unwrap();
+        let command = operation.command_for(thread, thread).unwrap();
+        let managed = crate::ManagedHost::new(host.clone());
+        let blocked = tokio::spawn({
+            let managed = managed.clone();
+            let command = command.clone();
+            async move { managed.execute_terminal_cleanup(command).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked.is_finished(),
+            "C3 exact activity blocks terminal effects"
+        );
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        let error = blocked.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.kind,
+            awaken_session_contract::RunErrorKind::Unavailable,
+            "E1"
+        );
+        assert_eq!(
+            error.code, "session_environment_background_not_quiescent",
+            "E1"
+        );
+        assert!(
+            host.file_application()
+                .unwrap()
+                .list("workspace", Some(thread))
+                .await
+                .unwrap()
+                .is_empty(),
+            "E1 zero harvest"
+        );
+        assert!(
+            host.skills
+                .definitions("workspace")
+                .await
+                .unwrap()
+                .is_empty(),
+            "E1 zero Skill harvest"
+        );
+        assert_eq!(
+            environment.status().await.unwrap(),
+            SandboxStatus::Ready,
+            "E1"
+        );
+        let retained = host
+            .session_slots
+            .read(thread, |slot| slot.environment_owner.clone())
+            .unwrap();
+        assert!(
+            matches!(
+                (&retained, retiring),
+                (SessionEnvironmentOwner::Resident(current), false)
+                    if current.exact_matches(&owned)
+            ) || matches!(
+                (&retained, retiring),
+                (
+                    SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                        cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                        owned: RetiringEnvironmentOwner::Bound(current),
+                    }),
+                    true,
+                ) if current.exact_matches(&owned)
+            ),
+            "E1 exact owner retained"
+        );
+        assert!(
+            host.memory
+                .background()
+                .has_shared_environment_work(thread, &activity_generation_id),
+            "E2 exact owner-selected activity remains visible"
+        );
+        assert!(
+            !host
+                .memory
+                .background()
+                .has_shared_environment_work(thread, &other_generation_id),
+            "E2 the other identity domain is not a substitute activity key"
+        );
+
+        release.notify_one();
+        let completion = managed
+            .execute_terminal_cleanup(command.clone())
+            .await
+            .expect("C4 identical command retry");
+        completion.verify(&command).unwrap();
+        assert_eq!(
+            completion.artifact_receipts.len(),
+            1,
+            "E3 one harvest receipt"
+        );
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "E3 one durable Artifact"
+        );
+        assert_eq!(
+            host.skills.definitions("workspace").await.unwrap().len(),
+            1,
+            "E3 one durable authored Skill"
+        );
+        assert_eq!(
+            environment.status().await.unwrap(),
+            SandboxStatus::Terminated,
+            "E3 one physical disposal"
+        );
+        assert!(!host.session_slots.contains(thread), "E3 owner removed");
+    }
+}
+
+#[tokio::test]
 async fn cold_checkpoint_source_seeds_exact_pending_owner_before_adoption() {
     // Cause/effect rule: C1 durable suspend source tuple is exact; C2 local
     // owner is Vacant; C3 frozen provider exists; C4 provider adoption fails.
@@ -1112,13 +1554,97 @@ async fn pending_durable_binding_is_not_a_successful_terminal_noop() {
 }
 
 #[tokio::test]
+async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_drain() {
+    // Cause/effect decision table: C1 an exact Bound owner is already Retiring
+    // for the highest-priority Terminal cause; C2 its WorkerRelay generation is
+    // Active with an open exact Route; C3 lower-priority revocation arrives;
+    // C4 the canonical exact MCP drain is later invoked compatibly. Effects:
+    // E1 C1+C2+C3 returns Err with the same Retiring owner; E2 exact Route,
+    // open fence, and Active projection are unmodified and still admit calls;
+    // E3 C4 alone closes/removes the Route, marks Removed, and returns proof.
+    // Rules: R1=C1+C2+C3=>E1+E2; R2=R1+C4=>E3. Retirement admission therefore
+    // precedes every MCP mutation; an errored revocation cannot consume retry
+    // authority from either existing owner.
+    let thread = "conflicting-revocation-retains-relay";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    host.install_test_resident_session_environment(thread, environment);
+    let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
+    let route_before = relay.route_url(&mcp_generation).unwrap();
+    let terminal = host
+        .retire_current_environment(
+            thread,
+            SessionEnvironmentRetirementCause::Terminal {
+                effect_id: "terminal-effect".into(),
+            },
+            RetirementSelection::Current,
+        )
+        .unwrap()
+        .unwrap();
+
+    let error = host
+        .revoke_all_session_realizations()
+        .await
+        .expect_err("R1 conflicting revocation must fail before MCP drain");
+    assert!(error.to_string().contains("lower-priority"), "R1/E1");
+    assert!(
+        matches!(
+            host.session_slots
+                .read(thread, |slot| slot.environment_owner.clone()),
+            Some(SessionEnvironmentOwner::Retiring(current))
+                if current.exact_matches(&terminal.owner)
+        ),
+        "R1/E1 exact Terminal owner retained"
+    );
+    assert!(
+        host.mcp_projection(&mcp_generation)
+            .is_some_and(|projection| projection.state
+                == crate::session_slot::McpProjectionState::Active
+                && projection.server.is_some()),
+        "R1/E2 Active MCP owner unchanged"
+    );
+    assert_eq!(
+        relay.route_url(&mcp_generation).as_deref(),
+        Some(route_before.as_str()),
+        "R1/E2 exact Route retained"
+    );
+    let still_open = relay
+        .route_call_fence(&mcp_generation)
+        .unwrap()
+        .try_enter()
+        .expect("R1/E2 route fence remains open");
+    drop(still_open);
+
+    let proof = host
+        .drain_mcp_projections(thread, std::slice::from_ref(&mcp_generation))
+        .await
+        .expect("R2 compatible exact MCP drain");
+    assert_eq!(
+        proof.generations.as_slice(),
+        std::slice::from_ref(&mcp_generation),
+        "R2/E3"
+    );
+    assert!(relay.route_url(&mcp_generation).is_none(), "R2/E3");
+    assert_eq!(
+        host.mcp_projection(&mcp_generation).unwrap().state,
+        crate::session_slot::McpProjectionState::Removed,
+        "R2/E3"
+    );
+}
+
+#[tokio::test]
 async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() {
     // Cause/effect table: C1 durable pending binding has no local Arc; C2 exact
     // frozen provider and SandboxSpec mount inputs exist; C3 provider adoption
-    // cannot be completed; C4 revocation strips ordinary runtime authority.
+    // cannot be completed; C4 revocation is attempted before ordinary runtime
+    // authority has been released;
+    // C5 an exact WorkerRelay Route and Active MCP projection already exist.
     // Effects: E1 return Err; E2 retain pending binding; E3 retain the exact
     // provider publication and mount/environment projection needed by the next
-    // terminal/revocation retry. Rule R19/R20: C1+C2+C3+C4=>E1+E2+E3.
+    // terminal/revocation retry; E4 retain the open Route/fence and Active MCP
+    // owner without an early drain. Rule R19/R20: C1+C2+C3+C4+C5=>E1+E2+E3+E4.
     let thread = "revocation-retains-retry-authority";
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("revocation-agent")
@@ -1165,6 +1691,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         },
     )
     .expect("C1 pending owner");
+    let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
+    let route_before = relay.route_url(&mcp_generation).unwrap();
     let spec_before = host.sandbox_spec(thread);
     let lifecycle = host
         .session_slots
@@ -1195,16 +1723,37 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         Some(snapshot.id),
         "R20/E3 provider publication"
     );
+    assert!(
+        host.mcp_projection(&mcp_generation)
+            .is_some_and(|projection| projection.state
+                == crate::session_slot::McpProjectionState::Active
+                && projection.server.is_some()),
+        "R20/E4 Active MCP owner retained"
+    );
+    assert_eq!(
+        relay.route_url(&mcp_generation).as_deref(),
+        Some(route_before.as_str()),
+        "R20/E4 exact Route retained"
+    );
+    let still_open = relay
+        .route_call_fence(&mcp_generation)
+        .unwrap()
+        .try_enter()
+        .expect("R20/E4 route fence remains open");
+    drop(still_open);
 }
 
 #[tokio::test]
 async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     // Cause/effect rule: C1 revocation selects one exact Resident Arc; C2 stop
     // succeeds but status remains live; C3 ordinary runtime projections are
-    // revoked. Effects: E1 retain the exact hidden Revocation Retiring owner;
-    // E2 retain its frozen provider publication and SandboxSpec mount inputs for
-    // terminal/revocation retry. Only an exact Terminated observation may clear
-    // C1, so C2 is not a successful physical cleanup.
+    // revoked; C4 Environment quiescence already closed MCP admission. Effects:
+    // E1 retain the exact hidden Revocation Retiring owner; E2 retain its frozen
+    // provider publication and SandboxSpec mount inputs for terminal/revocation
+    // retry; E3 preserve the exact closed fence so revocation cannot masquerade
+    // as an authoritative restore/source-disposal reopen. Only an exact
+    // Terminated observation may clear C1, so C2 is not a successful physical
+    // cleanup; only the canonical durable projection proof may clear C4.
     let thread = "revocation-retiring-retry-authority";
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
@@ -1226,6 +1775,31 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         },
     );
     host.install_test_resident_session_environment(thread, environment.clone());
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        thread,
+        1,
+        u64::MAX,
+        "environment",
+        "image",
+    );
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace",
+        thread,
+        "suspend",
+        &generation,
+        7,
+        None,
+        None,
+    );
+    let fence = crate::session_slot::McpQuiescenceAdmissionFence::new(
+        &operation,
+        "source-effect",
+        &serde_json::to_string(&environment.handle()).unwrap(),
+        &generation,
+    );
+    host.session_slots
+        .close_mcp_realization_admission(thread, fence.clone())
+        .unwrap();
     let spec_before = host.sandbox_spec(thread);
     let lifecycle = host
         .session_slots
@@ -1254,6 +1828,12 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
             .map(|current| current.id),
         Some(snapshot.id),
         "E2 provider publication"
+    );
+    assert_eq!(
+        host.session_slots
+            .read(thread, |slot| slot.mcp_quiescence_fence.clone()),
+        Some(Some(fence)),
+        "E3 revocation is not a quiescence-fence reopen authority"
     );
 }
 

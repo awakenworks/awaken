@@ -7659,6 +7659,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
     // | H22 | exact removed tombstone | exact request replay | stage | - | rebuild one staged projection/material |
     // | H24 | Managed prompts-as-skills | any backend | stage | - | reject before projection/materialization |
+    // | H25 | exact Staging owner | exact replay | stage | - | retryable unavailable/no false staged receipt |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -7834,6 +7835,24 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         Some(1),
         "H22 no duplicate tombstone"
     );
+    let staging_request = recovered_projection.request.clone();
+    host.session_slots.modify("mcp-exact", |slot| {
+        slot.mcp[0].state = crate::session_slot::McpProjectionState::Staging;
+        slot.mcp[0].staging = Some(crate::session_slot::McpStagingActivity::default());
+    });
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(staging_request)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_generation_staging",
+        "H25"
+    );
+    host.session_slots.modify("mcp-exact", |slot| {
+        slot.mcp[0].state = crate::session_slot::McpProjectionState::Staged;
+        slot.mcp[0].staging = None;
+    });
     let mut expired = request("mcp-expired", "workspace-a", 1);
     expired.generation.lease_expires_at_unix_ms = 0;
     assert_eq!(
@@ -8519,6 +8538,8 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
                 call_fences: Vec::new(),
             }),
             mcp_process: None,
+            staging: None,
+            drain: Arc::new(tokio::sync::Mutex::new(())),
             state: McpProjectionState::Staged,
         }
     };
@@ -8733,6 +8754,8 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
             call_fences: vec![fence],
         }),
         mcp_process: None,
+        staging: None,
+        drain: Arc::new(tokio::sync::Mutex::new(())),
         state: McpProjectionState::Active,
     })
     .unwrap();
@@ -8773,6 +8796,622 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
         McpProjectionState::Removed,
         "Q2/E3"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry() {
+    use awaken_runtime_contract::CredentialRealizationKind;
+    use awaken_session_contract::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
+    };
+
+    use crate::mcp::{McpTransportMaterial, McpTransportMaterialKind};
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+
+    // Route-drain cause/effect table (paired with mcp_relay's actual-forward
+    // acceptance test):
+    // | Rule | exact relay permit | drain attempt | Effect |
+    // | R1 | active | Future cancelled | Draining + same closed Route retained; no proof |
+    // | R2 | active | outer revoke wait expires | Unavailable; Draining + owner retained; no proof |
+    // | R3 | settled | retry | exact Route removed, then projection Removed + proof |
+    // C1 the receipt is WorkerRelay and C2 this is its exact generation are
+    // constraints for every rule. E1 no new route permit is admitted after the
+    // first close. Cancellation/timeout never manufactures a different fence,
+    // route registry, or Removed receipt.
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    assert!(host.mcp_relay.set(relay.clone()).is_ok());
+    let generation = McpGenerationRef {
+        session_id: "mcp-worker-relay-drain".into(),
+        attachment_id: McpAttachmentId("docs".into()),
+        generation: McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let request = StageMcpAttachment {
+        workspace_id: "workspace-a".into(),
+        generation: generation.clone(),
+        realization_id: "realization-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        name: "docs".into(),
+        target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test/sse")
+            .unwrap(),
+        prompts_as_skills: false,
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+    let server = McpTransportMaterial {
+        name: "docs".into(),
+        prompts_as_skills: false,
+        transport: McpTransportMaterialKind::Http {
+            url: "https://mcp.example.test/sse".into(),
+            bearer: Some(awaken_agent_contract::RedactedString::new("relay-secret")),
+            refresh: None,
+        },
+    };
+    relay.set_route(&generation, &server);
+    let permit = relay
+        .route_call_fence(&generation)
+        .unwrap()
+        .try_enter()
+        .expect("accepted exact route activity");
+    host.insert_mcp_projection(McpGenerationProjection {
+        receipt: McpRealizationReceipt {
+            generation: generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: None,
+            actual_realization_kind: Some(CredentialRealizationKind::WorkerRelay),
+            receipt_fingerprint: request.fingerprint(),
+        },
+        request,
+        server: Some(server),
+        native_wiring: None,
+        mcp_process: None,
+        staging: None,
+        drain: Arc::new(tokio::sync::Mutex::new(())),
+        state: McpProjectionState::Active,
+    })
+    .unwrap();
+
+    let cancelled_host = host.clone();
+    let cancelled =
+        tokio::spawn(async move { cancelled_host.revoke_all_session_realizations().await });
+    loop {
+        if host
+            .mcp_projection(&generation)
+            .is_some_and(|projection| projection.state == McpProjectionState::Draining)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    cancelled.abort();
+    let _ = cancelled.await;
+    assert!(
+        relay.route_url(&generation).is_some(),
+        "R1 exact Route retained"
+    );
+    assert!(
+        relay
+            .route_call_fence(&generation)
+            .unwrap()
+            .try_enter()
+            .is_none(),
+        "R1/E1 closed admission is retry-stable"
+    );
+    assert_eq!(
+        host.mcp_projection(&generation).unwrap().state,
+        McpProjectionState::Draining,
+        "R1 no Removed proof"
+    );
+
+    let timeout = host
+        .revoke_all_session_realizations()
+        .await
+        .expect_err("R2 outer revoke must propagate held route timeout");
+    assert_eq!(timeout.code, "mcp_generation_call_quiescence_timeout", "R2");
+    assert!(relay.route_url(&generation).is_some(), "R2 owner retained");
+    assert_eq!(
+        host.mcp_projection(&generation).unwrap().state,
+        McpProjectionState::Draining,
+        "R2 no Removed proof"
+    );
+
+    drop(permit);
+    let proof = host
+        .drain_mcp_projections(&generation.session_id, std::slice::from_ref(&generation))
+        .await
+        .expect("R3 settled retry");
+    assert_eq!(
+        proof.generations.as_slice(),
+        std::slice::from_ref(&generation),
+        "R3 proof"
+    );
+    assert!(
+        relay.route_url(&generation).is_none(),
+        "R3 exact Route removed"
+    );
+    assert_eq!(
+        host.mcp_projection(&generation).unwrap().state,
+        McpProjectionState::Removed,
+        "R3 Removed follows route quiescence"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
+    use async_trait::async_trait;
+    use awaken_provisioning_contract as pc;
+    use awaken_session_contract::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
+    };
+
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+
+    struct Process {
+        id: String,
+        unreapable: bool,
+    }
+
+    #[async_trait]
+    impl pc::ProcessHandle for Process {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            if self.unreapable {
+                std::future::pending().await
+            } else {
+                Ok(pc::ExitStatus {
+                    code: Some(0),
+                    signaled: false,
+                })
+            }
+        }
+
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            if self.unreapable {
+                Ok(None)
+            } else {
+                Ok(Some(self.wait().await?))
+            }
+        }
+
+        async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            if self.unreapable {
+                Err(pc::SandboxError::new("scripted MCP signal failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let generation = |session: &str, number| McpGenerationRef {
+        session_id: session.into(),
+        attachment_id: McpAttachmentId(format!("mcp-{number}")),
+        generation: McpGeneration(number),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let projection = |generation: McpGenerationRef, unreapable| {
+        let request = StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: generation.clone(),
+            realization_id: format!("realize-{}", generation.generation.0),
+            stage_idempotency_key: format!("stage-{}", generation.generation.0),
+            name: format!("mcp-{}", generation.generation.0),
+            target: awaken_session_contract::McpTarget::parse_http(format!(
+                "https://mcp-{}.example.test",
+                generation.generation.0
+            ))
+            .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        };
+        McpGenerationProjection {
+            receipt: McpRealizationReceipt {
+                generation: generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: None,
+                actual_realization_kind: None,
+                receipt_fingerprint: request.fingerprint(),
+            },
+            request,
+            server: None,
+            native_wiring: None,
+            mcp_process: Some(Arc::new(Process {
+                id: format!("process-{}", generation.generation.0),
+                unreapable,
+            })),
+            staging: None,
+            drain: Arc::new(tokio::sync::Mutex::new(())),
+            state: McpProjectionState::Active,
+        }
+    };
+    let stuck = generation("mcp-partial-quiescence", 1);
+    let clean = generation("mcp-partial-quiescence", 2);
+    host.insert_mcp_projection(projection(stuck.clone(), true))
+        .unwrap();
+    host.insert_mcp_projection(projection(clean.clone(), false))
+        .unwrap();
+
+    // Cause/effect decision table:
+    // | Rule | C2 exact expected | C3 process reap | C6 cancellation | Effect |
+    // | P1 | both generations | first fails, second succeeds | no | no proof;
+    // |    |                  |                             |    | first owner retained Draining, second Removed |
+    // The loop must continue after P1's first failure so partial cleanup never
+    // strands an independently reapable generation.
+    assert!(
+        host.drain_mcp_projections("mcp-partial-quiescence", &[stuck.clone(), clean.clone()])
+            .await
+            .is_err(),
+        "P1"
+    );
+    let stuck_projection = host.mcp_projection(&stuck).unwrap();
+    assert_eq!(stuck_projection.state, McpProjectionState::Draining, "P1");
+    assert!(stuck_projection.mcp_process.is_some(), "P1 owner retained");
+    assert_eq!(
+        host.mcp_projection(&clean).unwrap().state,
+        McpProjectionState::Removed,
+        "P1 partial progress"
+    );
+
+    let runtime_thread = "mcp-runtime-quiescence";
+    let runtime_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let runtime = runtime_host
+        .ctx_for(runtime_thread, None)
+        .await
+        .expect("runtime owner");
+    *runtime.active_run.lock().expect("active run mutex") =
+        Some(RunId("mcp-runtime-active-run".into()));
+    let runtime_generation = generation(runtime_thread, 3);
+    runtime_host
+        .insert_mcp_projection(projection(runtime_generation.clone(), false))
+        .unwrap();
+
+    // Runtime-owner cause/effect decision table:
+    // | Rule | C4 active Run | C6 drain cancellation/timeout | Effect |
+    // | P2 | yes | Future cancelled after Draining | same slot Runtime retained; no proof |
+    // | P3 | yes | retry reaches timeout | same Runtime + Draining process retained; no proof |
+    // | P4 | settled | retry | process Removed + exact proof; outer quiesce still owns Runtime removal |
+    // P2/P3 prevent a retry from losing the only active-run fence and turning a
+    // failed attempt into false quiescence. P4 preserves the single existing
+    // Session-slot owner until the whole Environment transaction succeeds.
+    let cancelled_host = runtime_host.clone();
+    let cancelled_generation = runtime_generation.clone();
+    let cancelled = tokio::spawn(async move {
+        cancelled_host
+            .drain_mcp_projections(runtime_thread, &[cancelled_generation])
+            .await
+    });
+    loop {
+        if runtime_host
+            .mcp_projection(&runtime_generation)
+            .is_some_and(|projection| projection.state == McpProjectionState::Draining)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    cancelled.abort();
+    let _ = cancelled.await;
+    assert!(
+        runtime_host
+            .session_slots
+            .read(runtime_thread, |slot| slot
+                .runtime
+                .as_ref()
+                .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
+            .unwrap_or(false),
+        "P2 retains the exact Runtime owner"
+    );
+    assert_eq!(
+        runtime_host
+            .mcp_projection(&runtime_generation)
+            .unwrap()
+            .state,
+        McpProjectionState::Draining,
+        "P2"
+    );
+
+    let timeout = runtime_host
+        .drain_mcp_projections(runtime_thread, std::slice::from_ref(&runtime_generation))
+        .await
+        .expect_err("P3 active Run must time out");
+    assert!(
+        timeout
+            .to_string()
+            .contains("could not quiesce the active Session Run"),
+        "P3 reports the active owner"
+    );
+    assert!(
+        runtime_host
+            .session_slots
+            .read(runtime_thread, |slot| slot
+                .runtime
+                .as_ref()
+                .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
+            .unwrap_or(false),
+        "P3 retains the exact Runtime owner"
+    );
+    assert!(
+        runtime_host
+            .mcp_projection(&runtime_generation)
+            .is_some_and(
+                |projection| projection.state == McpProjectionState::Draining
+                    && projection.mcp_process.is_some()
+            ),
+        "P3 retains the process owner"
+    );
+
+    *runtime.active_run.lock().expect("active run mutex") = None;
+    let proof = runtime_host
+        .drain_mcp_projections(runtime_thread, std::slice::from_ref(&runtime_generation))
+        .await
+        .expect("P4 settled retry");
+    assert_eq!(
+        proof.generations.as_slice(),
+        std::slice::from_ref(&runtime_generation),
+        "P4"
+    );
+    assert_eq!(
+        runtime_host
+            .mcp_projection(&runtime_generation)
+            .unwrap()
+            .state,
+        McpProjectionState::Removed,
+        "P4"
+    );
+    assert!(
+        runtime_host
+            .session_slots
+            .read(runtime_thread, |slot| slot
+                .runtime
+                .as_ref()
+                .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
+            .unwrap_or(false),
+        "P4 leaves Runtime removal to the outer quiesce owner"
+    );
+}
+
+#[tokio::test]
+async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
+    use async_trait::async_trait;
+    use awaken_provisioning_contract as pc;
+    use awaken_session_contract::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
+    };
+
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState, McpStagingActivity};
+
+    struct Process {
+        reaped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl pc::ProcessHandle for Process {
+        fn id(&self) -> &str {
+            "mcp-staging-process"
+        }
+
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            self.reaped.store(true, Ordering::SeqCst);
+            Ok(pc::ExitStatus {
+                code: Some(0),
+                signaled: false,
+            })
+        }
+
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            Ok(Some(self.wait().await?))
+        }
+
+        async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            Ok(())
+        }
+    }
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let generation = McpGenerationRef {
+        session_id: "mcp-staging-quiescence".into(),
+        attachment_id: McpAttachmentId("docs".into()),
+        generation: McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let request = StageMcpAttachment {
+        workspace_id: "workspace-a".into(),
+        generation: generation.clone(),
+        realization_id: "realize-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        name: "docs".into(),
+        target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test").unwrap(),
+        prompts_as_skills: false,
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+    let staging = McpStagingActivity::default();
+    let projection = McpGenerationProjection {
+        receipt: McpRealizationReceipt {
+            generation: generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: None,
+            actual_realization_kind: None,
+            receipt_fingerprint: request.fingerprint(),
+        },
+        request,
+        server: None,
+        native_wiring: None,
+        mcp_process: None,
+        staging: Some(staging.clone()),
+        drain: Arc::new(tokio::sync::Mutex::new(())),
+        state: McpProjectionState::Staging,
+    };
+    host.insert_mcp_projection(projection.clone()).unwrap();
+
+    let sandbox_generation = awaken_session_contract::SandboxGeneration::new(
+        "mcp-staging-quiescence",
+        1,
+        100,
+        "environment",
+        "base",
+    );
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace-a",
+        "mcp-staging-quiescence",
+        "suspend",
+        &sandbox_generation,
+        3,
+        None,
+        None,
+    );
+    host.session_slots
+        .close_mcp_realization_admission(
+            "mcp-staging-quiescence",
+            crate::session_slot::McpQuiescenceAdmissionFence::new(
+                &operation,
+                "source-effect",
+                "source-binding",
+                &sandbox_generation,
+            ),
+        )
+        .unwrap();
+
+    // Cause/effect decision table:
+    // | Rule | Stage boundary vs close | Drain/staging result | Effect |
+    // | S1 | insert commit after close | not owned | reject; residual set cannot grow |
+    // | S2 | inserted before close; spawn commits after close | drain cancelled | tracked Draining process retained; no proof |
+    // | S3 | publish/renew after close | not applicable | reject without visibility/claim mutation |
+    // | S4 | tracked staging finishes; retry | reap succeeds | Removed + exact proof |
+    // | S5 | Unmaterialized projection before/after S4 | residual / none | stay closed / reopen and admit a new stage |
+    host.install_session_environment_owner_projection(
+        "mcp-staging-quiescence",
+        "workspace-a",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .unwrap();
+    assert!(
+        !host
+            .session_slots
+            .mcp_realization_admitted("mcp-staging-quiescence"),
+        "S5 residual staging owner keeps expiry projection closed"
+    );
+    let mut late_projection = projection.clone();
+    late_projection.request.generation.generation = McpGeneration(2);
+    late_projection.receipt.generation = late_projection.request.generation.clone();
+    let late_generation = late_projection.request.generation.clone();
+    assert_eq!(
+        host.insert_mcp_projection(late_projection)
+            .unwrap_err()
+            .code,
+        "session_environment_quiescing",
+        "S1 late stage commit is rejected by the closed fence, not by an existing owner"
+    );
+    assert!(
+        host.mcp_projection(&late_generation).is_none(),
+        "S1 rejected commit cannot grow the residual owner set"
+    );
+    assert!(
+        host.publish_mcp_projection(&generation).await.is_err(),
+        "S3 publish fenced"
+    );
+    assert!(
+        host.renew_mcp_projection(&host.mcp_projection(&generation).unwrap().request)
+            .is_err(),
+        "S3 renewal fenced"
+    );
+    let drain_host = host.clone();
+    let drain_generation = generation.clone();
+    let draining = tokio::spawn(async move {
+        drain_host
+            .drain_mcp_projections("mcp-staging-quiescence", &[drain_generation])
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if host
+                .mcp_projection(&generation)
+                .is_some_and(|projection| projection.state == McpProjectionState::Draining)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let reaped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    assert!(
+        !host
+            .attach_staging_mcp_process(
+                &generation,
+                Arc::new(Process {
+                    reaped: reaped.clone(),
+                }),
+            )
+            .unwrap(),
+        "S2 spawn transfers to the Draining owner"
+    );
+    assert!(
+        host.complete_staging_mcp_projection(&generation, crate::mcp::McpWiring::empty())
+            .is_err(),
+        "S2 commit after close is rejected"
+    );
+    assert!(!draining.is_finished(), "S2");
+    draining.abort();
+    let _ = draining.await;
+    assert_eq!(
+        host.mcp_projection(&generation).unwrap().state,
+        McpProjectionState::Draining,
+        "S2 cancellation retains owner"
+    );
+    assert!(
+        host.mcp_projection(&generation)
+            .unwrap()
+            .mcp_process
+            .is_some(),
+        "S2 process owner retained"
+    );
+    staging.finish();
+    let proof = host
+        .drain_mcp_projections("mcp-staging-quiescence", std::slice::from_ref(&generation))
+        .await
+        .unwrap();
+    assert_eq!(
+        proof.generations.as_slice(),
+        std::slice::from_ref(&generation),
+        "S4"
+    );
+    assert_eq!(
+        host.mcp_projection(&generation).unwrap().state,
+        McpProjectionState::Removed,
+        "S4"
+    );
+    assert!(reaped.load(Ordering::SeqCst), "S4 process reaped");
+    host.install_session_environment_owner_projection(
+        "mcp-staging-quiescence",
+        "workspace-a",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .unwrap();
+    assert!(
+        host.session_slots
+            .mcp_realization_admitted("mcp-staging-quiescence"),
+        "S5 exact source-free projection reopens only after residual cleanup"
+    );
+    let removed_request = host.mcp_projection(&generation).unwrap().request;
+    assert!(
+        host.forget_exact_removed_mcp_projection(&removed_request),
+        "S5 old Removed owner can be forgotten after reopen"
+    );
+    host.insert_mcp_projection(projection)
+        .expect("S5 new realization is admitted after exact reopen");
 }
 
 /// MCP-effect authority cause/effect graph: C1 the asserted generation lease is
@@ -8916,6 +9555,8 @@ fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             server: None,
             native_wiring: None,
             mcp_process: None,
+            staging: None,
+            drain: Arc::new(tokio::sync::Mutex::new(())),
             state,
         })
         .unwrap();
@@ -9017,6 +9658,8 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         // discriminator used by the private Host projection.
         native_wiring: None,
         mcp_process: None,
+        staging: None,
+        drain: Arc::new(tokio::sync::Mutex::new(())),
         state: McpProjectionState::Staged,
     };
 
@@ -9120,6 +9763,8 @@ async fn worker_authority_loss_revokes_every_session_projection() {
         server: Some(server.clone()),
         native_wiring: Some(McpWiring::empty()),
         mcp_process: None,
+        staging: None,
+        drain: Arc::new(tokio::sync::Mutex::new(())),
         state: McpProjectionState::Staged,
     })
     .unwrap();

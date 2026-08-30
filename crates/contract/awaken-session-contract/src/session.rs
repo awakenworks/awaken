@@ -859,6 +859,7 @@ pub trait SessionRuntime: Send + Sync {
         _source_effect_id: &str,
         _source_binding: &str,
         _generation: &crate::SandboxGeneration,
+        _expected_mcp_generations: &[crate::McpGenerationRef],
     ) -> Result<crate::QuiescenceReceipt, RunError> {
         Err(RunError::unavailable_classified(
             "session_environment_checkpoint_unsupported",

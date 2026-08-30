@@ -172,8 +172,31 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let projected = projected_environment_owner(state, workspace_id, thread)?;
         self.session_slots.update(thread, |slot| {
-            slot.environment_owner.install_projection(projected)
+            slot.environment_owner.install_projection(projected)?;
+            slot.reopen_mcp_realization_admission_from_projection(state);
+            Ok(())
         })
+    }
+
+    /// Resolve the shared-background/quiescence key from the sole exact
+    /// process-local Environment owner. The durable generation remains owned by
+    /// the Session aggregate; this method only projects it into Runtime.
+    pub(crate) fn resident_environment_activity_generation_id(
+        &self,
+        thread: &str,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Result<String, HostError> {
+        self.session_slots
+            .read(thread, |slot| {
+                slot.environment_owner
+                    .resident_activity_generation_id(environment)
+            })
+            .flatten()
+            .ok_or_else(|| {
+                HostError::internal(
+                    "Runtime Environment does not match its exact Resident activity owner",
+                )
+            })
     }
 
     #[cfg(test)]
@@ -527,7 +550,10 @@ impl SharedHost {
         retirement: &RetiringSessionEnvironment,
     ) -> Result<bool, HostError> {
         let environment = retirement.owned.environment();
-        environment.stop_bound_processes().await;
+        environment
+            .stop_bound_processes()
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         self.observe_retirement_status(thread, retirement, environment.status().await)
             .map_err(|error| HostError::internal(error.to_string()))
     }
@@ -770,20 +796,22 @@ impl SharedHost {
             cause.clone(),
             RetirementSelection::Current,
         ) {
-            Ok(Some(retirement)) => Ok(Some(retirement.owner)),
+            Ok(Some(retirement)) => Some(retirement.owner),
             Ok(None) => match self.pending_environment_adoption(thread) {
-                Some((identity, binding)) => self
-                    .adopt_pending_environment_for_retirement(thread, &identity, &binding, cause)
-                    .await
-                    .map(Some),
-                None => Ok(None),
+                Some((identity, binding)) => Some(
+                    self.adopt_pending_environment_for_retirement(
+                        thread, &identity, &binding, cause,
+                    )
+                    .await?,
+                ),
+                None => None,
             },
-            Err(error) => Err(error),
+            Err(error) => return Err(error),
         };
 
-        self.stop_session_mcp_processes(thread).await;
+        self.drain_mcp_projections(thread, &[]).await?;
         let retirement_result = match retirement {
-            Ok(Some(retirement)) => match &retirement.owned {
+            Some(retirement) => match &retirement.owned {
                 RetiringEnvironmentOwner::Unbound(_) => {
                     self.dispose_and_confirm_retirement(thread, &retirement)
                         .await
@@ -793,8 +821,7 @@ impl SharedHost {
                     .await
                     .map(|_| ()),
             },
-            Ok(None) => Ok(()),
-            Err(error) => Err(error),
+            None => Ok(()),
         };
         if self.session_environment_owner_is_vacant(thread) {
             self.session_slots.remove(thread);
@@ -815,6 +842,15 @@ impl SharedHost {
                 let content_delivery = slot.content_delivery;
                 let baseline = slot.baseline.take();
                 let resources = std::mem::take(&mut slot.resources);
+                // Terminal retry still has to publish the retained owner's
+                // mutable outputs into its exact Workspace. This is a derived
+                // harvest scope, not continuing realization authority.
+                let workspace = slot.workspace.take();
+                // Revocation clears process-local realization material but is
+                // not an Environment restoration/source-disposal authority.
+                // Preserve an already-closed quiescence fence so only the
+                // canonical durable projection proof may reopen MCP effects.
+                let mcp_quiescence_fence = slot.mcp_quiescence_fence.take();
                 *slot = crate::session_slot::SessionRuntimeSlot::default();
                 slot.realization = realization;
                 slot.lifecycle = lifecycle;
@@ -827,6 +863,8 @@ impl SharedHost {
                 slot.content_delivery = content_delivery;
                 slot.baseline = baseline;
                 slot.resources = resources;
+                slot.workspace = workspace;
+                slot.mcp_quiescence_fence = mcp_quiescence_fence;
             });
         }
         retirement_result?;
@@ -870,7 +908,7 @@ impl SharedHost {
             }
         };
 
-        self.stop_session_mcp_processes(thread).await;
+        self.drain_mcp_projections(thread, &[]).await?;
         if let Some(retirement) = retirement {
             let env = retirement.owned.environment();
             if adopted_for_cleanup || env.needs_recovered_memory_reconciliation() {

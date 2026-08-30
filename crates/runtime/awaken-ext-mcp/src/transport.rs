@@ -36,6 +36,34 @@ struct McpCallFenceState {
 pub struct McpCallFence(Arc<McpCallFenceState>);
 
 impl McpCallFence {
+    /// Open one process-local activity fence. The caller must retain
+    /// this exact handle with the generation effect owner; constructing a fence
+    /// never creates durable desired state or another generation registry.
+    pub fn open() -> Self {
+        Self(Arc::new(McpCallFenceState {
+            accepting: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+            cancellation: awaken_runtime_contract::CancellationToken::new(),
+            quiesced: Notify::new(),
+        }))
+    }
+
+    /// Enter one already-admitted exact-generation effect. The second
+    /// acceptance check closes the increment-versus-drain race: either this
+    /// permit is counted by `close_and_wait`, or the effect never begins.
+    pub fn try_enter(&self) -> Option<McpCallPermit> {
+        if !self.0.accepting.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.0.in_flight.fetch_add(1, Ordering::SeqCst);
+        let permit = McpCallPermit(self.0.clone());
+        if !self.0.accepting.load(Ordering::SeqCst) {
+            drop(permit);
+            return None;
+        }
+        Some(permit)
+    }
+
     /// Hide the transport from new calls, cancel every in-flight future, and
     /// wait until all local call guards have left. Replays are idempotent.
     pub async fn close_and_wait(&self) {
@@ -60,9 +88,24 @@ impl McpCallFence {
     }
 }
 
-struct McpCallGuard(Arc<McpCallFenceState>);
+/// Opaque lifetime permit for one exact-generation MCP effect. Dropping the
+/// permit is the only completion signal; it grants no authority to reopen or
+/// cancel the fence.
+pub struct McpCallPermit(Arc<McpCallFenceState>);
 
-impl Drop for McpCallGuard {
+impl McpCallPermit {
+    /// Wait until the exact generation owner closes this activity fence.
+    pub async fn cancelled(&self) {
+        self.0.cancellation.cancelled().await;
+    }
+
+    /// Observe cancellation at synchronous effect boundaries.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancellation.is_cancelled()
+    }
+}
+
+impl Drop for McpCallPermit {
     fn drop(&mut self) {
         if self.0.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
             self.0.quiesced.notify_waiters();
@@ -76,32 +119,17 @@ struct RevocableMcpTransport {
 }
 
 impl RevocableMcpTransport {
-    fn begin(&self) -> Result<McpCallGuard, McpTransportError> {
-        if !self.fence.0.accepting.load(Ordering::SeqCst) {
-            return Err(McpTransportError::TransportError(
-                "MCP generation is draining".into(),
-            ));
-        }
-        self.fence.0.in_flight.fetch_add(1, Ordering::SeqCst);
-        let guard = McpCallGuard(self.fence.0.clone());
-        if !self.fence.0.accepting.load(Ordering::SeqCst) {
-            drop(guard);
-            return Err(McpTransportError::TransportError(
-                "MCP generation is draining".into(),
-            ));
-        }
-        Ok(guard)
-    }
-
     async fn run<T, F>(&self, future: F) -> Result<T, McpTransportError>
     where
         T: Send,
         F: Future<Output = Result<T, McpTransportError>> + Send,
     {
-        let _guard = self.begin()?;
+        let guard = self.fence.try_enter().ok_or_else(|| {
+            McpTransportError::TransportError("MCP generation is draining".into())
+        })?;
         tokio::select! {
             biased;
-            _ = self.fence.0.cancellation.cancelled() => Err(
+            _ = guard.cancelled() => Err(
                 McpTransportError::TransportError("MCP generation was revoked".into())
             ),
             result = future => result,
@@ -116,12 +144,7 @@ impl RevocableMcpTransport {
 pub fn revocable_transport(
     inner: Arc<dyn McpToolTransport>,
 ) -> (Arc<dyn McpToolTransport>, McpCallFence) {
-    let fence = McpCallFence(Arc::new(McpCallFenceState {
-        accepting: AtomicBool::new(true),
-        in_flight: AtomicUsize::new(0),
-        cancellation: awaken_runtime_contract::CancellationToken::new(),
-        quiesced: Notify::new(),
-    }));
+    let fence = McpCallFence::open();
     (
         Arc::new(RevocableMcpTransport {
             inner,
