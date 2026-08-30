@@ -47,6 +47,14 @@ async fn run(command: Command) -> Result<(), String> {
             println!("{}", deployment.report(json).trim_end());
             Ok(())
         }
+        Command::Doctor { json, config_path } => {
+            let deployment = ResolvedDeployment::load(ConfigOverrides {
+                config_path,
+                ..Default::default()
+            })?;
+            println!("{}", deployment.doctor_report(json).await.trim_end());
+            Ok(())
+        }
         Command::DoctorAcp { json } => {
             println!(
                 "{}",

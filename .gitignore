@@ -20,6 +20,8 @@ deploy/k3d/awaken-server-local
 # ACP production image: host-built bridge staged temporarily by build.sh
 deploy/images/sandbox/.awaken-sandbox.bin
 deploy/images/sandbox/.acp-runtimes.generated.json
+# Management image: exact binary extracted from the release archive in CI.
+deploy/images/management/.awaken-management.bin
 
 # Local Claude Code worktrees/scratch (never tracked)
 .claude/

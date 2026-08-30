@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { workspaceLabel } from "../app-state";
 import type { ConfigCapabilitiesView } from "../api/types";
-import { NAV, WORKSPACE_JOURNEY, navPath, titleForPath, visibleNavigation } from "./paths";
+import {
+  NAV,
+  WORKSPACE_JOURNEY,
+  navPath,
+  quickstartSessionPath,
+  titleForPath,
+  visibleNavigation,
+} from "./paths";
 
 function capabilities(
   byokEnabled: boolean,
@@ -70,6 +77,19 @@ describe("console information architecture", () => {
       scope: "workspace-a",
       title: "MCP overview",
     });
+  });
+
+  it("routes Quickstart into the canonical durable Session with presentational provenance", () => {
+    // Cause/effect decision table: R1 explicit Workspace + Session -> their
+    // canonical detail route plus a non-authoritative source query; R2 empty
+    // Workspace -> existing default scope. The query changes only guidance and
+    // never creates a second Session route or onboarding state machine.
+    expect(quickstartSessionPath("workspace-a", "sesn_123")).toBe(
+      "/w/workspace-a/sessions/sesn_123?from=quickstart",
+    );
+    expect(quickstartSessionPath("", "sesn_123")).toBe(
+      "/w/default/sessions/sesn_123?from=quickstart",
+    );
   });
 
   /**
