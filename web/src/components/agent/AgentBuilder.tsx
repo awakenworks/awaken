@@ -1,14 +1,20 @@
 import type {
   AgentConfig,
+  AgentToolsetCap,
   ContextPolicy,
   CredentialSource,
   InputBinding,
   ManagedToolsetCap,
-  PermissionConfig,
   PluginCap,
+  ResourceInputDefaultMounts,
   RuntimeCap,
 } from "../../lib/api/types";
 import { useEffect, useState } from "react";
+import {
+  controlledModificationMemberNames,
+  selectedAgentToolIds,
+  withSelectedAgentTools,
+} from "../../lib/agent-toolsets";
 import type { JsonSchema } from "../ui";
 import {
   Button,
@@ -26,7 +32,6 @@ import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
 import AgentModelRuntimeControls from "./AgentModelRuntimeControls";
 import { isAcpModelSelection } from "../../lib/agent-model-selection";
 import BehaviorCard from "./BehaviorCard";
-import PermissionEditor from "./PermissionEditor";
 import ResourcesTab from "./ResourcesTab";
 import ToolOverridesEditor from "./ToolOverridesEditor";
 
@@ -39,14 +44,16 @@ export default function AgentBuilder({
   runtimes,
   tools,
   toolsets,
+  agentToolset,
   plugins,
-  policies,
   credentials,
   resources,
+  resourceInputDefaults,
   resourcesError,
   changed,
   onSectionChange,
   onPatch,
+  onApplyControlledModifications,
   onManageModels,
   onResourcesChange,
   onRetryResources,
@@ -60,28 +67,29 @@ export default function AgentBuilder({
   runtimes: RuntimeCap[];
   tools: Array<{ id: string; description: string }>;
   toolsets: ManagedToolsetCap[];
+  agentToolset?: AgentToolsetCap;
   plugins: PluginCap[];
-  policies: Array<{ id: string }>;
   credentials: CredentialSource[];
   resources: InputBinding[];
+  resourceInputDefaults?: ResourceInputDefaultMounts;
   resourcesError?: Error;
   changed: (path: string) => boolean;
   onSectionChange: (section: BuilderSection) => void;
   onPatch: (patch: Partial<AgentConfig>) => void;
+  onApplyControlledModifications: () => void;
   onManageModels: () => void;
   onResourcesChange: (inputs: InputBinding[]) => void;
   onRetryResources: () => void;
   onValidityChange: (valid: boolean) => void;
 }) {
   const app = useApp();
+  const agentToolsetMembers = agentToolset?.members ?? [];
   const [toolsValid, setToolsValid] = useState(true);
   const [integrationsValid, setIntegrationsValid] = useState(true);
   useEffect(() => {
     onValidityChange(toolsValid && integrationsValid);
   }, [integrationsValid, onValidityChange, toolsValid]);
-  const selectedToolIds = config.tools.filter((tool): tool is string => typeof tool === "string");
-  const advancedTools = config.tools.filter((tool) => typeof tool !== "string");
-  const hasTypedToolsets = advancedTools.some((tool) => tool.type === "agent_toolset_20260401" || tool.type === "mcp_toolset");
+  const selectedToolIds = selectedAgentToolIds(config.tools, agentToolsetMembers);
   const acp = isAcpModelSelection(config.model);
   const backgroundConfig = (config.plugin_config.background_task as { tools?: string[] } | undefined) ?? {};
   const backgroundTools = backgroundConfig.tools ?? [];
@@ -91,6 +99,13 @@ export default function AgentBuilder({
       .filter((tool) => !(config.tool_overrides ?? []).some((entry) => entry.target === tool))
       .map((target) => ({ target })),
   ];
+  const controlledPresetAvailable = agentToolsetMembers.some(
+    (member) => member.controlled_modification,
+  );
+  const controlledMemberNames = controlledModificationMemberNames(agentToolsetMembers);
+  const controlledMemberDescription = controlledMemberNames.length > 0
+    ? controlledMemberNames.join(", ")
+    : app.t("advertised controlled-modification tools", "已公布的受控修改工具");
   const sections: Array<{ key: BuilderSection; label: string; zh: string }> = [
     { key: "instructions", label: "Instructions", zh: "提示词" },
     { key: "tools", label: "Tools & permissions", zh: "工具与权限" },
@@ -272,9 +287,35 @@ export default function AgentBuilder({
                   .map((id) => ({ id })),
               ]}
               selected={selectedToolIds}
-              onChange={(value) => onPatch({ tools: [...advancedTools, ...value] })}
+              onChange={(value) => {
+                if (!agentToolset) return;
+                onPatch({
+                  tools: withSelectedAgentTools(
+                    config.tools,
+                    value,
+                    agentToolset.members,
+                    agentToolset.default_config.permission_policy,
+                  ),
+                });
+              }}
               empty={app.t("No tools advertised.", "没有可用工具。")}
             />
+          </div>
+          <div className="field">
+            <label>{app.t("Permission preset", "权限预设")}</label>
+            <span className="mut">{app.t(
+              `Controlled modifications are projected by the server from its typed ${controlledMemberDescription} authority when you save.`,
+              `保存时，服务端会依据 typed ${controlledMemberDescription} 权威投影受控修改策略。`,
+            )}</span>
+            <div>
+              <Button
+                variant="ghost"
+                disabled={!controlledPresetAvailable}
+                onClick={onApplyControlledModifications}
+              >
+                {app.t("Apply controlled modifications", "应用受控修改")}
+              </Button>
+            </div>
           </div>
           <div className="field">
             <label>{app.t("Tool behavior policies", "工具行为策略")}</label>
@@ -318,30 +359,6 @@ export default function AgentBuilder({
               {renderBehavior("web_search")}
             </div>
           )}
-          {policies.some((policy) => policy.id === "permission") && !hasTypedToolsets && (
-            <div className="field">
-              <label>{app.t("Permissions", "权限")}</label>
-              <span className="mut">{app.t(
-                "Every tool call is evaluated against the default decision and ordered rules.",
-                "每次工具调用都会按默认裁决和有序规则执行权限判断。",
-              )}</span>
-              <PermissionEditor
-                value={(config.plugin_config.permission as PermissionConfig) ?? {}}
-                onChange={(value) => onPatch({
-                  plugin_config: { ...config.plugin_config, permission: value },
-                })}
-              />
-            </div>
-          )}
-          {hasTypedToolsets && (
-            <div className="banner info">
-              <span>ⓘ</span>
-              <span>{app.t(
-                "Permissions are configured per ToolSet. Built-in defaults are below; each MCP default stays with its integration under Skills & MCP.",
-                "权限按 ToolSet 配置。内置工具默认值位于下方；每个 MCP 默认值与其集成一起位于“Skills 与 MCP”。",
-              )}</span>
-            </div>
-          )}
           <AgentAdvancedToolsEditor config={config} onPatch={onPatch} onValidityChange={setToolsValid} />
         </Card>
       )}
@@ -367,7 +384,11 @@ export default function AgentBuilder({
             </div>
           ) : (
             <Card>
-              <ResourcesTab inputs={resources} onChange={onResourcesChange} />
+              <ResourcesTab
+                inputs={resources}
+                defaultMounts={resourceInputDefaults}
+                onChange={onResourcesChange}
+              />
             </Card>
           )}
           {behavior("memory") && (

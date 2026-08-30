@@ -2,6 +2,7 @@
 // work. Each manual or scheduled firing owns a separate inspectable Session.
 import { execFileSync } from "node:child_process";
 import { basename, resolve } from "node:path";
+import { typedAgentTools } from "../../test-support/agent-tools.mjs";
 import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 import { MANAGED_HEADERS } from "../support/betas.mjs";
 import {
@@ -86,7 +87,10 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ru
   });
   await putAgent(page, AGENT_ID, {
       id: AGENT_ID, name: "Repository maintenance agent", model: { id: MODEL_ID },
-      system: `First call read exactly once on ${TOOL_PATH}. Use only that snapshot. Write exactly these headings: Snapshot, Maintenance exceptions, Controls present, Next action. Under Snapshot, include the exact Revision and Tracked modifications values. If no exception exists, write None. Do not invent an owner or consequence, and do not claim to modify the repository. Stay under 120 words.`, tools: ["read"], mcp_servers: [], skills: [],
+      system: `First call read exactly once on ${TOOL_PATH}. Use only that snapshot. Write exactly these headings: Snapshot, Maintenance exceptions, Controls present, Next action. Under Snapshot, include the exact Revision and Tracked modifications values. If no exception exists, write None. Do not invent an owner or consequence, and do not claim to modify the repository. Stay under 120 words.`,
+      // Snapshot decision rule: C1 the maintenance source is mounted read-only;
+      // E1 exactly one typed Agent ToolSet enables the sole required `read` call.
+      tools: typedAgentTools(["read"]), mcp_servers: [], skills: [],
       plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 4,
   });
   await putAgentResources(page, AGENT_ID, [

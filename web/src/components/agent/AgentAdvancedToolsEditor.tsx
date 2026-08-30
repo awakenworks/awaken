@@ -3,7 +3,8 @@
 // recovery behavior. All values remain part of the same reviewed draft.
 
 import { useEffect, useMemo, useState } from "react";
-import type { AgentConfig, AgentToolset, AgentToolsetConfig, CustomClientTool } from "../../lib/api/types";
+import type { AgentConfig, AgentManagedToolset, AgentToolsetConfig, CustomClientTool } from "../../lib/api/types";
+import { isAgentToolset, isMcpToolset } from "../../lib/agent-toolsets";
 import { Button, Card, Switch, TextAreaField, TextField } from "../ui";
 import { useApp } from "../../lib/app-state";
 
@@ -11,10 +12,6 @@ type RecoveryPolicy = { mode: "never_replay" | "replay_safe" | "idempotent" | "d
 
 function isCustom(tool: AgentConfig["tools"][number]): tool is CustomClientTool {
   return typeof tool === "object" && tool.type === "custom";
-}
-
-function isToolset(tool: AgentConfig["tools"][number]): tool is AgentToolset {
-  return typeof tool === "object" && (tool.type === "agent_toolset_20260401" || tool.type === "mcp_toolset");
 }
 
 function ClientToolSchemaEditor({
@@ -73,13 +70,13 @@ export default function AgentAdvancedToolsEditor({
   const app = useApp();
   const staticTools = config.tools.filter((tool): tool is string => typeof tool === "string");
   const customTools = config.tools.filter(isCustom);
-  const toolsets = config.tools.filter((tool): tool is AgentToolset => isToolset(tool) && tool.type === "agent_toolset_20260401");
-  const mcpToolsets = config.tools.filter((tool): tool is AgentToolset => isToolset(tool) && tool.type === "mcp_toolset");
-  const otherTools = config.tools.filter((tool) => typeof tool !== "string" && !isCustom(tool) && !isToolset(tool));
+  const toolsets = config.tools.filter(isAgentToolset);
+  const mcpToolsets = config.tools.filter(isMcpToolset);
+  const otherTools = config.tools.filter((tool) => typeof tool !== "string" && !isCustom(tool) && !isAgentToolset(tool) && !isMcpToolset(tool));
   const [invalidSchemas, setInvalidSchemas] = useState<Set<number>>(new Set());
   useEffect(() => onValidityChange(invalidSchemas.size === 0), [invalidSchemas, onValidityChange]);
 
-  const replaceAdvanced = (custom: CustomClientTool[], sets: AgentToolset[]) => {
+  const replaceAdvanced = (custom: CustomClientTool[], sets: AgentManagedToolset[]) => {
     const { permission: _legacyPermission, ...pluginConfig } = config.plugin_config;
     onPatch({
       tools: [...otherTools, ...mcpToolsets, ...sets, ...custom, ...staticTools],
@@ -90,7 +87,7 @@ export default function AgentAdvancedToolsEditor({
     customTools.map((tool, current) => current === index ? { ...tool, ...patch } : tool),
     toolsets,
   );
-  const setToolset = (index: number, patch: Partial<AgentToolset>) => replaceAdvanced(
+  const setToolset = (index: number, patch: Partial<AgentManagedToolset>) => replaceAdvanced(
     customTools,
     toolsets.map((toolset, current) => current === index ? { ...toolset, ...patch } : toolset),
   );
