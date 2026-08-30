@@ -1,0 +1,9 @@
+# Marketing stories mount evidence as read-only Session inputs. The recording
+# host therefore uses the OS-enforced Namespace provider (Seatbelt on macOS)
+# instead of the intentionally weaker local provider used by portable CI.
+role = "all-in-one"
+bind = "127.0.0.1:38080"
+no_browser = true
+identity_mode = "no-login"
+sandbox_tier = "namespace"
+acp_clis = []
