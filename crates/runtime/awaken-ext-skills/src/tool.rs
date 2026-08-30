@@ -183,12 +183,12 @@ pub fn expand_slash_commands(
     registry: &dyn SkillRegistry,
     session_id: &str,
     input: Vec<Message>,
-) -> Vec<Message> {
+) -> Result<Vec<Message>, String> {
     input
         .into_iter()
-        .map(|message| {
+        .map(|message| -> Result<Message, String> {
             if message.role != Role::User {
-                return message;
+                return Ok(message);
             }
             let text: String = message
                 .content
@@ -199,17 +199,17 @@ pub fn expand_slash_commands(
                 })
                 .collect();
             let Some(rest) = text.trim_start().strip_prefix('/') else {
-                return message;
+                return Ok(message);
             };
             let (name, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-            match registry.get(name.trim()) {
+            Ok(match registry.get(name.trim())? {
                 Some(skill) if skill.user_invocable => Message::text(
                     message.id,
                     Role::User,
                     render_user_invocation(&skill, args.trim(), Some(session_id)),
                 ),
                 _ => message,
-            }
+            })
         })
         .collect()
 }
@@ -436,6 +436,7 @@ impl RawTool for ListSkillsTool {
         let entries: Vec<serde_json::Value> = self
             .registry
             .list()
+            .map_err(ToolError::Execution)?
             .iter()
             .filter(|s| s.model_invocable)
             .filter(|s| is_surfaced(s, self.activations.as_ref()))
@@ -524,7 +525,7 @@ impl RawTool for SkillTool {
         }
         // A leading slash is a user-invocation affordance; accept it here too.
         let key = name.trim_start_matches('/');
-        let Some(metadata) = self.registry.get(key) else {
+        let Some(metadata) = self.registry.get(key).map_err(ToolError::Execution)? else {
             return Ok(ToolOutput::error(call_id, format!("unknown skill: {name}")));
         };
         if !metadata.model_invocable {
@@ -1269,14 +1270,15 @@ mod tests {
             },
         ]);
         // user-invocable → expands to the resolved body
-        let out = expand_slash_commands(&registry, "sess", vec![user_msg("/deploy prod")]);
+        let out = expand_slash_commands(&registry, "sess", vec![user_msg("/deploy prod")]).unwrap();
         assert_eq!(msg_text(&out[0]), "checklist for prod");
         // non-user-invocable / unknown / plain → unchanged
         let out = expand_slash_commands(
             &registry,
             "sess",
             vec![user_msg("/secret"), user_msg("/nope"), user_msg("hi")],
-        );
+        )
+        .unwrap();
         assert_eq!(msg_text(&out[0]), "/secret");
         assert_eq!(msg_text(&out[1]), "/nope");
         assert_eq!(msg_text(&out[2]), "hi");
@@ -1302,7 +1304,7 @@ mod tests {
             Role::Assistant,
             "/deploy prod",
         );
-        let out = expand_slash_commands(&registry, "sess", vec![assistant]);
+        let out = expand_slash_commands(&registry, "sess", vec![assistant]).unwrap();
         assert_eq!(
             msg_text(&out[0]),
             "/deploy prod",

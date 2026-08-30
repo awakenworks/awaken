@@ -910,7 +910,7 @@ impl SessionRuntime for ManagedHost {
                     registry.as_ref(),
                     &command.session_id,
                     input,
-                ),
+                ).map_err(RunError::bad_request)?,
                 None => input,
             };
             let (_, mut activation) =

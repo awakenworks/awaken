@@ -580,7 +580,7 @@ impl SharedHost {
         // Expand a user `/skill-name` into the skill's instructions before the Run.
         let input = match &ctx.skill_registry {
             Some(registry) => {
-                awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
+                awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input).map_err(HostError::bad_request)?
             }
             None => input,
         };

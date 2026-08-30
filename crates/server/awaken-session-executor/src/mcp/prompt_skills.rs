@@ -72,15 +72,16 @@ impl McpPromptSkillRegistry {
 
 #[async_trait]
 impl SkillRegistry for McpPromptSkillRegistry {
-    fn get(&self, id: &str) -> Option<SkillSpec> {
-        self.prompts.get(id).map(|prompt| self.spec(id, prompt))
+    fn get(&self, id: &str) -> Result<Option<SkillSpec>, String> {
+        Ok(self.prompts.get(id).map(|prompt| self.spec(id, prompt)))
     }
 
-    fn list(&self) -> Vec<SkillSpec> {
-        self.prompts
+    fn list(&self) -> Result<Vec<SkillSpec>, String> {
+        Ok(self
+            .prompts
             .iter()
             .map(|(id, prompt)| self.spec(id, prompt))
-            .collect()
+            .collect())
     }
 
     async fn resolve(
@@ -298,7 +299,7 @@ mod tests {
             .await
             .expect("discovers prompt metadata");
 
-        let listed = registry.list();
+        let listed = registry.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "mcp:github:review");
         assert_eq!(listed[0].provenance, SkillProvenance::Mcp);

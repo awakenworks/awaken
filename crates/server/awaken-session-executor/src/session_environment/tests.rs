@@ -593,7 +593,7 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
         .await
         .unwrap();
     assert!(result.text().contains("bound-hand-ok"));
-    let skills = environment.scan_skill_dir("skills");
+    let skills = environment.scan_skill_dir("skills").unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].id, "authored");
     assert_eq!(skills[0].dir, "skills/authored");
@@ -1860,7 +1860,7 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     assert_eq!(change.wait().await.unwrap().code, Some(0));
     environment.register_skill_dir("skills");
     environment.refresh_skills().await.unwrap();
-    let skills = environment.scan_skill_dir("skills");
+    let skills = environment.scan_skill_dir("skills").unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].id, "authored");
     let commit = environment

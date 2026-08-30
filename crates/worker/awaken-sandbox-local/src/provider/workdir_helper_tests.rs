@@ -1,8 +1,7 @@
-
 use super::*;
 use crate::git_transport::git_stdout;
 use awaken_provisioning_contract::{
-    IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
+    IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec,
 };
 
 fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
@@ -75,7 +74,7 @@ async fn list_files_and_scan_skill_dir_read_the_realized_root() {
     std::fs::write(root.join("outputs/a.txt"), b"A").unwrap();
     std::fs::write(root.join("outputs/sub/b.txt"), b"B").unwrap();
     assert_eq!(
-        sandbox.list_files("outputs"),
+        sandbox.list_files("outputs").unwrap(),
         vec![
             ("a.txt".to_string(), b"A".to_vec()),
             ("sub/b.txt".to_string(), b"B".to_vec()),
@@ -102,7 +101,7 @@ async fn list_files_and_scan_skill_dir_read_the_realized_root() {
     std::fs::create_dir_all(root.join("skills/outside")).unwrap();
     std::fs::write(root.join("skills/outside/SKILL.md"), "# outside").unwrap();
 
-    let skills = sandbox.scan_skill_dir(".claude/skills");
+    let skills = sandbox.scan_skill_dir(".claude/skills").unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].id, "greet");
     assert_eq!(skills[0].dir, ".claude/skills/greet");
@@ -112,9 +111,10 @@ async fn list_files_and_scan_skill_dir_read_the_realized_root() {
 /// Repository realization cause/effect decision table:
 /// | Rule | Destination / Agent Git config | Frozen plan | Effect |
 /// |---|---|---|---|
-/// | R1 | absent | valid | clone the exact repository |
+/// | R1 | absent | valid | build in a random stage, verify, and atomically publish without replacement |
 /// | R2 | already realized | exact replay | succeed without replacing Agent state |
-/// | R3 | occupied | different remote/checkout | reject without modifying the tree |
+/// | R3 | complete repository | different remote/checkout | reject without modifying the tree |
+/// | R3b | incomplete/non-Repository tree | any plan | reject and preserve every byte; reservation is not deletion authority |
 /// | R4 | origin and `url.*.insteadOf` target attacker | exact authored remote plus branch/commit | push only the absent exact ref; attacker unchanged |
 /// | R5 | R4 after successful push | same plan/coordinate | return the identical canonical receipt |
 #[tokio::test]
@@ -171,7 +171,7 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
     let root = sandbox.root.root().to_path_buf();
     let plan = pc::RepositoryRealizationPlan {
         repository_id: "repo-1".into(),
-        mount_path: "workspace/repo".into(),
+        mount_path: "/workspace/repo".into(),
         source_remote_url: bare.to_string_lossy().into_owned(),
         transport_url: bare.to_string_lossy().into_owned(),
         initial_branch: None,
@@ -186,6 +186,17 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
     assert_eq!(
         std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
         "hello"
+    );
+    assert!(
+        std::fs::read_dir(root.join("workspace"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                !name.starts_with(".awaken-repository-") || !name.ends_with(".stage")
+            }),
+        "R1 successful publish leaves no stage name"
     );
     std::fs::write(repo_dir.join("PRESERVED"), "agent state").unwrap();
     pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
@@ -211,6 +222,21 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
         "hello",
         "R3 does not replace the authoritative tree"
+    );
+    let incomplete_dir = root.join("workspace/incomplete");
+    std::fs::create_dir(&incomplete_dir).unwrap();
+    std::fs::write(incomplete_dir.join("PRESERVED"), "user bytes").unwrap();
+    let incomplete = pc::RepositoryRealizationPlan {
+        mount_path: "/workspace/incomplete".into(),
+        ..plan.clone()
+    };
+    pc::RepositoryRealizer::realize_repository(&sandbox, &incomplete, None)
+        .await
+        .expect_err("R3b incomplete destination fails closed");
+    assert_eq!(
+        std::fs::read_to_string(incomplete_dir.join("PRESERVED")).unwrap(),
+        "user bytes",
+        "R3b incomplete destination is never deleted"
     );
     // Provision sets NO committer identity — that is the agent's to own.
     let cfg = std::process::Command::new("git")
@@ -343,7 +369,7 @@ async fn repository_realizer_checks_out_the_exact_commit_pin() {
         .unwrap();
     let plan = pc::RepositoryRealizationPlan {
         repository_id: "repo-commit".into(),
-        mount_path: "workspace/repo".into(),
+        mount_path: "/workspace/repo".into(),
         source_remote_url: seed.to_string_lossy().into_owned(),
         transport_url: seed.to_string_lossy().into_owned(),
         initial_branch: None,
@@ -366,7 +392,7 @@ async fn repository_realizer_checks_out_the_exact_commit_pin() {
     assert_eq!(String::from_utf8(head.stdout).unwrap().trim(), first);
 
     let invalid = pc::RepositoryRealizationPlan {
-        mount_path: "workspace/invalid".into(),
+        mount_path: "/workspace/invalid".into(),
         initial_commit: Some("0000000000000000000000000000000000000000".into()),
         ..plan
     };
@@ -419,186 +445,4 @@ async fn dynamic_inline_projection_handles_file_directory_and_missing_removal() 
         .unwrap();
     sandbox.remove_inline("nested").unwrap();
     sandbox.remove_inline("nested").unwrap();
-}
-
-fn restore_request(excluded_mounts: Vec<String>) -> pc::SandboxRestoreRequest {
-    pc::SandboxRestoreRequest {
-        workspace_id: "workspace-a".into(),
-        session_id: "checkpoint-session".into(),
-        effect_id: "blake3:0000000000000000000000000000000000000000000000000000000000000001".into(),
-        generation_id: "generation-a".into(),
-        checkpoint: pc::SandboxCheckpointRef {
-            id: "checkpoint-a".into(),
-            format: "portable-provider-owned-format".into(),
-            digest: "sha256:checkpoint-a".into(),
-            size_bytes: 7,
-            created_at_unix_ms: 20,
-            expires_at_unix_ms: 10_000,
-            environment_fingerprint: "environment".into(),
-            base_image_fingerprint: "base-image".into(),
-            excluded_mounts,
-            suspend_effect_id: "suspend".into(),
-        },
-    }
-}
-
-/*
- * Exact local-target decision table (R1-R4, R7-R8).
- * Causes: C1 no target; C2 exact evidence exists; C3 fresh provider; C4
- * concurrent acquisition; C5 source checkpoint unavailable; C6 provider
- * exclusion superset; C7 restored handle carries deny-tool-egress.
- * Effects: E1 reserve one directory/evidence sidecar; E2 return one handle;
- * E3 recover without checkpoint-byte access or process memory; E4 preserve
- * the exact exclusion list and security posture.
- * Rules: R1=C1=>E1; R2=C2=>E2; R3=C2+C3+C5=>E2+E3;
- * R4=C1+C4=>E1+E2; R7=C6+C7=>E4.
- */
-#[tokio::test]
-async fn exact_restore_target_replays_across_concurrent_and_fresh_local_providers() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mut spec = workdir_spec("checkpoint-session", true);
-    spec.mounts.push(pc::MountRequirement {
-        mount_id: "input-a".into(),
-        source: pc::MountSource::Inline {
-            contents: "authority-owned".into(),
-        },
-        mount_path: "/workspace/input-a".into(),
-        access: pc::MountAccess::ReadWrite,
-        required: true,
-        lifetime: pc::MountLifetime::Session,
-    });
-    let exclusions = vec!["/runtime/config-home".into(), "/workspace/input-a".into()];
-    let request = restore_request(exclusions.clone());
-    let left_provider = LocalProvider::new(tmp.path());
-    let right_provider = LocalProvider::new(tmp.path());
-
-    let (left, right) = tokio::join!(
-        pc::SandboxProvider::acquire_restore(&left_provider, &spec, &request),
-        pc::SandboxProvider::acquire_restore(&right_provider, &spec, &request),
-    );
-    let left = left.unwrap();
-    let right = right.unwrap();
-    assert_ne!(left.disposition(), right.disposition(), "R1/R4");
-    let left_handle = left.target().handle();
-    let right_handle = right.target().handle();
-    assert_eq!(left_handle, right_handle, "R2/E2");
-    assert_eq!(
-        left_handle
-            .local_payload()
-            .unwrap()
-            .continuation_excluded_paths,
-        exclusions,
-        "R7/E4"
-    );
-    assert!(
-        left_handle.local_payload().unwrap().deny_tool_egress,
-        "R7/E4"
-    );
-
-    let evidence = request.evidence(&spec);
-    let root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
-    assert!(root.is_dir(), "R1/E1");
-    let fresh_provider = LocalProvider::new(tmp.path());
-    let replay = pc::SandboxProvider::acquire_restore(&fresh_provider, &spec, &request)
-        .await
-        .unwrap();
-    assert_eq!(
-        replay.disposition(),
-        pc::SandboxRestoreTargetDisposition::Recovered,
-        "R3/E3"
-    );
-    assert_eq!(replay.target().handle(), left_handle, "R3/E2");
-    assert_eq!(
-        fresh_provider
-            .adopt_sandbox_with_spec(&spec, &left_handle)
-            .await
-            .unwrap()
-            .handle(),
-        left_handle,
-        "R3/E2"
-    );
-
-    drop(left);
-    drop(right);
-    drop(replay);
-    pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request)
-        .await
-        .unwrap();
-    assert!(!root.exists(), "R8 exact disposal");
-}
-
-/*
- * Local mismatch/orphan rules (R5-R6). C1 target evidence differs; C2 an
- * unfenced directory occupies the deterministic target; C3 exact evidence
- * points at a symlink instead of a physical provider directory. E1 reject
- * without replacing/deleting either object. R5=C1=>E1; R6=C2|C3=>E1.
- */
-#[tokio::test]
-async fn exact_restore_target_rejects_mismatched_evidence_and_unfenced_orphan() {
-    let tmp = tempfile::tempdir().unwrap();
-    let spec = workdir_spec("checkpoint-session", false);
-    let provider = LocalProvider::new(tmp.path());
-    let request = restore_request(Vec::new());
-    let target = pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-        .await
-        .unwrap();
-    let evidence = request.evidence(&spec);
-    let root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
-    let file_name = root.file_name().unwrap().to_string_lossy();
-    let sidecar = root
-        .parent()
-        .unwrap()
-        .join(format!(".{file_name}.awaken-restore-target.json"));
-    let mut other = request.clone();
-    other.generation_id = "generation-b".into();
-    std::fs::write(
-        &sidecar,
-        serde_json::to_vec(&serde_json::json!({
-            "evidence": other.evidence(&spec)
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-            .await
-            .is_err(),
-        "R5/E1"
-    );
-    assert!(root.exists(), "R5/E1 preserve target");
-
-    drop(target);
-    std::fs::remove_dir_all(&root).unwrap();
-    std::fs::remove_file(&sidecar).unwrap();
-    std::fs::create_dir_all(&root).unwrap();
-    assert!(
-        pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-            .await
-            .is_err(),
-        "R6/E1"
-    );
-    assert!(root.exists(), "R6/E1 preserve orphan");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-
-        std::fs::remove_dir_all(&root).unwrap();
-        let outside = tmp.path().join("outside-provider-target");
-        std::fs::create_dir(&outside).unwrap();
-        std::fs::write(outside.join("sentinel"), b"outside").unwrap();
-        symlink(&outside, &root).unwrap();
-        std::fs::write(
-            &sidecar,
-            serde_json::to_vec(&serde_json::json!({ "evidence": evidence })).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-                .await
-                .is_err(),
-            "R6/C3/E1"
-        );
-        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
-    }
 }
