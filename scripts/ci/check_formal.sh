@@ -477,6 +477,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/background-task" \
     -config formal/tla/BackgroundTask.cfg formal/tla/BackgroundTask.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/sandbox-control-publication" \
+    -config formal/tla/SandboxControlPublication.cfg \
+    formal/tla/SandboxControlPublication.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/eval-evidence" \
     -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
