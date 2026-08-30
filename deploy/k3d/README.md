@@ -47,6 +47,14 @@ k3d node as `awaken-sandbox:local`; its non-`latest` tag defaults to
 `IfNotPresent`, so Session Pods consume the exact node-local image without a
 Registry pull:
 
+The product overlay selects `container_hand_residency = "resident"`. The
+existing Pod channel is the single ACP transport for these Kubernetes Sessions;
+it avoids making successful Agent startup depend on whether a particular
+apiserver exposes the attached-exec WebSocket protocol. The runtime
+ServiceAccount therefore owns namespace-scoped `pods/portforward` for that
+resident channel. Attached exec remains a runtime capability for bounded file
+operations, not a parallel ACP transport.
+
 ```bash
 deploy/images/sandbox/build.sh awaken-sandbox:local
 . e2e/k3d/harness.sh
