@@ -608,6 +608,8 @@ pub struct awaken_runtime_contract::llm::ToolCall
 pub awaken_runtime_contract::llm::ToolCall::arguments: serde_json::value::Value
 pub awaken_runtime_contract::llm::ToolCall::call_id: alloc::string::String
 pub awaken_runtime_contract::llm::ToolCall::tool_id: alloc::string::String
+pub const awaken_runtime_contract::llm::DEFAULT_MODEL_ATTEMPT_WATCHDOG: core::time::Duration
+pub const awaken_runtime_contract::llm::DEFAULT_MODEL_RESPONSE_TIMEOUT: core::time::Duration
 pub const awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY: &str
 pub trait awaken_runtime_contract::llm::DeltaSink: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::DeltaSink::on_reasoning<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
