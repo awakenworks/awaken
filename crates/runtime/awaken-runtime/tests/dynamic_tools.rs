@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Command, Key, MergePolicy, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
+use awaken_runtime_contract::ToolSearchLimit;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -21,8 +22,8 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolExposure,
-    ToolPresentation, ToolPresentationOverride,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    ToolDiscoverySettings, ToolExposure, ToolPresentation, ToolPresentationOverride,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
@@ -280,11 +281,18 @@ impl LlmExecutor for DiscoveryProbe {
             .push(request.tools.iter().map(|t| t.id.clone()).collect());
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = match n {
-            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
-                call_id: "open".to_string(),
-                tool_id: awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string(),
-                arguments: serde_json::json!({ "query": "select:create_issue" }),
-            }]),
+            0 => AssistantOutput::from_tool_calls(vec![
+                ToolCall {
+                    call_id: "open-create".to_string(),
+                    tool_id: awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string(),
+                    arguments: serde_json::json!({ "query": "select:create_issue" }),
+                },
+                ToolCall {
+                    call_id: "open-list".to_string(),
+                    tool_id: awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string(),
+                    arguments: serde_json::json!({ "query": "select:list_issues" }),
+                },
+            ]),
             1 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "c1".to_string(),
                 tool_id: "create_issue".to_string(),
@@ -304,15 +312,21 @@ impl LlmExecutor for DiscoveryProbe {
 async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persisted() {
     // Causal graph and state-transition coverage:
     // C1 a live MCP descriptor is OnDemand; C2 it has an alias; C3 no reveal fact
-    // exists; C4 tool_search selects the alias; C5 the ToolResult and reveal State
-    // command commit in one Step; C6 the next inference rebuilds its model view.
+    // exists; C4 two tool_search calls select distinct aliases in one batch under
+    // a published one-result-per-call limit; C5 each ToolResult and the cumulative
+    // reveal State command commit in model order; C6 the next inference rebuilds
+    // its model view.
     // Effects: E1 only tool_search is initially visible; E2 the result carries a
-    // tool_reference; E3 the canonical-id/fingerprint fact survives State replay;
-    // E4 the aliased descriptor is visible next Step; E5 an alias call dispatches
-    // to the canonical MCP executable. This single path covers static/dynamic
-    // catalog convergence, presentation, persistence, replay and execution.
+    // tool_reference; E3 both canonical-id/fingerprint facts survive State replay;
+    // E4 both aliased descriptors are visible next Step; E5 an alias call dispatches
+    // to the canonical MCP executable; E6 sequential discovery results form a union
+    // rather than overwriting one another. This single path covers static/dynamic
+    // catalog convergence, bounded presentation, persistence, replay and execution.
     let version = Arc::new(AtomicU64::new(1));
-    let tools = Arc::new(Mutex::new(vec!["mcp__srv__a".to_string()]));
+    let tools = Arc::new(Mutex::new(vec![
+        "mcp__srv__a".to_string(),
+        "mcp__srv__b".to_string(),
+    ]));
     let seen = Arc::new(Mutex::new(Vec::new()));
 
     let runtime = Runtime::new()
@@ -326,14 +340,28 @@ async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persist
         }));
 
     let mut act = activation();
-    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_overrides([(
-        "mcp__srv__a".to_string(),
-        ToolPresentationOverride {
-            alias: Some("create_issue".to_string()),
-            description: Some("Create a GitHub issue.".to_string()),
-            exposure: Some(ToolExposure::OnDemand),
-        },
-    )]);
+    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_overrides([
+        (
+            "mcp__srv__a".to_string(),
+            ToolPresentationOverride {
+                alias: Some("create_issue".to_string()),
+                description: Some("Create a GitHub issue.".to_string()),
+                exposure: Some(ToolExposure::OnDemand),
+            },
+        ),
+        (
+            "mcp__srv__b".to_string(),
+            ToolPresentationOverride {
+                alias: Some("list_issues".to_string()),
+                description: Some("List GitHub issues.".to_string()),
+                exposure: Some(ToolExposure::OnDemand),
+            },
+        ),
+    ])
+    .with_discovery(ToolDiscoverySettings {
+        max_results: Some(ToolSearchLimit::new(1).expect("valid test limit")),
+        ..Default::default()
+    });
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -353,6 +381,10 @@ async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persist
         seen[1].contains(&"create_issue".to_string()),
         "the revealed tool appears on the next step"
     );
+    assert!(
+        seen[1].contains(&"list_issues".to_string()),
+        "C4+C5+C6=>E4+E6: both sequential reveals appear on the next step"
+    );
     // C2+call=>E5: execution uses the canonical MCP identity.
     let committed = commit.committed();
     assert!(
@@ -366,13 +398,15 @@ async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persist
     let discovery = replayed
         .get(Scope::Run, &Key("runtime.tool_discovery.v1".into()))
         .expect("committed discovery state replays");
-    assert!(
-        discovery
-            .pointer("/revealed/mcp__srv__a")
-            .and_then(serde_json::Value::as_str)
-            .is_some(),
-        "C5=>E3: state authority remains canonical rather than aliased"
-    );
+    for canonical_id in ["mcp__srv__a", "mcp__srv__b"] {
+        assert!(
+            discovery
+                .pointer(&format!("/revealed/{canonical_id}"))
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "C5=>E3: state authority remains canonical rather than aliased"
+        );
+    }
 }
 
 #[tokio::test]
