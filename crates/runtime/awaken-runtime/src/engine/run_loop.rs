@@ -152,7 +152,8 @@ impl LiveEnv {
 /// before yielding. A `MaxTokens`-truncated text-only step is continued in place:
 /// the partial is committed as its own assistant message, a continuation prompt
 /// follows it, and inference reruns on the grown transcript — up to a per-step
-/// budget, after which the truncated step stands. A truncated step still carrying
+/// budget, after which the outer loop commits the last partial and ends with an
+/// explicit incomplete-output inference failure. A truncated step still carrying
 /// tool calls skips recovery: those calls must be answered by tool results, not
 /// another assistant step. On a clean pre-commit failure (no partial committed
 /// this step) with a candidate remaining, it fails over to the next pool model;
@@ -276,10 +277,17 @@ async fn infer_step(
             .push(RunEvent::ModelRequestCompleted(observed.observation).into());
         match observed.result {
             Ok(response) => {
-                let truncated_text_only = response.stop_reason == Some(StopReason::MaxTokens)
-                    && response.output.tool_calls().is_empty()
-                    && !response.output.text_content().is_empty();
-                if truncated_text_only && truncation_retries < runtime.max_continuation_retries() {
+                let has_tool_calls = !response.output.tool_calls().is_empty();
+                let has_text = !response.output.text_content().is_empty();
+                let may_continue = response.stop_reason.is_some_and(|reason| {
+                    reason.admits_continuation(
+                        has_tool_calls,
+                        has_text,
+                        truncation_retries,
+                        runtime.max_continuation_retries(),
+                    )
+                });
+                if may_continue {
                     if let Some(step_usage) = response.usage {
                         fold_thread_usage(
                             store,
@@ -700,6 +708,23 @@ pub(super) async fn drive(
             .collect();
         let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
         ledger.push_message(assistant);
+
+        // A non-tool MaxTokens response reaches this boundary when its in-place
+        // continuation budget is exhausted (including a configured zero budget)
+        // or when it contains no continuable text. Preserve any last partial in
+        // the ordinary terminal ThreadCommit, but never misreport incomplete
+        // output as NaturalEnd.
+        if response.stop_reason == Some(StopReason::MaxTokens) && calls.is_empty() {
+            disposition = Some(RunDisposition::ended(
+                run_id.clone(),
+                EndCause::Error(Failure::Inference {
+                    code: "max_tokens_exhausted".to_string(),
+                    message: "model output remained truncated after the continuation budget was exhausted"
+                        .to_string(),
+                }),
+            ));
+            break;
+        }
 
         // A non-compliant model can still emit a tool call even though the
         // reserved final request advertised no tools. Never execute that call:
