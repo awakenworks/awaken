@@ -1,5 +1,6 @@
 use super::committed_projection::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor,
+    message_projection_ordinal_bound,
 };
 use super::*;
 use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
@@ -53,6 +54,48 @@ async fn persist_batch_projection_anchors(
         )
         .await
         .expect("commit projection anchors");
+}
+
+#[test]
+fn committed_message_ordinal_search_is_bounded_by_its_source_message() {
+    // Cause/effect graph: C1 one Assistant Message contains thinking, visible
+    // text, and two tool blocks; C2 its Session may already contain an
+    // arbitrarily large unrelated Event prefix. Effects: E1 the canonical
+    // encoder can emit at most content-block count + thinking + message; E2 the
+    // canonical ordering search is independent of the Session Event count.
+    // Decision table: R1(C1,!C2)->bound=6; R2(C1,C2)->the same bound=6. The
+    // existing warm/cold canonical payload tests cover semantic equality; this
+    // rule guards the complexity constraint that prevents list_events from
+    // starving the Worker heartbeat while holding the Session projection lock.
+    let message = Message::new(
+        MessageId("bounded-ordinal-source".into()),
+        Role::Assistant,
+        vec![
+            ContentBlock::Thinking {
+                text: "reason".into(),
+                signature: None,
+            },
+            ContentBlock::text("answer"),
+            ContentBlock::ToolUse {
+                id: "call-a".into(),
+                name: "tool-a".into(),
+                input: serde_json::json!({}),
+            },
+            ContentBlock::ToolUse {
+                id: "call-b".into(),
+                name: "tool-b".into(),
+                input: serde_json::json!({}),
+            },
+        ],
+    );
+
+    let bound = message_projection_ordinal_bound(&message);
+    let encoded = crate::project::project_messages(std::slice::from_ref(&message), None);
+    assert_eq!(bound, 6, "R1/R2 E1+E2");
+    assert!(
+        encoded.len() <= bound,
+        "R1/R2 canonical encoder respects E1"
+    );
 }
 
 #[test]
