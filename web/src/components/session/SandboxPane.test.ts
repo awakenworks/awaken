@@ -13,6 +13,7 @@ import {
   inspectProtocolSse,
   protocolEventType,
   previewToolLabel,
+  retainProtocolEvents,
 } from "./ProtocolDebugger";
 
 describe("AI SDK Live Preview helpers", () => {
@@ -76,6 +77,31 @@ describe("cross-protocol Live Preview", () => {
   it("labels protocol lifecycle frames without inventing a type", () => {
     expect(protocolEventType({ type: "RUN_STARTED", runId: "run-1" })).toBe("RUN_STARTED");
     expect(protocolEventType({ delta: "hello" })).toBe("data");
+  });
+
+  it("retains lifecycle anchors when streaming deltas exceed the inspector limit", () => {
+    const events = [
+      { id: 1, protocol: "ag-ui", direction: "request", type: "RUN_AGENT", payload: {} },
+      { id: 2, protocol: "ag-ui", direction: "response", type: "RUN_STARTED", payload: {} },
+      ...Array.from({ length: 140 }, (_, index) => ({
+        id: index + 3,
+        protocol: "ag-ui" as const,
+        direction: "response" as const,
+        type: "TEXT_MESSAGE_CONTENT",
+        payload: { delta: String(index) },
+      })),
+      { id: 143, protocol: "ag-ui", direction: "response", type: "RUN_FINISHED", payload: {} },
+    ] as const;
+
+    const retained = retainProtocolEvents([...events], 60);
+    expect(retained).toHaveLength(60);
+    expect(retained.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "RUN_AGENT",
+      "RUN_STARTED",
+      "RUN_FINISHED",
+    ]));
+    expect(retained.at(-2)?.payload).toEqual({ delta: "139" });
+    expect(retained.at(-1)?.type).toBe("RUN_FINISHED");
   });
 
   it("reassembles SSE records across transport chunk boundaries", async () => {

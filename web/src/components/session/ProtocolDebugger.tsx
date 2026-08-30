@@ -34,6 +34,28 @@ export interface PreviewProtocolEvent {
   payload: unknown;
 }
 
+function isProtocolEventAnchor(event: PreviewProtocolEvent): boolean {
+  return event.direction === "request"
+    || event.type.startsWith("HTTP_")
+    || event.type === "STREAM_ERROR"
+    || /^(?:RUN|STEP|TOOL_CALL|TEXT_MESSAGE)_(?:START|STARTED|END|FINISHED|ERROR)$/.test(event.type);
+}
+
+/** Keep the inspector bounded without allowing token-level stream deltas to
+ * erase the request and lifecycle frames that explain what the run did. */
+export function retainProtocolEvents(
+  events: PreviewProtocolEvent[],
+  limit: number,
+): PreviewProtocolEvent[] {
+  if (events.length <= limit) return events;
+  const anchors = events.filter(isProtocolEventAnchor).slice(-Math.min(24, limit));
+  const anchorIds = new Set(anchors.map((event) => event.id));
+  const recent = events
+    .filter((event) => !anchorIds.has(event.id))
+    .slice(-(limit - anchors.length));
+  return [...anchors, ...recent].sort((left, right) => left.id - right.id);
+}
+
 export function protocolEventType(payload: unknown): string {
   if (payload && typeof payload === "object" && "type" in payload && typeof payload.type === "string") {
     return payload.type;
@@ -113,7 +135,7 @@ export function ProtocolEventInspector({
       <div className="agent-preview-events__list" role="log" aria-live="polite">
         {events.length === 0 ? (
           <p className="mut">{app.t("Send a task to see this protocol's event sequence.", "发送任务后可查看该协议的事件顺序。")}</p>
-        ) : events.slice(-60).map((event) => (
+        ) : retainProtocolEvents(events, 60).map((event) => (
           <details className="agent-preview-event" key={event.id}>
             <summary>
               <span aria-hidden="true">{event.direction === "request" ? "→" : "←"}</span>{" "}
