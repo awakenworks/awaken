@@ -265,6 +265,11 @@ production logic.
   finish fences, expiry reclaim, NeverReplay indeterminacy, bounded attempts,
   and terminal owner clearing. The process-local supervisor remains a driver,
   not a second durable task store.
+- `SandboxControlPublication.tla` covers the provider-neutral control-channel
+  publication slot shared by local Namespace and container sandboxes: one live
+  owner identity, stale-release fencing, finite identity exhaustion without
+  wraparound, and absorbing close. Provider sockets, Kubernetes Pods, process
+  lifetime, and kernel isolation remain executable or environmental evidence.
 - `EvalEvidence.tla` covers only deterministic evaluation evidence handling:
   frozen dataset version, exactly-one observation validity, complete case
   classification before publication, and post-publication immutability.
