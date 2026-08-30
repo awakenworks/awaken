@@ -8,6 +8,7 @@ use awaken_iam_contract::{
 use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote};
 use base64::Engine as _;
 
+use super::off_event_loop;
 use super::{ActionNamespace, now_rfc3339, now_unix, qualified_action};
 
 pub(super) fn cloud_authorization_denial_detail(
@@ -72,7 +73,7 @@ pub(super) async fn authenticate_off_event_loop(
 ) -> Result<RemoteAuthenticatedCredential, RemoteAuthenticationFailure> {
     // Desktop OAuth refresh and remote token verification use synchronous IAM
     // transports. A stale cached token may refresh before authentication.
-    match tokio::task::spawn_blocking(move || authz.authenticate(presented)).await {
+    match off_event_loop::run(move || authz.authenticate(presented)).await {
         Ok(Ok(authenticated)) => Ok(authenticated),
         Ok(Err(AuthReject::Expired)) => Err(RemoteAuthenticationFailure::Expired),
         Ok(Err(AuthReject::Revoked)) => Err(RemoteAuthenticationFailure::Revoked),

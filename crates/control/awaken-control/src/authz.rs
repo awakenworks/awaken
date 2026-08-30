@@ -143,6 +143,7 @@ mod entitlement;
 mod hosted_route_profile;
 mod local_browser;
 mod managed_context;
+mod off_event_loop;
 mod profiles;
 use credentials::{
     authorization_bearer_token, bearer_token, is_legacy_tunnel_route, is_tunnel_route,
@@ -1267,14 +1268,15 @@ pub async fn management_guard(
     }
 
     let legacy_tunnel_route = is_legacy_tunnel_route(req.uri().path());
-    let authenticated = if legacy_tunnel_route {
-        bearer_token(req.headers())
-            .map(|presented| authz.authenticate(&presented))
-            .unwrap_or(Err(AuthReject::Invalid))
-    } else {
-        bearer_token(req.headers())
-            .map(|presented| authz.authenticate(&presented))
-            .unwrap_or_else(|| authz.authenticate_browser(req.headers()))
+    let authenticated = match bearer_token(req.headers()) {
+        Some(presented) => off_event_loop::run({
+            let authz = authz.clone();
+            move || authz.authenticate(&presented)
+        })
+        .await
+        .unwrap_or(Err(AuthReject::Invalid)),
+        None if legacy_tunnel_route => Err(AuthReject::Invalid),
+        None => authz.authenticate_browser(req.headers()),
     };
     let (principal, workspace) = match authenticated {
         Ok(identity) => identity,
