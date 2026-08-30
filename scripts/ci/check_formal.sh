@@ -249,7 +249,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness replaying_a_fully_applied_migration_plan_is_a_noop
   run_kani awaken-ext-compact \
     --harness fold_point_preserves_the_requested_suffix \
-    --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix
+    --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix \
+    --harness compaction_artifact_requires_exact_identity_coverage_and_content
   run_kani awaken-ext-memory \
     --harness memory_recall_contribution_is_exact_and_disabled_is_inert
   run_kani awaken-ext-goal \
