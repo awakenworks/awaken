@@ -476,9 +476,9 @@ impl ManagedState {
             match &mut event.kind {
                 OutboundKind::AgentToolResult { tool_use_id, .. } => {
                     *tool_use_id = latest.get(tool_use_id).cloned().ok_or_else(|| {
-                        StateError::Run(RunError::internal(
-                            "Managed tool result has no preceding tool-use identity",
-                        ))
+                        StateError::Run(RunError::internal(format!(
+                            "Managed tool result `{tool_use_id}` has no preceding tool-use identity"
+                        )))
                     })?;
                 }
                 OutboundKind::AgentMcpToolResult {
