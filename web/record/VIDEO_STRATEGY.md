@@ -1,138 +1,211 @@
-# Awaken video architecture
+# Awaken marketing video standard
 
-The series is organized by user outcome, not by sidebar destination. Every recording
-starts with intent and capability, proves one claim against the real UI/API, and ends
-with one contrast that can stand alone as a shareable clip.
+The public series shows useful work, not product vocabulary. A first-time viewer should
+understand the task, the risk, the result, and the human boundary without knowing
+what an Agent, Session, Resource, or Deployment means beforehand.
 
-Each video is one complete story, not one sidebar tour:
-
-```text
-one user tension → one configured mechanism → one visible effect → one verified claim → one Aha
-```
-
-The harness reserves 172 seconds for the story and rejects any final artifact that
-reaches 180 seconds. A feature appears only when it advances that video's single claim;
-the combined series—not an overloaded overview—provides complete product coverage.
-
-## Dynamic view — the audience journey
+Every public video follows one line:
 
 ```text
-discover       first value         differentiated control       hard proof          trust
-   │               │                         │                       │                 │
-   ▼               ▼                         ▼                       ▼                 ▼
-overview → connect model → build one agent → control its runtime → violate a rule → inspect evidence
-                                │                   │                    │
-                                └──── protocols / sandbox / MCP ────────┘
+consequential task -> real input -> Agent action -> useful deliverable -> human control -> clear handoff
 ```
 
-The opening establishes the promise in under a minute. The next video gets a user to
-a live answer. Later videos deepen confidence with configuration, runtime enforcement,
-protocol portability, and operational evidence. This order optimizes time-to-value
-before asking the viewer to learn the architecture.
+The target release set contains six complementary stories. They follow one operating
+journey from first decision to repeated, governed work, rather than slicing the product
+into settings tours. Technical checks remain in `proofs/`. They protect the claims
+without asking a customer to watch setup, protocol handshakes, denial tests, or infrastructure receipts as marketing content.
 
-## Static view — value chapters and source UI
+## What the strongest official examples do
 
-| Chapter | User question | UI grouped into the story | Aha moment |
-|---|---|---|---|
-| 00 · Overview | Why Awaken? | Home, Agents, Sessions, Models, environments | One control plane from configuration to evidence |
-| 01 · First success | Can my model work now? | Models, Credentials, live test | A key becomes a verified executor, not a hidden setting |
-| 02 · Build | Can I create a useful specialist? | Agent Overview, publish diff, Sandbox | One config becomes a versioned live agent |
-| 03 · Govern tools | Can it act without becoming unsafe? | Tools, permission rules, approval | Tool identity and policy are inspectable data |
-| 04 · Grounding | What knowledge does it use? | Resources, Skills, Memory, session trace | Inputs and evidence stay visible |
-| 05 · AI authoring | Can the model configure the platform? | Assistant, capability contract, config diff | AI proposes only capabilities the runtime advertises |
-| 06 · Runtime proof | Are constraints real? | State Machine, live read-before-write violation | The unsafe write is stopped before the tool executes |
-| 10 · Skill effect | Can a short goal invoke a repeatable procedure? | Skill upload, Agent binding, live Gemini result | Two words produce the exact specialist result because the procedure travels with the Agent |
-| 11 · Resource provenance | What did this Session actually receive? | Memory, file, Skill, Agent resources, Session Files | Every mounted input has a type, path, and source id |
-| 12 · Deployment | Can a published Agent become recurring operation? | Deployment, Environment, cron, real Session | One trigger creates and drives an inspectable Session |
-| 13 · Managed API ingress | Does API integration remain operable in the console? | `POST /v1/sessions`, Sessions detail | The API and UI reveal the same governed Session |
-| 14 · Session lifecycle | Can an operator close work without deleting evidence? | Interrupt receipt, archive, rejected write | Archive stays inspectable and becomes an enforced read-only boundary |
-| 15 · A2A discovery | Can peers discover each other before delegation? | Local well-known Card, inbound endpoints, remote Card lookup | A2A discovery is symmetric and contract-driven |
-| 16 · Access boundary | Can integration access be scoped and revoked? | Client token issue, protected read, revoke | The same credential moves visibly from allowed to denied |
-| 17 · Frontend protocols | Can AI SDK and AG-UI share one Agent? | Protocol guide, AI SDK stream, AG-UI stream, shared history | Two framework protocols commit to one durable thread |
-| 18 · MCP server export | Can existing MCP clients control Awaken? | `/v1/mcp`, bearer handshake, explicit tool catalog | Awaken is both an MCP consumer and a protected MCP server |
-| 19 · Codex ACP Agent | Can Codex become a managed, isolated execution engine? | Agent, `acp:codex` environment, Docker sandbox, live Session, transcript | One portable Agent runs on real containerized Codex and returns to governed history |
+Reviewed on 2026-08-16 against primary sources:
 
-## Customer relationship and sharing objective by story
+- [Anthropic, Agents for financial services](https://www.anthropic.com/news/finance-agents)
+- [Anthropic, Scaling Managed Agents](https://www.anthropic.com/engineering/managed-agents)
+- [LangChain, Build a data analysis agent](https://docs.langchain.com/oss/python/deepagents/data-analysis)
+- [LangChain, Deep Agents overview](https://docs.langchain.com/oss/python/deepagents/overview)
+- [DeerFlow official case studies](https://deerflow.tech/)
 
-| Video | Visible effect that closes the story | Loyalty | Satisfaction | Word of mouth |
-|---|---|---|---|---|
-| 00 · One Agent journey | One configured Agent reaches a Managed session with explicit ACP provenance | A stable mental model makes later workflows feel familiar | The platform breadth is understood through one object, not a feature dump | “One Agent, many realizations” works as the series trailer |
-| 01 · Connect Gemini | A gcloud OAuth source produces a real `MODEL READY` response without copying a key | Secure, repeatable model supply builds operational trust | The viewer knows setup works before leaving the page | Secret-free setup plus a live answer is an easy proof to share |
-| 02 · Build specialist | Three PR titles become structured live release notes | A repeatable Draft-to-proof loop invites the next Agent | Auto-save/validate and immediate output reduce friction | The input/output transformation is useful on its own |
-| 03 · Govern tools | A real model calls `bash`; policy denies it before execution | Teams can safely grant more capability over time | Tool identity and denial reason remain visible | Prompt tries, runtime refuses: a memorable trust clip |
-| 04 · Durable Memory | A fresh session recalls a random code from an explicit store | Accumulated value rewards continued use | Randomized recall removes ambiguity about runtime effect | Anyone can repeat the fresh-session proof |
-| 05 · AI authoring | Plain intent becomes a validated Draft; the human publishes | Faster creation raises repeat usage without losing ownership | No manual form marathon; exact config remains reviewable | “AI drafts, human decides” addresses a common objection |
-| 06 · State Machine | An unread write is visibly blocked with the configured reason | Hard invariants build confidence in deeper automation | Failure is clear and actionable, not mysterious | This is the strongest standalone Aha in the series |
-| 07 · ACP sandbox | A Managed session visibly inherits `acp:claude` and no-egress policy | Replaceable runtime protects Agent investment | Runtime provenance confirms that configuration reached the boundary | Portable Agent plus locked runtime appeals to platform teams |
-| 10 · Skill effect | A two-word request returns `SKILL READY` through a bound Skill | Reusable procedure compounds across Agents | Users stop repeating operational detail | The tiny-input/precise-output contrast is inherently shareable |
-| 11 · Resource provenance | Session Files exposes Memory, file, and Skill mounts | Reusable knowledge stays transparent | One view answers “what did it receive?” | Security teams can inspect the proof without narration |
-| 12 · Deployment | A schedule launches a Session whose Agent output is inspectable | Recurring work makes Awaken part of operations | Output plus linked Session removes click uncertainty | Chat becoming scheduled operation signals production value |
-| 13 · Managed API ingress | An API-created Session appears unchanged in the console | Stable wire objects protect integration investment | Developers and operators share one source of truth | The API-to-console handoff is easy to demonstrate |
-| 14 · Session lifecycle | Interrupt is acknowledged; archive rejects every later write | Enforced lifecycle boundaries earn trust | Receipt plus archived state removes ambiguity | Operations teams see concise fail-closed governance proof |
-| 15 · A2A discovery | A real remote Agent Card appears with protocol and capability data | Standards-based discovery preserves portability | Connection diagnosis is immediate | Cross-platform interoperability becomes visible evidence |
-| 16 · Access boundary | A scoped token works, is revoked, then fails closed | Reliable revocation supports durable enterprise use | One-time copy plus denial test removes ambiguity | Allowed-to-denied is a concise governance proof |
-| 17 · Frontend protocols | AI SDK and AG-UI both expose the same committed history | Framework changes do not strand Agents | Built-in paths and shared history shorten integration diagnosis | Cross-framework continuity is directly reproducible |
-| 18 · MCP server export | Authenticated discovery returns only explicit management tools | Standard clients preserve integration investment | Opt-in enablement and a dedicated bearer are unambiguous | Bidirectional MCP is a memorable platform proof |
-| 19 · Codex ACP Agent | A live Codex reply lands as one coherent Managed message | Replaceable engines protect accumulated Agent investment | Visible startup and a complete answer eliminate adapter ambiguity | “Same Agent, real Codex engine” is a compact portability proof |
+Anthropic names familiar jobs and finished work: a pitchbook, a KYC escalation package,
+a month-end close report. The examples also say where a person reviews and approves the
+work before it reaches a client or is acted on.
 
-Loyalty comes from accumulated value and predictable control; satisfaction comes from
-short time-to-proof and actionable failures; advocacy comes from a visually obvious
-contrast that still makes sense when clipped away from the full video.
+LangChain's strongest tutorial begins with a CSV and ends with analysis, visualizations,
+and a Slack delivery. Planning, sandbox execution, and tracing explain why the result is
+credible, but the result remains the center of the story.
 
-Access and Deployments now enter the series because their backend effects are asserted.
-Runtime secrets and Settings are supporting configuration surfaces; neither gets
-a standalone video until it can prove a distinct executed customer outcome.
+DeerFlow leads with artifacts people can see: a forecast webpage, a generated video, an
+explanatory comic, and a Titanic analysis with charts. The visible artifact makes the
+Agent's work legible before the viewer studies the harness.
 
-Dashboard, Eval, Datasets, and Audit remain in the UI smoke inventory only while their
-routes are gated. They enter the series after the backend is enabled and a recording can
-prove a result; a gated or empty page is not a product payoff.
+The transferable pattern is work input and useful result first, mechanism second.
+Awaken applies it to reproducible technical work: a named evidence file, an auditable
+decision, a reviewed Agent revision, an existing SDK client, a protected action, a
+restart, and a scheduled repository check. Awaken does
+not present these demonstration scenarios as deployed customer cases.
 
-## Series groups
+## Public release set
 
-- Start: 00–02 — promise, Gemini connection, and the first useful published Agent.
-- Control: 03–06 — tools, Memory, AI editing, and State Machine behavior with runtime effects.
-- Integrate: 10, 13, 15, 17–19 — MCP both ways, Managed Agents, A2A, AI SDK, AG-UI, Skills, and a real Codex ACP engine.
-- Operate: 11–12, 14 — provenance, recurring Deployment Sessions, and lifecycle enforcement.
-- Govern: 16 — issue, scope, and revoke access.
+Awaken is a development platform, but the videos do not invent operators to prove that
+point. Each video begins with a recognizable technical job. A role appears only where
+the product enforces a real responsibility boundary, such as final release approval.
 
-The release still has no publishable closed-loop story for Dashboard, Eval, Datasets,
-Audit, Webhooks, self-hosted worker placement, or data-subject erasure. Keep them out
-until their UI can create an effect and inspect the result. This is a release-truth
-constraint, not a copywriting omission.
+| Video | Status | Task and content | Complete loop | What the viewer learns |
+| --- | --- | --- | --- | --- |
+| 00 · Evidence to decision | Executable | Mount specified material read-only, inspect the real read trace, and receive a reviewable decision | Exact source → Agent read → HOLD and actions → durable Session → human approval remains required | Awaken delivers traceable work rather than an ungrounded chat answer |
+| 02 · Build entirely in UI | Executable | Configure an API compatibility reviewer in Console, Preview it against a breaking contract diff, review the configuration diff, and publish the exact revision | Visible configuration → isolated Preview → real compatibility finding → review → immutable publication for new Sessions | Agent behavior is configurable, testable, and reviewable without editing code |
+| 03 · Connect with Anthropic SDK | Executable | Use an existing Managed Agents client to create and continue work | SDK request → Awaken Session → committed result → same Session in Console | A technical team can connect an existing client without adopting a second history model |
+| 04 · Human-controlled action | Executable | Investigate a real local repository and prepare a protected change | Repository evidence → Agent plan → permission wait → human decision → inspectable artifact | Automation can reach consequential work without hiding the authority boundary |
+| 05 · Survive restart | Executable | Start work, restart Awaken, and continue the same Session | Accepted input → committed progress → service restart → same Session resumes → final result | Durable Session and recovery have a visible operational meaning |
+| 06 · Scheduled operation | Executable | Capture a real repository snapshot and schedule an exception-only maintenance brief | Repository facts → read-only snapshot → Deployment → Run once → separate result Session → human next action | A verified Agent can become repeatable work without turning each run into an opaque cron job |
 
-Agent behavior controls are proven by the Memory and State Machine runtime stories,
-not by a configuration-only video. Protocol composition is proven by the
-runtime MCP and Codex ACP stories, not by a metadata-only Session setup video.
+Video 00 is the outcome flagship. Video 02 is the product-control flagship. If a viewer
+cannot answer “what file did the Agent read, what decision did it reach, and who still
+approves?” after video 00, it does not ship. If a viewer cannot answer “what can I
+control, how do I test it, and how do I know the published Agent is the one I reviewed?”
+after video 02, it does not ship.
 
-## Release matrix
+## Video 02: complete UI control without a settings tour
 
-| Class | Videos | Publication rule |
-|---|---|---|
-| Deterministic platform proof | 00, 03–09, 11, 13–14 | UI/API checkpoints must pass against the release build |
-| Real-model proof | 01, 02, 10, 12, 17, 19 | Requires a live provider response; 19 additionally requires a real authenticated Codex ACP adapter inside an observed Docker container |
-| Integration scenario | 15 | Requires a registered and reachable remote A2A delegate |
-| Security scenario | 16, 18 | Requires embedded IAM or the dedicated MCP export bearer |
-| Product-gated | Dashboard, Eval, Datasets, Audit | No video until backend capability and a visible effect exist |
+The story is not “Awaken has many fields.” It is “an API compatibility policy can
+become a reviewed Agent without editing code or trusting hidden defaults.”
 
-## Copy and interaction rules
+1. Start with the risk: a removed response field and renamed status values must not
+   be smoothed into a safe-to-publish decision.
+2. Choose the model route and visible execution policy: reasoning level, speed,
+   processing geography, and exact fallback identities.
+3. Write the job and bound its work: system instructions, step limit, and context policy.
+4. Grant only the work inputs and actions it needs: Resources, Memory, Skills, MCP,
+   catalog tools, client tools, dynamic tool patterns, permissions, presentation, and
+   recovery policy.
+5. Define how work proceeds: State Machine, specialist roster, delegation budgets,
+   runtime extensions, and metadata.
+6. Run the unsaved draft against the real model. The result must identify both client
+   breaks and state the migration work required before publication.
+7. Review the exact configuration and Resource snapshot, publish it, then read the
+   immutable revision back from the API.
 
-- Subtitle one thought at a time; lead with the outcome, then name the mechanism.
-- Prefer concrete verbs: “blocks before execution”, “recalls bounded context”,
-  “persists across this thread”. Avoid architecture nouns without an observable effect.
-- Keep code/config snippets to the smallest decisive fragment and visually pair them
-  with the resulting UI state or runtime event.
-- Never let a spinner carry the story. Show an immediate queued/running state, then a
-  success result or an actionable error. Quota/auth failures must say what the user can
-  do next.
-- Keep the product chrome recognizable, use one brand close, and cut each Aha into a
-  6–12 second standalone clip for sharing.
-- Never ship a configuration-only ending when a runtime or Managed-session effect can
-  be shown. If the real provider, tool, or protocol is unavailable, produce a failed
-  diagnostic artifact instead of weakening the claim.
+The edit is selective. The camera shows one consequential choice from each control
+layer, then uses the review diff to prove the whole authored configuration. Long lists,
+credentials, and waits do not become footage. Raw JSON remains a lossless inspection
+and migration escape hatch, not the primary way a user must configure a supported
+Agent capability.
 
-## Installation claim
+## Cross-video capability coverage
 
-The `awaken` binary embeds the production console at compile time. The installation
-story may claim one-binary startup through `awaken all-in-one` only when its checkpoint
-copies the release binary into a clean directory, starts it without Node.js or external
-web assets, and opens the console from the binary's HTTP listener.
+`P` means planned coverage: the story design makes the capability understandable. `E`
+means a current executable recording visibly proves the real product behavior. A planned
+cell is not evidence. The matching proof test still runs when a mechanism is not narrated.
+
+| Capability | 00 | 02 | 03 | 04 | 05 | 06 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Real model and provider route | P/E | P/E | P/E | P/E | P/E | P/E |
+| Agent instructions, limits, context, inference, fallback |  | P/E | P/E | P/E | P/E | P/E |
+| Tools, permissions, and protected effects | P/E | P/E |  | P/E | P/E | P/E |
+| Files, repositories, Memory, and provenance | P/E | P/E |  | P/E | P/E | P/E |
+| Skills, MCP, and multi-Agent configuration |  | P/E |  | P |  |  |
+| Draft, Preview, diff, and publication snapshot |  | P/E |  | P |  | P/E |
+| Managed Agents client compatibility |  |  | P/E |  |  |  |
+| Session execution, trace, and committed history | P/E | P/E | P/E | P/E | P/E | P/E |
+| Restart and recovery |  | P/E |  |  | P/E |  |
+| Deployment, Run once, and schedule |  |  |  |  |  | P/E |
+| Human authority and actionable handoff | P/E | P/E | P/E | P/E | P/E | P/E |
+
+No row is complete merely because a control is rendered. The release gate for every
+`E` cell is `UI input -> saved readback -> published snapshot -> runtime effect` where
+the capability has a runtime effect. Failure at any edge blocks the video.
+
+## Proofs that do not become videos
+
+The following remain executable release gates:
+
+- 01 Provider connection
+- 03 Tool denial
+- 04 Cross-Session Memory recall
+- 05 AI-assisted authoring
+- 06 State Machine enforcement
+- 07 Clean all-in-one startup
+- 10 Skill activation
+- 11 Resource provenance
+- 13 Managed API ingress
+- 14 Session interrupt and archive
+- 15 A2A discovery
+- 16 Access issue and revoke
+- 17 AI SDK and AG-UI history
+- 18 MCP server export
+- 19 Codex ACP execution
+- 20 Tool identity and deferred loading
+
+A proof returns to the public series only when it gains all five elements:
+
+1. A recognizable job without invented biography or calendar pressure.
+2. A consequence the viewer cares about.
+3. A deliverable useful outside the product demo.
+4. A visible human control point.
+5. A recipient who can act on the result.
+
+“The request was denied,” “the server is ready,” and “the protocol connected” are useful
+evidence. They are not complete marketing stories.
+
+## Script standard
+
+### Opening
+
+- Show the result or the decision tension within eight seconds.
+- Name the task and failure consequence.
+- Do not invent a person, company history, date, deadline, or meeting to add urgency.
+- Do not open with a dashboard, feature category, or architecture term.
+
+### Middle
+
+- Keep setup below 40 percent of runtime.
+- Show only operations that change the decision or establish trust in the result.
+- Explain why an action matters. Never narrate where the cursor clicks.
+- Use the real model for every claimed Agent result.
+- Pair each important claim with visible UI and independent API readback.
+
+### Ending
+
+- End on the deliverable, not a saved form or success toast.
+- Name the next action, owner, or recipient.
+- Use one Aha line that still makes sense as a six to twelve second clip.
+- Close with the brand only after the business result is visible.
+
+## Copy standard
+
+Every sentence has one job. Prefer short concrete verbs: decide, block, recall, assign,
+review, publish, schedule, inspect.
+
+Write:
+
+- “NO-GO. The brief names both blockers.”
+- “The conversation ends. The operating rule does not.”
+- “The meeting starts with a decision, not a search for status.”
+
+Avoid:
+
+- “Unlock the power of next-generation agentic transformation.”
+- “Seamlessly orchestrate robust, scalable workflows.”
+- “Awaken showcases comprehensive end-to-end capabilities.”
+
+Do not use inflated claims, vague superlatives, forced three-part slogans, or em dashes.
+Do not claim a customer, deployment, business metric, certification, or compatibility
+that the recording cannot prove.
+
+## Visual and runtime standard
+
+- Record the release build served by one `awaken all-in-one` origin.
+- Use 1920 by 1200, H.264 High, yuv420p, 30 fps.
+- Use only the time needed to close the story. Remove dead waits and repeated setup,
+  but never cut the evidence, human boundary, result, or handoff to meet a time quota.
+- Keep subtitles to one thought, no more than 12 English words or 100 characters.
+- Focus the exact evidence named by the subtitle.
+- Never leave a spinner, blank canvas, setup wait, or retry loop in the story.
+- A stale source or harness hash blocks publication.
+- A failed assertion produces a diagnostic artifact, never a polished MP4.
+
+The brand close is:
+
+> The conversation can end. The work stays ready for whoever comes next.
+
+This line is a summary of what the viewer has already seen. It is not a substitute for
+showing the result.
