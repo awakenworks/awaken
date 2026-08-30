@@ -1259,6 +1259,17 @@ mod tests {
         }
     }
 
+    // Restore capability rule: C1=Namespace owns no durable cross-process
+    // restore/adoption substrate; E1=advertise no checkpoint format so provider
+    // selection fails closed before any physical side effect. This intentionally
+    // forbids treating its process-local directory as a durable restore target.
+    #[test]
+    fn namespace_does_not_advertise_checkpoint_restore_without_a_durable_substrate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = NamespaceProvider::new(tmp.path());
+        assert!(pc::SandboxProvider::checkpoint_formats(&provider).is_empty());
+    }
+
     #[tokio::test]
     async fn create_sandbox_realizes_a_resolvable_and_an_optional_unresolvable_mount() {
         use pc::Sandbox;

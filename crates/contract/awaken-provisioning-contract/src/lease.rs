@@ -220,10 +220,11 @@ pub struct AdoptionPlan {
     pub orphan: Vec<SandboxHandle>,
 }
 
-/// The identity of a sandbox for reconciliation: `(provider_kind, sandbox_id)`.
-/// `extra` carries provider locators, not identity, so it is excluded.
-fn key(h: &SandboxHandle) -> (&str, &str) {
-    (h.provider_kind(), h.sandbox_id.as_str())
+/// The identity of a sandbox for reconciliation. Ordinary Phase-A handles
+/// remain `(provider_kind, sandbox_id, None)` and ignore provider payload.
+/// Phase-B restored handles additionally require exact restoration evidence.
+fn key(h: &SandboxHandle) -> (&str, &str, Option<&crate::SandboxRestorationEvidence>) {
+    (h.provider_kind(), h.sandbox_id.as_str(), h.restoration())
 }
 
 /// Reconcile live sandboxes against those still referenced by a live run.
@@ -232,12 +233,12 @@ fn key(h: &SandboxHandle) -> (&str, &str) {
 /// - live ∖ referenced → **reap** (nothing needs it)
 /// - referenced ∖ live → **orphan** (the run's sandbox died; re-place it)
 ///
-/// Pure and neutral: identity is `(provider_kind, sandbox_id)`; `referenced` is
-/// supplied by the caller from live `Claimed` bindings.
+/// Pure and neutral: identity is `(provider_kind, sandbox_id, restoration)`;
+/// `referenced` is supplied by the caller from live `Claimed` bindings.
 #[must_use]
 pub fn reconcile_adoption(live: &[SandboxHandle], referenced: &[SandboxHandle]) -> AdoptionPlan {
-    let referenced_keys: Vec<(&str, &str)> = referenced.iter().map(key).collect();
-    let live_keys: Vec<(&str, &str)> = live.iter().map(key).collect();
+    let referenced_keys: Vec<_> = referenced.iter().map(key).collect();
+    let live_keys: Vec<_> = live.iter().map(key).collect();
 
     let mut plan = AdoptionPlan::default();
     for h in live {
@@ -275,6 +276,14 @@ pub struct ReconcileOutcome {
 /// sandboxes a run still references, reap (reconnect → `dispose`) the ones nothing
 /// references, and pass orphans through for the caller to re-place. Best-effort per
 /// handle so a single failure never strands the rest of the fleet.
+///
+/// This generic actuator has neither the frozen [`crate::spec::SandboxSpec`] nor
+/// the authoritative [`crate::sandbox::SandboxRestoreRequest`] required to prove
+/// an exact restored target. Handles carrying restoration evidence therefore fail
+/// closed without provider effects. Exact restored adoption/disposal belongs to
+/// the dedicated R1 [`SandboxProvider::restore`] /
+/// [`SandboxProvider::dispose_restored`] port owner; it must not be recreated as a
+/// second cleanup path here.
 pub async fn apply_adoption_plan(
     provider: &dyn SandboxProvider,
     plan: &AdoptionPlan,
@@ -284,12 +293,20 @@ pub async fn apply_adoption_plan(
         ..Default::default()
     };
     for h in &plan.adopt {
+        if h.restoration().is_some() {
+            out.failed.push(h.clone());
+            continue;
+        }
         match provider.adopt(h).await {
             Ok(_reconnected) => out.adopted.push(h.clone()),
             Err(_) => out.failed.push(h.clone()),
         }
     }
     for h in &plan.reap {
+        if h.restoration().is_some() {
+            out.failed.push(h.clone());
+            continue;
+        }
         match provider.adopt(h).await {
             Ok(sandbox) => match sandbox.dispose().await {
                 Ok(()) => out.reaped.push(h.clone()),
@@ -412,6 +429,25 @@ mod tests {
         SandboxHandle::new("k8s", id)
     }
 
+    pub(super) fn restored_h(id: &str, effect_coordinate: &str) -> SandboxHandle {
+        let mut encoded = serde_json::to_value(h(id)).unwrap();
+        encoded.as_object_mut().unwrap().insert(
+            "restoration".into(),
+            serde_json::json!({
+                "effect_id": awaken_agent_contract::collision_resistant_fingerprint(
+                "awaken-test-restoration-effect-v1",
+                &[effect_coordinate.as_bytes()],
+                ),
+                "generation_id": "generation-a",
+                "checkpoint_id": "checkpoint-a",
+                "checkpoint_digest": "digest-a",
+                "sandbox_spec_fingerprint": "spec-a",
+                "checkpoint_exclusions_fingerprint": "exclusions-a"
+            }),
+        );
+        serde_json::from_value(encoded).unwrap()
+    }
+
     #[test]
     fn indefinite_lease_is_always_live() {
         assert_eq!(
@@ -506,13 +542,14 @@ mod tests {
     }
 
     #[test]
-    fn identity_ignores_provider_payload() {
+    fn phase_a_identity_ignores_provider_payload() {
         let with_payload = SandboxHandle::local(
             "a",
             crate::LocalSandboxHandleV1 {
                 outputs_path: "/outputs".into(),
                 base_env: Vec::new(),
                 continuation_excluded_paths: Vec::new(),
+                deny_tool_egress: false,
             },
         );
         let plan = reconcile_adoption(&[with_payload], &[SandboxHandle::new("local", "a")]);
@@ -521,6 +558,36 @@ mod tests {
             1,
             "same (kind,id) reconciles regardless of provider payload"
         );
+    }
+
+    // Restoration reconciliation table: C1 both handles have None; C2 both
+    // carry the same complete Some; C3 one has None; C4 both have Some but one
+    // exact field differs. Effects: R1/R2 adopt, while R3/R4 reap the live
+    // identity and orphan the durable reference. Provider payload remains
+    // excluded in R1; exact restoration evidence is included in R2-R4.
+    #[test]
+    fn phase_b_identity_requires_exact_restoration_evidence() {
+        let exact = restored_h("restored", "effect-a");
+        let same = exact.clone();
+        let mismatch = restored_h("restored", "effect-b");
+        let ordinary = h("restored");
+
+        assert_eq!(
+            reconcile_adoption(std::slice::from_ref(&exact), &[same])
+                .adopt
+                .len(),
+            1,
+            "R2"
+        );
+        for (rule, referenced) in [("R3", ordinary), ("R4", mismatch)] {
+            let plan = reconcile_adoption(
+                std::slice::from_ref(&exact),
+                std::slice::from_ref(&referenced),
+            );
+            assert_eq!(plan.reap, vec![exact.clone()], "{rule}");
+            assert_eq!(plan.orphan, vec![referenced], "{rule}");
+            assert!(plan.adopt.is_empty(), "{rule}");
+        }
     }
 
     #[test]
@@ -774,6 +841,71 @@ mod actuator_tests {
         assert!(out.adopted.is_empty());
         assert!(out.reaped.is_empty());
         assert_eq!(out.failed.len(), 2);
+    }
+
+    // Restored-handle actuator decision table:
+    // C1 restoration Some in adopt; C2 restoration Some in reap; C3 ordinary
+    // restoration None follows either. R1 C1/C2 => failed with zero provider
+    // adopt/dispose effects because this generic port lacks the frozen spec and
+    // restore request. R2 C3 => ordinary work still succeeds after either
+    // fail-closed classification, preserving per-handle best effort.
+    #[tokio::test]
+    async fn restored_handles_fail_closed_without_blocking_ordinary_work() {
+        let restored_adopt = super::tests::restored_h("restored-adopt", "effect-adopt");
+        let restored_reap = super::tests::restored_h("restored-reap", "effect-reap");
+        let exact_adopts = Arc::new(AtomicU32::new(0));
+        let exact_disposes = Arc::new(AtomicU32::new(0));
+        let exact_provider = FakeProvider {
+            adopts: exact_adopts.clone(),
+            disposes: exact_disposes.clone(),
+            fail_adopt_ids: Vec::new(),
+            dispose_fails: false,
+        };
+
+        let exact = apply_adoption_plan(
+            &exact_provider,
+            &AdoptionPlan {
+                adopt: vec![restored_adopt.clone()],
+                reap: vec![restored_reap.clone()],
+                orphan: Vec::new(),
+            },
+        )
+        .await;
+        assert_eq!(
+            exact.failed,
+            vec![restored_adopt.clone(), restored_reap.clone()]
+        );
+        assert!(exact.adopted.is_empty());
+        assert!(exact.reaped.is_empty());
+        assert_eq!(exact_adopts.load(Ordering::SeqCst), 0, "R1 adopt");
+        assert_eq!(exact_disposes.load(Ordering::SeqCst), 0, "R1 dispose");
+
+        let ordinary = h("ordinary");
+        let mixed_adopts = Arc::new(AtomicU32::new(0));
+        let mixed_disposes = Arc::new(AtomicU32::new(0));
+        let mixed_provider = FakeProvider {
+            adopts: mixed_adopts.clone(),
+            disposes: mixed_disposes.clone(),
+            fail_adopt_ids: Vec::new(),
+            dispose_fails: false,
+        };
+        let mixed = apply_adoption_plan(
+            &mixed_provider,
+            &AdoptionPlan {
+                adopt: vec![restored_adopt.clone(), ordinary.clone()],
+                reap: vec![restored_reap.clone()],
+                orphan: Vec::new(),
+            },
+        )
+        .await;
+        assert_eq!(mixed.adopted, vec![ordinary], "R2");
+        assert_eq!(mixed.failed, vec![restored_adopt, restored_reap], "R2");
+        assert_eq!(mixed_adopts.load(Ordering::SeqCst), 1, "ordinary only");
+        assert_eq!(
+            mixed_disposes.load(Ordering::SeqCst),
+            0,
+            "restored reap skipped"
+        );
     }
 
     #[tokio::test]

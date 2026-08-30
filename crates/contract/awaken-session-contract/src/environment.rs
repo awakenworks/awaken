@@ -131,34 +131,44 @@ pub struct SessionEnvironmentOperation {
 impl SessionEnvironmentOperation {
     #[must_use]
     pub fn new(
+        workspace_id: &str,
         session_id: &str,
         kind: &str,
-        generation_id: &str,
+        generation: &SandboxGeneration,
         activity_epoch: u64,
         realization: Option<crate::SessionRealizationLease>,
+        checkpoint: Option<&SandboxCheckpointRef>,
     ) -> Self {
+        let generation_bytes =
+            serde_json::to_vec(generation).expect("SandboxGeneration serializes");
+        let activity_epoch_bytes = activity_epoch.to_be_bytes();
+        let realization_bytes =
+            serde_json::to_vec(&realization).expect("SessionRealizationLease serializes");
+        let checkpoint_bytes = checkpoint
+            .map(|value| serde_json::to_vec(value).expect("SandboxCheckpointRef serializes"));
+        let mut components = vec![
+            workspace_id.as_bytes(),
+            session_id.as_bytes(),
+            kind.as_bytes(),
+            generation_bytes.as_slice(),
+            activity_epoch_bytes.as_slice(),
+            realization_bytes.as_slice(),
+        ];
+        if let Some(checkpoint_bytes) = checkpoint_bytes.as_deref() {
+            components.push(checkpoint_bytes);
+        }
         Self {
-            effect_id: crate::stable_fingerprint(&(
-                "session-environment-operation-v1",
-                session_id,
-                kind,
-                generation_id,
-                activity_epoch,
-                realization.as_ref().map(|lease| {
-                    (
-                        lease.owner.as_str(),
-                        lease.runtime_incarnation.as_str(),
-                        lease.epoch,
-                    )
-                }),
-            )),
+            effect_id: awaken_agent_contract::collision_resistant_fingerprint(
+                "awaken-session-environment-operation-v2",
+                &components,
+            ),
             activity_epoch,
             realization,
         }
     }
 }
 
-pub use awaken_provisioning_contract::SandboxCheckpointRef;
+pub use awaken_provisioning_contract::{SandboxCheckpointRef, SandboxRestoreRequest};
 
 /// Exact bounds and aggregate identity for one idempotent checkpoint effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -267,6 +277,31 @@ impl SessionEnvironmentState {
         }
     }
 
+    /// Project the sole durable `Restoring` tuple into the provider-neutral
+    /// request used by restore and terminal orphan cleanup.
+    #[must_use]
+    pub fn restoring_request(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Option<SandboxRestoreRequest> {
+        let Self::Restoring {
+            operation,
+            checkpoint,
+            generation,
+        } = self
+        else {
+            return None;
+        };
+        Some(SandboxRestoreRequest {
+            workspace_id: workspace_id.to_owned(),
+            session_id: session_id.to_owned(),
+            effect_id: operation.effect_id.clone(),
+            generation_id: generation.id.clone(),
+            checkpoint: checkpoint.clone(),
+        })
+    }
+
     pub fn set_resident(&mut self, binding: impl Into<String>) {
         *self = Self::Resident {
             binding: binding.into(),
@@ -334,6 +369,7 @@ impl SessionEnvironmentState {
 
     pub fn begin_suspend(
         &mut self,
+        workspace_id: &str,
         session_id: &str,
         activity_epoch: u64,
         realization: Option<crate::SessionRealizationLease>,
@@ -350,11 +386,13 @@ impl SessionEnvironmentState {
             return Err(SessionEnvironmentTransitionError::NotResident);
         };
         let operation = SessionEnvironmentOperation::new(
+            workspace_id,
             session_id,
             "suspend",
-            &generation.id,
+            generation,
             activity_epoch,
             realization,
+            None,
         );
         *self = Self::Suspending {
             operation,
@@ -456,6 +494,7 @@ impl SessionEnvironmentState {
 
     pub fn begin_restore(
         &mut self,
+        workspace_id: &str,
         session_id: &str,
         activity_epoch: u64,
         realization: Option<crate::SessionRealizationLease>,
@@ -475,11 +514,13 @@ impl SessionEnvironmentState {
             return Err(SessionEnvironmentTransitionError::CheckpointExpired);
         }
         let operation = SessionEnvironmentOperation::new(
+            workspace_id,
             session_id,
             "restore",
-            &generation.id,
+            generation,
             activity_epoch,
             realization,
+            Some(checkpoint),
         );
         *self = Self::Restoring {
             operation,
@@ -751,13 +792,285 @@ mod tests {
         }
     }
 
+    fn realization() -> crate::SessionRealizationLease {
+        crate::SessionRealizationLease {
+            owner: "owner-a".into(),
+            runtime_incarnation: "runtime-a".into(),
+            epoch: 3,
+            expires_at_unix_ms: 900,
+        }
+    }
+
+    fn restore_effect(
+        workspace_id: &str,
+        session_id: &str,
+        generation: &SandboxGeneration,
+        activity_epoch: u64,
+        realization: Option<crate::SessionRealizationLease>,
+        checkpoint: &SandboxCheckpointRef,
+    ) -> String {
+        SessionEnvironmentOperation::new(
+            workspace_id,
+            session_id,
+            "restore",
+            generation,
+            activity_epoch,
+            realization,
+            Some(checkpoint),
+        )
+        .effect_id
+    }
+
+    // Environment-operation identity decision table. Causes are the complete
+    // authoritative tuple: workspace, Session, kind, every generation field,
+    // activity epoch, every realization field, and (for restore) every
+    // checkpoint field. Effects: R1 exact replay reuses one canonical id;
+    // R2-R8 any changed axis changes it; R9/R10 already-durable legacy restore
+    // and suspend operations replay opaquely; R11 length framing prevents tuple
+    // boundary aliasing. No legacy id can be newly derived by this writer.
+    #[test]
+    fn environment_operation_effect_is_workspace_bound_complete_and_legacy_replay_safe() {
+        let generation = generation();
+        let suspend = SessionEnvironmentOperation::new(
+            "workspace-a",
+            "s1",
+            "suspend",
+            &generation,
+            6,
+            Some(realization()),
+            None,
+        );
+        let checkpoint = checkpoint(&suspend);
+        let expected = restore_effect(
+            "workspace-a",
+            "s1",
+            &generation,
+            7,
+            Some(realization()),
+            &checkpoint,
+        );
+        assert_eq!(
+            restore_effect(
+                "workspace-a",
+                "s1",
+                &generation,
+                7,
+                Some(realization()),
+                &checkpoint,
+            ),
+            expected,
+            "R1"
+        );
+        assert!(
+            awaken_agent_contract::collision_resistant_fingerprint_digest(&expected).is_some(),
+            "R1 canonical writer"
+        );
+        assert_ne!(
+            restore_effect(
+                "workspace-b",
+                "s1",
+                &generation,
+                7,
+                Some(realization()),
+                &checkpoint,
+            ),
+            expected,
+            "R2 workspace"
+        );
+        assert_ne!(
+            restore_effect(
+                "workspace-a",
+                "s2",
+                &generation,
+                7,
+                Some(realization()),
+                &checkpoint,
+            ),
+            expected,
+            "R3 Session"
+        );
+        assert_ne!(
+            SessionEnvironmentOperation::new(
+                "workspace-a",
+                "s1",
+                "restore-other",
+                &generation,
+                7,
+                Some(realization()),
+                Some(&checkpoint),
+            )
+            .effect_id,
+            expected,
+            "R4 kind"
+        );
+
+        let mut generation_variants = Vec::new();
+        for field in 0..5 {
+            let mut changed = generation.clone();
+            match field {
+                0 => changed.id.push_str("-other"),
+                1 => changed.created_at_unix_ms += 1,
+                2 => changed.expires_at_unix_ms += 1,
+                3 => changed.environment_fingerprint.push_str("-other"),
+                _ => changed.base_image_fingerprint.push_str("-other"),
+            }
+            generation_variants.push(changed);
+        }
+        for changed in generation_variants {
+            assert_ne!(
+                restore_effect(
+                    "workspace-a",
+                    "s1",
+                    &changed,
+                    7,
+                    Some(realization()),
+                    &checkpoint,
+                ),
+                expected,
+                "R5 complete generation"
+            );
+        }
+        assert_ne!(
+            restore_effect(
+                "workspace-a",
+                "s1",
+                &generation,
+                8,
+                Some(realization()),
+                &checkpoint,
+            ),
+            expected,
+            "R6 activity epoch"
+        );
+
+        let mut realization_variants = Vec::new();
+        for field in 0..4 {
+            let mut changed = realization();
+            match field {
+                0 => changed.owner.push_str("-other"),
+                1 => changed.runtime_incarnation.push_str("-other"),
+                2 => changed.epoch += 1,
+                _ => changed.expires_at_unix_ms += 1,
+            }
+            realization_variants.push(changed);
+        }
+        for changed in realization_variants {
+            assert_ne!(
+                restore_effect(
+                    "workspace-a",
+                    "s1",
+                    &generation,
+                    7,
+                    Some(changed),
+                    &checkpoint,
+                ),
+                expected,
+                "R7 complete realization"
+            );
+        }
+        assert_ne!(
+            restore_effect("workspace-a", "s1", &generation, 7, None, &checkpoint),
+            expected,
+            "R7 realization presence"
+        );
+
+        let mut checkpoint_variants = Vec::new();
+        for field in 0..10 {
+            let mut changed = checkpoint.clone();
+            match field {
+                0 => changed.id.push_str("-other"),
+                1 => changed.format.push_str("-other"),
+                2 => changed.digest.push_str("-other"),
+                3 => changed.size_bytes += 1,
+                4 => changed.created_at_unix_ms += 1,
+                5 => changed.expires_at_unix_ms += 1,
+                6 => changed.environment_fingerprint.push_str("-other"),
+                7 => changed.base_image_fingerprint.push_str("-other"),
+                8 => changed.excluded_mounts.push("/other".into()),
+                _ => changed.suspend_effect_id.push_str("-other"),
+            }
+            checkpoint_variants.push(changed);
+        }
+        for changed in checkpoint_variants {
+            assert_ne!(
+                restore_effect(
+                    "workspace-a",
+                    "s1",
+                    &generation,
+                    7,
+                    Some(realization()),
+                    &changed,
+                ),
+                expected,
+                "R8 complete checkpoint"
+            );
+        }
+
+        let legacy = SessionEnvironmentOperation {
+            effect_id: "fnv1a64:0123456789abcdef".into(),
+            activity_epoch: 1,
+            realization: None,
+        };
+        let mut restoring = SessionEnvironmentState::Restoring {
+            operation: legacy.clone(),
+            checkpoint: checkpoint.clone(),
+            generation: generation.clone(),
+        };
+        let restoring_before = restoring.clone();
+        assert_eq!(
+            restoring
+                .begin_restore(
+                    "different-workspace",
+                    "different-session",
+                    99,
+                    Some(realization()),
+                    u64::MAX,
+                )
+                .unwrap(),
+            &legacy,
+            "R9"
+        );
+        assert_eq!(restoring, restoring_before, "R9 opaque durable replay");
+
+        let mut suspending = SessionEnvironmentState::Suspending {
+            operation: legacy.clone(),
+            source_binding: "source".into(),
+            generation: generation.clone(),
+            suspend_phase: SuspendPhase::Quiescing,
+            checkpoint: None,
+        };
+        let suspending_before = suspending.clone();
+        assert_eq!(
+            suspending
+                .begin_suspend(
+                    "different-workspace",
+                    "different-session",
+                    99,
+                    Some(realization()),
+                )
+                .unwrap(),
+            &legacy,
+            "R10"
+        );
+        assert_eq!(suspending, suspending_before, "R10 opaque durable replay");
+
+        assert_ne!(
+            restore_effect("ab", "c", &generation, 7, Some(realization()), &checkpoint,),
+            restore_effect("a", "bc", &generation, 7, Some(realization()), &checkpoint,),
+            "R11 length framing"
+        );
+    }
+
     // Cause/effect design: C1=Resident, C2=no live effect, C4=current epoch,
     // C5=checkpoint succeeds, C6=source termination proven; constraint: each
     // receipt is bound to one operation+generation. R3 => E2 then E4.
     #[test]
     fn suspend_advances_only_in_durable_effect_order() {
         let mut state = resident();
-        let operation = state.begin_suspend("s1", 7, None).unwrap().clone();
+        let operation = state
+            .begin_suspend("workspace-a", "s1", 7, None)
+            .unwrap()
+            .clone();
         assert!(matches!(
             state,
             SessionEnvironmentState::Suspending {
@@ -798,7 +1111,10 @@ mod tests {
     #[test]
     fn source_cannot_be_disposed_before_checkpoint_reference() {
         let mut state = resident();
-        let operation = state.begin_suspend("s1", 7, None).unwrap().clone();
+        let operation = state
+            .begin_suspend("workspace-a", "s1", 7, None)
+            .unwrap()
+            .clone();
         state
             .record_quiescence(&QuiescenceReceipt {
                 effect_id: operation.effect_id.clone(),
@@ -825,7 +1141,10 @@ mod tests {
     #[test]
     fn restore_is_idempotent_and_bound_to_checkpoint() {
         let mut state = resident();
-        let suspend = state.begin_suspend("s1", 7, None).unwrap().clone();
+        let suspend = state
+            .begin_suspend("workspace-a", "s1", 7, None)
+            .unwrap()
+            .clone();
         state
             .record_quiescence(&QuiescenceReceipt {
                 effect_id: suspend.effect_id.clone(),
@@ -850,8 +1169,16 @@ mod tests {
                 terminated: true,
             })
             .unwrap();
-        let restore = state.begin_restore("s1", 8, None, 100).unwrap().clone();
-        assert_eq!(state.begin_restore("s1", 8, None, 100).unwrap(), &restore);
+        let restore = state
+            .begin_restore("workspace-a", "s1", 8, None, 100)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            state
+                .begin_restore("workspace-a", "s1", 8, None, 100)
+                .unwrap(),
+            &restore
+        );
         state
             .complete_restore(&RestoreReceipt {
                 effect_id: restore.effect_id,
@@ -868,14 +1195,21 @@ mod tests {
     // restore effect and retains the durable checkpoint evidence.
     #[test]
     fn expired_checkpoint_fails_closed() {
-        let operation =
-            SessionEnvironmentOperation::new("s1", "suspend", &generation().id, 1, None);
+        let operation = SessionEnvironmentOperation::new(
+            "workspace-a",
+            "s1",
+            "suspend",
+            &generation(),
+            1,
+            None,
+            None,
+        );
         let mut state = SessionEnvironmentState::Hibernated {
             checkpoint: checkpoint(&operation),
             generation: generation(),
         };
         assert_eq!(
-            state.begin_restore("s1", 2, None, 1_000),
+            state.begin_restore("workspace-a", "s1", 2, None, 1_000),
             Err(SessionEnvironmentTransitionError::CheckpointExpired)
         );
         assert!(matches!(state, SessionEnvironmentState::Hibernated { .. }));
@@ -933,7 +1267,10 @@ mod tests {
             wrong_live_count in 1u32..u32::MAX,
         ) {
             let mut state = resident();
-            let operation = state.begin_suspend("s1", 7, None).unwrap().clone();
+            let operation = state
+                .begin_suspend("workspace-a", "s1", 7, None)
+                .unwrap()
+                .clone();
             let before = state.clone();
             let receipt = QuiescenceReceipt {
                 effect_id: operation.effect_id,

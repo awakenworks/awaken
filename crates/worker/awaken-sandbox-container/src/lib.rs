@@ -37,6 +37,7 @@ mod packages;
 mod podman_plan;
 mod process_env;
 mod provider_contract;
+mod provider_realization;
 use process_env::environment_keepalive_command;
 pub use process_env::runtime_configuration_homes;
 mod recovery;
@@ -60,7 +61,7 @@ pub use provider_contract::{
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
-    RuntimeAgentProcess, RuntimeError, SandboxControlBindingRequest,
+    RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
 use runtime::{allowlist_capability_advertised, container_capabilities};
 pub use secret::SecretBytes;
@@ -372,17 +373,40 @@ mod planner_tests {
 /// blob-store resolve on this tier; the ACP resource path rides `Other{content}` so it
 /// works today.
 #[derive(Debug)]
-pub(crate) struct StagingGuard(std::path::PathBuf);
+pub(crate) struct StagingGuard {
+    path: std::path::PathBuf,
+    remove_on_drop: bool,
+}
 
 impl StagingGuard {
     fn path(&self) -> &std::path::Path {
-        &self.0
+        &self.path
+    }
+
+    /// A restored physical target outlives this process-local wrapper. Its
+    /// staging directory is removed only by explicit terminal disposal after a
+    /// replacement provider has re-observed the same runtime handle.
+    fn retain_for_restoration(&mut self) {
+        self.remove_on_drop = false;
+    }
+
+    fn retained(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            remove_on_drop: false,
+        }
+    }
+
+    fn remove(mut self) {
+        self.remove_on_drop = true;
     }
 }
 
 impl Drop for StagingGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if self.remove_on_drop {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 }
 
@@ -702,7 +726,10 @@ pub(crate) fn staging_dir(
         ))
     })?;
     let path = d.clone();
-    *guard = Some(StagingGuard(d));
+    *guard = Some(StagingGuard {
+        path: d,
+        remove_on_drop: true,
+    });
     Ok(path)
 }
 
@@ -1070,6 +1097,166 @@ pub(crate) const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
 /// realization/adoption only and cannot authorize garbage collection.
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const RUNTIME_OWNER_LABEL: &str = "awaken.sandbox.owner";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_EFFECT_LABEL: &str = "awaken.sandbox.restore.effect";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_GENERATION_LABEL: &str = "awaken.sandbox.restore.generation";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_CHECKPOINT_LABEL: &str = "awaken.sandbox.restore.checkpoint";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_CHECKPOINT_DIGEST_LABEL: &str = "awaken.sandbox.restore.checkpoint-digest";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_SPEC_LABEL: &str = "awaken.sandbox.restore.spec";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_EXCLUSIONS_LABEL: &str = "awaken.sandbox.restore.exclusions";
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) const RESTORE_PLAN_LABEL: &str = "awaken.sandbox.restore.plan";
+
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) fn restoration_metadata(
+    evidence: &pc::SandboxRestorationEvidence,
+) -> [(&'static str, &str); 6] {
+    [
+        (RESTORE_EFFECT_LABEL, evidence.effect_id()),
+        (RESTORE_GENERATION_LABEL, evidence.generation_id()),
+        (RESTORE_CHECKPOINT_LABEL, evidence.checkpoint_id()),
+        (
+            RESTORE_CHECKPOINT_DIGEST_LABEL,
+            evidence.checkpoint_digest(),
+        ),
+        (RESTORE_SPEC_LABEL, evidence.sandbox_spec_fingerprint()),
+        (
+            RESTORE_EXCLUSIONS_LABEL,
+            evidence.checkpoint_exclusions_fingerprint(),
+        ),
+    ]
+}
+
+/// Stable secret-free fingerprint of the complete pre-materialization runtime
+/// plan. It is calculated before Blob/Secret/Memory resolution and passed
+/// unchanged to the substrate, so a read-first retry can verify immutable
+/// realization without reopening any external source.
+pub(crate) fn restoration_plan_fingerprint(plan: &ContainerPlan) -> String {
+    let mut canonical = plan.clone();
+    // Docker/Podman add this exact provider-owned locator only after the
+    // read-first fingerprint is frozen. Its host source is preserved and
+    // verified through the durable continuation handle instead.
+    canonical
+        .binds
+        .retain(|bind| bind.mount_path != LIVE_INPUTS_ROOT);
+    // Package resolution deterministically replaces only the image reference;
+    // the complete package demand and original base image remain bound by the
+    // SandboxSpec evidence. Normalizing that derived reference lets a fresh
+    // provider verify the same logical plan before reopening the image source.
+    if !canonical.packages.is_empty() {
+        canonical.image = "<awaken-package-derived-image>".into();
+        if matches!(canonical.rootfs, RootfsPlan::Image(_)) {
+            canonical.rootfs = RootfsPlan::Image("<awaken-package-derived-image>".into());
+        }
+    }
+    blake3::hash(format!("container-restore-plan-v1\0{canonical:?}").as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// Decode the one canonical restore-evidence tuple from substrate metadata.
+/// All four fields are one atomic identity: an object with a partial tuple is
+/// corrupt and must never be adopted as either an ordinary or restored target.
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) fn restoration_evidence_from_metadata(
+    mut value: impl FnMut(&str) -> Option<String>,
+    substrate: &str,
+) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+    let effect_id = value(RESTORE_EFFECT_LABEL);
+    let generation_id = value(RESTORE_GENERATION_LABEL);
+    let checkpoint_id = value(RESTORE_CHECKPOINT_LABEL);
+    let checkpoint_digest = value(RESTORE_CHECKPOINT_DIGEST_LABEL);
+    let sandbox_spec_fingerprint = value(RESTORE_SPEC_LABEL);
+    let checkpoint_exclusions_fingerprint = value(RESTORE_EXCLUSIONS_LABEL);
+    match (
+        effect_id,
+        generation_id,
+        checkpoint_id,
+        checkpoint_digest,
+        sandbox_spec_fingerprint,
+        checkpoint_exclusions_fingerprint,
+    ) {
+        (None, None, None, None, None, None) => Ok(None),
+        (
+            Some(effect_id),
+            Some(generation_id),
+            Some(checkpoint_id),
+            Some(checkpoint_digest),
+            Some(sandbox_spec_fingerprint),
+            Some(checkpoint_exclusions_fingerprint),
+        ) => pc::SandboxRestorationEvidence::from_exact_parts(
+            effect_id,
+            generation_id,
+            checkpoint_id,
+            checkpoint_digest,
+            sandbox_spec_fingerprint,
+            checkpoint_exclusions_fingerprint,
+        )
+        .map(Some)
+        .map_err(|error| RuntimeError::Backend(error.to_string())),
+        _ => Err(RuntimeError::Backend(format!(
+            "{substrate} has incomplete restore evidence"
+        ))),
+    }
+}
+
+fn retained_host_staging(
+    handle: Option<&pc::ContainerContinuationHandle>,
+) -> Result<Option<StagingGuard>, RuntimeError> {
+    let Some(pc::ContainerContinuationHandle::HostBindRestoration(locator)) = handle else {
+        return Ok(None);
+    };
+    retained_host_staging_path(std::path::PathBuf::from(locator.staging_root())).map(Some)
+}
+
+fn retained_host_staging_path(path: std::path::PathBuf) -> Result<StagingGuard, RuntimeError> {
+    validate_host_staging_path(&path)?;
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(RuntimeError::Backend(
+            "restored host-bind staging locator is not a physical directory".into(),
+        ));
+    }
+    Ok(StagingGuard::retained(path))
+}
+
+fn validate_host_staging_path(path: &std::path::Path) -> Result<(), RuntimeError> {
+    let provider_temp = std::env::temp_dir();
+    let trusted_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("awaken-acp-stage-"));
+    if path.parent() != Some(provider_temp.as_path()) || !trusted_name {
+        return Err(RuntimeError::Backend(
+            "restored host-bind staging locator is outside the provider staging namespace".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Remove one daemon-observed host-bind locator without requiring it to have
+/// survived a Host reboot. Namespace validation precedes any filesystem effect;
+/// a symlink is unlinked as an object and is never followed.
+#[cfg(any(test, feature = "docker", feature = "podman"))]
+fn remove_host_staging_path(path: &std::path::Path) -> Result<(), RuntimeError> {
+    validate_host_staging_path(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path).map_err(|error| RuntimeError::Backend(error.to_string()))
+        }
+        Ok(_) => {
+            std::fs::remove_file(path).map_err(|error| RuntimeError::Backend(error.to_string()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RuntimeError::Backend(error.to_string())),
+    }
+}
 
 pub(crate) fn runtime_owner_id() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1079,6 +1266,15 @@ pub(crate) fn runtime_owner_id() -> String {
         .unwrap_or(0);
     let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!("{}-{epoch}-{sequence}", std::process::id())
+}
+
+/// Stable runtime namespace for one exact restore effect. Unlike ordinary
+/// Docker/Podman placement it deliberately excludes the process-local runtime
+/// owner, so a replacement provider instance resolves the same physical target.
+fn restoration_runtime_scope(
+    evidence: &pc::SandboxRestorationEvidence,
+) -> Result<String, pc::SandboxError> {
+    evidence.physical_target_key()
 }
 
 /// A daemon-global container name. Session/thread ids are only unique inside one
@@ -1092,6 +1288,12 @@ pub(crate) fn runtime_container_name(owner_id: &str, scope: &str) -> String {
     let scope = stage_name(scope);
     let scope = &scope[..scope.len().min(80)];
     format!("awaken-{}-{scope}", &owner[..16])
+}
+
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) fn restore_container_name(scope: &str) -> String {
+    let identity = blake3::hash(scope.as_bytes()).to_hex();
+    format!("awaken-restore-{identity}")
 }
 
 fn err(e: RuntimeError) -> pc::SandboxError {
@@ -1234,25 +1436,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        // Fail closed against our capabilities before touching the runtime.
-        pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
-            .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
-        if spec
-            .mounts
-            .iter()
-            .any(pc::MountRequirement::is_secret_writeback)
-            && !self.runtime.supports_secret_writeback()
-        {
-            return Err(err(RuntimeError::Backend(
-                "this container runtime cannot persist a writable credential-file mount"
-                    .to_string(),
-            )));
-        }
+        self.realize_container(spec, None).await
+    }
 
-        // A Session owns one live environment. Attached mode retains the legacy
-        // keepalive; resident mode runs the existing Hand as PID 1 so Worker
-        // replacement can reopen its provider-owned channel without a second
-        // process-placement path.
+    fn environment_plan(&self, spec: &pc::SandboxSpec) -> Result<ContainerPlan, pc::SandboxError> {
         let command = self
             .resident_hand
             .as_ref()
@@ -1278,231 +1465,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 hand.max_connections.to_string(),
             ));
         }
-        if !plan.packages.is_empty() {
-            let base_image = match &plan.rootfs {
-                RootfsPlan::Image(reference) => reference.clone(),
-                RootfsPlan::HostUserland => plan.image.clone(),
-                _ => {
-                    return Err(err(RuntimeError::Backend(
-                        "package provisioning requires an OCI image rootfs".into(),
-                    )));
-                }
-            };
-            plan.image = if let Some(provisioner) = &self.package_provisioner {
-                provisioner
-                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
-                    .await
-                    .map_err(err)?
-            } else {
-                self.runtime
-                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
-                    .await
-                    .map_err(err)?
-            };
-            plan.rootfs = RootfsPlan::Image(plan.image.clone());
-        }
-        // Resolve + materialize each mount's bytes: self-contained content (codex config,
-        // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
-        // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
-        // dir (bound by docker/podman) and recorded as `content` (projected by the k8s
-        // ConfigMap path) — kept alive by the sandbox for the container's lifetime.
-        let secret_broker = self
-            .secret_broker
-            .read()
-            .expect("container secret broker lock poisoned")
-            .clone();
-        let mut staging = resolve_and_stage(
-            spec,
-            &mut plan.binds,
-            &self.blobs,
-            &self.file_store,
-            &secret_broker,
-            self.runtime.uses_persistent_volume_claims(),
-        )
-        .await?;
-        if self.runtime.uses_host_live_input_bind() {
-            live_inputs::stage_host_projection(&spec.scope, &mut plan.binds, &mut staging.guard)?;
-        }
-        let native_memory = self.runtime.has_native_memory_mounts();
-        let mounter = self
-            .memory_mounter
-            .read()
-            .expect("container memory mounter lock poisoned")
-            .clone();
-        stage_memory_binds(spec, &mut plan, &mut staging, mounter, native_memory).await?;
-        let container_id = match self.runtime.create(&spec.scope, &plan).await {
-            Ok(id) => id,
-            Err(error) => {
-                for mount in staging.memory.drain(..) {
-                    mount.handle.teardown().await;
-                }
-                return Err(err(error));
-            }
-        };
-        let runtime_handle = match self.runtime.handle_extra(&container_id).await {
-            Ok(evidence) => evidence,
-            Err(error) => {
-                let _ = self.runtime.remove(&container_id).await;
-                return Err(err(error));
-            }
-        };
-        let sandbox_control_incarnation = if spec.control_services.is_empty() {
-            None
-        } else {
-            match self
-                .runtime
-                .sandbox_control_binding(
-                    &container_id,
-                    SandboxControlBindingRequest::New {
-                        required: &spec.control_services,
-                    },
-                )
-                .await
-            {
-                Ok(Some(binding)) => Some(binding),
-                Ok(None) => {
-                    let _ = self.runtime.remove(&container_id).await;
-                    return Err(err(RuntimeError::Backend(
-                        "container runtime omitted a demanded Sandbox control incarnation".into(),
-                    )));
-                }
-                Err(error) => {
-                    let _ = self.runtime.remove(&container_id).await;
-                    return Err(err(error));
-                }
-            }
-        };
-        // Report each mount's realization: a byte mount is a Bind and a Memory
-        // store is the canonical mounter's copy projection. Built from spec.mounts
-        // directly because native volumes do not align with the byte-bind list.
-        let realized = spec
-            .mounts
-            .iter()
-            .map(|m| pc::RealizedMount {
-                mount_id: m.mount_id.clone(),
-                mount_path: m.mount_path.clone(),
-                access: m.access,
-                realization: match m.source {
-                    // Remote container memory is seeded and harvested as a bounded
-                    // copy through the canonical MemoryMounter.
-                    pc::MountSource::MemoryStore { .. } => pc::Realization::Copy,
-                    _ => pc::Realization::Bind,
-                },
-                content_hash: None,
-            })
-            .collect();
-        Ok(ContainerSandbox {
-            runtime: self.runtime.clone(),
-            id: spec.scope.clone(),
-            container_id,
-            outputs_path: spec.outputs_path.clone(),
-            base_env: spec.env.clone(),
-            control_services: spec.control_services.clone(),
-            sandbox_control_incarnation,
-            control_publication: Arc::new(ContainerControlPublicationRegistry::default()),
-            blobs: self.blobs.clone(),
-            file_store: self.file_store.clone(),
-            live_input_projection: self.runtime.supports_live_input_projection(),
-            runtime_handle,
-            continuation_excluded_paths: spec
-                .mounts
-                .iter()
-                .map(|mount| mount.mount_path.clone())
-                .collect(),
-            adopted_handle: None,
-            realized,
-            recovered: false,
-            lifecycle: Arc::new(ContainerCleanupState {
-                staging: std::sync::Mutex::new(staging.guard),
-                secret_writebacks: staging.secret_writebacks,
-                secret_broker,
-                memory: tokio::sync::Mutex::new(Some(staging.memory)),
-                writeback_done: tokio::sync::Mutex::new(false),
-                remove_done: tokio::sync::Mutex::new(false),
-            }),
-        })
-    }
-
-    /// Re-adopt a concrete long-lived environment from its durable handle.
-    pub async fn adopt_container(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        self.adopt_container_with_spec(None, handle).await
-    }
-
-    async fn adopt_container_with_spec(
-        &self,
-        spec: Option<&pc::SandboxSpec>,
-        handle: &pc::SandboxHandle,
-    ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        let payload = recovery::decode_handle(handle)?;
-        let capabilities = self.runtime_sandbox_capabilities();
-        if let Some(spec) = spec {
-            pc::prepare_environment(spec, &capabilities)
-                .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
-        }
-        let control_services = pc::validate_adopted_sandbox_control_services(
-            spec.map(|spec| &spec.control_services),
-            &payload.control_services,
-            &capabilities,
-        )
-        .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
-        if payload.control_services.is_empty() != payload.sandbox_control_incarnation.is_none() {
-            return Err(err(RuntimeError::Backend(
-                "container handle control topology and incarnation are inconsistent".into(),
-            )));
-        }
-        let container_id = payload.container_id;
-        if self.runtime.inspect(&container_id).await.map_err(err)? == ContainerState::Gone {
-            return Err(err(RuntimeError::NotFound(container_id)));
-        }
-        let sandbox_control_incarnation = if control_services.is_empty() {
-            None
-        } else {
-            Some(
-                self.runtime
-                    .sandbox_control_binding(
-                        &container_id,
-                        SandboxControlBindingRequest::Adopt {
-                            required: &control_services,
-                            expected: payload.sandbox_control_incarnation.as_ref(),
-                        },
-                    )
-                    .await
-                    .map_err(err)?
-                    .ok_or_else(|| {
-                        err(RuntimeError::Backend(
-                            "adopted container omitted a demanded Sandbox control incarnation"
-                                .into(),
-                        ))
-                    })?,
-            )
-        };
-        Ok(ContainerSandbox {
-            runtime: self.runtime.clone(),
-            id: handle.sandbox_id.clone(),
-            container_id,
-            outputs_path: payload.outputs_path,
-            base_env: payload.base_env,
-            control_services,
-            sandbox_control_incarnation,
-            control_publication: Arc::new(ContainerControlPublicationRegistry::default()),
-            blobs: self.blobs.clone(),
-            file_store: self.file_store.clone(),
-            live_input_projection: payload.live_input_projection,
-            runtime_handle: payload.runtime_handle,
-            continuation_excluded_paths: payload.continuation_excluded_paths,
-            adopted_handle: Some(handle.clone()),
-            realized: Vec::new(),
-            recovered: true,
-            lifecycle: Arc::new(ContainerCleanupState::completed(
-                self.secret_broker
-                    .read()
-                    .expect("container secret broker lock poisoned")
-                    .clone(),
-            )),
-        })
+        Ok(plan)
     }
 }
 
@@ -1540,6 +1503,25 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
                 .await?,
         ))
     }
+
+    async fn acquire_restore_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+        Ok(self
+            .acquire_restore_sandbox(spec, request)
+            .await?
+            .map_target(|sandbox| Arc::new(sandbox) as Arc<dyn ContainerEnvironment>))
+    }
+
+    async fn dispose_restored_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<(), pc::SandboxError> {
+        self.dispose_restore_target(spec, request).await
+    }
 }
 
 #[async_trait]
@@ -1564,6 +1546,25 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         handle: &pc::SandboxHandle,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(self.adopt_container(handle).await?))
+    }
+
+    async fn acquire_restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+        Ok(self
+            .acquire_restore_sandbox(spec, request)
+            .await?
+            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+    }
+
+    async fn dispose_restored(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<(), pc::SandboxError> {
+        self.dispose_restore_target(spec, request).await
     }
 }
 
@@ -1591,7 +1592,8 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// Exact independently governed paths retained only for checkpoint safety.
     continuation_excluded_paths: Vec<String>,
     /// Exact reader-owned wire handle retained only across adoption. Current
-    /// creation paths continue to emit restoration None.
+    /// creation paths emit restoration None; exact physical restore acquisition
+    /// installs the request-bound handle before returning the target.
     adopted_handle: Option<pc::SandboxHandle>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
@@ -1707,9 +1709,12 @@ struct ContainerCleanupState {
 }
 
 impl ContainerCleanupState {
-    fn completed(secret_broker: Option<Arc<dyn pc::SecretBroker>>) -> Self {
+    fn recovered(
+        secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+        staging: Option<StagingGuard>,
+    ) -> Self {
         Self {
-            staging: std::sync::Mutex::new(None),
+            staging: std::sync::Mutex::new(staging),
             secret_writebacks: Vec::new(),
             secret_broker,
             memory: tokio::sync::Mutex::new(None),
@@ -1766,7 +1771,9 @@ impl ContainerCleanupState {
                     mount.handle.teardown().await;
                 }
             }
-            self.staging.lock().expect("staging mutex poisoned").take();
+            if let Some(staging) = self.staging.lock().expect("staging mutex poisoned").take() {
+                staging.remove();
+            }
             *done = true;
         }
         Ok(())

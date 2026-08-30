@@ -603,6 +603,8 @@ pub fn awaken_agent_contract::event::fold_step(&[awaken_agent_contract::agent::m
 pub fn awaken_agent_contract::event::terminal(&awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
 pub fn awaken_agent_contract::event::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
 pub mod awaken_agent_contract::fingerprint
+pub fn awaken_agent_contract::fingerprint::collision_resistant_fingerprint(&str, &[&[u8]]) -> alloc::string::String
+pub fn awaken_agent_contract::fingerprint::collision_resistant_fingerprint_digest(&str) -> core::option::Option<&str>
 pub fn awaken_agent_contract::fingerprint::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
 pub mod awaken_agent_contract::id
 pub fn awaken_agent_contract::id::fresh_process_id(&str) -> alloc::string::String
@@ -1317,6 +1319,8 @@ pub fn awaken_agent_contract::archive_thread_command() -> awaken_agent_contract:
 pub fn awaken_agent_contract::archived_thread_commit_cursor(&[awaken_agent_contract::agent::state::Command], &[u64]) -> core::option::Option<u64>
 pub fn awaken_agent_contract::classify_run_lifecycle_event(&awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind
 pub fn awaken_agent_contract::classify_run_lifecycle_record(&awaken_agent_contract::audit::kind::Kind, &awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> core::option::Option<awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind>
+pub fn awaken_agent_contract::collision_resistant_fingerprint(&str, &[&[u8]]) -> alloc::string::String
+pub fn awaken_agent_contract::collision_resistant_fingerprint_digest(&str) -> core::option::Option<&str>
 pub fn awaken_agent_contract::decode_run_lifecycle_cursor(awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor) -> (u64, usize)
 pub fn awaken_agent_contract::encode_run_lifecycle_cursor(u64, usize) -> core::result::Result<awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor, awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursorCodecError>
 pub fn awaken_agent_contract::fresh_process_id(&str) -> alloc::string::String

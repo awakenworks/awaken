@@ -132,6 +132,87 @@ fn container_capabilities_are_the_strongest_tier() {
     );
 }
 
+/* Host-bind restore-locator table. C1=daemon-observed provider staging path;
+ * C2=process-local wrapper drops before Session CAS; C3=locator escapes the
+ * provider temp namespace; C4=Host reboot already removed the directory.
+ * E1=retain physical binds across C2; E2=explicit terminal removal succeeds
+ * idempotently; E3=reject before filesystem deletion. Rules: H1 C1+C2=>E1;
+ * H2 C1+terminal=>E2; H3 C3=>E3; H4 C1+C4+terminal=>E2. */
+#[test]
+fn restored_host_staging_survives_wrapper_drop_and_only_terminally_removes() {
+    let mut guard = None;
+    let path = staging_dir(&mut guard, "restore-staging-test").unwrap();
+    std::fs::write(path.join("physical"), b"retained").unwrap();
+    drop(guard);
+    assert!(!path.exists(), "ordinary staging still cleans on drop");
+
+    let mut guard = None;
+    let path = staging_dir(&mut guard, "restore-staging-test").unwrap();
+    std::fs::write(path.join("physical"), b"retained").unwrap();
+    let handle = pc::ContainerContinuationHandle::HostBindRestoration(
+        pc::HostBindRestorationHandle::for_restore(path.to_string_lossy().into_owned()).unwrap(),
+    );
+    let retained = retained_host_staging(Some(&handle)).unwrap().unwrap();
+    drop(retained);
+    assert_eq!(
+        std::fs::read(path.join("physical")).unwrap(),
+        b"retained",
+        "H1/E1"
+    );
+    remove_host_staging_path(&path).unwrap();
+    assert!(!path.exists(), "H2/E2");
+    remove_host_staging_path(&path).expect("H4 missing after Host restart is idempotent");
+
+    let escaped = pc::ContainerContinuationHandle::HostBindRestoration(
+        pc::HostBindRestorationHandle::for_restore("/tmp/not-an-awaken-stage").unwrap(),
+    );
+    assert!(retained_host_staging(Some(&escaped)).is_err(), "H3/E3");
+    assert!(
+        remove_host_staging_path(std::path::Path::new("/tmp/not-an-awaken-stage")).is_err(),
+        "H3/E3"
+    );
+}
+
+#[test]
+fn restore_plan_fingerprint_normalizes_only_provider_derived_realization_fields() {
+    /* Immutable-plan rules. C1 the frozen package demand is present; C2 package
+     * resolution replaces only its image; C3 Docker/Podman add the sole managed
+     * live-input host bind; C4 a security-bearing command/network field changes.
+     * E1 C1 and C1+C2+C3 share one read-first fingerprint; E2 C4 changes it.
+     * Rules PF1=C1=>E1; PF2=C1+C2+C3=>E1; PF3=C1+C4=>E2. */
+    let mut restore_spec = spec("restore-plan-fingerprint");
+    restore_spec.packages.managers.insert(
+        "npm".into(),
+        vec!["@modelcontextprotocol/server-filesystem@1.0.0".into()],
+    );
+    let pre_resolution = container_plan(
+        &restore_spec,
+        "ghcr.io/awaken/sandbox:base",
+        &environment_keepalive_command(),
+        None,
+    )
+    .unwrap();
+    let frozen = restoration_plan_fingerprint(&pre_resolution);
+
+    let mut realized = pre_resolution.clone();
+    realized.image = "registry.internal/awaken-packages@sha256:resolved".into();
+    realized.rootfs = RootfsPlan::Image(realized.image.clone());
+    realized.binds.push(BindPlan {
+        source_ref: "/tmp/awaken-acp-stage-provider/live-inputs".into(),
+        mount_path: LIVE_INPUTS_ROOT.into(),
+        read_only: false,
+        content: None,
+        content_bytes: None,
+        secret_content: None,
+        secret_writeback: false,
+        credential_file_path: None,
+    });
+    assert_eq!(restoration_plan_fingerprint(&realized), frozen, "PF2/E1");
+
+    realized.command.push("unexpected".into());
+    assert_ne!(restoration_plan_fingerprint(&realized), frozen, "PF3/E2");
+}
+
 #[test]
 fn current_container_provider_rejects_egress_only_secret_injection() {
     // Cause graph/table:
@@ -793,6 +874,10 @@ struct FakeState {
     control_peers: Vec<tokio::io::DuplexStream>,
     removals: Vec<(String, usize)>,
     inspections: usize,
+    restore_targets: HashMap<String, pc::SandboxRestorationEvidence>,
+    restore_plan_fingerprints: HashMap<String, String>,
+    restore_creates: usize,
+    restore_disposals: usize,
 }
 
 #[derive(Default)]
@@ -1018,6 +1103,163 @@ impl ContainerRuntime for FakeRuntime {
         Ok(cid)
     }
 
+    async fn recover_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(RuntimeError::Backend(
+                "fake restore target plan mismatch".into(),
+            ));
+        }
+        let cid = format!("restore-{id}");
+        let state = self.st.lock().unwrap();
+        let Some(observed) = state.restore_targets.get(&cid) else {
+            return Ok(None);
+        };
+        if observed != evidence {
+            return Err(RuntimeError::Backend(
+                "fake restore target evidence mismatch".into(),
+            ));
+        }
+        if state
+            .restore_plan_fingerprints
+            .get(&cid)
+            .map(String::as_str)
+            != Some(plan_fingerprint)
+        {
+            return Err(RuntimeError::Backend(
+                "fake physical restore plan mismatch".into(),
+            ));
+        }
+        if state.alive.get(&cid) != Some(&true) {
+            return Err(RuntimeError::Backend(
+                "fake exact restore target is not alive".into(),
+            ));
+        }
+        Ok(Some(RuntimeRestoreTarget {
+            container_id: cid,
+            disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+        }))
+    }
+
+    async fn restore_or_adopt(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<RuntimeRestoreTarget, RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(RuntimeError::Backend(
+                "fake restore target plan mismatch".into(),
+            ));
+        }
+        let cid = format!("restore-{id}");
+        let mut state = self.st.lock().unwrap();
+        if let Some(observed) = state.restore_targets.get(&cid) {
+            if observed != evidence {
+                return Err(RuntimeError::Backend(
+                    "fake restore target evidence mismatch".into(),
+                ));
+            }
+            if state
+                .restore_plan_fingerprints
+                .get(&cid)
+                .map(String::as_str)
+                != Some(plan_fingerprint)
+            {
+                return Err(RuntimeError::Backend(
+                    "fake physical restore plan mismatch".into(),
+                ));
+            }
+            return Ok(RuntimeRestoreTarget {
+                container_id: cid,
+                disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+            });
+        }
+        state.restore_targets.insert(cid.clone(), evidence.clone());
+        state
+            .restore_plan_fingerprints
+            .insert(cid.clone(), plan_fingerprint.to_owned());
+        state.restore_creates += 1;
+        state.alive.insert(cid.clone(), true);
+        state
+            .created_command
+            .insert(cid.clone(), plan.command.clone());
+        state.created_env.insert(cid.clone(), plan.env.clone());
+        state.created_binds.insert(cid.clone(), plan.binds.clone());
+        state.created_images.insert(cid.clone(), plan.image.clone());
+        Ok(RuntimeRestoreTarget {
+            container_id: cid,
+            disposition: pc::SandboxRestoreTargetDisposition::Created,
+        })
+    }
+
+    async fn restoration_evidence(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+        let state = self.st.lock().unwrap();
+        if state.alive.get(container_id) != Some(&true) {
+            return Err(RuntimeError::Backend(
+                "fake restored target is not alive".into(),
+            ));
+        }
+        Ok(state.restore_targets.get(container_id).cloned())
+    }
+
+    async fn restoration_plan_fingerprint(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        Ok(self
+            .st
+            .lock()
+            .unwrap()
+            .restore_plan_fingerprints
+            .get(container_id)
+            .cloned())
+    }
+
+    async fn dispose_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<(), RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(RuntimeError::Backend(
+                "fake restore cleanup plan mismatch".into(),
+            ));
+        }
+        let cid = format!("restore-{id}");
+        let mut state = self.st.lock().unwrap();
+        let Some(observed) = state.restore_targets.get(&cid) else {
+            return Ok(());
+        };
+        if observed != evidence
+            || state
+                .restore_plan_fingerprints
+                .get(&cid)
+                .map(String::as_str)
+                != Some(plan_fingerprint)
+        {
+            return Err(RuntimeError::Backend(
+                "fake restore cleanup identity mismatch".into(),
+            ));
+        }
+        state.restore_targets.remove(&cid);
+        state.restore_plan_fingerprints.remove(&cid);
+        state.alive.remove(&cid);
+        state.restore_disposals += 1;
+        Ok(())
+    }
+
     async fn spawn(
         &self,
         container_id: &str,
@@ -1207,14 +1449,21 @@ fn writable_credential_spec(scope: &str) -> pc::SandboxSpec {
     sandbox_spec
 }
 
-fn provider_without_broker(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
-    // A conventional forward proxy exercises connectivity configuration without
-    // claiming to enforce a host allowlist. Required mounts are seeded because a
-    // missing required source fails closed at create.
-    ContainerProvider::new(runtime, "ghcr.io/awaken/sandbox:latest")
-        .with_forward_proxy(ForwardProxy {
+fn base_provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
+    // One immutable provider composition is shared by creation and fresh-process
+    // recovery. The conventional proxy supplies connectivity without claiming to
+    // enforce a host allowlist.
+    ContainerProvider::new(runtime, "ghcr.io/awaken/sandbox:latest").with_forward_proxy(
+        ForwardProxy {
             url: "http://gw.internal:8888".into(),
-        })
+        },
+    )
+}
+
+fn provider_without_broker(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
+    // Required mounts are seeded because a missing required source fails closed
+    // at ordinary creation.
+    base_provider(runtime)
         .with_blob("file-1", b"in-bytes".to_vec())
         .with_blob("res-9", b"work-bytes".to_vec())
 }
@@ -1223,6 +1472,167 @@ fn provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = b"container-process-secret".to_vec();
     provider_without_broker(runtime).with_secret_broker(broker)
+}
+
+fn restore_request(spec: &pc::SandboxSpec) -> pc::SandboxRestoreRequest {
+    pc::SandboxRestoreRequest {
+        workspace_id: "workspace-a".into(),
+        session_id: spec.scope.clone(),
+        effect_id: "blake3:0000000000000000000000000000000000000000000000000000000000000002".into(),
+        generation_id: "generation-a".into(),
+        checkpoint: pc::SandboxCheckpointRef {
+            id: "checkpoint-a".into(),
+            format: "provider-owned-checkpoint".into(),
+            digest: "digest-a".into(),
+            size_bytes: 7,
+            created_at_unix_ms: 10,
+            expires_at_unix_ms: 20,
+            environment_fingerprint: "environment-a".into(),
+            base_image_fingerprint: "image-a".into(),
+            excluded_mounts: spec
+                .mounts
+                .iter()
+                .map(|mount| mount.mount_path.clone())
+                .collect(),
+            suspend_effect_id: "suspend-a".into(),
+        },
+    }
+}
+
+/*
+ * Exact container-target cause/effect decision table (R1-R4, R6-R7).
+ * Causes: C1 target absent; C2 exact tuple already present; C3 fresh provider
+ * object sharing only the physical runtime while creation Blob inputs are no
+ * longer available; C4 concurrent callers; C5 same effect with mismatched
+ * generation/checkpoint evidence; C6 handle evidence is stripped while
+ * physical evidence remains.
+ * Effects: E1 one physical creation; E2 one identical durable handle; E3 one
+ * Created plus one Recovered disposition; E4 recover without provider-local
+ * memory; E5 mismatch preserves target and fails closed; E6 stripped adoption
+ * fails while exact adoption succeeds.
+ * C7 terminal cleanup carries the original request. E7 delete only the exact
+ * target, with absent replay succeeding. Rules: R1=C1=>E1; R2=C2=>E2;
+ * R3=C2+C3=>E2+E4; R4=C1+C4=>E1+E2+E3; R6=C5=>E5;
+ * R7=C6=>E6; R8=C7=>E7.
+ */
+#[tokio::test]
+async fn exact_restore_target_is_shared_by_concurrent_and_fresh_container_providers() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let scope = "exact-restore";
+    let sandbox_spec = spec(scope);
+    let request = restore_request(&sandbox_spec);
+    let left_provider = provider(runtime.clone());
+    let right_provider = provider(runtime.clone());
+
+    let (left, right) = tokio::join!(
+        left_provider.acquire_restore_environment(&sandbox_spec, &request),
+        right_provider.acquire_restore_environment(&sandbox_spec, &request),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert_eq!(
+        [left.disposition(), right.disposition()]
+            .into_iter()
+            .filter(|disposition| { *disposition == pc::SandboxRestoreTargetDisposition::Created })
+            .count(),
+        1,
+        "R4/E3 exactly one caller creates"
+    );
+    assert_eq!(left.target().handle(), right.target().handle(), "R4/E2");
+    assert_eq!(runtime.st.lock().unwrap().restore_creates, 1, "R1/E1");
+    let handle = left.target().handle();
+
+    // The fresh provider retains the same immutable provider composition but no
+    // BlobSource, seed, or SecretBroker: R3 proves physical lookup happens before
+    // resolving the two required mount sources used only for creation.
+    let fresh_provider = base_provider(runtime.clone());
+    let replay = fresh_provider
+        .acquire_restore_environment(&sandbox_spec, &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        replay.disposition(),
+        pc::SandboxRestoreTargetDisposition::Recovered,
+        "R3/E4"
+    );
+    assert_eq!(replay.target().handle(), handle, "R3/E2");
+
+    let mut mismatched = request.clone();
+    mismatched.generation_id.push_str("-different");
+    assert!(
+        fresh_provider
+            .acquire_restore_environment(&sandbox_spec, &mismatched)
+            .await
+            .is_err(),
+        "R6/E5"
+    );
+    assert_eq!(runtime.st.lock().unwrap().restore_creates, 1, "R6/E5");
+
+    fresh_provider
+        .adopt_container_with_spec(Some(&sandbox_spec), &handle)
+        .await
+        .expect("R7 exact evidence adopts");
+    let stripped = pc::SandboxHandle::container(
+        handle.sandbox_id.clone(),
+        handle.container_payload().unwrap().clone(),
+    );
+    assert!(
+        fresh_provider
+            .adopt_container_with_spec(Some(&sandbox_spec), &stripped)
+            .await
+            .is_err(),
+        "R7/E6 physical restore evidence cannot be stripped"
+    );
+
+    drop(left);
+    drop(right);
+    drop(replay);
+    fresh_provider
+        .dispose_restored_environment(&sandbox_spec, &request)
+        .await
+        .expect("R8 exact terminal disposal");
+    fresh_provider
+        .dispose_restored_environment(&sandbox_spec, &request)
+        .await
+        .expect("R8 absent replay");
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.restore_disposals, 1, "R8/E7");
+    assert!(state.restore_targets.is_empty(), "R8/E7");
+}
+
+#[tokio::test]
+async fn malformed_restore_effect_is_rejected_before_every_substrate_effect() {
+    // Pre-effect admission table R9: C1 the Session operation id is a legacy
+    // opaque FNV value or malformed BLAKE3 syntax; C2 Phase-B acquisition is
+    // requested. C1+C2 => E1 reject before recover/create/inspect/remove/spawn
+    // and E2 leave the physical runtime empty. Existing durable operations may
+    // replay in the aggregate, but rollout admission cannot activate them.
+    for effect_id in [
+        "fnv1a64:0123456789abcdef",
+        "blake3:00",
+        "blake3:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let container_provider = provider(runtime.clone());
+        let sandbox_spec = spec("malformed-restore");
+        let mut request = restore_request(&sandbox_spec);
+        request.effect_id = effect_id.into();
+        assert!(
+            container_provider
+                .acquire_restore_environment(&sandbox_spec, &request)
+                .await
+                .is_err(),
+            "R9/E1 {effect_id}"
+        );
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(state.restore_creates, 0, "R9/E1 {effect_id}");
+        assert_eq!(state.restore_disposals, 0, "R9/E1 {effect_id}");
+        assert!(state.restore_targets.is_empty(), "R9/E2 {effect_id}");
+        assert!(state.alive.is_empty(), "R9/E2 {effect_id}");
+        assert_eq!(state.inspections, 0, "R9/E1 {effect_id}");
+        assert!(state.spawned.is_empty(), "R9/E1 {effect_id}");
+        assert!(state.removals.is_empty(), "R9/E1 {effect_id}");
+    }
 }
 
 struct UnavailableControlService;
@@ -1785,19 +2195,32 @@ async fn handle_round_trips_and_adopt_reconnects() {
 }
 
 #[tokio::test]
-async fn adopted_container_reader_preserves_future_restoration_exactly() {
-    // Provider reader rule R13: C1 a live container and C2 a future complete
-    // Some handle reach Phase A. C1+C2 => E1 ordinary adoption (not restore)
-    // joins the existing object and E2 handle() returns the exact input wire.
+async fn generic_container_adoption_rejects_restoration_without_a_frozen_spec() {
+    // Phase-B spec-less adoption rule R13: C1 a Phase-A reader accepts a complete
+    // future Some value; C2 it is attached to an ordinary live target; C3 generic
+    // SandboxProvider::adopt supplies no frozen SandboxSpec. Phase-A wire-reader
+    // compatibility does not activate a Phase-B restore. C1+C2+C3 => E1 reject
+    // before every runtime effect and E2 preserve the existing physical target.
     let runtime = Arc::new(FakeRuntime::default());
     let node_a = provider(runtime.clone());
     let created = node_a.create(&spec("reader-adopt")).await.unwrap();
-    let future = add_future_restoration(&created.handle());
+    let ordinary = created.handle();
+    let container_id = ordinary.container_payload().unwrap().container_id.clone();
+    let future = add_future_restoration(&ordinary);
     drop(created);
     drop(node_a);
-    let node_b = provider(runtime);
-    let adopted = node_b.adopt(&future).await.unwrap();
-    assert_eq!(adopted.handle(), future, "R13/E2");
+    let node_b = provider(runtime.clone());
+    assert!(node_b.adopt(&future).await.is_err(), "R13/E1");
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.inspections, 0, "R13/E1 pre-inspect");
+    assert!(state.spawned.is_empty(), "R13/E1");
+    assert!(state.removals.is_empty(), "R13/E1");
+    assert!(state.control_binding_calls.is_empty(), "R13/E1");
+    assert_eq!(state.lease_touches, 0, "R13/E1");
+    assert_eq!(state.restore_creates, 0, "R13/E1");
+    assert_eq!(state.restore_disposals, 0, "R13/E1");
+    assert!(state.restore_targets.is_empty(), "R13/E1");
+    assert_eq!(state.alive.get(&container_id), Some(&true), "R13/E2");
 }
 
 #[tokio::test]

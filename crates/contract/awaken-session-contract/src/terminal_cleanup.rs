@@ -805,6 +805,10 @@ pub struct SessionCleanupCommand {
     pub session_id: String,
     pub thread_id: String,
     pub effect_id: String,
+    /// Exact unpublished physical target owned by a durable `Restoring` state.
+    /// Only the root command carries it; legacy/non-restoring commands omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_target: Option<crate::SandboxRestoreRequest>,
 }
 
 impl SessionCleanupCommand {
@@ -819,7 +823,19 @@ impl SessionCleanupCommand {
                 thread_id,
                 root_effect_id,
             )),
+            restore_target: None,
         }
+    }
+
+    pub fn with_restore_target(
+        mut self,
+        request: crate::SandboxRestoreRequest,
+    ) -> Result<Self, SessionCleanupError> {
+        if self.thread_id != self.session_id || request.session_id != self.session_id {
+            return Err(SessionCleanupError::OperationMismatch);
+        }
+        self.restore_target = Some(request);
+        Ok(self)
     }
 }
 

@@ -293,6 +293,14 @@ pub trait RepositoryRealizer: Send + Sync {
 #[serde(deny_unknown_fields)]
 pub struct SandboxHandle {
     pub sandbox_id: String,
+    /// Exact restore effect which owns this physical binding.
+    ///
+    /// This is provider evidence carried by the canonical durable locator, not
+    /// a second lifecycle state. Legacy/create/adopt handles omit it. A
+    /// checkpoint-capable provider attaches it while acquiring the one exact
+    /// target. The field proves physical identity only; the checkpoint
+    /// decorator returns [`SandboxRestoreResult`] after it has materialized and
+    /// verified its own bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restoration: Option<SandboxRestorationEvidence>,
     payload: SandboxHandlePayload,
@@ -314,6 +322,11 @@ pub struct LocalSandboxHandleV1 {
     pub outputs_path: String,
     pub base_env: Vec<crate::EnvVar>,
     pub continuation_excluded_paths: Vec<String>,
+    /// Workdir egress posture is part of the durable projection. Older handles
+    /// default to the historical permissive posture; a restored handle is also
+    /// fenced by its complete SandboxSpec fingerprint.
+    #[serde(default)]
+    pub deny_tool_egress: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,7 +385,13 @@ pub struct ContainerSandboxHandleV1 {
         std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
 }
 
+mod restore_contract;
 mod restore_wire;
+pub use restore_contract::{
+    SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget,
+    SandboxRestoreTargetDisposition, checkpoint_exclusions_fingerprint,
+    sandbox_spec_security_fingerprint, validate_checkpoint_exclusions_for_spec,
+};
 pub use restore_wire::{HostBindRestorationHandle, SandboxRestorationEvidence};
 
 /// Runtime-owned incarnation evidence carried through Worker adoption.
@@ -1008,17 +1027,45 @@ pub trait SandboxProvider: Send + Sync {
     /// rebuilds a client against the still-running pod/container.
     async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError>;
 
+    /// Acquire the one physical target for a restore effect without reading or
+    /// interpreting checkpoint bytes. This is an explicit composition seam,
+    /// not a capability advertisement: bare providers never call it from
+    /// ordinary create/adopt paths.
+    async fn acquire_restore(
+        &self,
+        _spec: &SandboxSpec,
+        _request: &SandboxRestoreRequest,
+    ) -> Result<SandboxRestoreTarget<Box<dyn Sandbox>>, SandboxError> {
+        Err(SandboxError::new(
+            "sandbox provider does not implement exact restore target acquisition",
+        ))
+    }
+
     /// Create a distinct environment from one verified filesystem checkpoint.
     /// The default fails closed so out-of-tree providers cannot accidentally
     /// advertise continuation without implementing it.
     async fn restore(
         &self,
         _spec: &SandboxSpec,
-        _checkpoint: &SandboxCheckpointRef,
+        _request: &SandboxRestoreRequest,
         _store: &dyn SandboxCheckpointStore,
-    ) -> Result<Box<dyn Sandbox>, SandboxError> {
+    ) -> Result<SandboxRestoreResult<Box<dyn Sandbox>>, SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement checkpoint restore",
+        ))
+    }
+
+    /// Remove only the unpublished physical target named by one durable
+    /// `Restoring` tuple. Terminal cleanup calls this before deleting the source
+    /// checkpoint. Absence is an idempotent success for implementing providers;
+    /// the default fails closed because it cannot prove the target set.
+    async fn dispose_restored(
+        &self,
+        _spec: &SandboxSpec,
+        _request: &SandboxRestoreRequest,
+    ) -> Result<(), SandboxError> {
+        Err(SandboxError::new(
+            "sandbox provider does not implement exact restored-target disposal",
         ))
     }
 }

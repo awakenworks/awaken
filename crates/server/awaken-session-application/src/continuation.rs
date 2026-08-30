@@ -123,6 +123,7 @@ impl SessionApplication {
                     ) =>
             {
                 session.environment.begin_suspend(
+                    &owner_scope,
                     session_id,
                     session.activity_epoch,
                     session.realization.clone(),
@@ -281,6 +282,7 @@ impl SessionApplication {
                         SessionContinuationError::Repository("activity epoch exhausted".into())
                     })?;
                     session.environment.begin_restore(
+                        &owner_scope,
                         session_id,
                         next_epoch,
                         session.realization.clone(),
@@ -289,21 +291,14 @@ impl SessionApplication {
                     self.commit_continuation(&owner_scope, session, "environment-restore-intent")
                         .await?;
                 }
-                SessionEnvironmentState::Restoring {
-                    operation,
-                    checkpoint,
-                    generation,
-                } => {
-                    let agent_id = session.agent_id().unwrap_or_default().to_string();
+                SessionEnvironmentState::Restoring { .. } => {
+                    let request = session
+                        .environment
+                        .restoring_request(&owner_scope, session_id)
+                        .expect("Restoring state projects one exact request");
                     let receipt = self
                         .runtime()
-                        .restore_checkpointed_session_environment(
-                            &agent_id,
-                            session_id,
-                            &operation,
-                            &generation,
-                            &checkpoint,
-                        )
+                        .restore_checkpointed_session_environment(request)
                         .await?;
                     session.environment.complete_restore(&receipt)?;
                     self.commit_continuation(&owner_scope, session, "environment-restored")

@@ -130,7 +130,10 @@ fn session(id: &str, title: &str) -> PersistedSession {
     }
 }
 
-fn hibernated_environment(id: &str) -> awaken_session_contract::SessionEnvironmentState {
+fn hibernated_environment(
+    workspace_id: &str,
+    id: &str,
+) -> awaken_session_contract::SessionEnvironmentState {
     let generation = awaken_session_contract::SandboxGeneration::new(
         id,
         1,
@@ -139,10 +142,12 @@ fn hibernated_environment(id: &str) -> awaken_session_contract::SessionEnvironme
         "base-image",
     );
     let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
+        workspace_id,
         id,
         "suspend",
-        &generation.id,
+        &generation,
         0,
+        None,
         None,
     );
     awaken_session_contract::SessionEnvironmentState::Hibernated {
@@ -366,9 +371,9 @@ async fn global_environment_phase_count_has_no_recovery_batch_limit<R: ManagedSe
     }
     let mut last = last.expect("P1 lexically last root");
     let last_id = last.session_id.clone();
-    last.environment = hibernated_environment(&last_id);
+    last.environment = hibernated_environment("ws_a", &last_id);
     last.environment
-        .begin_restore(&last_id, 0, None, 1)
+        .begin_restore("ws_a", &last_id, 0, None, 1)
         .expect("P2 valid restore intent");
     replace_session(repo, "ws_a", last, "test:phase-count:restoring", Vec::new()).await;
 
@@ -404,12 +409,12 @@ where
         .unwrap();
     let id = "phase-concurrent";
     let mut current = session(id, id);
-    current.environment = hibernated_environment(id);
+    current.environment = hibernated_environment("ws_a", id);
     let current = create_session(repo.as_ref(), "ws_a", current, Vec::new()).await;
     let mut restoring = current.clone();
     restoring
         .environment
-        .begin_restore(id, 0, None, 1)
+        .begin_restore("ws_a", id, 0, None, 1)
         .expect("C2 valid restore intent");
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let count = {

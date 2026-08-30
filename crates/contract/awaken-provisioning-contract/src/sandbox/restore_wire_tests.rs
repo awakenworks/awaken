@@ -155,6 +155,7 @@ fn every_phase_a_constructor_omits_restoration() {
                 outputs_path: "/outputs".into(),
                 base_env: Vec::new(),
                 continuation_excluded_paths: Vec::new(),
+                deny_tool_egress: false,
             },
         ),
         SandboxHandle::namespace(

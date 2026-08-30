@@ -96,6 +96,13 @@ pub enum ContainerState {
     Gone,
 }
 
+/// One runtime-level physical target selected by an exact restore identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeRestoreTarget {
+    pub container_id: String,
+    pub disposition: pc::SandboxRestoreTargetDisposition,
+}
+
 /// Whether a provider is binding a newly realized runtime object or proving an
 /// adopted object against durable incarnation evidence. The two states are
 /// deliberately distinct so adoption can never mint trust from a same-name
@@ -270,6 +277,74 @@ pub trait ContainerRuntime: Send + Sync {
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
+
+    /// Read the physical runtime namespace before resolving any external input
+    /// needed only to create a target. A completed exact target is sufficient
+    /// restore evidence in its own right: a replacement provider must be able
+    /// to reopen it even when package, blob, or Secret sources are temporarily
+    /// unavailable. `None` means the stable target name is absent; observation
+    /// failures and mismatched evidence must fail closed rather than fall
+    /// through to a second creation path.
+    async fn recover_restore_target(
+        &self,
+        _id: &str,
+        _plan: &ContainerPlan,
+        _plan_fingerprint: &str,
+        _evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not implement exact restore target observation".into(),
+        ))
+    }
+
+    /// Create or recover the one runtime object for an exact restore effect.
+    /// Implementations must persist and compare `evidence` on their physical
+    /// substrate; an ordinary process-owner name or in-memory cache is invalid.
+    async fn restore_or_adopt(
+        &self,
+        _id: &str,
+        _plan: &ContainerPlan,
+        _plan_fingerprint: &str,
+        _evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<RuntimeRestoreTarget, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not implement exact restore target acquisition".into(),
+        ))
+    }
+
+    /// Observe restore identity from the physical runtime object. Adoption
+    /// compares this with the durable handle in both directions, so stripping
+    /// evidence from a restored binding cannot turn it into an ordinary target.
+    async fn restoration_evidence(
+        &self,
+        _container_id: &str,
+    ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Observe the immutable pre-materialization plan binding from the physical
+    /// target. Restored adoption compares it with the current provider plan.
+    async fn restoration_plan_fingerprint(
+        &self,
+        _container_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        Ok(None)
+    }
+
+    /// Idempotently delete the exact unpublished target selected by one durable
+    /// Restoring tuple. Implementations must verify both the plan and effect
+    /// evidence before removal and treat absence as success.
+    async fn dispose_restore_target(
+        &self,
+        _id: &str,
+        _plan: &ContainerPlan,
+        _plan_fingerprint: &str,
+        _evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not implement exact restored-target disposal".into(),
+        ))
+    }
 
     /// Runtime-owned, non-secret incarnation evidence persisted inside the
     /// canonical SandboxHandle. Most runtimes need none; Kubernetes uses it to

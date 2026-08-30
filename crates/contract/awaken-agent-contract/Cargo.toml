@@ -11,6 +11,7 @@ authority = "agent"
 
 [dependencies]
 async-trait.workspace = true
+blake3 = "1"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

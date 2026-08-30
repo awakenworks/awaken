@@ -4,14 +4,46 @@
 //! only execute one already-fenced quiesce, checkpoint, dispose, restore, or
 //! checkpoint-delete effect through the existing Host and provider owners.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_session_contract::{McpAttachmentRealizer as _, RunError};
+use awaken_session_contract::RunError;
 
 use crate::{ManagedHost, to_run_error};
 
 impl ManagedHost {
+    fn restoration_provider_and_spec(
+        &self,
+        request: &awaken_session_contract::SandboxRestoreRequest,
+    ) -> Result<
+        (
+            &crate::session_environment::SessionEnvironmentProvider,
+            awaken_provisioning_contract::SandboxSpec,
+        ),
+        RunError,
+    > {
+        request
+            .validate()
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let (workspace, _, publication) = self
+            .host
+            .resolve_session_publication(&request.session_id, None, None)
+            .map_err(to_run_error)?;
+        if workspace != request.workspace_id {
+            return Err(RunError::unavailable(
+                "restore request Workspace does not match the Session projection",
+            ));
+        }
+        let provisioning = publication
+            .as_ref()
+            .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
+            .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
+        let provider = self
+            .host
+            .session_environment_provider(provisioning)
+            .map_err(to_run_error)?;
+        Ok((provider, self.host.sandbox_spec(&request.session_id)))
+    }
+
     pub(super) async fn quiesce_environment_continuation(
         &self,
         thread: &str,
@@ -204,17 +236,8 @@ impl ManagedHost {
 
     pub(super) async fn restore_environment_continuation(
         &self,
-        agent: &str,
-        thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_contract::SandboxGeneration,
-        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        request: awaken_session_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let lifecycle_guard = lifecycle.lock().await;
         let store = self
             .host
             .environment_checkpoint_store
@@ -225,58 +248,33 @@ impl ManagedHost {
                     "No Session environment checkpoint store is installed",
                 )
             })?;
-        let (_, _, publication) = self
-            .host
-            .resolve_session_publication(thread, Some(agent), None)
-            .map_err(to_run_error)?;
-        let provisioning = publication
-            .as_ref()
-            .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
-            .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
-        let provider = self
-            .host
-            .session_environment_provider(provisioning)
-            .map_err(to_run_error)?;
-        let environment = Arc::new(
-            provider
-                .restore(&self.host.sandbox_spec(thread), checkpoint, store.as_ref())
-                .await
-                .map_err(|error| RunError::unavailable(error.to_string()))?,
-        );
-        let binding = serde_json::to_string(&environment.handle())
+        let (provider, spec) = self.restoration_provider_and_spec(&request)?;
+        let handle = provider
+            .restore(&spec, &request, store.as_ref())
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let binding = serde_json::to_string(&handle)
             .map_err(|error| RunError::internal(error.to_string()))?;
-        let requests = self.host.session_slots.update(thread, |slot| {
-            let requests = slot
-                .mcp
-                .iter()
-                .map(|projection| projection.request.clone())
-                .collect::<Vec<_>>();
-            slot.mcp.clear();
-            slot.runtime = None;
-            slot.environment = Some(environment);
-            slot.expected_environment_binding = Some(binding.clone());
-            requests
-        });
-        drop(lifecycle_guard);
-        for request in requests {
-            if let Err(error) = self.stage_mcp_attachment(request).await {
-                let failed = self.host.session_slots.modify(thread, |slot| {
-                    slot.runtime = None;
-                    slot.expected_environment_binding = None;
-                    slot.environment.take()
-                });
-                if let Some(Some(environment)) = failed {
-                    let _ = environment.dispose().await;
-                }
-                return Err(error);
-            }
-        }
         Ok(awaken_session_contract::RestoreReceipt {
-            effect_id: operation.effect_id.clone(),
-            generation_id: generation.id.clone(),
-            checkpoint_id: checkpoint.id.clone(),
+            effect_id: request.effect_id,
+            generation_id: request.generation_id,
+            checkpoint_id: request.checkpoint.id,
             binding,
         })
+    }
+
+    /// Dispose only the unpublished physical target named by the durable
+    /// `Restoring` tuple. The Session cleanup operation remains the sole retry
+    /// and completion authority; this adapter owns no side journal or slot.
+    pub(super) async fn dispose_restoring_environment_continuation(
+        &self,
+        request: &awaken_session_contract::SandboxRestoreRequest,
+    ) -> Result<(), RunError> {
+        let (provider, spec) = self.restoration_provider_and_spec(request)?;
+        provider
+            .dispose_restored(&spec, request)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))
     }
 
     pub(super) async fn delete_environment_continuation_checkpoint(

@@ -1383,6 +1383,10 @@ impl SessionRuntime for ManagedHost {
             .end_session(&command.thread_id)
             .await
             .map_err(to_run_error)?;
+        if let Some(request) = command.restore_target.as_ref() {
+            self.dispose_restoring_environment_continuation(request)
+                .await?;
+        }
         let completion =
             awaken_session_contract::SessionCleanupCompletion::new(&command, artifacts.receipts);
         completion
@@ -1763,14 +1767,9 @@ impl SessionRuntime for ManagedHost {
 
     async fn restore_checkpointed_session_environment(
         &self,
-        agent: &str,
-        thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_contract::SandboxGeneration,
-        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        request: awaken_session_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
-        self.restore_environment_continuation(agent, thread, operation, generation, checkpoint)
-            .await
+        self.restore_environment_continuation(request).await
     }
 
     async fn delete_session_checkpoint(

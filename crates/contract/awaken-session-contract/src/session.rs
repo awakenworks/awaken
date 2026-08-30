@@ -894,11 +894,7 @@ pub trait SessionRuntime: Send + Sync {
     /// Restore a distinct environment from the exact durable checkpoint.
     async fn restore_checkpointed_session_environment(
         &self,
-        _agent: &str,
-        _thread: &str,
-        _operation: &crate::SessionEnvironmentOperation,
-        _generation: &crate::SandboxGeneration,
-        _checkpoint: &crate::SandboxCheckpointRef,
+        _request: crate::SandboxRestoreRequest,
     ) -> Result<crate::RestoreReceipt, RunError> {
         Err(RunError::unavailable_classified(
             "session_environment_checkpoint_unsupported",

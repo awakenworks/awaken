@@ -57,12 +57,13 @@ mod pod_projection;
 mod pod_security;
 mod process;
 mod realization;
+mod restore;
 mod sandbox_control;
 use client::K8sClients;
 pub(crate) use client::install_rustls_crypto_provider;
 use error::api_not_found;
 pub(crate) use error::backend;
-use names::{configmap_name, continuation_claim_name, credential_secret_name};
+use names::{configmap_name, credential_secret_name};
 pub(crate) use names::{k8s_runtime_id, pod_name};
 #[cfg(test)]
 use pod_projection::build_pod;
@@ -79,8 +80,8 @@ use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result}
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
 use realization::{
-    PodReadiness, await_pod_deleted, create_or_verify, create_or_verify_with_status, pod_readiness,
-    reap_terminal_pod, stamp_pod_realization,
+    PodReadiness, create_or_verify, create_or_verify_with_status, pod_readiness, reap_terminal_pod,
+    stamp_pod_realization,
 };
 pub(crate) use realization::{create_or_verify_with_status_exact, stamp_realization};
 pub use sandbox_control::{
@@ -249,76 +250,6 @@ impl K8sRuntime {
             .secrets()
             .delete_collection(&DeleteParams::default(), &params)
             .await;
-    }
-
-    async fn remove_bound(
-        &self,
-        container_id: &str,
-        persisted_claim_uid: Option<&str>,
-    ) -> Result<(), RuntimeError> {
-        let pods = self.pods();
-        let observed_pod = match pods.get(container_id).await {
-            Ok(pod) => Some(pod),
-            Err(error) if api_not_found(&error) => None,
-            Err(error) => return Err(backend(error)),
-        };
-        let pod_claim_uid = observed_pod
-            .as_ref()
-            .and_then(continuation::bound_claim_uid)
-            .map(str::to_owned);
-        if let (Some(expected), Some(actual)) = (persisted_claim_uid, pod_claim_uid.as_deref())
-            && expected != actual
-        {
-            return Err(backend(
-                "Sandbox Pod is bound to a different continuation PVC incarnation",
-            ));
-        }
-        let expected_claim_uid = persisted_claim_uid.or(pod_claim_uid.as_deref());
-        if self.continuation_volume.is_some() && expected_claim_uid.is_none() {
-            let runtime_id = container_id
-                .strip_prefix("awaken-")
-                .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
-            let claim_name = continuation_claim_name(runtime_id);
-            match self.persistent_volume_claims().get(&claim_name).await {
-                Err(error) if api_not_found(&error) => {}
-                Err(error) => return Err(backend(error)),
-                Ok(_) => {
-                    return Err(backend(
-                        "continuation PVC exists without persisted incarnation evidence",
-                    ));
-                }
-            }
-        }
-
-        self.cleanup_projected_content(container_id).await;
-        if let Some(pod) = observed_pod {
-            let uid = pod
-                .metadata
-                .uid
-                .clone()
-                .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
-            let resource_version = pod
-                .metadata
-                .resource_version
-                .clone()
-                .ok_or_else(|| backend("Kubernetes Sandbox Pod has no resourceVersion"))?;
-            let params = lifecycle::pod_delete_params(
-                &pod,
-                kube::api::Preconditions {
-                    uid: Some(uid),
-                    resource_version: Some(resource_version),
-                },
-            );
-            match pods.delete(container_id, &params).await {
-                Ok(_) => await_pod_deleted(&pods, container_id).await?,
-                Err(error) if api_not_found(&error) => {}
-                Err(error) => return Err(backend(error)),
-            }
-        }
-        if let Some(uid) = expected_claim_uid {
-            continuation::delete_claim(&self.persistent_volume_claims(), container_id, uid).await?;
-        }
-        Ok(())
     }
 }
 
@@ -646,6 +577,59 @@ impl ContainerRuntime for K8sRuntime {
         admit_network(&plan.network, self.network_policy_attestation.current())?;
         creation::create(self, id, plan).await
     }
+
+    async fn recover_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<Option<crate::RuntimeRestoreTarget>, RuntimeError> {
+        if matches!(plan.network, crate::NetworkMode::None) {
+            self.probe_ready().await?;
+        }
+        admit_network(&plan.network, self.network_policy_attestation.current())?;
+        restore::recover(self, id, plan, plan_fingerprint, evidence).await
+    }
+
+    async fn restore_or_adopt(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<crate::RuntimeRestoreTarget, RuntimeError> {
+        if matches!(plan.network, crate::NetworkMode::None) {
+            self.probe_ready().await?;
+        }
+        admit_network(&plan.network, self.network_policy_attestation.current())?;
+        creation::restore_or_adopt(self, id, plan, plan_fingerprint, evidence).await
+    }
+
+    async fn restoration_evidence(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+        restore::restoration_evidence(self, container_id).await
+    }
+
+    async fn restoration_plan_fingerprint(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        restore::plan_fingerprint(self, container_id).await
+    }
+
+    async fn dispose_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<(), RuntimeError> {
+        restore::dispose(self, id, plan, plan_fingerprint, evidence).await
+    }
+
     async fn handle_extra(
         &self,
         container_id: &str,
@@ -902,7 +886,7 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.remove_bound(container_id, None).await
+        continuation::remove_bound(self, container_id, None).await
     }
 
     async fn remove_with_handle(
@@ -911,7 +895,7 @@ impl ContainerRuntime for K8sRuntime {
         runtime_handle: Option<&pc::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
         let claim_uid = continuation::cleanup_claim_uid(runtime_handle)?;
-        self.remove_bound(container_id, claim_uid).await
+        continuation::remove_bound(self, container_id, claim_uid).await
     }
 }
 

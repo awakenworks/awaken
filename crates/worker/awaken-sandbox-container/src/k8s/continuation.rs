@@ -13,7 +13,10 @@ use kube::api::{DeleteParams, Preconditions};
 use super::error::api_not_found;
 use super::names::continuation_claim_name;
 use super::pod_projection::CONTINUATION_VOLUME;
-use super::{ContainerPlan, RuntimeError, backend, hardened_security_context};
+use super::realization::await_pod_deleted;
+use super::{
+    ContainerPlan, K8sRuntime, RuntimeError, backend, hardened_security_context, lifecycle,
+};
 
 const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -118,18 +121,39 @@ pub(super) fn bound_claim_uid(pod: &k8s_openapi::api::core::v1::Pod) -> Option<&
         .map(String::as_str)
 }
 
-pub(super) fn handle_extra(
+/// Select only the canonical continuation volume. Other PVC-backed Resource or
+/// Cache mounts are independent authorities and must never be mistaken for the
+/// mutable-filesystem continuation claim.
+pub(super) fn bound_claim_name(
     pod: &k8s_openapi::api::core::v1::Pod,
-) -> Result<Option<ContainerContinuationHandle>, RuntimeError> {
-    let binds_continuation_claim = pod
+) -> Result<Option<&str>, RuntimeError> {
+    let claims = pod
         .spec
         .as_ref()
         .and_then(|spec| spec.volumes.as_ref())
-        .is_some_and(|volumes| {
-            volumes.iter().any(|volume| {
-                volume.name == CONTINUATION_VOLUME && volume.persistent_volume_claim.is_some()
-            })
-        });
+        .into_iter()
+        .flatten()
+        .filter(|volume| volume.name == CONTINUATION_VOLUME)
+        .collect::<Vec<_>>();
+    match claims.as_slice() {
+        [] => Ok(None),
+        [volume] => volume
+            .persistent_volume_claim
+            .as_ref()
+            .map(|claim| claim.claim_name.as_str())
+            .filter(|name| !name.is_empty())
+            .map(Some)
+            .ok_or_else(|| backend("Kubernetes continuation volume has no exact PVC claim")),
+        _ => Err(backend(
+            "Kubernetes Sandbox Pod has multiple canonical continuation volumes",
+        )),
+    }
+}
+
+pub(super) fn handle_extra(
+    pod: &k8s_openapi::api::core::v1::Pod,
+) -> Result<Option<ContainerContinuationHandle>, RuntimeError> {
+    let binds_continuation_claim = bound_claim_name(pod)?.is_some();
     match (binds_continuation_claim, bound_claim_uid(pod)) {
         (false, None) => Ok(None),
         (true, Some(uid)) => Ok(Some(ContainerContinuationHandle::KubernetesContinuation {
@@ -156,6 +180,79 @@ pub(super) fn cleanup_claim_uid(
             "Kubernetes cleanup received a host-bind continuation handle",
         )),
     }
+}
+
+/// Delete one exact Pod/PVC continuation pair. The durable claim UID, when
+/// present, fences both Pod adoption and PVC deletion; an unfenced surviving
+/// claim is never guessed from another volume or removed by name alone.
+pub(super) async fn remove_bound(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    persisted_claim_uid: Option<&str>,
+) -> Result<(), RuntimeError> {
+    let pods = runtime.pods();
+    let observed_pod = match pods.get(container_id).await {
+        Ok(pod) => Some(pod),
+        Err(error) if api_not_found(&error) => None,
+        Err(error) => return Err(backend(error)),
+    };
+    let pod_claim_uid = observed_pod
+        .as_ref()
+        .and_then(bound_claim_uid)
+        .map(str::to_owned);
+    if let (Some(expected), Some(actual)) = (persisted_claim_uid, pod_claim_uid.as_deref())
+        && expected != actual
+    {
+        return Err(backend(
+            "Sandbox Pod is bound to a different continuation PVC incarnation",
+        ));
+    }
+    let expected_claim_uid = persisted_claim_uid.or(pod_claim_uid.as_deref());
+    if runtime.continuation_volume.is_some() && expected_claim_uid.is_none() {
+        let runtime_id = container_id
+            .strip_prefix("awaken-")
+            .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
+        let claim_name = continuation_claim_name(runtime_id);
+        match runtime.persistent_volume_claims().get(&claim_name).await {
+            Err(error) if api_not_found(&error) => {}
+            Err(error) => return Err(backend(error)),
+            Ok(_) => {
+                return Err(backend(
+                    "continuation PVC exists without persisted incarnation evidence",
+                ));
+            }
+        }
+    }
+
+    runtime.cleanup_projected_content(container_id).await;
+    if let Some(pod) = observed_pod {
+        let uid = pod
+            .metadata
+            .uid
+            .clone()
+            .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
+        let resource_version = pod
+            .metadata
+            .resource_version
+            .clone()
+            .ok_or_else(|| backend("Kubernetes Sandbox Pod has no resourceVersion"))?;
+        let params = lifecycle::pod_delete_params(
+            &pod,
+            kube::api::Preconditions {
+                uid: Some(uid),
+                resource_version: Some(resource_version),
+            },
+        );
+        match pods.delete(container_id, &params).await {
+            Ok(_) => await_pod_deleted(&pods, container_id).await?,
+            Err(error) if api_not_found(&error) => {}
+            Err(error) => return Err(backend(error)),
+        }
+    }
+    if let Some(uid) = expected_claim_uid {
+        delete_claim(&runtime.persistent_volume_claims(), container_id, uid).await?;
+    }
+    Ok(())
 }
 
 pub(super) fn build_claim(
