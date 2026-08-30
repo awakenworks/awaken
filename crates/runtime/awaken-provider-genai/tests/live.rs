@@ -292,6 +292,194 @@ async fn live_deepseek_openai_chat_reasoning_tool_round_trip() {
     .await;
 }
 
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_openai_chat_three_large_tool_rounds() {
+    // Multi-round compatibility cause/effect table. Causes: C1 protocol is
+    // OpenAI Chat or Anthropic Messages; C2 transport is buffered or SSE; C3
+    // three correlated tool results approximate the observed GenerationContext,
+    // compact Skill, and SubjectPack sizes; C4 40 unrelated tools remain
+    // advertised. Effects: E1 each continuation is usable and contains the one
+    // ordered ToolUse; E2 SSE emits the same tool/text payload that becomes the
+    // committed response; E3 the terminal response contains MULTI_ROUND_OK; E4
+    // an empty provider choice is a protocol failure, never a successful empty
+    // answer. Decision rules: M1 each C1 x C2 pairing+C3+C4=>E1; M2 SSE=>E2;
+    // M3 all three results=>E3; M4 empty choice at any round=>E4. The exact
+    // assistant messages remain replay authority; tests never flatten or invent
+    // reasoning blocks.
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model = std::env::var("AWAKEN_DEEPSEEK_CHAT_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-pro".to_string());
+    let executor = GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::OpenAI,
+        "https://api.deepseek.com/v1",
+        key,
+    );
+
+    assert_deepseek_three_large_tool_rounds(&executor, model, TestTransport::Buffered).await;
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_openai_chat_streaming_three_large_tool_rounds() {
+    // Covers M1-M4 with OpenAI Chat + SSE, the exact transport pairing used by
+    // Managed Run execution. This is intentionally distinct from the buffered
+    // rule because provider stream assembly owns the empty-choice failure.
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model = std::env::var("AWAKEN_DEEPSEEK_CHAT_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-pro".to_string());
+    let executor = GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::OpenAI,
+        "https://api.deepseek.com/v1",
+        key,
+    );
+
+    assert_deepseek_three_large_tool_rounds(&executor, model, TestTransport::Streaming).await;
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_anthropic_messages_three_large_tool_rounds() {
+    // Same M1-M3 decision rules as the OpenAI Chat proof. Running the identical
+    // transcript shape through Anthropic Messages isolates protocol compatibility
+    // from model, tool schema, and result-size causes.
+    let (executor, model) = live_deepseek_anthropic_executor();
+    assert_deepseek_three_large_tool_rounds(&executor, model, TestTransport::Buffered).await;
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_anthropic_messages_streaming_three_large_tool_rounds() {
+    // Covers M1-M4 with Anthropic Messages + SSE. Together with the OpenAI Chat
+    // rule, this distinguishes a provider/model failure from an adapter-specific
+    // streaming continuation failure.
+    let (executor, model) = live_deepseek_anthropic_executor();
+    assert_deepseek_three_large_tool_rounds(&executor, model, TestTransport::Streaming).await;
+}
+
+#[derive(Clone, Copy)]
+enum TestTransport {
+    Buffered,
+    Streaming,
+}
+
+async fn assert_deepseek_three_large_tool_rounds(
+    executor: &GenaiExecutor,
+    model: String,
+    transport: TestTransport,
+) {
+    let tool = compatibility_tool();
+    let mut tools = vec![tool.clone()];
+    for index in 0..40 {
+        let mut unrelated = tool.clone();
+        unrelated.id = format!("unused_browser_fixture_{index}");
+        unrelated.description = format!(
+            "Unrelated browser capability {index}. {}",
+            "Describe viewport, accessibility, navigation, input, output, and recovery fields. "
+                .repeat(12)
+        );
+        tools.push(unrelated);
+    }
+    let mut messages = vec![ChatMessage {
+        role: Role::User,
+        content: vec![ContentBlock::text(
+            "Call read_compatibility_fixture exactly three times in sequence with markers round-1, round-2, and round-3. Wait for each result before the next call. After round-3, reply with MULTI_ROUND_OK.",
+        )],
+    }];
+    let result_lengths = [771_usize, 10_106, 3_910];
+
+    for (index, result_length) in result_lengths.into_iter().enumerate() {
+        let response = infer_for_test_transport(
+            executor,
+            ChatRequest {
+                model_binding: ModelBinding {
+                    provider_identity_ref: "deepseek".into(),
+                    model_ref: model.clone(),
+                    backend_ref: "genai".into(),
+                },
+                inference: Default::default(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+            },
+            transport,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("M1/E1 or M4/E4 usable continuation: {error}"));
+        let calls = response.output.tool_calls();
+        assert_eq!(calls.len(), 1, "M1/E1 one ToolUse at round {}", index + 1);
+        assert_eq!(
+            calls[0].arguments["marker"],
+            format!("round-{}", index + 1),
+            "M1/E1 ordered marker at round {}",
+            index + 1
+        );
+        messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: response.output.blocks,
+        });
+        messages.push(ChatMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::tool_result(
+                calls[0].call_id.clone(),
+                vec![ContentBlock::text(format!(
+                    "ROUND_{}_RESULT:{}",
+                    index + 1,
+                    "x".repeat(result_length)
+                ))],
+            )],
+        });
+    }
+
+    let terminal = infer_for_test_transport(
+        executor,
+        ChatRequest {
+            model_binding: ModelBinding {
+                provider_identity_ref: "deepseek".into(),
+                model_ref: model,
+                backend_ref: "genai".into(),
+            },
+            inference: Default::default(),
+            messages,
+            tools,
+        },
+        transport,
+    )
+    .await
+    .expect("M3/E3 terminal marker or M4/E4 fail closed");
+    assert!(
+        terminal.output.text_content().contains("MULTI_ROUND_OK"),
+        "M3/E3 completion marker"
+    );
+}
+
+async fn infer_for_test_transport(
+    executor: &GenaiExecutor,
+    request: ChatRequest,
+    transport: TestTransport,
+) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse> {
+    match transport {
+        TestTransport::Buffered => executor.infer(request).await,
+        TestTransport::Streaming => {
+            let deltas = RecordingDeltas::default();
+            let response = executor.infer_streaming(request, &deltas).await?;
+            let calls = response.output.tool_calls();
+            if calls.is_empty() {
+                assert_eq!(
+                    deltas.text.lock().unwrap().as_str(),
+                    response.output.text_content(),
+                    "M2/E2 streamed text is committed text"
+                );
+            } else {
+                assert!(
+                    !deltas.tool_arguments.lock().unwrap().is_empty(),
+                    "M2/E2 streamed tool arguments are observable"
+                );
+            }
+            Ok(response)
+        }
+    }
+}
+
 async fn assert_deepseek_reasoning_tool_round_trip(
     executor: &GenaiExecutor,
     model: String,

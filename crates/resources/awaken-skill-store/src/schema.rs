@@ -65,7 +65,7 @@ pub(crate) fn selected_skill_store_bundle(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 pub(crate) fn expanded_skill_store_bundle() -> Result<MigrationBundle, MigrationError> {
     expanded::bundle()
 }

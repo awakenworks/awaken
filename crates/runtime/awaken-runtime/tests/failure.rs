@@ -3,8 +3,8 @@
 //! still succeed (G26). A `MaxTokens`-truncated text response is continued in place
 //! up to a per-step budget.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -149,6 +149,47 @@ impl LlmExecutor for TruncatingLlm {
                 // representation. An explicit but unknown provider reason is
                 // rejected by the adapter before reaching this neutral port.
                 stop_reason: None,
+            })
+        }
+    }
+}
+
+/// First response exhausts the output budget in private reasoning; the next
+/// bounded continuation produces a public terminal answer.
+struct ReasoningOnlyTruncatingLlm {
+    calls: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<ChatRequest>>>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for ReasoningOnlyTruncatingLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.requests.lock().unwrap().push(request);
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            Ok(ChatResponse {
+                output: AssistantOutput::from_blocks(vec![ContentBlock::thinking(
+                    "private plan consumed the first allowance",
+                )]),
+                usage: Some(TokenUsage {
+                    prompt_tokens: 11,
+                    completion_tokens: 4,
+                    ..Default::default()
+                }),
+                stop_reason: Some(StopReason::MaxTokens),
+            })
+        } else {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("bounded continuation completed"),
+                usage: Some(TokenUsage {
+                    prompt_tokens: 13,
+                    completion_tokens: 3,
+                    ..Default::default()
+                }),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -415,6 +456,92 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
             ..Default::default()
         },
         "M2/E4: truncated and final request usage is accumulated exactly once"
+    );
+}
+
+#[tokio::test]
+async fn reasoning_only_max_tokens_uses_the_same_bounded_continuation_owner() {
+    // Reasoning-only truncation cause/effect table. C1 a provider returns one
+    // non-empty Thinking block, MaxTokens, usage, and no public text/ToolUse;
+    // C2 the Step has continuation budget; C3 the next response is a natural
+    // public answer. Effects: E1 no identical provider retry occurs; E2 the
+    // existing in-place continuation commits the private partial plus its one
+    // smaller-pieces prompt; E3 the second logical request completes the same
+    // Run/Thread/Step; E4 both usages are counted once and reasoning never leaks
+    // into answer text. Rule Q1=C1+C2+C3=>E1+E2+E3+E4. Neighbor rules: text
+    // truncation is M1/M2 above; exhausted budget is X1 below; MaxTokens with a
+    // typed tool is T1 below; NaturalEnd reasoning-only is rejected at the
+    // provider usability seam. The provider transcript mapper owns omission of
+    // a standalone reasoning-only history row, so Runtime adds no second mapper.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = Runtime::new().with_llm(Arc::new(ReasoningOnlyTruncatingLlm {
+        calls: calls.clone(),
+        requests: requests.clone(),
+    }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let outcome = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("Q1 executes");
+
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd), "Q1/E3");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "Q1/E1");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "Q1/E1");
+    assert!(
+        requests[1].messages.iter().any(|message| {
+            message.role == Role::Assistant
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Thinking { .. }))
+        }),
+        "Q1/E2 private partial remains neutral transcript truth"
+    );
+    assert!(
+        requests[1].messages.iter().any(|message| {
+            message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { text } if text.contains("smaller pieces")))
+        }),
+        "Q1/E2 one bounded continuation prompt"
+    );
+    let committed = commit.committed();
+    assert!(
+        committed.messages.iter().any(|message| {
+            message.role == Role::Assistant
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Thinking { .. }))
+        }),
+        "Q1/E2"
+    );
+    assert_eq!(
+        committed
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .map(|message| awaken_agent_contract::agent::content::extract_text(&message.content))
+            .collect::<Vec<_>>(),
+        vec!["".to_string(), "bounded continuation completed".to_string()],
+        "Q1/E4 reasoning is never answer text"
+    );
+    assert_eq!(
+        ThreadUsage::from_committed_state(&commit.committed_state(&ThreadId("thread-1".into())))
+            .by_model["m"],
+        TokenUsage {
+            prompt_tokens: 24,
+            completion_tokens: 7,
+            ..Default::default()
+        },
+        "Q1/E4"
     );
 }
 

@@ -18,6 +18,38 @@ use thiserror::Error;
 use crate::agent_bindings::InferenceOptions;
 use crate::resolved::{ModelBinding, ToolDescriptor};
 
+/// Default deadline for a provider adapter to open and consume one complete
+/// model response. Reasoning-capable models may spend minutes before their first
+/// public token or typed tool call, so this is deliberately independent from a
+/// transport-idle detector.
+pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Runtime watchdog around the complete [`LlmExecutor`] attempt. It is a last
+/// resort for an executor that fails to enforce its own response deadline, and
+/// therefore must outlive [`DEFAULT_MODEL_RESPONSE_TIMEOUT`] so the provider's
+/// typed terminal outcome remains authoritative.
+pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(630);
+
+const _: () =
+    assert!(DEFAULT_MODEL_ATTEMPT_WATCHDOG.as_secs() > DEFAULT_MODEL_RESPONSE_TIMEOUT.as_secs());
+
+#[cfg(test)]
+mod inference_deadline_contract_tests {
+    use super::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT};
+
+    #[test]
+    fn provider_deadline_precedes_the_runtime_watchdog() {
+        // Deadline cause/effect table. Causes: C1 a provider terminates before
+        // its response deadline; C2 it reaches its own deadline; C3 an executor
+        // ignores every provider deadline and remains pending. Effects: E1 the
+        // provider result/error reaches Runtime unchanged; E2 only C3 is cut off
+        // by the outer watchdog. Rules D1=(C1|C2)=>E1 because response timeout <
+        // watchdog; D2=C3=>E2. Invariant: an outer watchdog must never preempt
+        // the canonical provider terminal boundary under default composition.
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
+    }
+}
+
 /// One model invocation request. Pure data so it can be logged, replayed, and
 /// snapshotted without holding a live provider handle (G3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,22 +127,22 @@ pub enum StopReason {
 impl StopReason {
     /// Whether this response may consume one more in-place continuation.
     ///
-    /// This is the loop's single admission rule: only a text-bearing
-    /// `MaxTokens` response with no tool call and remaining budget may be
-    /// continued. Keeping the predicate beside the existing stop-reason type
-    /// prevents provider adapters and runtime callers from inventing parallel
-    /// interpretations of truncation.
+    /// This is the loop's single admission rule: only a `MaxTokens` response
+    /// with continuable public text or private reasoning, no tool call, and
+    /// remaining budget may be continued. Keeping the predicate beside the
+    /// existing stop-reason type prevents provider adapters and runtime callers
+    /// from inventing parallel interpretations of truncation.
     #[must_use]
     pub const fn admits_continuation(
         self,
         has_tool_calls: bool,
-        has_text: bool,
+        has_continuable_output: bool,
         completed_continuations: usize,
         max_continuations: usize,
     ) -> bool {
         matches!(self, Self::MaxTokens)
             && !has_tool_calls
-            && has_text
+            && has_continuable_output
             && completed_continuations < max_continuations
     }
 }
@@ -122,15 +154,17 @@ mod stop_reason_verification {
     #[kani::proof]
     fn max_token_continuation_requires_every_exact_guard() {
         let has_tool_calls: bool = kani::any();
-        let has_text: bool = kani::any();
+        let has_continuable_output: bool = kani::any();
         let completed_continuations: usize = kani::any();
         let max_continuations: usize = kani::any();
 
-        let expected = !has_tool_calls && has_text && completed_continuations < max_continuations;
+        let expected = !has_tool_calls
+            && has_continuable_output
+            && completed_continuations < max_continuations;
         assert_eq!(
             StopReason::MaxTokens.admits_continuation(
                 has_tool_calls,
-                has_text,
+                has_continuable_output,
                 completed_continuations,
                 max_continuations,
             ),
@@ -138,25 +172,25 @@ mod stop_reason_verification {
         );
         assert!(!StopReason::NaturalEnd.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
         assert!(!StopReason::ToolUse.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
         assert!(!StopReason::StopSequence.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
         assert!(!StopReason::ContentFilter.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
@@ -197,6 +231,17 @@ impl AssistantOutput {
     /// The response's combined text across its `Text` blocks.
     pub fn text_content(&self) -> String {
         extract_text(&self.blocks)
+    }
+
+    /// Whether the provider returned private reasoning that can explain a
+    /// `MaxTokens` truncation even when no public answer or tool call fit in the
+    /// response budget. It is never answer text and is never an ordinary
+    /// successful response by itself.
+    #[must_use]
+    pub fn has_reasoning(&self) -> bool {
+        self.blocks.iter().any(
+            |block| matches!(block, ContentBlock::Thinking { text, .. } if !text.trim().is_empty()),
+        )
     }
 
     /// The tool calls this response requests, in order, projected onto the

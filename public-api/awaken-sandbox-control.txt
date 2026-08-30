@@ -26,6 +26,16 @@ pub awaken_sandbox_control::RepositoryGitCredentialQuery::path: alloc::string::S
 pub awaken_sandbox_control::RepositoryGitCredentialQuery::protocol: alloc::string::String
 impl awaken_sandbox_control::RepositoryGitCredentialQuery
 pub fn awaken_sandbox_control::RepositoryGitCredentialQuery::validate(&self) -> core::result::Result<(), awaken_sandbox_control::SandboxControlProtocolError>
+pub struct awaken_sandbox_control::SandboxControlPublicationLease(_)
+pub struct awaken_sandbox_control::SandboxControlPublicationSlot<T>
+impl<T> awaken_sandbox_control::SandboxControlPublicationSlot<T>
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::close(&self) -> core::option::Option<T>
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::owns(&self, &awaken_sandbox_control::SandboxControlPublicationLease) -> bool
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::release(&self, &awaken_sandbox_control::SandboxControlPublicationLease)
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::reserve(&self, T) -> core::result::Result<awaken_sandbox_control::SandboxControlPublicationLease, awaken_sandbox_control::SandboxControlPublishError>
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::with_current_mut<R>(&self, &awaken_sandbox_control::SandboxControlPublicationLease, impl core::ops::function::FnOnce(&mut T) -> R) -> core::result::Result<R, awaken_sandbox_control::SandboxControlPublishError>
+impl<T> core::default::Default for awaken_sandbox_control::SandboxControlPublicationSlot<T>
+pub fn awaken_sandbox_control::SandboxControlPublicationSlot<T>::default() -> Self
 pub struct awaken_sandbox_control::SandboxControlPublishError
 pub struct awaken_sandbox_control::SandboxControlSecret(_)
 impl awaken_sandbox_control::SandboxControlSecret
