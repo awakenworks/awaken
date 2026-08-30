@@ -1,4 +1,5 @@
 use super::*;
+use pc::Sandbox as _;
 use tokio::io::AsyncReadExt as _;
 
 struct Broker;
@@ -57,6 +58,153 @@ fn ns_spec(scope: &str, mounts: Vec<pc::MountRequirement>) -> pc::SandboxSpec {
         command: Vec::new(),
         deny_tool_egress: false,
     }
+}
+
+#[tokio::test]
+async fn ready_create_replay_projects_namespace_receipt_without_remounting() {
+    // Namespace create-replay table: C1 lifecycle is Creating/Ready; C2
+    // effect is exact/drifted. N1 Creating materializes and records one
+    // Bind result; N2 Ready+exact only reprojects that receipt/layout and
+    // preserves post-Ready bytes; N3 drift rejects. A rematerialization
+    // would replace `after-ready` with the frozen Inline value.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let spec = ns_spec(
+        "namespace-ready-receipt",
+        vec![pc::MountRequirement {
+            mount_id: "inline".into(),
+            source: pc::MountSource::Inline {
+                contents: "declared".into(),
+            },
+            mount_path: "/workspace/receipt.txt".into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }],
+    );
+    let effect = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+    let first = provider
+        .create_sandbox_for_effect(&spec, &effect, None)
+        .await
+        .expect("N1");
+    let first_handle = pc::Sandbox::handle(&first);
+    std::fs::write(
+        first.workspace_root().root().join("receipt.txt"),
+        b"after-ready",
+    )
+    .unwrap();
+
+    let replay = provider
+        .create_sandbox_for_effect(&spec, &effect, None)
+        .await
+        .expect("N2");
+    assert_eq!(pc::Sandbox::handle(&replay), first_handle, "N2 receipt");
+    assert_eq!(
+        std::fs::read(replay.workspace_root().root().join("receipt.txt")).unwrap(),
+        b"after-ready",
+        "N2 zero rematerialization"
+    );
+    assert!(
+        provider
+            .create_sandbox_for_effect(
+                &spec,
+                &pc::SandboxEffectFence::new("drifted", "owner", "runtime", 1, u64::MAX,).unwrap(),
+                None,
+            )
+            .await
+            .is_err(),
+        "N3"
+    );
+}
+
+#[tokio::test]
+async fn legacy_namespace_adoption_reemits_v1_without_invented_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let scope = "legacy-namespace-v1";
+    std::fs::create_dir_all(crate::sandbox_dir(tmp.path(), scope)).unwrap();
+    let legacy = pc::SandboxHandle::namespace(
+        NamespaceProvider::provider_kind(),
+        scope,
+        pc::NamespaceSandboxHandleV1 {
+            outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.into(),
+            base_env: Vec::new(),
+            network: pc::NetworkPolicy::Unrestricted,
+            control_services: Default::default(),
+        },
+    );
+    let adopted = provider.adopt_sandbox(&legacy).await.unwrap();
+    let emitted = pc::Sandbox::handle(&adopted);
+    assert_eq!(emitted, legacy);
+    assert!(emitted.realization_fingerprint().is_none());
+    assert!(emitted.owned_paths().is_none());
+}
+
+/// Repository provider rule: C1 an explicit non-workspace absolute path is
+/// carried in the plan; E1 reject it before Git, E2 create neither the exact
+/// target nor the former silently-relocated `/workspace/...` target.
+#[tokio::test]
+async fn repository_realization_rejects_non_workspace_paths_without_relocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&ns_spec("namespace-repository-path", Vec::new()))
+        .await
+        .unwrap();
+    let plan = pc::RepositoryRealizationPlan {
+        repository_id: "repo".into(),
+        mount_path: "/repo".into(),
+        source_remote_url: "file:///does-not-matter".into(),
+        transport_url: "file:///does-not-matter".into(),
+        initial_branch: None,
+        initial_commit: None,
+        access: pc::MountAccess::ReadWrite,
+    };
+
+    let error = sandbox
+        .provision_repo(&plan, None)
+        .expect_err("C1/E1 unsupported path");
+    assert!(error.to_string().contains("current providers require"));
+    assert!(!sandbox.root.root().join("repo").exists(), "E2 exact");
+    assert!(
+        !sandbox.workspace_root().root().join("repo").exists(),
+        "E2 no relocation"
+    );
+}
+
+/// Namespace crash-cut adapter rule: C1 the exact `/workspace` final name
+/// already contains an incomplete/non-Repository directory; C2 the durable
+/// handle may reserve that path. N1 C1(+either C2 value) => E1 reject before
+/// Git, E2 preserve the directory and its bytes. Absent, exact replay, and
+/// publish-race rows are owned by the shared `provision_repo_at` decision
+/// table, so Namespace does not maintain a second realization state machine.
+#[tokio::test]
+async fn repository_realization_preserves_an_incomplete_namespace_destination() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&ns_spec("namespace-repository-occupied", Vec::new()))
+        .await
+        .unwrap();
+    let occupied = sandbox.workspace_root().root().join("repo");
+    std::fs::create_dir(&occupied).unwrap();
+    std::fs::write(occupied.join("PRESERVED"), "user bytes").unwrap();
+    let plan = pc::RepositoryRealizationPlan {
+        repository_id: "repo".into(),
+        mount_path: "/workspace/repo".into(),
+        source_remote_url: "https://network-must-not-run.invalid/repository".into(),
+        transport_url: "https://network-must-not-run.invalid/repository".into(),
+        initial_branch: None,
+        initial_commit: None,
+        access: pc::MountAccess::ReadWrite,
+    };
+
+    sandbox
+        .provision_repo(&plan, None)
+        .expect_err("N1 incomplete destination fails closed");
+    assert_eq!(
+        std::fs::read_to_string(occupied.join("PRESERVED")).unwrap(),
+        "user bytes",
+        "N1/E2 existing bytes are never deleted"
+    );
 }
 
 #[tokio::test]
@@ -143,6 +291,194 @@ async fn a_memory_store_mount_without_a_mounter_fails_loud() {
         }],
     );
     assert!(provider.create_sandbox(&spec).await.is_err());
+}
+
+#[tokio::test]
+async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
+    // Namespace terminal-copy preparation/authorization table: C1 the current
+    // handle carries the complete canonical copy evidence; C2 ack evidence is
+    // exact/mismatched; C3 terminal fence is live same-effect/stale/same-lease
+    // successor/foreign; C4 aggregate preparation is/is not durably accepted.
+    // N1 C1+exact+live records that effect without rebuilding a MemoryMount and
+    // is idempotent after a lost response; N2 every invalid C2/C3 row leaves the
+    // exact root untouched; N3 prepare is rejected until N1, while exact prepare
+    // and its replay have zero physical effect; C5 the C response is lost and
+    // same-operation renewal D retries before/after the C root CAS. N4 both
+    // orders return immutable C; shorter/foreign inputs have zero mutation. N5
+    // only C4 permits the separate C->D physical-disposal port to remove the root.
+    // Guard draining itself is provider-shared and covered by the mixed
+    // Copy/FUSE table in `memory_mount_release_tests`.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let spec = ns_spec(
+        "terminal-namespace-memory-copy",
+        vec![pc::MountRequirement {
+            mount_id: "memory".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "store".into(),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/workspace/memory".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        }],
+    );
+    let create =
+        pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 2).unwrap();
+    let terminal =
+        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX - 1).unwrap();
+    let stale = pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, 0).unwrap();
+    let successor =
+        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
+    let foreign =
+        pc::SandboxEffectFence::new("foreign", "other-owner", "runtime", 1, u64::MAX).unwrap();
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
+    let root = crate::sandbox_dir(tmp.path(), &spec.scope);
+    let mut creation =
+        crate::realization_marker::begin(&root, &fingerprint, &create, None, None).unwrap();
+    creation.prepare_root().unwrap();
+    std::fs::create_dir_all(root.join("workspace/memory")).unwrap();
+    std::fs::write(root.join("workspace/memory/value"), b"candidate").unwrap();
+    let evidence = pc::MemoryMaterializationEvidence::new(
+        "store",
+        "/workspace/memory",
+        vec![pc::MemoryMaterializationHead {
+            path: "value".into(),
+            id: "head".into(),
+            content_sha256: "digest".into(),
+        }],
+    )
+    .unwrap();
+    let completion = crate::realization_marker::RealizationCompletionReceipt::new(
+        &[pc::RealizedMount {
+            mount_id: "memory".into(),
+            mount_path: "/workspace/memory".into(),
+            access: pc::MountAccess::ReadWrite,
+            realization: pc::Realization::Copy,
+            content_hash: None,
+        }],
+        vec![evidence.clone()],
+    )
+    .unwrap();
+    let realization = creation.complete(&completion).unwrap();
+    let handle = pc::SandboxHandle::namespace_v2(
+        NamespaceProvider::provider_kind(),
+        spec.scope.clone(),
+        pc::NamespaceSandboxHandleV2 {
+            previous: pc::NamespaceSandboxHandleV1 {
+                outputs_path: spec.outputs_path.clone(),
+                base_env: spec.env.clone(),
+                network: spec.network.clone(),
+                control_services: Default::default(),
+            },
+            realization_fingerprint: fingerprint,
+            effect_fence: create,
+            physical_incarnation: realization.physical_incarnation().to_owned(),
+            owned_paths: vec!["/workspace/memory".into()],
+        },
+    )
+    .with_memory_materializations(vec![evidence.clone()])
+    .unwrap();
+    let cold = provider
+        .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .await
+        .unwrap()
+        .expect("N1");
+    assert!(cold.memory_mounts.lock().await.is_empty(), "N1");
+    assert!(
+        cold.prepare_disposal_for_effect(&terminal).await.is_err(),
+        "N3 preparation requires ack"
+    );
+    let mismatched = pc::MemoryMaterializationEvidence::new(
+        "store",
+        "/workspace/memory",
+        vec![pc::MemoryMaterializationHead {
+            path: "value".into(),
+            id: "head".into(),
+            content_sha256: "different".into(),
+        }],
+    )
+    .unwrap();
+    assert!(
+        pc::Sandbox::acknowledge_memory_reconciliation(&cold, &terminal, &[mismatched],)
+            .await
+            .is_err(),
+        "N2 mismatched evidence"
+    );
+    assert!(
+        pc::Sandbox::acknowledge_memory_reconciliation(
+            &cold,
+            &stale,
+            std::slice::from_ref(&evidence),
+        )
+        .await
+        .is_err(),
+        "N2 stale"
+    );
+    assert!(root.is_dir(), "N2 zero physical effect");
+    pc::Sandbox::acknowledge_memory_reconciliation(
+        &cold,
+        &terminal,
+        std::slice::from_ref(&evidence),
+    )
+    .await
+    .expect("N1 exact");
+    pc::Sandbox::acknowledge_memory_reconciliation(
+        &cold,
+        &terminal,
+        std::slice::from_ref(&evidence),
+    )
+    .await
+    .expect("N1 replay");
+    let prepared = cold
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("N3 exact preparation");
+    let replayed = cold
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("N3 preparation response-loss replay");
+    assert_eq!(prepared, terminal, "N3 exact durable predecessor");
+    assert_eq!(replayed, terminal, "N3 response-loss predecessor");
+    assert!(root.is_dir(), "N3 preparation has zero physical effect");
+    pc::Sandbox::acknowledge_memory_reconciliation(
+        &cold,
+        &successor,
+        std::slice::from_ref(&evidence),
+    )
+    .await
+    .expect("N4 same-lease successor");
+    assert!(
+        pc::Sandbox::acknowledge_memory_reconciliation(
+            &cold,
+            &foreign,
+            std::slice::from_ref(&evidence),
+        )
+        .await
+        .is_err(),
+        "N4 foreign lease"
+    );
+    assert!(root.is_dir(), "N4 rejected effects are non-destructive");
+    let renewed_replay = cold
+        .prepare_disposal_for_effect(&successor)
+        .await
+        .expect("N4 successor preparation");
+    assert_eq!(renewed_replay, terminal, "N4 C/D CAS orders share C");
+    assert!(
+        cold.prepare_disposal_for_effect(&stale).await.is_err(),
+        "N4 shorter retry"
+    );
+    assert!(
+        cold.prepare_disposal_for_effect(&foreign).await.is_err(),
+        "N4 foreign retry"
+    );
+    assert!(root.is_dir(), "N4 preparation cannot dispose the root");
+    let disposal = crate::test_disposal_authorization_for_current(&terminal, &successor);
+    cold.dispose_for_effect(&disposal)
+        .await
+        .expect("N5 aggregate-authorized physical disposal");
 }
 
 #[tokio::test]

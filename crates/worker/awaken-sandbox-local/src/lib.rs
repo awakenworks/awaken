@@ -1380,6 +1380,34 @@ impl From<SandboxError> for awaken_provisioning_contract::SandboxError {
 }
 
 #[cfg(test)]
+pub(crate) fn test_disposal_authorization(
+    prepared: &awaken_provisioning_contract::SandboxEffectFence,
+) -> awaken_provisioning_contract::SandboxDisposalAuthorization {
+    test_disposal_authorization_for_current(prepared, prepared)
+}
+
+#[cfg(test)]
+pub(crate) fn test_disposal_authorization_for_current(
+    prepared: &awaken_provisioning_contract::SandboxEffectFence,
+    current: &awaken_provisioning_contract::SandboxEffectFence,
+) -> awaken_provisioning_contract::SandboxDisposalAuthorization {
+    use awaken_provisioning_contract as pc;
+
+    let fingerprint = format!("local-test-preparation:{}", prepared.operation_id);
+    let preparation = pc::SandboxDisposalPreparation::new(prepared.clone(), fingerprint).unwrap();
+    let operation_id = preparation.operation_id().unwrap();
+    let successor = pc::SandboxEffectFence::new(
+        operation_id,
+        current.owner.clone(),
+        current.runtime_incarnation.clone(),
+        current.epoch,
+        current.expires_at_unix_ms,
+    )
+    .unwrap();
+    preparation.authorize(successor).unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
