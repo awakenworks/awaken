@@ -17,14 +17,17 @@ trap 'rm -f "$RENDERED"' EXIT
 # Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
 # publishing port is not reachable inside the cluster); C6 the Kubernetes
-# backend selects the canonical resident Pod channel instead of attached exec; C7
-# model/provider secret names or values appear in the manifest. Effects: E1 one
+# backend selects the canonical resident Pod channel and grants its ServiceAccount
+# the namespace-scoped Pod port-forward subresource used by that channel, while
+# retaining attached exec only for bounded file operations; C7 model/provider
+# secret names or values appear in the manifest. Effects: E1 one
 # all-in-one backend can start from the canonical image;
 # E2 Awaken/Console and management APIs have no terminal-user ingress; E3 config
 # plus Awaken-owned provider configuration, Skills, Agents, and Sessions survive
 # Pod replacement; E4 only the product backend may reach port 8080; E5 K8s ACP
 # startup uses the already-owned resident channel rather than depending on an
-# apiserver exec-stream protocol; E6 reject the deployment contract before a
+# apiserver exec-stream protocol, and may open that channel without broadening
+# authority beyond the Session namespace; E6 reject the deployment contract before a
 # cluster mutation. Rules: K1 C1+C2+C3+C4+C5+C6+!C7=>E1+E2+E3+E4+E5;
 # K2 !C1|!C2|!C3|!C4|!C5|!C6|C7=>E6.
 kubectl kustomize "$OVERLAY" >"$RENDERED"
@@ -56,6 +59,7 @@ grep -q 'package_registry_insecure = true' "$RENDERED"
 grep -q 'serviceAccountName: awaken-product' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
+grep -q -- '- pods/portforward' "$RENDERED"
 PRODUCT_OBJECT_RULE="$(sed -n '14,34p' "$RENDERED")"
 grep -q -- '- create' <<<"$PRODUCT_OBJECT_RULE"
 grep -q -- '- update' <<<"$PRODUCT_OBJECT_RULE"

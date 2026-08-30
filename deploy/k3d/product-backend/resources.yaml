@@ -48,7 +48,7 @@ rules:
     resources: ["pods", "configmaps"]
     verbs: ["create", "get", "list", "update", "delete", "deletecollection"]
   - apiGroups: [""]
-    resources: ["pods/exec"]
+    resources: ["pods/exec", "pods/portforward"]
     verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["secrets"]
