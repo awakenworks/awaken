@@ -6,11 +6,14 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MARKETING_STORIES, PRODUCT_PROOFS } from "./catalog.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const flowDir = resolve(here, "flows");
+const proofDir = resolve(here, "proofs");
 const flowNames = readdirSync(flowDir).filter((name) => name.endsWith(".mjs")).sort();
 const flows = new Map(flowNames.map((name) => [name, readFileSync(resolve(flowDir, name), "utf8")]));
+const proofs = new Map(PRODUCT_PROOFS.map((slug) => [`${slug}.mjs`, readFileSync(resolve(proofDir, `${slug}.mjs`), "utf8")]));
 const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
 const readme = readFileSync(resolve(here, "README.md"), "utf8");
 
@@ -37,14 +40,39 @@ const checks = [
     assert.ok(intro, `${name}: intro needs literal intent and capability copy`);
     assert.ok(intro[1].length >= 35 && intro[2].length >= 35, `${name}: intro is too vague`);
   })],
+  ["first-viewer task stakes", () => eachFlow((name, source) => {
+    const job = storyLiteral(source, "job");
+    const stakes = storyLiteral(source, "stakes");
+    const handoff = storyLiteral(source, "handoff");
+    const intro = source.match(/await intro\(\s*"([^"]+)"/s)?.[1] ?? "";
+    assert.ok(job.length >= 8, `${name}: name the concrete job, not a fictional person`);
+    assert.ok(stakes.length >= 55, `${name}: state a consequential failure, not a generic benefit`);
+    assert.ok(handoff.length >= 55, `${name}: state what the result enables and where human authority remains`);
+    assert.ok(intro.length >= 55, `${name}: open with the job or risk instead of invented biography`);
+    assert.doesNotMatch(intro, /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b|\b\d{1,2}:\d{2}\b/i, `${name}: do not manufacture calendar pressure`);
+  })],
+  ["humanized story copy", () => eachFlow((name, source) => {
+    const story = source.slice(source.indexOf("export const story"), source.indexOf("};", source.indexOf("export const story")) + 2);
+    assert.doesNotMatch(story, /[—–]/, `${name}: story metadata contains an em or en dash`);
+    assert.doesNotMatch(story, /\b(?:crucial|pivotal|showcase|delve|underscores?|not merely|not just)\b/i, `${name}: replace generic AI-style promotion with concrete facts`);
+  })],
   ["caption readability", () => eachFlow((name, source) => {
     for (const text of literalCallArgs(source, ["say", "aha"])) {
-      assert.ok([...text].length <= 150, `${name}: caption exceeds 150 characters: ${text}`);
+      assert.ok([...text].length <= 100, `${name}: caption exceeds 100 characters: ${text}`);
+      assert.ok(text.trim().split(/\s+/).length <= 12, `${name}: caption exceeds 12 words: ${text}`);
+      assert.doesNotMatch(text, /[—–]/, `${name}: humanize audience copy without em or en dashes`);
     }
   })],
   ["brand close", () => {
-    assert.match(harness, /awaken · configure, prove, and run agents/);
-    assert.match(harness, /AHA ·/);
+    assert.match(harness, /Awaken Agents · work that can continue/);
+    assert.match(harness, /The conversation can end\. The work stays ready for whoever comes next\./);
+    assert.match(harness, /M14\.2 6h3\.6l8\.6 20h-3L16 8\.4 8\.6 26h-3Z/);
+    assert.match(harness, /#68ced9/);
+    assert.match(harness, /#a392ff/);
+    assert.match(harness, /cursor\.style\.opacity = "0"/);
+    assert.match(harness, /cursor\.style\.opacity = "1"/);
+    assert.doesNotMatch(harness, /rec-brand-mark::before|linear-gradient\(145deg,rgba\(205,80,108/);
+    assert.doesNotMatch(harness, /Intent ·|Awaken ·|AHA ·/);
   }],
   ["subtitle deliverables", () => {
     for (const extension of ["captions.json", ".vtt", ".srt"]) assert.ok(harness.includes(extension), `harness: missing ${extension}`);
@@ -62,10 +90,16 @@ const checks = [
     assert.match(harness, /Recording stopped/);
   }],
   ["recording composition", () => {
-    assert.match(harness, /width: 1600, height: 900/);
+    assert.match(harness, /width: 1920, height: 1200/);
     assert.match(harness, /videoStartedAt/);
     assert.match(harness, /classList\.toggle\("top", targetIsLow\)/);
     assert.match(harness, /AWAKEN_RECORD_KEEP_WEBM/);
+    assert.match(harness, /recording requires one all-in-one origin/);
+    assert.match(harness, /verifyFinalVideo\(temporaryMp4\)/);
+    assert.match(harness, /product_revision: recordedProductRevision/);
+    assert.match(harness, /recording requires a clean tracked source tree/);
+    assert.match(harness, /fps=30/);
+    assert.match(harness, /rec-brand/);
   }],
   ["no turn vocabulary", () => eachFlow((name, source) => {
     assert.doesNotMatch(source, /\bturns?\b/i, `${name}: use run/step/thread vocabulary`);
@@ -75,22 +109,23 @@ const checks = [
     assert.doesNotMatch(source, /mock|fake response/i, `${name}: scripted model result presented as real`);
   })],
   ["state runtime proof", () => {
-    const source = requiredFlow("06-ai-state-machine.mjs");
+    const source = requiredProof("06-ai-state-machine.mjs");
     assert.match(source, /Try draft\|试运行草稿/);
     assert.match(source, /State Machine blocks the unread write at runtime/);
-    assert.match(source, /Agent working\|Agent 工作中/);
+    assert.match(source, /details\[data-tool="write"\]/);
+    assert.match(source, /writeCard\.locator\("summary"\)\.click\(\)/);
   }],
   ["repeat-safe state", () => {
-    const source = requiredFlow("06-ai-state-machine.mjs");
-    assert.match(source, /\[read, written\]/);
+    const source = requiredProof("06-ai-state-machine.mjs");
+    assert.match(source, /from: \["read", "written"\]/);
     assert.match(source, /arrayContaining\(\["read", "written"\]\)/);
   }],
   ["runtime tool identity", () => {
-    assert.match(requiredFlow("03-tools-permissions.mjs"), /bash\(command/);
-    assert.doesNotMatch(requiredFlow("06-ai-state-machine.mjs"), /\bRead\(|\bWrite\(/);
+    assert.match(requiredProof("03-tools-permissions.mjs"), /bash\(command/);
+    assert.doesNotMatch(requiredProof("06-ai-state-machine.mjs"), /\bRead\(|\bWrite\(/);
   }],
   ["credential safety", () => {
-    const source = requiredFlow("01-connect-model.mjs");
+    const source = requiredProof("01-connect-model.mjs");
     assert.match(source, /oauth_helper: "gcloud"/);
     assert.match(source, /not\.toHaveProperty\("material_ref"\)/);
     assert.match(source, /not\.toHaveProperty\("oauth_command"\)/);
@@ -100,11 +135,11 @@ const checks = [
     assert.doesNotMatch(harness, /admin-token/);
   }],
   ["single model-connection workflow", () => {
-    const source = requiredFlow("01-connect-model.mjs");
+    const source = requiredProof("01-connect-model.mjs");
     for (const claim of [
       "Provider connections",
       "Verify & import models",
-      "immediately available to Agent pickers and the Assistant",
+      "connected model is immediately discoverable for Agent authoring",
       "/v1/config/provider-connections",
     ]) {
       assert.ok(source.includes(claim), `01-connect-model.mjs: missing ${claim}`);
@@ -118,7 +153,7 @@ const checks = [
     }
   }],
   ["feature breadth", () => {
-    const corpus = [...flows.values()].join("\n");
+    const corpus = [...flows.values(), ...proofs.values()].join("\n");
     for (const claim of [
       "model", "agent", "permission", "memory", "State Machine", "trace",
       "Managed Agents", "ACP", "MCP", "sandbox", "Skill", "Deployment",
@@ -131,8 +166,12 @@ const checks = [
     assert.match(source, /await wait\(/, `${name}: add a visual settle after interaction`);
   })],
   ["caption-scene coupling", () => {
-    const overview = requiredFlow("00-platform-overview.mjs");
-    assert.ok(matches(overview, /await beat\(/g) >= 7, "overview: every capability beat should focus its visible evidence");
+    const overview = requiredFlow("00-awaken-agents-overview.mjs");
+    const focusedBeats = matches(overview, /await beat\(/g);
+    assert.ok(
+      focusedBeats >= 3 && focusedBeats <= 4,
+      "overview: focus the few pieces of evidence that close one human story",
+    );
     assert.match(harness, /\.rec-focus/);
   }],
   ["no static pauses", () => {
@@ -148,20 +187,24 @@ const checks = [
     const authoring = requiredFlow("02-build-agent.mjs");
     assert.match(authoring, /Start preview\|开始预览/);
     assert.match(authoring, /status\(\)\)\.toBe\(404\)/);
-    assert.match(authoring, /publication\.agent_inputs\.inputs/);
-    assert.doesNotMatch(authoring, /Save resources|保存资源/);
+    assert.match(authoring, /publication\.source_revision/);
+    assert.match(authoring, /Message to agent over AG-UI/);
+    assert.match(authoring, /protocols#protocol-ag-ui/);
+    assert.match(authoring, /RUN_FINISHED/);
+    assert.doesNotMatch(authoring, /Memory & resources|Memory 与资源/);
   }],
   ["MCP override proof", () => {
-    const tools = requiredFlow("03-tools-permissions.mjs");
+    const tools = requiredProof("20-tool-presentation.mjs");
     assert.match(tools, /mcp__issues__create_issue/);
-    assert.match(tools, /config\.tools\)\.not\.toContain/);
+    assert.match(tools, /config\.tools\)\.toEqual\(\["read"\]\)/);
     assert.match(tools, /config\.mcp_servers/);
   }],
   ["Memory effect proof", () => {
-    const memory = requiredFlow("04-resources-transparency.mjs");
-    assert.ok(matches(memory, /\/v1\/sessions/g) >= 2, "memory: use two fresh sessions");
-    assert.match(memory, /persisted\.content/);
-    assert.match(memory, /getByText\(secret/);
+    const memory = requiredProof("04-resources-transparency.mjs");
+    assert.ok(matches(memory, /createManagedSession\(/g) >= 2, "memory: use two fresh sessions");
+    assert.match(memory, /memory\.content/);
+    assert.match(memory, /Human approval is required before every external side effect/);
+    assert.match(memory, /release-policy\.txt/);
     assert.match(memory, /publication\.agent_inputs\.inputs/);
     assert.doesNotMatch(memory, /Save resources|保存资源/);
   }],
@@ -171,34 +214,18 @@ const checks = [
     assert.match(readme, /aha\(text\)/);
   }],
   ["series completeness", () => {
-    assert.deepEqual(flowNames, [
-      "00-platform-overview.mjs",
-      "01-connect-model.mjs",
-      "02-build-agent.mjs",
-      "03-tools-permissions.mjs",
-      "04-resources-transparency.mjs",
-      "05-ai-authoring.mjs",
-      "06-ai-state-machine.mjs",
-      "10-skill-optimized-agent.mjs",
-      "11-resource-provenance.mjs",
-      "12-deployment-control.mjs",
-      "13-managed-api-ingress.mjs",
-      "14-session-control.mjs",
-      "15-a2a-discovery.mjs",
-      "16-access-boundary.mjs",
-      "17-frontend-protocols.mjs",
-      "18-mcp-server-export.mjs",
-      "19-codex-acp-agent.mjs",
-    ]);
+    assert.deepEqual(flowNames, MARKETING_STORIES.map((slug) => `${slug}.mjs`));
+    assert.deepEqual([...proofs.keys()], PRODUCT_PROOFS.map((slug) => `${slug}.mjs`));
   }],
   ["customer relationship objective", () => eachFlow((name, source) => {
     for (const field of ["loyalty", "satisfaction", "advocacy"]) {
       assert.match(source, new RegExp(`${field}:\\s*["']`), `${name}: explain how this story strengthens ${field}`);
     }
   })],
-  ["sub-three-minute close", () => {
-    assert.match(harness, /MAX_VIDEO_MS = 180_000/);
-    assert.match(harness, /MAX_FLOW_MS = 172_000/);
+  ["complete close and bounded capture", () => {
+    assert.match(harness, /MAX_FLOW_MS = 480_000/);
+    assert.match(harness, /Runtime waits are editorially cut only after their real checkpoint succeeds/);
+    assert.match(harness, /await showBrand\("The conversation can end/);
   }],
 ];
 
@@ -224,6 +251,18 @@ function requiredFlow(name) {
   const source = flows.get(name);
   assert.ok(source, `missing flow ${name}`);
   return source;
+}
+
+function requiredProof(name) {
+  const source = proofs.get(name);
+  assert.ok(source, `missing proof ${name}`);
+  return source;
+}
+
+function storyLiteral(source, field) {
+  const value = source.match(new RegExp(`${field}:\\s*(["'])(.*?)\\1`))?.[2];
+  assert.ok(value, `missing story.${field}`);
+  return value;
 }
 
 function matches(source, pattern) {
