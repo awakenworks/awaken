@@ -2,1046 +2,52 @@
 //!
 //! This crate deliberately separates the non-replaceable eligibility kernel from
 //! replaceable ranking policy. A policy may order workers that already satisfy the
-//! durable requirements, but it cannot widen isolation, capability, version, or
-//! recovery authority. Registry persistence, authentication, capacity reservation,
-//! and executor channels live in server/composition crates.
+//! durable requirements, but it cannot widen authority; mutable adapters live elsewhere.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+mod manifest;
+mod observation;
+mod placement;
+mod registry;
+mod requirements;
 
-use async_trait::async_trait;
-use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
 pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
 };
-use awaken_provisioning_contract::{
-    IsolationClass, ResourceLimits, ResourceRequests, SandboxCapabilities, SandboxCapacityShapeId,
-    SandboxRequirements,
+pub use manifest::{
+    CURRENT_CONTRACT_VERSION, FingerprintError, HOST_EXECUTOR_CAPABILITY,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY,
+    SESSION_RESOURCES_CAPABILITY, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerCapacity, WorkerManifest,
 };
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use thiserror::Error;
-
-/// Worker can install a frozen Workspace-scoped Session resource manifest over
-/// shared File/Memory/Skill/lifecycle and Resource Registry ports.
-pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
-
-/// Worker has an explicitly installed in-process executor for a published Host
-/// candidate. This is a realization capability, not a snapshot wire scheme.
-pub const HOST_EXECUTOR_CAPABILITY: &str = "host-executor/v1";
-
-/// Worker can open the exact persisted credential source frozen into a published
-/// Provider candidate. This capability grants no credential by itself.
-pub const PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str = "credential-source/v1";
-
-/// Worker can inject a frozen Repository config's opaque credential reference at
-/// realization time. Kept separate so a secretless worker remains eligible for
-/// File/Memory/Skill and public Repository inputs.
-pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
-
-/// Placement-context key for a soft, exact Environment capacity preference.
-pub const PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE: &str = "environment_shape";
-
-/// Worker can revalidate and use exact private credential revisions that never
-/// cross the control plane. Use may be secret materialization or a local backend
-/// (such as a CLI) reading its own login. Eligibility additionally requires a
-/// current observation for every pinned revision, so this capability alone
-/// grants no access.
-pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
-
-/// Closed lease rule for any dynamic Worker observation. Identity, state and
-/// coherence are supplied as one exact-match axis by the typed observation;
-/// time validity is a half-open interval so old evidence loses authority at
-/// `valid_until_ms` and future evidence never becomes prematurely selectable.
-#[must_use]
-pub(crate) const fn dynamic_observation_admitted(
-    exact_verified_fact: bool,
-    observed_at_ms: u64,
-    now_ms: u64,
-    valid_until_ms: u64,
-) -> bool {
-    exact_verified_fact && observed_at_ms <= now_ms && now_ms < valid_until_ms
-}
-
-/// Point-in-time, non-secret credential evidence published by one Worker.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct WorkerCredentialObservation {
-    pub credential: WorkerCredentialRevision,
-    pub state: WorkerCredentialState,
-    pub observed_at_ms: u64,
-    /// Exclusive deadline after which this observation is no longer placement
-    /// evidence. A missing field from an older sender decodes to zero and
-    /// therefore fails closed.
-    #[serde(default)]
-    pub valid_until_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason_code: Option<String>,
-}
-
-impl WorkerCredentialObservation {
-    #[must_use]
-    pub fn available(
-        credential: WorkerCredentialRevision,
-        observed_at_ms: u64,
-        valid_until_ms: u64,
-    ) -> Self {
-        Self {
-            credential,
-            state: WorkerCredentialState::Available,
-            observed_at_ms,
-            valid_until_ms,
-            reason_code: None,
-        }
-    }
-
-    #[must_use]
-    pub fn is_selectable_at(&self, credential: &WorkerCredentialRevision, now_ms: u64) -> bool {
-        dynamic_observation_admitted(
-            self.state == WorkerCredentialState::Available && &self.credential == credential,
-            self.observed_at_ms,
-            now_ms,
-            self.valid_until_ms,
-        )
-    }
-}
-
-/// Worker-leased wrapper around one ACP capability observation. The inner
-/// profile is protocol-neutral and secret-free; expiry is Worker authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerAcpCapabilityObservation {
-    pub observation: AcpCapabilityObservation,
-    #[serde(default)]
-    pub valid_until_ms: u64,
-}
-
-impl WorkerAcpCapabilityObservation {
-    #[must_use]
-    pub fn is_selectable_at(
-        &self,
-        requirement: &WorkerAcpCapabilityRequirement,
-        now_ms: u64,
-    ) -> bool {
-        dynamic_observation_admitted(
-            self.observation.state() == AcpCapabilityObservationState::Verified
-                && self.observation.backend_ref() == requirement.backend_ref
-                && self.observation.fingerprint() == Some(requirement.fingerprint.as_str()),
-            self.observation.observed_at_ms(),
-            now_ms,
-            self.valid_until_ms,
-        )
-    }
-}
-
-/// Exact dynamic ACP profile required by an immutable publication.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct WorkerAcpCapabilityRequirement {
-    pub backend_ref: String,
-    pub fingerprint: String,
-}
-
-pub const CURRENT_CONTRACT_VERSION: u32 = 1;
-
-/// One concrete worker process. `worker_id` names the logical slot;
-/// `incarnation_id` changes on every boot; `generation` is allocated durably by
-/// the registry. Reusing a worker id therefore never reuses execution authority.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct WorkerIdentity {
-    pub worker_id: String,
-    pub incarnation_id: String,
-    pub generation: u64,
-}
-
-impl WorkerIdentity {
-    #[must_use]
-    pub fn new(
-        worker_id: impl Into<String>,
-        incarnation_id: impl Into<String>,
-        generation: u64,
-    ) -> Self {
-        Self {
-            worker_id: worker_id.into(),
-            incarnation_id: incarnation_id.into(),
-            generation,
-        }
-    }
-
-    /// Stable owner vocabulary for the existing dispatch lease. It includes the
-    /// boot identity, so bulk renewal cannot accidentally renew a replacement's
-    /// or predecessor's leases even before stores gain typed identity columns.
-    #[must_use]
-    pub fn lease_owner(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.worker_id, self.generation, self.incarnation_id
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerState {
-    Starting,
-    Ready,
-    Draining,
-    Quiesced,
-    Dead,
-}
-
-impl WorkerState {
-    #[must_use]
-    pub const fn accepts_work(self) -> bool {
-        matches!(self, Self::Ready)
-    }
-}
-
-/// State of the asynchronous dynamic-evidence probe relative to process
-/// startup. Probe evidence affects placement, never process liveness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DynamicEvidenceProbeState {
-    Pending,
-    Succeeded,
-    Failed,
-}
-
-/// Readiness policy after registration and runtime assembly have succeeded.
-///
-/// The probe state is explicit so the independence claim is executable and
-/// exhaustively provable. Callers still publish no dynamic evidence until a
-/// successful probe; [`dynamic_evidence_admits`] enforces that claim fence.
-#[must_use]
-pub const fn process_ready_after_startup(_probe: DynamicEvidenceProbeState) -> bool {
-    true
-}
-
-/// Inclusive protocol-version range supported by a worker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VersionRange {
-    pub min: u32,
-    pub max: u32,
-}
-
-impl VersionRange {
-    pub const ANY: Self = Self {
-        min: 0,
-        max: u32::MAX,
-    };
-
-    #[must_use]
-    pub const fn exact(version: u32) -> Self {
-        Self {
-            min: version,
-            max: version,
-        }
-    }
-
-    #[must_use]
-    pub const fn is_valid(self) -> bool {
-        self.min <= self.max
-    }
-
-    #[must_use]
-    pub const fn contains(self, version: u32) -> bool {
-        self.is_valid() && version >= self.min && version <= self.max
-    }
-}
-
-impl Default for VersionRange {
-    fn default() -> Self {
-        Self::ANY
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerCapacity {
-    pub max_concurrent: u32,
-    /// Optional maximum resource request one sandbox assigned to this Worker may
-    /// make. Entirely unset delegates feasibility to the sandbox backend (for
-    /// example Kubernetes); it is never aggregate inventory or billing data.
-    #[serde(default)]
-    pub resources: ResourceLimits,
-}
-
-impl Default for WorkerCapacity {
-    fn default() -> Self {
-        Self {
-            max_concurrent: 1,
-            resources: ResourceLimits::default(),
-        }
-    }
-}
-
-/// Immutable capabilities for one worker incarnation. Dynamic health/load does
-/// not belong here and therefore cannot perturb the capability fingerprint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerManifest {
-    pub manifest_version: u32,
-    pub build_digest: String,
-    #[serde(default)]
-    pub capabilities: BTreeSet<String>,
-    pub zone: Option<String>,
-    pub architecture: String,
-    pub sandbox: SandboxCapabilities,
-    /// Trusted recovery capability of the SessionEnvironment-owned Sandbox
-    /// executor. Production derives this from the same typed deployment value
-    /// that constructs the executor; it is never an Agent-authored claim.
-    #[serde(default)]
-    pub sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    #[serde(default)]
-    pub sandbox_backends: BTreeSet<String>,
-    #[serde(default)]
-    pub dispatch_contract: VersionRange,
-    #[serde(default)]
-    pub runtime_protocol: VersionRange,
-    #[serde(default)]
-    pub checkpoint_formats: BTreeSet<String>,
-    #[serde(default)]
-    pub capacity: WorkerCapacity,
-}
-
-impl Default for WorkerManifest {
-    fn default() -> Self {
-        Self {
-            manifest_version: CURRENT_CONTRACT_VERSION,
-            build_digest: String::new(),
-            capabilities: BTreeSet::new(),
-            zone: None,
-            architecture: std::env::consts::ARCH.to_string(),
-            sandbox: SandboxCapabilities {
-                isolation: IsolationClass::Workdir,
-                tool_transparent: false,
-                path_fidelity: false,
-                enforced_readonly: false,
-                network_isolation: false,
-                enforced_network_allowlist: false,
-                secret_egress_substitution: false,
-                resource_limits: false,
-                custom_rootfs: false,
-                package_provisioning: false,
-                control_services: Default::default(),
-            },
-            sandbox_tool_recovery:
-                awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
-            sandbox_backends: BTreeSet::new(),
-            dispatch_contract: VersionRange::ANY,
-            runtime_protocol: VersionRange::ANY,
-            checkpoint_formats: BTreeSet::new(),
-            capacity: WorkerCapacity::default(),
-        }
-    }
-}
-
-impl WorkerManifest {
-    /// Content address of immutable capabilities. BTree collections and struct
-    /// field order make the JSON canonical for this version of the contract.
-    pub fn fingerprint(&self) -> Result<String, FingerprintError> {
-        let encoded = serde_json::to_vec(self).map_err(FingerprintError::Serialize)?;
-        Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum FingerprintError {
-    #[error("worker manifest cannot be serialized: {0}")]
-    Serialize(serde_json::Error),
-}
-
-/// Whether the execution location may fall back. This is distinct from sandbox
-/// isolation degradation: neither policy can weaken the other's hard floor.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionLocation {
-    /// Backward-compatible posture for legacy rows: prefer a remote worker, while
-    /// the composition root may explicitly choose its local executor.
-    #[default]
-    RemotePreferred,
-    RemoteRequired,
-    LocalOnly,
-}
-
-/// Run-level replacement behavior. Per-tool side-effect replay remains governed
-/// by the existing `ToolRecoveryPolicy` pinned in the executable snapshot.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerRecoveryMode {
-    /// Rebuild the runtime from committed truth; existing tool policies decide
-    /// whether interrupted calls replay, reconnect, or become indeterminate.
-    #[default]
-    RebuildFromCommittedTruth,
-    /// A replacement must adopt the already-bound sandbox.
-    RequireSandboxContinuity,
-    /// Never automatically assign the run to another worker incarnation.
-    NeverReplace,
-}
-
-/// Durable hard requirements pinned when a Run enters dispatch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlacementRequirements {
-    /// Zero denotes a row authored before this contract existed. It preserves the
-    /// old local/remote-preferred posture, while new strict builders write v1.
-    #[serde(default)]
-    pub contract_version: u32,
-    #[serde(default)]
-    pub required_capabilities: BTreeSet<String>,
-    /// Worker-private credential revisions required by the complete published
-    /// candidate set. Shared-vault references do not belong here.
-    #[serde(default)]
-    pub required_credentials: BTreeSet<WorkerCredentialRevision>,
-    /// Exact, expiring ACP profiles frozen by BackendOwned publications.
-    #[serde(default)]
-    pub required_acp_capabilities: BTreeSet<WorkerAcpCapabilityRequirement>,
-    pub required_zone: Option<String>,
-    pub architecture: Option<String>,
-    #[serde(default)]
-    pub sandbox: SandboxRequirements,
-    /// Every non-default recovery mode frozen on a Sandbox-target tool. The
-    /// selected Worker executor must support all of them before it may claim.
-    #[serde(default)]
-    pub required_sandbox_tool_recovery: BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>,
-    pub sandbox_backend: Option<String>,
-    #[serde(default)]
-    pub dispatch_contract_version: u32,
-    #[serde(default)]
-    pub runtime_protocol_version: u32,
-    pub checkpoint_format: Option<String>,
-    #[serde(default)]
-    pub location: ExecutionLocation,
-    #[serde(default)]
-    pub recovery: WorkerRecoveryMode,
-    /// Exact per-sandbox scheduling demand frozen at admission.
-    #[serde(default)]
-    pub resources: ResourceRequests,
-}
-
-impl Default for PlacementRequirements {
-    fn default() -> Self {
-        Self {
-            contract_version: 0,
-            required_capabilities: BTreeSet::new(),
-            required_credentials: BTreeSet::new(),
-            required_acp_capabilities: BTreeSet::new(),
-            required_zone: None,
-            architecture: None,
-            sandbox: SandboxRequirements::default(),
-            required_sandbox_tool_recovery: BTreeSet::new(),
-            sandbox_backend: None,
-            dispatch_contract_version: 0,
-            runtime_protocol_version: 0,
-            checkpoint_format: None,
-            location: ExecutionLocation::RemotePreferred,
-            recovery: WorkerRecoveryMode::RebuildFromCommittedTruth,
-            resources: ResourceRequests::default(),
-        }
-    }
-}
-
-impl PlacementRequirements {
-    /// Whether this is the exact backward-compatible posture omitted from legacy
-    /// durable queue rows.
-    #[must_use]
-    pub fn is_legacy_default(&self) -> bool {
-        self == &Self::default()
-    }
-
-    #[must_use]
-    pub fn remote_required() -> Self {
-        Self {
-            contract_version: CURRENT_CONTRACT_VERSION,
-            location: ExecutionLocation::RemoteRequired,
-            dispatch_contract_version: CURRENT_CONTRACT_VERSION,
-            runtime_protocol_version: CURRENT_CONTRACT_VERSION,
-            ..Self::default()
-        }
-    }
-
-    /// Author a current-contract request that may run locally or on a compatible
-    /// registered Worker. [`Default`] remains the durable legacy decoder posture
-    /// (v0), so new admission code must use this constructor instead of silently
-    /// publishing an obsolete protocol requirement.
-    #[must_use]
-    pub fn remote_preferred() -> Self {
-        Self {
-            contract_version: CURRENT_CONTRACT_VERSION,
-            location: ExecutionLocation::RemotePreferred,
-            dispatch_contract_version: CURRENT_CONTRACT_VERSION,
-            runtime_protocol_version: CURRENT_CONTRACT_VERSION,
-            ..Self::default()
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum Incompatibility {
-    #[error("local-only work cannot be claimed by a remote worker")]
-    LocalOnly,
-    #[error("worker capacity must be greater than zero")]
-    ZeroCapacity,
-    #[error("worker per-sandbox resource ceiling is insufficient")]
-    InsufficientResources,
-    #[error("missing capability {0}")]
-    MissingCapability(String),
-    #[error("required zone {required}, worker zone is {actual:?}")]
-    Zone {
-        required: String,
-        actual: Option<String>,
-    },
-    #[error("required architecture {required}, worker architecture is {actual}")]
-    Architecture { required: String, actual: String },
-    #[error("sandbox isolation or enforcement capabilities are insufficient")]
-    SandboxCapabilities,
-    #[error("sandbox tool recovery mode {required:?} is unsupported by {actual:?}")]
-    SandboxToolRecovery {
-        required: awaken_runtime_contract::tool::ToolRecoveryMode,
-        actual: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    },
-    #[error("sandbox backend {0} is unsupported")]
-    SandboxBackend(String),
-    #[error("dispatch contract version {0} is unsupported")]
-    DispatchVersion(u32),
-    #[error("runtime protocol version {0} is unsupported")]
-    RuntimeVersion(u32),
-    #[error("checkpoint format {0} is unsupported")]
-    CheckpointFormat(String),
-}
-
-/// Exact compatibility kernel for one Sandbox-owned tool-recovery demand.
-///
-/// Placement and the exhaustive proof both call this production selector. A
-/// non-default recovery mode is therefore a hard admission axis, rather than a
-/// ranking hint that an incompatible Worker could ignore.
-#[must_use]
-pub const fn sandbox_tool_recovery_is_compatible(
-    required: awaken_runtime_contract::tool::ToolRecoveryMode,
-    installed: awaken_runtime_contract::tool::ToolRecoveryCapability,
-) -> bool {
-    required.is_supported_by(installed)
-}
-
-/// A Worker manifest may advertise only the recovery capability derived from
-/// the executor that this process actually installs.
-#[must_use]
-pub fn manifest_recovery_matches_installed(
-    advertised: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    installed: awaken_runtime_contract::tool::ToolRecoveryCapability,
-) -> bool {
-    advertised == installed
-}
-
-/// Final admission projection for asynchronous Worker observations.
-///
-/// Process readiness and static placement are intentionally computed without
-/// waiting for Sandbox-backed probes. Missing dynamic evidence can only make a
-/// ready Worker ineligible; it can never manufacture readiness or widen static
-/// eligibility.
-#[must_use]
-pub const fn dynamic_evidence_admits(
-    process_and_static_eligible: bool,
-    credential_evidence_satisfied: bool,
-    acp_evidence_satisfied: bool,
-) -> bool {
-    process_and_static_eligible && credential_evidence_satisfied && acp_evidence_satisfied
-}
-
-/// Non-replaceable compatibility kernel. It is intentionally independent from
-/// liveness and ranking; callers re-run it inside the atomic claim transaction.
-pub fn can_claim(
-    manifest: &WorkerManifest,
-    requirements: &PlacementRequirements,
-) -> Result<(), Incompatibility> {
-    if matches!(requirements.location, ExecutionLocation::LocalOnly) {
-        return Err(Incompatibility::LocalOnly);
-    }
-    if manifest.capacity.max_concurrent == 0 {
-        return Err(Incompatibility::ZeroCapacity);
-    }
-    if manifest.capacity.resources.is_set()
-        && !requirements
-            .resources
-            .fits_within(&manifest.capacity.resources)
-    {
-        return Err(Incompatibility::InsufficientResources);
-    }
-    if let Some(missing) = requirements
-        .required_capabilities
-        .iter()
-        .find(|capability| !manifest.capabilities.contains(*capability))
-    {
-        return Err(Incompatibility::MissingCapability(missing.clone()));
-    }
-    if let Some(required) = &requirements.required_zone
-        && manifest.zone.as_ref() != Some(required)
-    {
-        return Err(Incompatibility::Zone {
-            required: required.clone(),
-            actual: manifest.zone.clone(),
-        });
-    }
-    if let Some(required) = &requirements.architecture
-        && &manifest.architecture != required
-    {
-        return Err(Incompatibility::Architecture {
-            required: required.clone(),
-            actual: manifest.architecture.clone(),
-        });
-    }
-    if !manifest
-        .sandbox
-        .satisfies_requirements(&requirements.sandbox)
-    {
-        return Err(Incompatibility::SandboxCapabilities);
-    }
-    if let Some(required) = requirements
-        .required_sandbox_tool_recovery
-        .iter()
-        .find(|required| {
-            !sandbox_tool_recovery_is_compatible(**required, manifest.sandbox_tool_recovery)
-        })
-    {
-        return Err(Incompatibility::SandboxToolRecovery {
-            required: *required,
-            actual: manifest.sandbox_tool_recovery,
-        });
-    }
-    if let Some(backend) = &requirements.sandbox_backend
-        && !manifest.sandbox_backends.contains(backend)
-    {
-        return Err(Incompatibility::SandboxBackend(backend.clone()));
-    }
-    if !manifest
-        .dispatch_contract
-        .contains(requirements.dispatch_contract_version)
-    {
-        return Err(Incompatibility::DispatchVersion(
-            requirements.dispatch_contract_version,
-        ));
-    }
-    if !manifest
-        .runtime_protocol
-        .contains(requirements.runtime_protocol_version)
-    {
-        return Err(Incompatibility::RuntimeVersion(
-            requirements.runtime_protocol_version,
-        ));
-    }
-    if let Some(format) = &requirements.checkpoint_format
-        && !manifest.checkpoint_formats.contains(format)
-    {
-        return Err(Incompatibility::CheckpointFormat(format.clone()));
-    }
-    Ok(())
-}
-
-/// Whether an unregistered in-process executor may claim this run. A
-/// worker-private credential requirement is remote-only even if a malformed or
-/// legacy producer omitted the matching location flag.
-#[must_use]
-pub fn can_claim_locally(requirements: &PlacementRequirements) -> bool {
-    requirements.location != ExecutionLocation::RemoteRequired
-        && requirements.required_credentials.is_empty()
-        && requirements.required_acp_capabilities.is_empty()
-}
-
-/// Registry view consumed by placement. Live executor/channel handles are never
-/// stored here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerSnapshot {
-    pub identity: WorkerIdentity,
-    pub state: WorkerState,
-    pub manifest: WorkerManifest,
-    pub capability_fingerprint: String,
-    pub in_flight: u32,
-    /// Exact mount-less Environment shapes currently ready in this incarnation's
-    /// never-used capacity. These are ephemeral receipts, not capabilities.
-    #[serde(default)]
-    pub warm_environment_shapes: BTreeSet<SandboxCapacityShapeId>,
-    /// Latest non-secret credential observations reported by this incarnation.
-    /// The set is deliberately outside the immutable manifest: local login or
-    /// revocation may change while the worker process remains alive.
-    #[serde(default)]
-    pub credential_observations: BTreeSet<WorkerCredentialObservation>,
-    #[serde(default)]
-    pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
-    pub expires_at_ms: u64,
-}
-
-/// Durable, non-secret record of the worker incarnation selected for one claim.
-/// The dispatch lease epoch remains the fencing token; this record explains who
-/// received that epoch and which immutable capability set was evaluated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerAssignment {
-    pub identity: WorkerIdentity,
-    pub capability_fingerprint: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum AssignmentRejection {
-    #[error("worker is not currently eligible for the pinned requirements")]
-    Ineligible,
-    #[error("the run forbids replacement by another worker incarnation")]
-    ReplacementForbidden,
-    #[error("replacement requires an existing sandbox binding")]
-    SandboxContinuityUnavailable,
-}
-
-/// Heap-free recovery kernel shared by runtime admission and Kani. Returning a
-/// typed reason (rather than a boolean) keeps fail-closed diagnostics identical
-/// in the proof harness and the store claim paths.
-#[must_use]
-pub const fn assignment_recovery_rejection(
-    replacing: bool,
-    recovery: WorkerRecoveryMode,
-    sandbox_bound: bool,
-) -> Option<AssignmentRejection> {
-    if !replacing {
-        return None;
-    }
-    match recovery {
-        WorkerRecoveryMode::NeverReplace => Some(AssignmentRejection::ReplacementForbidden),
-        WorkerRecoveryMode::RequireSandboxContinuity if !sandbox_bound => {
-            Some(AssignmentRejection::SandboxContinuityUnavailable)
-        }
-        WorkerRecoveryMode::RequireSandboxContinuity
-        | WorkerRecoveryMode::RebuildFromCommittedTruth => None,
-    }
-}
-
-/// Shared admission kernel for initial placement, wake, and crash replacement.
-pub fn can_assign(
-    worker: &WorkerSnapshot,
-    requirements: &PlacementRequirements,
-    previous: Option<&WorkerAssignment>,
-    sandbox_bound: bool,
-    now_ms: u64,
-) -> Result<(), AssignmentRejection> {
-    if !worker.accepts(requirements, now_ms) {
-        return Err(AssignmentRejection::Ineligible);
-    }
-    let replacing = previous.is_some_and(|prior| prior.identity != worker.identity);
-    if let Some(rejection) =
-        assignment_recovery_rejection(replacing, requirements.recovery, sandbox_bound)
-    {
-        Err(rejection)
-    } else {
-        Ok(())
-    }
-}
-
-impl From<&WorkerSnapshot> for WorkerAssignment {
-    fn from(snapshot: &WorkerSnapshot) -> Self {
-        Self {
-            identity: snapshot.identity.clone(),
-            capability_fingerprint: snapshot.capability_fingerprint.clone(),
-        }
-    }
-}
-
-/// Durable registry record. Placement consumes `snapshot`; sequence/timestamps
-/// remain control-plane concurrency and observability facts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegisteredWorker {
-    pub snapshot: WorkerSnapshot,
-    pub heartbeat_sequence: u64,
-    /// Sequence of the latest accepted heartbeat that changed dynamic
-    /// credential or ACP evidence. Unlike a content hash, this fence cannot
-    /// return to an older value when evidence changes A -> B -> A.
-    #[serde(default)]
-    pub observation_sequence: u64,
-    pub registered_at_ms: u64,
-    pub heartbeat_at_ms: u64,
-    pub drain_deadline_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerRegistration {
-    pub worker_id: String,
-    pub incarnation_id: String,
-    pub manifest: WorkerManifest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkerHeartbeat {
-    pub sequence: u64,
-    pub ready: bool,
-    pub in_flight: u32,
-    #[serde(default)]
-    pub warm_environment_shapes: BTreeSet<SandboxCapacityShapeId>,
-    /// Exact worker-private credential revisions currently materializable.
-    /// No secret, local path, environment name, or broker token crosses here.
-    #[serde(default)]
-    pub credential_observations: BTreeSet<WorkerCredentialObservation>,
-    #[serde(default)]
-    pub acp_capability_observations: Vec<WorkerAcpCapabilityObservation>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RegistryMutation {
-    Applied,
-    NotFound,
-    StaleIncarnation,
-    StaleSequence,
-    InvalidTransition,
-}
-
-#[derive(Debug, Error)]
-pub enum RegistryError {
-    #[error("worker id and incarnation id must be non-empty")]
-    InvalidIdentity,
-    #[error("worker slot {worker_id} is occupied by generation {generation}")]
-    SlotOccupied { worker_id: String, generation: u64 },
-    #[error("an incarnation cannot change its registered manifest")]
-    ManifestChanged,
-    #[error("worker registry persistence failed: {0}")]
-    Persistence(String),
-    #[error("worker generation authority is exhausted for slot {worker_id}")]
-    GenerationExhausted { worker_id: String },
-}
-
-/// Secret-free read projection of the current Worker authority.
-///
-/// Control-plane readers depend on this narrow port instead of receiving the
-/// mutation-capable directory. A split Control process can therefore use an
-/// authenticated HTTP adapter while AllInOne projects the exact local authority.
-#[async_trait]
-pub trait WorkerObservationSource: Send + Sync {
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError>;
-}
-
-/// Worker-directory authority. Implementations must make every mutation atomic;
-/// expired/dead records remain tombstones so late messages cannot resurrect them.
-#[async_trait]
-pub trait WorkerDirectory: WorkerObservationSource {
-    async fn register(
-        &self,
-        registration: WorkerRegistration,
-        now_ms: u64,
-        ttl_ms: u64,
-    ) -> Result<RegisteredWorker, RegistryError>;
-
-    async fn heartbeat(
-        &self,
-        identity: &WorkerIdentity,
-        heartbeat: WorkerHeartbeat,
-        now_ms: u64,
-        ttl_ms: u64,
-    ) -> Result<RegistryMutation, RegistryError>;
-
-    async fn begin_drain(
-        &self,
-        identity: &WorkerIdentity,
-        deadline_ms: u64,
-    ) -> Result<RegistryMutation, RegistryError>;
-
-    async fn mark_quiesced(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> Result<RegistryMutation, RegistryError>;
-
-    async fn deregister(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> Result<RegistryMutation, RegistryError>;
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
-
-    async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError>;
-}
-
-impl WorkerSnapshot {
-    #[must_use]
-    pub fn accepts(&self, requirements: &PlacementRequirements, now_ms: u64) -> bool {
-        let process_and_static_eligible = self.state.accepts_work()
-            && self.expires_at_ms > now_ms
-            && self.in_flight < self.manifest.capacity.max_concurrent
-            && self.manifest.fingerprint().ok().as_deref()
-                == Some(self.capability_fingerprint.as_str())
-            && can_claim(&self.manifest, requirements).is_ok();
-        let credential_evidence_satisfied =
-            requirements.required_credentials.iter().all(|required| {
-                self.credential_observations
-                    .iter()
-                    .any(|observation| observation.is_selectable_at(required, now_ms))
-            });
-        let acp_evidence_satisfied =
-            requirements
-                .required_acp_capabilities
-                .iter()
-                .all(|required| {
-                    self.acp_capability_observations
-                        .iter()
-                        .any(|observation| observation.is_selectable_at(required, now_ms))
-                });
-        dynamic_evidence_admits(
-            process_and_static_eligible,
-            credential_evidence_satisfied,
-            acp_evidence_satisfied,
-        )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlacementContext {
-    pub run_id: String,
-    pub workspace_id: String,
-    pub requirements: PlacementRequirements,
-    pub recovered: bool,
-    pub previous_worker: Option<WorkerIdentity>,
-    pub attributes: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RankedWorker {
-    pub identity: WorkerIdentity,
-    pub score: i64,
-    pub reason: String,
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum PlacementError {
-    #[error("no eligible worker")]
-    NoEligibleWorker,
-    #[error("placement policy failed: {0}")]
-    Policy(String),
-    #[error("placement policy returned an ineligible worker: {0}")]
-    IneligibleResult(String),
-    #[error("placement policy returned a worker more than once: {0}")]
-    DuplicateResult(String),
-}
-
-/// Replaceable preference only. It receives an already-filtered candidate list.
-pub trait PlacementPolicy: Send + Sync {
-    fn id(&self) -> &str;
-
-    fn rank(
-        &self,
-        context: &PlacementContext,
-        eligible: &[WorkerSnapshot],
-    ) -> Result<Vec<RankedWorker>, PlacementError>;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LeastLoadedPolicy;
-
-impl PlacementPolicy for LeastLoadedPolicy {
-    fn id(&self) -> &str {
-        "least-loaded"
-    }
-
-    fn rank(
-        &self,
-        context: &PlacementContext,
-        eligible: &[WorkerSnapshot],
-    ) -> Result<Vec<RankedWorker>, PlacementError> {
-        let mut workers = eligible.to_vec();
-        let preferred = context
-            .attributes
-            .get(PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE);
-        workers.sort_by(|left, right| {
-            let left_warm = preferred
-                .is_some_and(|shape| left.warm_environment_shapes.contains(shape.as_str()));
-            let right_warm = preferred
-                .is_some_and(|shape| right.warm_environment_shapes.contains(shape.as_str()));
-            right_warm.cmp(&left_warm).then_with(|| {
-                left.in_flight
-                    .cmp(&right.in_flight)
-                    .then_with(|| left.identity.cmp(&right.identity))
-            })
-        });
-        Ok(workers
-            .into_iter()
-            .map(|worker| {
-                let warm = preferred
-                    .is_some_and(|shape| worker.warm_environment_shapes.contains(shape.as_str()));
-                RankedWorker {
-                    identity: worker.identity,
-                    score: if warm { 1_000_000 } else { 0 } - i64::from(worker.in_flight),
-                    reason: if warm {
-                        "ready Environment shape, then least in-flight work"
-                    } else {
-                        "least in-flight work"
-                    }
-                    .to_string(),
-                }
-            })
-            .collect())
-    }
-}
-
-/// Filter through the immutable kernel, invoke the extension, then validate its
-/// output again. A buggy or malicious extension can fail placement but cannot
-/// widen authority.
-pub fn place(
-    policy: &dyn PlacementPolicy,
-    context: &PlacementContext,
-    workers: &[WorkerSnapshot],
-    now_ms: u64,
-) -> Result<RankedWorker, PlacementError> {
-    let eligible = workers
-        .iter()
-        .filter(|worker| worker.accepts(&context.requirements, now_ms))
-        .cloned()
-        .collect::<Vec<_>>();
-    rank_eligible(policy, context, eligible)
-}
-
-/// Placement for a concrete dispatch assignment. Unlike [`place`], this also
-/// applies replacement and sandbox-continuity constraints from the durable
-/// prior assignment. The extension still receives only eligible candidates.
-pub fn place_assignment(
-    policy: &dyn PlacementPolicy,
-    context: &PlacementContext,
-    workers: &[WorkerSnapshot],
-    previous: Option<&WorkerAssignment>,
-    sandbox_bound: bool,
-    now_ms: u64,
-) -> Result<RankedWorker, PlacementError> {
-    let eligible = workers
-        .iter()
-        .filter(|worker| {
-            can_assign(
-                worker,
-                &context.requirements,
-                previous,
-                sandbox_bound,
-                now_ms,
-            )
-            .is_ok()
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    rank_eligible(policy, context, eligible)
-}
-
-fn rank_eligible(
-    policy: &dyn PlacementPolicy,
-    context: &PlacementContext,
-    eligible: Vec<WorkerSnapshot>,
-) -> Result<RankedWorker, PlacementError> {
-    if eligible.is_empty() {
-        return Err(PlacementError::NoEligibleWorker);
-    }
-    let allowed = eligible
-        .iter()
-        .map(|worker| worker.identity.clone())
-        .collect::<HashSet<_>>();
-    let ranked = policy.rank(context, &eligible)?;
-    let mut seen = HashSet::new();
-    let mut selected = None;
-    for candidate in ranked {
-        if !allowed.contains(&candidate.identity) {
-            return Err(PlacementError::IneligibleResult(
-                candidate.identity.worker_id,
-            ));
-        }
-        if !seen.insert(candidate.identity.clone()) {
-            return Err(PlacementError::DuplicateResult(
-                candidate.identity.worker_id,
-            ));
-        }
-        if selected.is_none() {
-            selected = Some(candidate);
-        }
-    }
-    selected.ok_or(PlacementError::NoEligibleWorker)
-}
+#[cfg(any(test, kani))]
+pub(crate) use observation::dynamic_observation_admitted;
+pub use observation::{
+    WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerCredentialObservation,
+    dynamic_evidence_admits,
+};
+pub use placement::{
+    LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PlacementContext, PlacementError,
+    PlacementPolicy, RankedWorker, place, place_assignment,
+};
+pub use registry::{
+    AssignmentRejection, DynamicEvidenceProbeState, RegisteredWorker, RegistryError,
+    RegistryMutation, WorkerAssignment, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
+    assignment_recovery_rejection, can_assign, process_ready_after_startup,
+};
+pub use requirements::{
+    ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode, can_claim,
+    can_claim_locally, manifest_recovery_matches_installed, sandbox_tool_recovery_is_compatible,
+};
+
+#[cfg(test)]
+use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
+#[cfg(test)]
+use awaken_provisioning_contract::{
+    IsolationClass, ResourceLimits, ResourceRequests, SandboxCapabilities, SandboxRequirements,
+};
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(kani)]
 mod verification {
@@ -1342,6 +348,85 @@ mod tests {
         // Sandbox cause is present, therefore claim admission has no rejection
         // effect. Negative rows are partitioned by the two tests below.
         assert!(can_claim(&manifest("a", 0).manifest, &requirements()).is_ok());
+    }
+
+    #[test]
+    fn terminal_cleanup_v2_requires_explicit_valid_runtime_protocol_support() {
+        // Cause/effect table: C1=the range is structurally valid; C2=its lower
+        // bound is positive, so this is an explicit declaration rather than the
+        // omitted-field/default `ANY` compatibility value; C3=the range contains
+        // terminal-cleanup protocol v2. E1=admit v2 cleanup transport; E2=reject
+        // before any cleanup claim or effect.
+        //
+        // | Rule | C1 valid | C2 explicit | C3 contains v2 | Effect |
+        // |---|---|---|---|---|
+        // | R1 default/ANY | yes | no | yes | E2 |
+        // | R2 explicit 1..2 | yes | yes | yes | E1 |
+        // | R3 invalid 2..1 | no | yes | no | E2 |
+        // | R4 explicit v1 | yes | yes | no | E2 |
+        // | R5 zero-based 0..2 | yes | no | yes | E2 |
+        let supports = |runtime_protocol| {
+            WorkerManifest {
+                runtime_protocol,
+                ..WorkerManifest::default()
+            }
+            .explicitly_supports_terminal_cleanup_v2()
+        };
+
+        assert!(!supports(VersionRange::ANY), "R1/E2");
+        assert!(supports(VersionRange { min: 1, max: 2 }), "R2/E1");
+        assert!(!supports(VersionRange { min: 2, max: 1 }), "R3/E2");
+        assert!(!supports(VersionRange::exact(1)), "R4/E2");
+        assert!(!supports(VersionRange { min: 0, max: 2 }), "R5/E2");
+    }
+
+    #[test]
+    fn terminal_cleanup_requirements_exclude_run_only_capabilities() {
+        // Cause/effect graph: C1 cleanup retains any Session Resource; C2 one
+        // retained Repository has a credential binding; C3 one durable
+        // checkpoint names a format. Effects: E1 require the Session Resource
+        // adapter; E2 additionally require Repository credential injection; E3
+        // require the exact checkpoint format; E4 always require explicit
+        // cleanup runtime v2 while model/ACP/tool/credential sets remain empty.
+        //
+        // | Rule | C1 resources | C2 credentialed repo | C3 checkpoint | Effect |
+        // |---|---|---|---|---|
+        // | T1 | no | no | no | E4 only |
+        // | T2 | yes | no | no | E1 + E4 |
+        // | T3 | yes | yes | stream-v1 | E1 + E2 + E3 + E4 |
+        let bare = PlacementRequirements::terminal_cleanup(false, false, None);
+        assert_eq!(bare.runtime_protocol_version, 2, "T1/E4");
+        assert!(bare.required_capabilities.is_empty(), "T1/E4");
+        assert!(bare.required_credentials.is_empty(), "T1/E4");
+        assert!(bare.required_acp_capabilities.is_empty(), "T1/E4");
+        assert!(bare.required_sandbox_tool_recovery.is_empty(), "T1/E4");
+
+        let resources = PlacementRequirements::terminal_cleanup(true, false, None);
+        assert_eq!(
+            resources.required_capabilities,
+            BTreeSet::from([SESSION_RESOURCES_CAPABILITY.to_string()]),
+            "T2/E1"
+        );
+
+        let complete =
+            PlacementRequirements::terminal_cleanup(true, true, Some("stream-v1".into()));
+        assert!(
+            complete
+                .required_capabilities
+                .contains(SESSION_RESOURCES_CAPABILITY),
+            "T3/E1"
+        );
+        assert!(
+            complete
+                .required_capabilities
+                .contains(REPOSITORY_CREDENTIALS_CAPABILITY),
+            "T3/E2"
+        );
+        assert_eq!(
+            complete.checkpoint_format.as_deref(),
+            Some("stream-v1"),
+            "T3/E3"
+        );
     }
 
     #[test]

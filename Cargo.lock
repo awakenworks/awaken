@@ -302,8 +302,8 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
- "awaken-sqlite-pool",
  "awaken-sql-storage",
+ "awaken-sqlite-pool",
  "awaken-tenancy",
  "axum",
  "http-body-util",
@@ -436,6 +436,7 @@ dependencies = [
  "awaken-data-subject-application",
  "awaken-data-subject-store",
  "awaken-deployment-contract",
+ "awaken-dispatch",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -467,10 +468,8 @@ dependencies = [
  "awaken-resource-reclaimer",
  "awaken-resource-worker-http",
  "awaken-run-executor-acp",
- "awaken-dispatch",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-session-executor",
  "awaken-sandbox-container",
  "awaken-sandbox-memoryd",
  "awaken-sandbox-policy-store",
@@ -479,6 +478,7 @@ dependencies = [
  "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-contract",
+ "awaken-session-executor",
  "awaken-session-store",
  "awaken-store-inmem",
  "awaken-tenancy",
@@ -557,9 +557,9 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
+ "awaken-sql-storage",
  "awaken-sqlite-pool",
  "awaken-store-inmem",
- "awaken-sql-storage",
  "awaken-store-sqlite",
  "awaken-tenancy",
  "rusqlite",
@@ -674,11 +674,14 @@ dependencies = [
  "awaken-config-store",
  "awaken-connection-plan",
  "awaken-control",
+ "awaken-coordinator-client",
  "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-deployment-application",
  "awaken-deployment-contract",
+ "awaken-dispatch",
+ "awaken-dispatch-http",
  "awaken-dream-application",
  "awaken-environment-contract",
  "awaken-environment-execution-application",
@@ -711,10 +714,7 @@ dependencies = [
  "awaken-resource-worker-http",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
- "awaken-dispatch",
- "awaken-dispatch-http",
  "awaken-runtime-contract",
- "awaken-session-executor",
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",
  "awaken-scenario-host",
@@ -724,19 +724,19 @@ dependencies = [
  "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-contract",
+ "awaken-session-executor",
  "awaken-session-store",
+ "awaken-sql-storage",
  "awaken-sqlite-pool",
  "awaken-store-fs",
  "awaken-store-inmem",
  "awaken-store-postgres",
- "awaken-sql-storage",
  "awaken-store-sqlite",
  "awaken-tenancy",
  "awaken-webhook",
  "awaken-webhook-managed",
  "awaken-worker-contract",
  "awaken-worker-registry",
- "awaken-coordinator-client",
  "awaken-worker-transport-security",
  "axum",
  "base64 0.22.1",
@@ -753,6 +753,26 @@ dependencies = [
  "tower-http",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "awaken-coordinator-client"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-dispatch",
+ "awaken-dispatch-contract",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "awaken-worker-transport-security",
+ "axum",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -905,6 +925,107 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "awaken-dispatch"
+version = "1.0.0"
+dependencies = [
+ "async-nats",
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-dispatch-contract",
+ "awaken-dispatch-testkit",
+ "awaken-ext-builtin-tools",
+ "awaken-observability",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "awaken-session-contract",
+ "awaken-sqlite-pool",
+ "awaken-store-inmem",
+ "awaken-store-postgres",
+ "awaken-store-sqlite",
+ "futures-lite",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "awaken-dispatch-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-provisioning-contract",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "awaken-tenancy",
+ "awaken-worker-contract",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-dispatch-http"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-coordinator-client",
+ "awaken-dispatch",
+ "awaken-dispatch-contract",
+ "awaken-dispatch-testkit",
+ "awaken-file-store",
+ "awaken-memory-store",
+ "awaken-observability",
+ "awaken-provisioning-contract",
+ "awaken-resource-application",
+ "awaken-resource-contract",
+ "awaken-resource-store",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "awaken-session-executor",
+ "awaken-skill-store",
+ "awaken-store-inmem",
+ "awaken-store-postgres",
+ "awaken-tenancy",
+ "awaken-worker-transport-security",
+ "axum",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "awaken-dispatch-testkit"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-dispatch-contract",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "axum",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1437,8 +1558,8 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
- "awaken-sqlite-pool",
  "awaken-sql-storage",
+ "awaken-sqlite-pool",
  "rusqlite",
  "serde_json",
  "sqlx",
@@ -1711,6 +1832,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-resource-contract",
  "awaken-sandbox-control",
  "serde",
  "serde_json",
@@ -1782,8 +1904,8 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
- "awaken-sqlite-pool",
  "awaken-sql-storage",
+ "awaken-sqlite-pool",
  "parking_lot",
  "proptest",
  "rusqlite",
@@ -1801,15 +1923,15 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-dispatch",
+ "awaken-dispatch-contract",
+ "awaken-dispatch-testkit",
  "awaken-environment-contract",
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
- "awaken-dispatch",
- "awaken-dispatch-contract",
- "awaken-dispatch-testkit",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-skill-store",
@@ -1860,107 +1982,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "awaken-dispatch"
-version = "1.0.0"
-dependencies = [
- "async-nats",
- "async-trait",
- "awaken-agent-contract",
- "awaken-ext-builtin-tools",
- "awaken-observability",
- "awaken-dispatch-contract",
- "awaken-dispatch-testkit",
- "awaken-runtime",
- "awaken-runtime-contract",
- "awaken-scoped-migration",
- "awaken-scoped-migration-sqlite",
- "awaken-session-contract",
- "awaken-sqlite-pool",
- "awaken-store-inmem",
- "awaken-store-postgres",
- "awaken-store-sqlite",
- "futures-lite",
- "rusqlite",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "awaken-dispatch-contract"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-provisioning-contract",
- "awaken-runtime-contract",
- "awaken-session-contract",
- "awaken-tenancy",
- "awaken-worker-contract",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "awaken-dispatch-http"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-file-store",
- "awaken-memory-store",
- "awaken-observability",
- "awaken-provisioning-contract",
- "awaken-resource-application",
- "awaken-resource-contract",
- "awaken-resource-store",
- "awaken-dispatch",
- "awaken-dispatch-contract",
- "awaken-dispatch-testkit",
- "awaken-runtime",
- "awaken-runtime-contract",
- "awaken-session-executor",
- "awaken-session-contract",
- "awaken-skill-store",
- "awaken-store-inmem",
- "awaken-store-postgres",
- "awaken-tenancy",
- "awaken-coordinator-client",
- "awaken-worker-transport-security",
- "axum",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "awaken-dispatch-testkit"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-dispatch-contract",
- "awaken-runtime-contract",
- "awaken-session-contract",
- "axum",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -2033,66 +2054,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-session-executor"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-acp-contract",
- "awaken-agent-contract",
- "awaken-credential-contract",
- "awaken-credential-materializer",
- "awaken-credential-vault",
- "awaken-ext-background-task",
- "awaken-ext-builtin-tools",
- "awaken-ext-compact",
- "awaken-ext-goal",
- "awaken-ext-mcp",
- "awaken-ext-memory",
- "awaken-ext-permission",
- "awaken-ext-skills",
- "awaken-ext-state-machine",
- "awaken-file-store",
- "awaken-memory-store",
- "awaken-observability",
- "awaken-provisioning-contract",
- "awaken-resource-application",
- "awaken-resource-contract",
- "awaken-resource-store",
- "awaken-run-executor-acp",
- "awaken-dispatch",
- "awaken-dispatch-contract",
- "awaken-dispatch-testkit",
- "awaken-runtime",
- "awaken-runtime-contract",
- "awaken-sandbox-container",
- "awaken-sandbox-local",
- "awaken-service-lifecycle",
- "awaken-session-contract",
- "awaken-session-store",
- "awaken-skill-store",
- "awaken-store-inmem",
- "awaken-store-sqlite",
- "awaken-tenancy",
- "awaken-coordinator-client",
- "awaken-worker-transport-security",
- "axum",
- "base64 0.22.1",
- "futures-util",
- "regex",
- "reqwest 0.12.28",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "tokio",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "awaken-sandbox"
 version = "1.0.0"
 dependencies = [
@@ -2152,6 +2113,13 @@ dependencies = [
  "thiserror",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "awaken-sandbox-fs"
+version = "1.0.0"
+dependencies = [
+ "rustix 1.1.4",
 ]
 
 [[package]]
@@ -2234,6 +2202,8 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
+ "awaken-dispatch",
+ "awaken-dispatch-http",
  "awaken-dream-application",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
@@ -2262,14 +2232,12 @@ dependencies = [
  "awaken-resource-store",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
- "awaken-dispatch",
- "awaken-dispatch-http",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-session-executor",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
  "awaken-session-contract",
+ "awaken-session-executor",
  "awaken-tenancy",
  "awaken-worker",
  "awaken-worker-transport-security",
@@ -2362,6 +2330,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-session-executor"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-acp-contract",
+ "awaken-agent-contract",
+ "awaken-coordinator-client",
+ "awaken-credential-contract",
+ "awaken-credential-materializer",
+ "awaken-credential-vault",
+ "awaken-dispatch",
+ "awaken-dispatch-contract",
+ "awaken-dispatch-testkit",
+ "awaken-ext-background-task",
+ "awaken-ext-builtin-tools",
+ "awaken-ext-compact",
+ "awaken-ext-goal",
+ "awaken-ext-mcp",
+ "awaken-ext-memory",
+ "awaken-ext-permission",
+ "awaken-ext-skills",
+ "awaken-ext-state-machine",
+ "awaken-file-store",
+ "awaken-memory-store",
+ "awaken-observability",
+ "awaken-provisioning-contract",
+ "awaken-resource-application",
+ "awaken-resource-contract",
+ "awaken-resource-store",
+ "awaken-run-executor-acp",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-sandbox-container",
+ "awaken-sandbox-local",
+ "awaken-service-lifecycle",
+ "awaken-session-contract",
+ "awaken-session-store",
+ "awaken-skill-store",
+ "awaken-store-inmem",
+ "awaken-store-sqlite",
+ "awaken-tenancy",
+ "awaken-worker-transport-security",
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "regex",
+ "reqwest 0.12.28",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "awaken-session-store"
 version = "1.0.0"
 dependencies = [
@@ -2374,8 +2402,8 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
- "awaken-sqlite-pool",
  "awaken-sql-storage",
+ "awaken-sqlite-pool",
  "proptest",
  "rusqlite",
  "serde",
@@ -2400,6 +2428,15 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-sql-storage"
+version = "1.0.0"
+dependencies = [
+ "proptest",
  "thiserror",
  "tokio",
 ]
@@ -2462,15 +2499,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "awaken-sql-storage"
-version = "1.0.0"
-dependencies = [
- "proptest",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -2606,6 +2634,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-coordinator-client",
  "awaken-credential-materializer",
  "awaken-ext-builtin-tools",
  "awaken-observability",
@@ -2614,14 +2643,13 @@ dependencies = [
  "awaken-resource-worker-http",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "awaken-session-executor",
  "awaken-sandbox-container",
  "awaken-sandbox-memoryd",
  "awaken-service-lifecycle",
  "awaken-session-contract",
+ "awaken-session-executor",
  "awaken-tool-relay",
  "awaken-worker-contract",
- "awaken-coordinator-client",
  "awaken-worker-transport-security",
  "axum",
  "getrandom 0.2.17",
@@ -2668,26 +2696,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
-]
-
-[[package]]
-name = "awaken-coordinator-client"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-dispatch",
- "awaken-dispatch-contract",
- "awaken-runtime-contract",
- "awaken-session-contract",
- "awaken-worker-transport-security",
- "axum",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]
