@@ -11,6 +11,146 @@ use awaken_session_contract::RunError;
 use crate::{ManagedHost, to_run_error};
 
 impl ManagedHost {
+    async fn quiesce_shared_environment_background(
+        &self,
+        thread: &str,
+        generation_id: &str,
+    ) -> Result<(), RunError> {
+        if self
+            .host
+            .memory
+            .background()
+            .quiesce_shared_environment(thread, generation_id, Duration::from_secs(30))
+            .await
+        {
+            return Ok(());
+        }
+        Err(RunError::unavailable_classified(
+            "session_environment_background_not_quiescent",
+            "Shared-Environment background work did not reach a durable boundary",
+        ))
+    }
+
+    /// Fence terminal harvest/disposal against the exact published physical
+    /// owner. Bound Retiring is included for revocation/recovery retries but is
+    /// not exposed through the ordinary Resident reader.
+    pub(super) async fn quiesce_terminal_environment_background(
+        &self,
+        thread: &str,
+    ) -> Result<Option<crate::session_slot::BoundSessionEnvironment>, RunError> {
+        let Some(owned) = self
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_owner.terminal_bound_environment()
+            })
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        let generation_id = owned.activity_generation_id();
+        self.quiesce_shared_environment_background(thread, &generation_id)
+            .await?;
+        let exact_owner_retained = self
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_owner
+                    .terminal_bound_environment()
+                    .is_some_and(|current| current.exact_matches(&owned))
+            })
+            .unwrap_or(false);
+        if !exact_owner_retained {
+            return Err(RunError::unavailable_classified(
+                "session_environment_terminal_owner_changed",
+                "Terminal Environment owner changed while background work was quiescing",
+            ));
+        }
+        Ok(Some(owned))
+    }
+
+    pub(super) async fn execute_terminal_cleanup_continuation(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        // Archive/delete and the recovery scanner may observe the same durable
+        // cleanup intent concurrently. Serialize the complete external-effect
+        // sequence on the Session lifecycle owner: Skill/Artifact harvest and
+        // environment disposal cannot safely race an identical retry before the
+        // first receipt is committed. Once the winner removes the slot, the
+        // waiter sees an empty projection and completes as the intended no-op.
+        let realization = self.host.session_slots.realization_lock(&command.thread_id);
+        let _realization = realization.lock().await;
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(&command.thread_id, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        // BackgroundTask start/reconnect work can outlive the primary Run while
+        // retaining this exact physical Environment. Refuse every harvest or
+        // disposal effect until the sole owner-projected durable/legacy activity
+        // key is quiet; timeout leaves the owner and slot intact for command retry.
+        let terminal_environment = self
+            .quiesce_terminal_environment_background(&command.thread_id)
+            .await?;
+        // Terminal release persists local Skills/Artifacts and disposes the
+        // environment. It never pushes Repository content implicitly: Managed
+        // Repository publication is an explicit Agent/MCP operation governed by
+        // that tool's permission policy, while controlled workflows export a
+        // patch into outputs for Artifact download and human application.
+        match terminal_environment.as_ref() {
+            Some(owned) => self
+                .host
+                .harvest_thread_skills_from_environment(&command.thread_id, &owned.environment)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?,
+            None => self
+                .host
+                .harvest_thread_skills(&command.thread_id)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?,
+        }
+        // A Restoring target is not a generic live Environment owner. Dispose
+        // its exact R1 physical target first; only success clears the request-
+        // bound Awaiting fence so ordinary terminal owner removal cannot double
+        // dispose it or report completion early.
+        if let Some(request) = command.restore_target.as_ref() {
+            if request.session_id != command.thread_id {
+                return Err(RunError::internal(
+                    "terminal restore target does not belong to its cleanup root",
+                ));
+            }
+            self.dispose_restoring_environment_continuation(request)
+                .await?;
+        }
+        // Failure is terminal-release blocking: keep the Sandbox available for
+        // the durable cleanup retry instead of disposing unharvested outputs.
+        let artifacts = match terminal_environment.as_ref() {
+            Some(owned) => {
+                self.host
+                    .harvest_thread_artifacts_from_environment(
+                        &command.thread_id,
+                        &owned.environment,
+                    )
+                    .await
+            }
+            None => self.host.harvest_thread_artifacts(&command.thread_id).await,
+        }
+        .map_err(|error| RunError::internal(error.to_string()))?;
+        // Memory is owned by its MemoryMount guard: FUSE writes through live and
+        // copy realization performs one CAS harvest during teardown.
+        self.host
+            .end_session(&command.thread_id, &command.effect_id)
+            .await
+            .map_err(crate::to_run_error)?;
+        let completion =
+            awaken_session_contract::SessionCleanupCompletion::new(&command, artifacts.receipts);
+        completion
+            .verify(&command)
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        Ok(completion)
+    }
+
     fn restoration_provider_and_spec(
         &self,
         request: &awaken_session_contract::SandboxRestoreRequest,
@@ -51,7 +191,10 @@ impl ManagedHost {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_contract::SandboxGeneration,
+        expected_mcp_generations: &[awaken_session_contract::McpGenerationRef],
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
+        let realization = self.host.session_slots.realization_lock(thread);
+        let _realization = realization.lock().await;
         let lifecycle = self
             .host
             .session_slots
@@ -65,6 +208,18 @@ impl ManagedHost {
                 source_effect_id,
                 source_binding,
                 generation,
+            )
+            .map_err(to_run_error)?;
+        self.host
+            .session_slots
+            .close_mcp_realization_admission(
+                thread,
+                crate::session_slot::McpQuiescenceAdmissionFence::new(
+                    operation,
+                    source_effect_id,
+                    source_binding,
+                    generation,
+                ),
             )
             .map_err(to_run_error)?;
         let primary_active = self
@@ -107,20 +262,19 @@ impl ManagedHost {
                 "Primary or delegated work still owns the Session environment",
             ));
         }
-        if !self
+        self.quiesce_shared_environment_background(thread, &generation.id)
+            .await?;
+        let mcp = self
             .host
-            .memory
-            .background()
-            .quiesce_shared_environment(thread, &generation.id, Duration::from_secs(30))
+            .drain_mcp_projections(thread, expected_mcp_generations)
             .await
-        {
-            return Err(RunError::unavailable_classified(
-                "session_environment_background_not_quiescent",
-                "Shared-Environment background work did not reach a durable boundary",
-            ));
-        }
-        self.host.stop_session_mcp_processes(thread).await;
-        environment.quiesce().await;
+            .map_err(to_run_error)?;
+        environment.quiesce().await.map_err(|error| {
+            RunError::unavailable_classified(
+                "session_environment_hand_not_quiescent",
+                error.to_string(),
+            )
+        })?;
         self.host
             .session_slots
             .modify(thread, |slot| slot.runtime = None);
@@ -129,6 +283,7 @@ impl ManagedHost {
             generation_id: generation.id.clone(),
             activity_epoch: operation.activity_epoch,
             live_environment_effects: 0,
+            mcp_generations: mcp.generations,
         })
     }
 

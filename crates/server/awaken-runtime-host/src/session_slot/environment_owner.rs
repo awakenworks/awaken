@@ -82,6 +82,15 @@ impl BoundSessionEnvironment {
             && Arc::ptr_eq(&self.environment, &other.environment)
             && self.environment.handle() == other.environment.handle()
     }
+
+    pub(crate) fn activity_generation_id(&self) -> String {
+        match &self.identity {
+            BoundSessionEnvironmentIdentity::Durable { generation, .. } => generation.id.clone(),
+            BoundSessionEnvironmentIdentity::LegacyDirect(_) => {
+                self.environment.handle().sandbox_id
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -179,6 +188,49 @@ impl SessionEnvironmentOwner {
 
     pub(crate) fn is_resident(&self) -> bool {
         matches!(self, Self::Resident(_))
+    }
+
+    /// Project the single activity-generation key for this exact Resident Arc.
+    /// Managed durable Sessions use the aggregate's Sandbox generation; legacy
+    /// direct Sessions retain their existing physical-sandbox key. Checking both
+    /// Arc identity and the evidence-bearing handle prevents a stale wrapper from
+    /// borrowing another Resident owner's background/quiescence domain.
+    pub(crate) fn resident_activity_generation_id(
+        &self,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Option<String> {
+        let Self::Resident(owned) = self else {
+            return None;
+        };
+        if !Arc::ptr_eq(&owned.environment, environment)
+            || owned.environment.handle() != environment.handle()
+        {
+            return None;
+        }
+        Some(owned.activity_generation_id())
+    }
+
+    /// Snapshot the exact published Environment owner used by terminal cleanup.
+    /// A retryable Bound retirement remains physical authority even though
+    /// ordinary tool readers must no longer see it as Resident. Unbound
+    /// candidates and pending/restoring projections have never published a
+    /// Runtime background domain and are intentionally excluded.
+    pub(crate) fn terminal_bound_environment(&self) -> Option<BoundSessionEnvironment> {
+        let owned = match self {
+            Self::Resident(owned) => owned,
+            Self::Retiring(RetiringSessionEnvironment {
+                owned: RetiringEnvironmentOwner::Bound(owned),
+                ..
+            }) => owned,
+            Self::Vacant
+            | Self::Preparing(_)
+            | Self::Restoring(_)
+            | Self::Retiring(RetiringSessionEnvironment {
+                owned: RetiringEnvironmentOwner::Unbound(_),
+                ..
+            }) => return None,
+        };
+        Some(owned.clone())
     }
 
     pub(crate) fn has_local_environment(&self) -> bool {

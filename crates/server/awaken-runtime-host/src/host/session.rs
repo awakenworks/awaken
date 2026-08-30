@@ -545,7 +545,10 @@ impl SharedHost {
                     // A concurrent cold resolver may have adopted while this context was
                     // becoming resident. Stop only that wrapper's hand process; disposing
                     // it would tear down the shared underlying sandbox.
-                    adopted.stop_bound_processes().await;
+                    adopted
+                        .stop_bound_processes()
+                        .await
+                        .map_err(|error| HostError::internal(error.to_string()))?;
                 }
                 // A resident Session is also a recovery wake. Rebind every
                 // frozen writable Memory resource through the one controller so
@@ -708,7 +711,10 @@ impl SharedHost {
                     "thread {thread} is already preparing a different sandbox"
                 )));
             }
-            extra.stop_bound_processes().await;
+            extra
+                .stop_bound_processes()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
             adopted = None;
         }
         let expected_binding = self.durable_session_environment_binding(thread);
@@ -797,7 +803,10 @@ impl SharedHost {
                             "thread {thread} is already bound to a different sandbox"
                         )));
                     }
-                    adopted.stop_bound_processes().await;
+                    adopted
+                        .stop_bound_processes()
+                        .await
+                        .map_err(|error| HostError::internal(error.to_string()))?;
                     (Some(existing), None)
                 }
                 (Some(existing), None) => (Some(existing), None),
@@ -1717,10 +1726,12 @@ impl SharedHost {
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
         let workspace_id = self.thread_workspace(thread).to_owned();
-        let environment_generation = env.as_ref().map_or_else(
-            || "brain".to_string(),
-            |environment| environment.handle().sandbox_id,
-        );
+        let environment_generation = match env.as_ref() {
+            Some(environment) => {
+                self.resident_environment_activity_generation_id(thread, environment)?
+            }
+            None => "brain".to_string(),
+        };
         let run_context = awaken_runtime_contract::RuntimeRunContext::new()
             .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                 awaken_tenancy::ScopeId::from(workspace_id.as_str()),

@@ -22,6 +22,9 @@ SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
 SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
 POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
 RUNTIME_HOST = "crates/server/awaken-runtime-host/src/lib.rs"
+RUNTIME_HOST_TERMINAL = (
+    "crates/server/awaken-runtime-host/src/environment_continuation.rs"
+)
 WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
 ARTIFACT_HARVEST = "crates/server/awaken-runtime-host/src/provisioning.rs"
 ARTIFACT_TRANSPORT = (
@@ -92,6 +95,10 @@ REQUIRED = {
     POSTGRES_SESSION_STORE: ("current_session.admits_tombstone(",),
     RUNTIME_HOST: (
         "async fn execute_terminal_cleanup",
+        ".execute_terminal_cleanup_continuation(command).await",
+    ),
+    RUNTIME_HOST_TERMINAL: (
+        "async fn execute_terminal_cleanup_continuation",
         "SessionCleanupCompletion::new",
         ".harvest_thread_artifacts(&command.thread_id)",
     ),
@@ -214,6 +221,31 @@ def selftest() -> None:
         "receipt.verify(&publication)", ""
     )
     assert session_effect_violations(missing_receipt), "unverified receipt rejected"
+
+    # Cause/effect rules: C1 the runtime trait entry delegates to the sole
+    # continuation owner; C2 that owner harvests artifacts and constructs the
+    # verified completion. Removing any edge must produce E1, a fitness error,
+    # rather than letting a forwarding shell masquerade as effect ownership.
+    for rule, owner, marker in (
+        (
+            "terminal cleanup delegation",
+            RUNTIME_HOST,
+            ".execute_terminal_cleanup_continuation(command).await",
+        ),
+        (
+            "terminal artifact harvest",
+            RUNTIME_HOST_TERMINAL,
+            ".harvest_thread_artifacts(&command.thread_id)",
+        ),
+        (
+            "terminal completion construction",
+            RUNTIME_HOST_TERMINAL,
+            "SessionCleanupCompletion::new",
+        ),
+    ):
+        mutant = dict(canonical)
+        mutant[owner] = mutant[owner].replace(marker, "")
+        assert session_effect_violations(mutant), f"removed {rule} rejected"
 
     # Mutation-test rules: removing any one critical edge must make the fitness
     # gate fail independently. This is the static complement to F0-F6 crash

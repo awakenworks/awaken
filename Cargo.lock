@@ -2061,6 +2061,7 @@ dependencies = [
  "awaken-worker-transport-security",
  "axum",
  "base64 0.22.1",
+ "futures-util",
  "regex",
  "reqwest 0.12.28",
  "schemars 1.2.1",

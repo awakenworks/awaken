@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(skills[0].id, "authored");
         assert_eq!(skills[0].dir, "skills/authored");
         environment.refresh_skills().await.unwrap();
-        environment.stop_bound_processes().await;
+        environment.stop_bound_processes().await.unwrap();
         environment.dispose().await.unwrap();
     }
 
@@ -872,7 +872,12 @@ mod tests {
         assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
         assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
 
-        original.stop_bound_processes().await;
+        assert!(matches!(
+            original.stop_bound_processes().await.unwrap(),
+            environment::EnvironmentStopProof::Hand(
+                session_hand::HandStopProof::ResidentProcessRetained
+            )
+        ));
         let adopted = environments.adopt(&spec(), &handle).await.unwrap();
         assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
         assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 2);
@@ -932,7 +937,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
-        environment.stop_bound_processes().await;
+        environment.stop_bound_processes().await.unwrap();
         assert!(matches!(
             hand.invoke(&ToolCall {
                 call_id: "closed".into(),
@@ -1249,7 +1254,7 @@ mod tests {
             1,
             "a failed projection reap never permits a replacement Hand"
         );
-        environment.dispose().await.unwrap();
+        assert!(environment.dispose().await.is_err());
     }
 
     #[tokio::test]
@@ -1295,6 +1300,121 @@ mod tests {
         );
         assert!(hand.projection_is_updating());
         assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped() {
+        // Cause/effect graph: C2=attached Hand is tracked; C3=Supervisor cannot
+        // prove reap. C2+C3 -> E1=no quiescence proof, E2=Ready owner retained,
+        // E3=closed lifecycle prevents replacement. Decision rule QH1 covers
+        // the unreapable terminal branch; the successful attached branch is
+        // covered by the ordinary environment lifecycle tests above.
+        let provider = Arc::new(FakeContainerProvider::default());
+        provider
+            .shared
+            .lock()
+            .unwrap()
+            .insert("__unreapable_hand".into(), Vec::new());
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+
+        assert!(environment.quiesce().await.is_err(), "QH1/E1");
+        let SessionEnvironment::Container { hand, .. } = &environment else {
+            panic!("test uses a Container environment")
+        };
+        assert!(hand.has_tracked_binding().await, "QH1/E2");
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1, "QH1/E3");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
+        // Cause/effect graph: C2=resident Hand belongs to the Session Pod;
+        // C3=checkpoint-and-release requests process quiescence; C4=the same
+        // durable operation retries; C5=terminal disposal follows. C2+C3 ->
+        // E1=first attempt has no proof while the resident binding and sandbox
+        // remain live; C2+C3+C4 -> E2=retry remains Retained, never Vacant;
+        // C5 -> E3=terminal stop may drop the channel before sandbox disposal.
+        // Rules QR1/QR2/QR3 distinguish retry-stable checkpoint safety from the
+        // existing terminal owner.
+        let provider = Arc::new(FakeContainerProvider::default());
+        let environment =
+            SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+                provider.clone(),
+                None,
+                Vec::new(),
+                ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+                "/usr/local/bin/awaken-sandbox",
+                std::time::Duration::ZERO,
+                crate::deployment_config::ContainerHandResidency::Resident,
+            )
+            .create(&spec())
+            .await
+            .unwrap();
+
+        assert!(environment.quiesce().await.is_err(), "QR1/E1");
+        let SessionEnvironment::Container { hand, .. } = &environment else {
+            panic!("test uses a Container environment")
+        };
+        assert!(hand.has_tracked_binding().await, "QR1/E1");
+        assert_eq!(
+            environment.status().await.unwrap(),
+            pc::SandboxStatus::Ready,
+            "QR1/E1"
+        );
+        assert!(environment.quiesce().await.is_err(), "QR2/E2");
+        assert!(hand.has_tracked_binding().await, "QR2/E2");
+        assert_eq!(
+            provider.resident_channel_opens.load(Ordering::SeqCst),
+            1,
+            "QR2/E2"
+        );
+        environment.dispose().await.unwrap();
+        assert!(!hand.has_tracked_binding().await, "QR3/E3");
+    }
+
+    #[tokio::test]
+    async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
+        // Cause/effect graph: C2=attached process; C6=quiescence Future is
+        // cancelled during bounded reap. C2+C6 -> E1=no receipt and E2=the same
+        // binding remains tracked for retry. Rule QC1 proves cancellation cannot
+        // manufacture Vacant or admit a replacement.
+        let provider = Arc::new(FakeContainerProvider::default());
+        provider
+            .shared
+            .lock()
+            .unwrap()
+            .insert("__slow_reap_hand".into(), Vec::new());
+        let environment = Arc::new(
+            SessionEnvironmentProvider::container(
+                provider.clone(),
+                Vec::new(),
+                ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+                "/usr/local/bin/awaken-sandbox",
+            )
+            .create(&spec())
+            .await
+            .unwrap(),
+        );
+        let quiescing = tokio::spawn({
+            let environment = environment.clone();
+            async move { environment.quiesce().await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        quiescing.abort();
+        let _ = quiescing.await;
+
+        let SessionEnvironment::Container { hand, .. } = environment.as_ref() else {
+            panic!("test uses a Container environment")
+        };
+        assert!(hand.has_tracked_binding().await, "QC1/E2");
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1, "QC1/E2");
     }
 
     /// Worker-local Hand inactivity cause/effect decision table.
@@ -1416,7 +1536,7 @@ mod tests {
             Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
         ));
         assert_eq!(failed_provider.hand_spawns.load(Ordering::SeqCst), 1, "I6");
-        failed.dispose().await.unwrap();
+        assert!(failed.dispose().await.is_err());
     }
 
     /// Idle/invoke race rule I7: C1=the old deadline fires while a Hand call owns

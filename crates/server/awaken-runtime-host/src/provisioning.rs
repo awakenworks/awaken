@@ -4,7 +4,6 @@
 //! session. Split out of `host.rs` to keep that file under the length limit; these
 //! are the same `SharedHost` (fields are `pub(crate)`).
 
-#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
 use crate::host::SharedHost;
@@ -696,15 +695,28 @@ impl SharedHost {
     /// environment or a host with no durable skill store (nothing to persist into).
     /// Idempotent: a re-scanned delivered skill puts identical bytes back under the same id.
     pub async fn harvest_thread_skills(&self, thread: &str) -> Result<(), ResourcePurgeError> {
-        if !self.skills.has_application() {
-            return Ok(());
-        }
         let env = self.session_environment(thread).await;
         let Some(env) = env else {
             return Ok(());
         };
+        self.harvest_thread_skills_from_environment(thread, &env)
+            .await
+    }
+
+    /// Harvest from an exact owner-held Environment. Terminal cleanup uses this
+    /// after its background-work fence because a retryable Bound retirement is
+    /// deliberately hidden from ordinary Resident readers.
+    pub(crate) async fn harvest_thread_skills_from_environment(
+        &self,
+        thread: &str,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Result<(), ResourcePurgeError> {
+        if !self.skills.has_application() {
+            return Ok(());
+        }
         let workspace = self.thread_workspace(thread);
-        self.persist_authored_skills(&workspace, env.as_ref()).await
+        self.persist_authored_skills(&workspace, environment.as_ref())
+            .await
     }
 
     /// Scan a live environment's workspace skill dir and persist each authored skill to the
@@ -735,6 +747,20 @@ impl SharedHost {
         thread: &str,
     ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         self.artifact_harvester().harvest(thread).await
+    }
+
+    /// Harvest outputs from the exact terminal owner snapshot. This does not
+    /// broaden the ordinary Resident lookup to expose Retiring Environments.
+    pub(crate) async fn harvest_thread_artifacts_from_environment(
+        &self,
+        thread: &str,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+        let harvester = self.artifact_harvester();
+        let claim = harvester.current_claim(thread);
+        harvester
+            .harvest_with_environment(thread, claim, environment)
+            .await
     }
 }
 
@@ -787,6 +813,15 @@ impl ArtifactHarvester {
                 receipts: Vec::new(),
             });
         };
+        self.harvest_with_environment(thread, claim, &env).await
+    }
+
+    pub(crate) async fn harvest_with_environment(
+        &self,
+        thread: &str,
+        claim: Option<awaken_run_ingress::RunClaim>,
+        env: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         let artifacts = env
             .artifacts()
             .await

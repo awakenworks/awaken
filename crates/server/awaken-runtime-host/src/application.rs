@@ -877,7 +877,7 @@ impl crate::SharedHost {
             Ok(None) => Ok(false),
             Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
                 let _ = self.interrupt(session_id).await;
-                self.revoke_session_realization(session_id).await;
+                self.revoke_session_realization(session_id).await?;
                 Ok(true)
             }
             Err(error) => Err(crate::HostError::internal(format!(
@@ -944,8 +944,12 @@ impl crate::SharedHost {
                 Ok(false) => {
                     // Another actor completed the operation between claim and
                     // poll. This projection has no ordinary Run authority.
-                    self.revoke_session_realization(&assignment.session_id)
-                        .await;
+                    if let Err(error) = self
+                        .revoke_session_realization(&assignment.session_id)
+                        .await
+                    {
+                        terminal_error.get_or_insert(error);
+                    }
                 }
                 Err(error) => {
                     terminal_error.get_or_insert(error);
@@ -1098,7 +1102,9 @@ impl crate::SharedHost {
             // Every failed renewal has one cleanup path. Expected terminal
             // retirement differs only in observability, never in side effects.
             let _ = self.interrupt(session_id).await;
-            self.revoke_session_realization(session_id).await;
+            if let Err(error) = self.revoke_session_realization(session_id).await {
+                terminal_error.get_or_insert(error);
+            }
         }
         match terminal_error {
             Some(error) => Err(error),
@@ -1110,25 +1116,26 @@ impl crate::SharedHost {
     /// no longer provable. This is not a terminal Session edge: preserve the
     /// durable Sandbox so the next authorized Worker can adopt it, while local
     /// processes, routes, credentials, and runtime references are discarded.
-    async fn revoke_session_realization(&self, session_id: &str) -> bool {
+    async fn revoke_session_realization(&self, session_id: &str) -> Result<bool, crate::HostError> {
+        if self.session_slots.read(session_id, |_| ()).is_none() {
+            return Ok(false);
+        }
+        let realization = self.session_slots.realization_lock(session_id);
+        let _realization = realization.lock().await;
         let Some(lifecycle) = self
             .session_slots
             .read(session_id, |slot| slot.lifecycle.clone())
         else {
-            return false;
+            return Ok(false);
         };
         let _lifecycle = lifecycle.lock().await;
         let retirement = self
             .retire_session_environment_for_revocation(session_id)
-            .await;
+            .await?;
         if let Some(relay) = self.mcp_relay.get() {
             relay.remove_routes(session_id);
         }
-        if let Err(error) = retirement {
-            eprintln!("Session realization revocation retained `{session_id}` for retry: {error}");
-            return false;
-        }
-        true
+        Ok(retirement)
     }
 
     /// Revoke every process-local Session projection after Worker authority is
@@ -1138,7 +1145,7 @@ impl crate::SharedHost {
         let session_ids = self.session_slots.session_ids();
         let mut revoked = 0;
         for session_id in session_ids {
-            if self.revoke_session_realization(&session_id).await {
+            if self.revoke_session_realization(&session_id).await? {
                 revoked += 1;
             }
         }

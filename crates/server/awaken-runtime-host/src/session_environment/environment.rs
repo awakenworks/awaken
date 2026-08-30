@@ -9,7 +9,16 @@ use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
 
 use super::HandExecutorFactory;
 use super::container_skills::ContainerSkillCache;
-use super::session_hand::{HandProjectionUpdate, SessionHandExecutor};
+use super::session_hand::{HandProjectionUpdate, HandStopProof, SessionHandExecutor};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnvironmentStopProof {
+    NoBoundProcesses,
+    Hand(HandStopProof),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EnvironmentQuiescenceProof;
 
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {
@@ -146,10 +155,14 @@ impl SessionEnvironment {
     /// Stop only the process bindings created while constructing this wrapper.
     /// Used when an adoption races a resident environment with the same handle;
     /// disposing here would incorrectly destroy the shared underlying container.
-    pub(crate) async fn stop_bound_processes(&self) {
+    pub(crate) async fn stop_bound_processes(
+        &self,
+    ) -> Result<EnvironmentStopProof, pc::SandboxError> {
         match self {
-            Self::Namespace { hand, .. } | Self::Container { hand, .. } => hand.stop().await,
-            Self::Workdir(_) => {}
+            Self::Namespace { hand, .. } | Self::Container { hand, .. } => {
+                hand.stop().await.map(EnvironmentStopProof::Hand)
+            }
+            Self::Workdir(_) => Ok(EnvironmentStopProof::NoBoundProcesses),
         }
     }
 

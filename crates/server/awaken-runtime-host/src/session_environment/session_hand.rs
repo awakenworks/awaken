@@ -193,7 +193,7 @@ impl HandAvailability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetireOutcome {
-    Retired,
+    Retired(HandStopProof),
     AlreadyVacant,
     Stale,
 }
@@ -201,6 +201,16 @@ enum RetireOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetireError {
     ReapFailed,
+}
+
+/// Typed evidence produced by the canonical Hand binding owner. A resident
+/// Hand is deliberately reported as retained: dropping its channel is not
+/// proof that the Session-Pod workload has terminated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandStopProof {
+    NoBinding,
+    AttachedProcessReaped,
+    ResidentProcessRetained,
 }
 
 struct HandLifecycle {
@@ -352,14 +362,14 @@ impl HandLifecycle {
         // this Future is cancelled, the mutex guard is dropped but the owner is
         // still tracked; a later retry can resume retirement and can never infer
         // Vacant and launch a second process from an unknown outcome.
-        if stop_hand_binding(current, event).await {
+        if let Ok(proof) = stop_hand_binding(current, event).await {
             debug_assert!(hand_binding_transition_admitted(
                 HandBindingPhase::Ready,
                 HandBindingPhase::Vacant,
             ));
             *binding = HandBindingState::Vacant;
             self.binding_changed.notify_waiters();
-            Ok(RetireOutcome::Retired)
+            Ok(RetireOutcome::Retired(proof))
         } else {
             // The process outcome is unknown. Starting another Hand could
             // violate the one-owner invariant, so fail closed.
@@ -393,11 +403,14 @@ impl HandLifecycle {
 
 const HAND_STOP_GRACE: Duration = Duration::from_secs(2);
 
-async fn stop_hand_binding(binding: &HandBinding, event: &'static str) -> bool {
+async fn stop_hand_binding(
+    binding: &HandBinding,
+    event: &'static str,
+) -> Result<HandStopProof, RetireError> {
     let Some(process) = binding.process.as_ref() else {
         // A resident Hand belongs to the Session Pod. Dropping the channel must
         // never terminate that workload.
-        return true;
+        return Ok(HandStopProof::ResidentProcessRetained);
     };
     let started = std::time::Instant::now();
     if let Err(error) =
@@ -409,11 +422,11 @@ async fn stop_hand_binding(binding: &HandBinding, event: &'static str) -> bool {
             error = %error,
             "failed to reap Session hand within the bounded signal ladder"
         );
-        false
+        Err(RetireError::ReapFailed)
     } else {
         awaken_observability::add_live_hand(-1);
         awaken_observability::record_hand_lifecycle(event, "ok", started.elapsed());
-        true
+        Ok(HandStopProof::AttachedProcessReaped)
     }
 }
 
@@ -733,7 +746,7 @@ impl SessionHandExecutor {
                             lifecycle
                                 .hibernate_if_current(Some(generation), "idle_hibernate")
                                 .await,
-                            Ok(RetireOutcome::Retired)
+                            Ok(RetireOutcome::Retired(_))
                         ) {
                             tracing::info!(
                                 session_environment = %operation_scope,
@@ -766,11 +779,13 @@ impl SessionHandExecutor {
             .hibernate_if_current(None, "projection_hibernate")
             .await
         {
-            Ok(RetireOutcome::Retired | RetireOutcome::AlreadyVacant) => Ok(HandProjectionUpdate {
-                hand: self,
-                _update: update,
-                committed: false,
-            }),
+            Ok(RetireOutcome::Retired(_) | RetireOutcome::AlreadyVacant) => {
+                Ok(HandProjectionUpdate {
+                    hand: self,
+                    _update: update,
+                    committed: false,
+                })
+            }
             Ok(RetireOutcome::Stale) => {
                 self.lifecycle.fence();
                 Err(pc::SandboxError::new(
@@ -786,12 +801,33 @@ impl SessionHandExecutor {
         }
     }
 
-    pub(super) async fn stop(&self) {
+    async fn finish_stop(&self, event: &'static str) -> Result<HandStopProof, pc::SandboxError> {
+        match self.lifecycle.hibernate_if_current(None, event).await {
+            Ok(RetireOutcome::Retired(proof)) => Ok(proof),
+            Ok(RetireOutcome::AlreadyVacant) => Ok(HandStopProof::NoBinding),
+            Ok(RetireOutcome::Stale) => Err(pc::SandboxError::new(
+                "Session hand binding changed while stop was quiescing",
+            )),
+            Err(RetireError::ReapFailed) => Err(pc::SandboxError::new(
+                "failed to reap Session hand during stop",
+            )),
+        }
+    }
+
+    /// Fence checkpoint admission and return retry-stable evidence. A resident
+    /// Hand has no Worker-owned process handle, so its binding remains tracked:
+    /// neither the first attempt nor a retry may turn Retained into Vacant.
+    pub(super) async fn quiesce(&self) -> Result<HandStopProof, pc::SandboxError> {
         self.lifecycle.close();
-        let _ = self
-            .lifecycle
-            .hibernate_if_current(None, "terminal_stop")
-            .await;
+        if self.mode == HandMode::Resident {
+            return Ok(HandStopProof::ResidentProcessRetained);
+        }
+        self.finish_stop("checkpoint_quiesce").await
+    }
+
+    pub(super) async fn stop(&self) -> Result<HandStopProof, pc::SandboxError> {
+        self.lifecycle.close();
+        self.finish_stop("terminal_stop").await
     }
 
     async fn replacement(&self) -> Result<(), ToolError> {

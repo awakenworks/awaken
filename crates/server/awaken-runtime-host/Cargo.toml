@@ -67,6 +67,7 @@ axum = { version = "0.8", features = ["multipart"] }
 # Runtime MCP relay transport; exact OAuth refresh remains in credential
 # materialization and is injected through CredentialRefreshFactory.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.22"
 # Content SHA-256 for the memory_stores memories/versions API (`content_sha256`).
 sha2 = "0.10"

@@ -1381,58 +1381,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         command: awaken_session_contract::SessionCleanupCommand,
     ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        // Archive/delete and the recovery scanner may observe the same durable
-        // cleanup intent concurrently. Serialize the complete external-effect
-        // sequence on the Session lifecycle owner: Skill/Artifact harvest and
-        // environment disposal cannot safely race an identical retry before the
-        // first receipt is committed. Once the winner removes the slot, the
-        // waiter sees an empty projection and completes as the intended no-op.
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(&command.thread_id, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
-        // Terminal release persists local Skills/Artifacts and disposes the
-        // environment. It never pushes Repository content implicitly: Managed
-        // Repository publication is an explicit Agent/MCP operation governed by
-        // that tool's permission policy, while controlled workflows export a
-        // patch into outputs for Artifact download and human application.
-        self.host
-            .harvest_thread_skills(&command.thread_id)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
-        // A Restoring target is not a generic live Environment owner. Dispose
-        // its exact R1 physical target first; only success clears the request-
-        // bound Awaiting fence so ordinary terminal owner removal cannot double
-        // dispose it or report completion early.
-        if let Some(request) = command.restore_target.as_ref() {
-            if request.session_id != command.thread_id {
-                return Err(RunError::internal(
-                    "terminal restore target does not belong to its cleanup root",
-                ));
-            }
-            self.dispose_restoring_environment_continuation(request)
-                .await?;
-        }
-        // Failure is terminal-release blocking: keep the Sandbox available for
-        // the durable cleanup retry instead of disposing unharvested outputs.
-        let artifacts = self
-            .host
-            .harvest_thread_artifacts(&command.thread_id)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
-        // Memory is owned by its MemoryMount guard: FUSE writes through live and
-        // copy realization performs one CAS harvest during teardown.
-        self.host
-            .end_session(&command.thread_id, &command.effect_id)
-            .await
-            .map_err(to_run_error)?;
-        let completion =
-            awaken_session_contract::SessionCleanupCompletion::new(&command, artifacts.receipts);
-        completion
-            .verify(&command)
-            .map_err(|error| RunError::internal(error.to_string()))?;
-        Ok(completion)
+        self.execute_terminal_cleanup_continuation(command).await
     }
 
     async fn execute_terminal_repository_publication(
@@ -1779,6 +1728,7 @@ impl SessionRuntime for ManagedHost {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_contract::SandboxGeneration,
+        expected_mcp_generations: &[awaken_session_contract::McpGenerationRef],
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.quiesce_environment_continuation(
             thread,
@@ -1786,6 +1736,7 @@ impl SessionRuntime for ManagedHost {
             source_effect_id,
             source_binding,
             generation,
+            expected_mcp_generations,
         )
         .await
     }

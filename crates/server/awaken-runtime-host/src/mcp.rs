@@ -28,6 +28,7 @@ mod prompt_skills;
 /// discovery. This policy is deliberately private runtime composition, not
 /// attachment desired state or a public Managed Agents wire extension.
 const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Private Worker-side material for one exact MCP generation. It is never an
 /// authoring or desired-state value and cannot cross the Runtime Host boundary.
@@ -269,30 +270,15 @@ pub(crate) struct McpWiring {
 }
 
 impl crate::SharedHost {
-    pub(crate) async fn stop_session_mcp_processes(&self, thread: &str) {
-        let processes = self
-            .session_slots
-            .modify(thread, |slot| {
-                slot.mcp
-                    .iter_mut()
-                    .filter_map(|projection| projection.mcp_process.take())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for process in processes {
-            let _ = process
-                .signal(awaken_provisioning_contract::Signal::Term)
-                .await;
-            let _ = process.wait().await;
-        }
-    }
-
     pub(crate) fn active_mcp_projections(
         &self,
         thread: &str,
     ) -> Vec<crate::session_slot::McpGenerationProjection> {
         self.session_slots
             .read(thread, |slot| {
+                if slot.mcp_quiescence_fence.is_some() {
+                    return Vec::new();
+                }
                 slot.mcp
                     .iter()
                     .filter(|projection| {
@@ -325,6 +311,12 @@ impl crate::SharedHost {
     ) -> Result<(), HostError> {
         let thread = projection.request.generation.session_id.clone();
         self.session_slots.update(&thread, |slot| {
+            if slot.mcp_quiescence_fence.is_some() {
+                return Err(HostError::unavailable_classified(
+                    "session_environment_quiescing",
+                    "MCP staging is closed while the Session Environment quiesces",
+                ));
+            }
             if slot
                 .mcp
                 .iter()
@@ -339,6 +331,75 @@ impl crate::SharedHost {
         })
     }
 
+    /// Transfer a freshly spawned stdio process into the already-installed
+    /// exact-generation owner before any further fallible await.
+    pub(crate) fn attach_staging_mcp_process(
+        &self,
+        generation: &awaken_session_contract::McpGenerationRef,
+        process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
+    ) -> Result<bool, HostError> {
+        self.session_slots
+            .modify(&generation.session_id, |slot| {
+                let admitted = slot.mcp_quiescence_fence.is_none();
+                let projection = slot
+                    .mcp
+                    .iter_mut()
+                    .find(|projection| projection.request.generation == *generation)
+                    .ok_or_else(|| HostError::internal("unknown MCP staging owner"))?;
+                if !matches!(
+                    projection.state,
+                    crate::session_slot::McpProjectionState::Staging
+                        | crate::session_slot::McpProjectionState::Draining
+                ) || projection.staging.is_none()
+                    || projection.mcp_process.is_some()
+                {
+                    return Err(HostError::internal(
+                        "MCP staging owner no longer admits a spawned process",
+                    ));
+                }
+                let connect_admitted = admitted
+                    && projection.state == crate::session_slot::McpProjectionState::Staging;
+                projection.mcp_process = Some(process);
+                Ok(connect_admitted)
+            })
+            .unwrap_or_else(|| Err(HostError::internal("unknown MCP Session projection")))
+    }
+
+    /// Publish only wiring into the private staged projection. Durable publish
+    /// remains the separate `Staged -> Active` transition.
+    pub(crate) fn complete_staging_mcp_projection(
+        &self,
+        generation: &awaken_session_contract::McpGenerationRef,
+        wiring: crate::mcp::McpWiring,
+    ) -> Result<(), HostError> {
+        self.session_slots
+            .modify(&generation.session_id, |slot| {
+                if slot.mcp_quiescence_fence.is_some() {
+                    return Err(HostError::unavailable_classified(
+                        "session_environment_quiescing",
+                        "MCP staging cannot commit while the Session Environment quiesces",
+                    ));
+                }
+                let projection = slot
+                    .mcp
+                    .iter_mut()
+                    .find(|projection| projection.request.generation == *generation)
+                    .ok_or_else(|| HostError::internal("unknown MCP staging owner"))?;
+                if projection.state != crate::session_slot::McpProjectionState::Staging
+                    || projection.mcp_process.is_none()
+                {
+                    return Err(HostError::internal(
+                        "MCP staging owner changed before connection completed",
+                    ));
+                }
+                projection.native_wiring = Some(wiring);
+                projection.staging = None;
+                projection.state = crate::session_slot::McpProjectionState::Staged;
+                Ok(())
+            })
+            .unwrap_or_else(|| Err(HostError::internal("unknown MCP Session projection")))
+    }
+
     /// Extend one already-staged or active exact generation without reopening
     /// credential material or reconnecting MCP. The immutable realization
     /// binding must be identical and only the expiry/idempotency attempt may
@@ -351,6 +412,12 @@ impl crate::SharedHost {
         let binding = request.renewal_binding_fingerprint();
         self.session_slots
             .update(&request.generation.session_id, |slot| {
+                if slot.mcp_quiescence_fence.is_some() {
+                    return Err(HostError::unavailable_classified(
+                        "session_environment_quiescing",
+                        "MCP renewal is closed while the Session Environment quiesces",
+                    ));
+                }
                 let Some(projection) = slot.mcp.iter_mut().find(|projection| {
                     projection.request.generation.session_id == request.generation.session_id
                         && projection.request.generation.attachment_id
@@ -402,6 +469,9 @@ impl crate::SharedHost {
         let request_fingerprint = request.fingerprint();
         self.session_slots
             .modify(&request.generation.session_id, |slot| {
+                if slot.mcp_quiescence_fence.is_some() {
+                    return false;
+                }
                 let Some(index) = slot.mcp.iter().position(|projection| {
                     projection.request.generation == request.generation
                         && projection.state == crate::session_slot::McpProjectionState::Removed
@@ -421,10 +491,20 @@ impl crate::SharedHost {
         &self,
         generation: &awaken_session_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
+        if !self
+            .session_slots
+            .mcp_realization_admitted(&generation.session_id)
+        {
+            return Err(HostError::unavailable_classified(
+                "session_environment_quiescing",
+                "MCP publication is closed while the Session Environment quiesces",
+            ));
+        }
         if let Some(projection) = self.mcp_projection(generation) {
             if matches!(
                 projection.state,
-                crate::session_slot::McpProjectionState::Draining
+                crate::session_slot::McpProjectionState::Staging
+                    | crate::session_slot::McpProjectionState::Draining
                     | crate::session_slot::McpProjectionState::Removed
             ) {
                 return Err(HostError::internal(
@@ -462,6 +542,12 @@ impl crate::SharedHost {
             }
         }
         let changed = self.session_slots.modify(&generation.session_id, |slot| {
+            if slot.mcp_quiescence_fence.is_some() {
+                return Err(HostError::unavailable_classified(
+                    "session_environment_quiescing",
+                    "MCP publication is closed while the Session Environment quiesces",
+                ));
+            }
             let Some(index) = slot
                 .mcp
                 .iter()
@@ -470,6 +556,9 @@ impl crate::SharedHost {
                 return Err(HostError::internal("unknown MCP generation projection"));
             };
             match slot.mcp[index].state {
+                crate::session_slot::McpProjectionState::Staging => Err(HostError::internal(
+                    "MCP generation is still staging and cannot be published",
+                )),
                 crate::session_slot::McpProjectionState::Staged => {
                     for projection in &mut slot.mcp {
                         if projection.request.generation.attachment_id == generation.attachment_id
@@ -502,6 +591,22 @@ impl crate::SharedHost {
         &self,
         generation: &awaken_session_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
+        let Some(drain) = self
+            .session_slots
+            .read(&generation.session_id, |slot| {
+                slot.mcp
+                    .iter()
+                    .find(|projection| projection.request.generation == *generation)
+                    .map(|projection| projection.drain.clone())
+            })
+            .flatten()
+        else {
+            return Ok(());
+        };
+        // Keep the exact owner installed while awaiting. Cancellation releases
+        // only this serialization guard; a retry sees Draining plus the same
+        // process/activity and resumes the canonical cleanup.
+        let _drain = drain.lock().await;
         let projected = self.session_slots.modify(&generation.session_id, |slot| {
             let Some(projection) = slot
                 .mcp
@@ -513,6 +618,12 @@ impl crate::SharedHost {
                 // an already fenced durable Draining generation.
                 return Ok::<_, HostError>(None);
             };
+            if !Arc::ptr_eq(&projection.drain, &drain) {
+                return Err(HostError::unavailable_classified(
+                    "mcp_generation_owner_changed",
+                    "MCP generation projection was replaced while cleanup was waiting",
+                ));
+            }
             if projection.state == crate::session_slot::McpProjectionState::Removed {
                 return Ok::<_, HostError>(None);
             }
@@ -526,20 +637,64 @@ impl crate::SharedHost {
                 .map(|wiring| wiring.call_fences.clone())
                 .unwrap_or_default();
             let process = projection.mcp_process.clone();
+            let staging = projection.staging.clone();
+            // The canonical Session slot must retain this Runtime owner across
+            // cancellation and timeout. Only the outer environment-quiescence
+            // transaction clears it after every MCP generation and the Hand
+            // have proved quiescent; otherwise a retry could lose the active-run
+            // fence and manufacture a Removed proof while the old Run is live.
             let runtime = slot.runtime.clone();
-            slot.runtime = None;
-            Ok(Some((call_fences, process, runtime)))
+            Ok(Some((call_fences, process, staging, runtime)))
         });
-        if let Some(relay) = self.mcp_relay.get() {
-            relay.remove_route(generation);
-        }
-        let Some((call_fences, process, runtime)) = projected.transpose()?.flatten() else {
+        let Some((mut call_fences, process, staging, runtime)) = projected.transpose()?.flatten()
+        else {
             return Ok(());
         };
 
-        for fence in call_fences {
-            fence.close_and_wait().await;
+        // WorkerRelay requests are not Runtime tool calls: Axum clones the
+        // exact Route before it awaits the body/upstream/stream. Add that
+        // route owner's existing MCP call fence to the same drain barrier.
+        // Removing the map entry is not quiescence because an accepted clone
+        // can still hold its credential and upstream future.
+        if let Some(relay) = self.mcp_relay.get()
+            && let Some(fence) = relay.route_call_fence(generation)
+        {
+            call_fences.push(fence);
         }
+        // Poll every exact fence together so all admission closes before a
+        // single slow permit can consume the bounded settlement window.
+        tokio::time::timeout(
+            MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT,
+            futures_util::future::join_all(call_fences.iter().map(|fence| fence.close_and_wait())),
+        )
+        .await
+        .map_err(|_| {
+            HostError::unavailable_classified(
+                "mcp_generation_call_quiescence_timeout",
+                "MCP generation drain could not quiesce an accepted MCP call",
+            )
+        })?;
+
+        let had_staging = staging.is_some();
+        if let Some(staging) = staging {
+            staging.wait().await;
+        }
+        // Spawn may have completed after Draining was installed but before the
+        // activity barrier closed. The task transfers that process into this
+        // same projection; re-read it before reaping so no post-snapshot child
+        // can be erased as an unowned handle.
+        let process = if process.is_none() && had_staging {
+            self.session_slots
+                .read(&generation.session_id, |slot| {
+                    slot.mcp
+                        .iter()
+                        .find(|projection| projection.request.generation == *generation)
+                        .and_then(|projection| projection.mcp_process.clone())
+                })
+                .flatten()
+        } else {
+            process
+        };
 
         if let Some(runtime) = runtime {
             if let Some(token) = runtime
@@ -584,6 +739,14 @@ impl crate::SharedHost {
             })?;
         }
 
+        // This is the sole visible-route removal edge. It runs only after the
+        // exact route fence, Runtime, staging, and process owners are quiescent;
+        // cancellation or any failure above leaves the closed Route installed
+        // with the Draining projection so retry retains the same proof owner.
+        if let Some(relay) = self.mcp_relay.get() {
+            relay.remove_route(generation);
+        }
+
         match self.session_slots.modify(&generation.session_id, |slot| {
             let Some(projection) = slot
                 .mcp
@@ -603,6 +766,7 @@ impl crate::SharedHost {
             projection.server = None;
             projection.native_wiring = None;
             projection.mcp_process = None;
+            projection.staging = None;
             projection.state = crate::session_slot::McpProjectionState::Removed;
             Ok(())
         }) {
@@ -610,6 +774,82 @@ impl crate::SharedHost {
             None => Ok(()),
         }
     }
+
+    /// Drain every exact durable generation requested by the Session owner and
+    /// any additional local leak, continuing after individual failures. The
+    /// returned proof echoes the durable expected set; local slot contents are
+    /// used only to find additional cleanup work and to reject residual effects.
+    pub(crate) async fn drain_mcp_projections(
+        &self,
+        thread: &str,
+        expected: &[awaken_session_contract::McpGenerationRef],
+    ) -> Result<McpQuiescenceProof, HostError> {
+        let mut targets = Vec::with_capacity(expected.len());
+        for generation in expected {
+            if generation.session_id != thread {
+                return Err(HostError::internal(
+                    "MCP quiescence generation belongs to another Session",
+                ));
+            }
+            if targets.iter().any(|seen| seen == generation) {
+                return Err(HostError::internal(
+                    "MCP quiescence expected set contains a duplicate generation",
+                ));
+            }
+            targets.push(generation.clone());
+        }
+        for generation in self
+            .session_slots
+            .read(thread, |slot| {
+                slot.mcp
+                    .iter()
+                    .filter(|projection| {
+                        projection.state != crate::session_slot::McpProjectionState::Removed
+                    })
+                    .map(|projection| projection.request.generation.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        {
+            if !targets.iter().any(|seen| seen == &generation) {
+                targets.push(generation);
+            }
+        }
+
+        let mut first_error = None;
+        for generation in &targets {
+            if let Err(error) = self.drain_mcp_projection(generation).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        let residual = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.mcp.iter().any(|projection| {
+                    projection.state != crate::session_slot::McpProjectionState::Removed
+                })
+            })
+            .unwrap_or(false);
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        if residual {
+            return Err(HostError::unavailable_classified(
+                "mcp_generation_quiescence_incomplete",
+                "MCP generation cleanup left a process-local owner unresolved",
+            ));
+        }
+        Ok(McpQuiescenceProof {
+            generations: expected.to_vec(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct McpQuiescenceProof {
+    pub generations: Vec<awaken_session_contract::McpGenerationRef>,
 }
 
 impl McpWiring {
