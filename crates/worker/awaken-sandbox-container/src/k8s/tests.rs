@@ -1,9 +1,383 @@
+//! Behavior tests for the Kubernetes runtime adapter.
+//!
+//! Kept as a child of `k8s` so private adapter evidence and cause/effect
+//! decision tables remain adjacent to their production owner.
 
 use crate::ForwardProxy;
 use awaken_provisioning_contract::ProcessHandle;
 use std::sync::Arc;
 
 use super::*;
+
+#[tokio::test]
+async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
+    /* Provider-kind admission table KH1. Causes: C1 current Kubernetes V2,
+     * legacy Kubernetes, or foreign host-bind continuation evidence reaches
+     * observation/removal; C2 an apiserver is unavailable. Effects: E1 V2
+     * yields its exact Pod/PVC fences; E2 legacy deletion fails for lack of a
+     * Pod UID; E3 host-bind fails locally before any apiserver observation or
+     * deletion. Rules: KH1a V2=>E1; KH1b legacy=>E2; KH1c host-bind+C2=>E3.
+     * This is provider-kind admission only; the Session aggregate remains the
+     * lifecycle authority and the existing K8s removal path remains the sole
+     * physical effect owner. */
+    let current = pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        pod_uid: "pod-a".into(),
+        claim_uid: Some("claim-a".into()),
+    };
+    assert_eq!(
+        runtime_contract::deletion_incarnation(Some(&current)).unwrap(),
+        (Some("pod-a"), Some("claim-a")),
+        "KH1a/E1",
+    );
+    let legacy = pc::ContainerContinuationHandle::KubernetesContinuation {
+        claim_uid: "claim-a".into(),
+    };
+    assert!(
+        runtime_contract::deletion_incarnation(Some(&legacy)).is_err(),
+        "KH1b/E2",
+    );
+
+    let host_bind = pc::ContainerContinuationHandle::HostBindRestoration(
+        pc::HostBindRestorationHandle::for_restore("/tmp/awaken-acp-stage-k8s-reject").unwrap(),
+    );
+    assert!(
+        runtime_contract::deletion_incarnation(Some(&host_bind))
+            .unwrap_err()
+            .to_string()
+            .contains("host-bind"),
+        "KH1c/E3 removal admission",
+    );
+    let runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+    let error = ContainerRuntime::observe(
+        &runtime,
+        ContainerObservationExpectation {
+            container_id: "never-read",
+            adoption_fingerprint: None,
+            realization_fingerprint: None,
+            runtime_handle: Some(&host_bind),
+            effect_fence: None,
+        },
+    )
+    .await
+    .expect_err("KH1c host-bind must fail before apiserver I/O");
+    assert!(error.to_string().contains("host-bind"), "KH1c/E3");
+}
+
+#[test]
+fn continuation_observation_has_one_disposing_authority() {
+    /* Pod/PVC observation table KCO1. Causes: C1 exact source Pod A is
+     * present/absent; C2 A is live/deleting; C3 Awaken's cleanup finalizer is
+     * held; C4 durable V2 expects claim P and observes P live/terminating/
+     * absent/foreign; C5 the aggregate terminal fence is present; C6 the
+     * total-absence proof carries exact fenced V2 claim evidence. Effects:
+     * E1 ordinary A+P remains Live; E2 own finalizer proves every required
+     * source-durability effect preceded physical cleanup and projects Disposing, including the PVC
+     * DELETE response-loss cut before A DELETE; E3 deleting A without the
+     * finalizer projects Disposing only when exact P is already terminating
+     * (finalizer-release response loss); E4 absent A+terminating P projects
+     * Disposing so cleanup only awaits P; E5 absent A+live P, a foreign P,
+     * deleting-without-proof, or missing fence fails closed; E6 exact A/P total
+     * absence is Live here and becomes DefinitivelyUnavailable only in the
+     * shared physical-observation owner.
+     *
+     * | Rule | A | deleting | own F | P | fence | total proof | Effect |
+     * | K1 | present | no  | no  | exact live | yes/no | no | E1 Live |
+     * | K2 | present | no/yes | yes | exact live/term | yes | no | E2 Disposing |
+     * | K3 | present | yes | no | exact term | yes | no | E3 Disposing |
+     * | K4 | absent | n/a | no | exact term | yes | no | E4 Disposing |
+     * | K5 | absent | n/a | no | exact live | yes | no | E5 Incompatible |
+     * | K6 | present | yes | no | exact live | yes | no | E5 Indeterminate |
+     * | K7 | any | any | any | foreign | yes | any | E5 Incompatible |
+     * | K8 | absent | n/a | no | absent | yes | yes | E6 Live |
+     * | K9 | absent | n/a | no | absent | no | no | E5 Incompatible | */
+    use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
+
+    let classify = |pod_present,
+                    pod_deleting,
+                    cleanup_gate,
+                    observed_claim_uid,
+                    claim_terminating,
+                    effect_fenced,
+                    fenced_total_absence| {
+        continuation_observation_disposition(ContinuationObservationEvidence {
+            pod_present,
+            pod_deleting,
+            cleanup_gate_held: cleanup_gate,
+            expected_uid: Some("p"),
+            observed_uid: observed_claim_uid,
+            observed_terminating: claim_terminating,
+            effect_fenced,
+            effect_fenced_total_absence: fenced_total_absence,
+        })
+    };
+
+    assert_eq!(
+        classify(true, false, false, Some("p"), false, false, false).unwrap(),
+        Live,
+        "K1"
+    );
+    for (deleting, terminating) in [(false, false), (true, false), (true, true)] {
+        assert_eq!(
+            classify(true, deleting, true, Some("p"), terminating, true, false).unwrap(),
+            Disposing,
+            "K2 deleting={deleting} terminating={terminating}"
+        );
+    }
+    assert_eq!(
+        classify(true, true, false, Some("p"), true, true, false).unwrap(),
+        Disposing,
+        "K3"
+    );
+    assert_eq!(
+        classify(false, false, false, Some("p"), true, true, false).unwrap(),
+        Disposing,
+        "K4"
+    );
+    assert_eq!(
+        classify(false, false, false, Some("p"), false, true, false).unwrap(),
+        Incompatible,
+        "K5"
+    );
+    assert!(
+        classify(true, true, false, Some("p"), false, true, false).is_err(),
+        "K6"
+    );
+    assert_eq!(
+        classify(true, false, false, Some("q"), false, true, false).unwrap(),
+        Incompatible,
+        "K7"
+    );
+    assert_eq!(
+        classify(false, false, false, None, false, true, true).unwrap(),
+        Live,
+        "K8"
+    );
+    assert_eq!(
+        classify(false, false, false, None, false, false, false).unwrap(),
+        Incompatible,
+        "K9"
+    );
+}
+
+#[test]
+fn pod_effect_fence_projection_decision_table_is_total() {
+    /* Effect-evidence cause/effect table. Causes: C1 none/all/partial of
+     * operation, owner, runtime, epoch, and expiry annotations; C2 numeric
+     * fields valid/invalid. Effects: E1 none remains legacy evidence; E2
+     * all valid fields reconstruct the exact neutral fence used by create,
+     * observe, and terminal removal; E3 partial or malformed evidence fails
+     * closed before adoption or deletion. */
+    assert_eq!(pod_effect_fence(None).unwrap(), None, "E1");
+
+    let fence =
+        pc::SandboxEffectFence::new("operation-1", "owner-1", "runtime-1", 7, 9_999).unwrap();
+    let complete = std::collections::BTreeMap::from([
+        (SANDBOX_EFFECT_ANNOTATION.into(), fence.operation_id.clone()),
+        (SANDBOX_EFFECT_OWNER_ANNOTATION.into(), fence.owner.clone()),
+        (
+            SANDBOX_EFFECT_RUNTIME_ANNOTATION.into(),
+            fence.runtime_incarnation.clone(),
+        ),
+        (
+            SANDBOX_EFFECT_EPOCH_ANNOTATION.into(),
+            fence.epoch.to_string(),
+        ),
+        (
+            SANDBOX_EFFECT_EXPIRY_ANNOTATION.into(),
+            fence.expires_at_unix_ms.to_string(),
+        ),
+    ]);
+    assert_eq!(
+        pod_effect_fence(Some(&complete)).unwrap(),
+        Some(fence),
+        "E2"
+    );
+
+    let mut partial = complete.clone();
+    partial.remove(SANDBOX_EFFECT_OWNER_ANNOTATION);
+    assert!(pod_effect_fence(Some(&partial)).is_err(), "E3 partial");
+    let mut malformed = complete;
+    malformed.insert(SANDBOX_EFFECT_EPOCH_ANNOTATION.into(), "invalid".into());
+    assert!(pod_effect_fence(Some(&malformed)).is_err(), "E3 malformed");
+}
+
+#[tokio::test]
+async fn realization_configuration_covers_every_immutable_kubernetes_input() {
+    /* Provider-configuration cause/effect table. Causes: C1 namespace and
+     * stable realization namespace; C2 direct/rendezvous/resident transport;
+     * C3 image-pull Secret list; C4 retained-volume policy; C5 GC owner.
+     * Effect E1 exact replay yields identical adoption identity; E2 changing
+     * any C1-C5 input changes the pure projection before apiserver I/O. The
+     * short-lived network capability is deliberately absent and represented
+     * by EgressRealizationIdentity's non-secret issuer revision instead. */
+    let base = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+    let replay = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+    assert_eq!(
+        base.realization_configuration().unwrap(),
+        replay.realization_configuration().unwrap(),
+        "E1"
+    );
+
+    let changed = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+        .with_rendezvous("127.0.0.1:7000".parse().unwrap())
+        .with_image_pull_secrets(["registry-auth".into()])
+        .with_continuation_volume(crate::K8sContinuationVolume {
+            storage_class_name: Some("fast".into()),
+            size: "20Gi".into(),
+        })
+        .with_owner(OwnerReference {
+            api_version: "v1".into(),
+            kind: "ConfigMap".into(),
+            name: "sandbox-owner".into(),
+            uid: "owner-uid".into(),
+            controller: Some(true),
+            block_owner_deletion: Some(false),
+        });
+    assert_ne!(
+        base.realization_configuration().unwrap(),
+        changed.realization_configuration().unwrap(),
+        "E2"
+    );
+}
+
+#[test]
+fn projected_cleanup_requires_attempt_owner_and_object_cas() {
+    /* Projected-cleanup cause/effect decision table.
+     * Causes: C0 K8s is compiled without Docker/Podman; C1 exact/different
+     * raw+label attempt; C2 exact/different Pod
+     * owner name+UID; C3 projected object UID/resourceVersion present/missing.
+     * Effects: E0 the shared attempt label remains available to K8s; E1
+     * authorize one UID+RV-preconditioned delete; E2 ignore an
+     * object outside this exact attempt/owner; E3 fail closed before DELETE.
+     * Rules: P0 C0=>E0 (this crate-level label reference is compile coverage);
+     * P1 exact(C1)+exact(C2)+complete(C3)=>E1; P2 different(C1)=>E2;
+     * P3 different(C2)=>E2; P4 exact(C1+C2)+missing(C3)=>E3. Pod absence is
+     * intentionally outside this kernel and delegates exclusively to GC.
+     */
+    let metadata = |attempt: &str, owner_uid: &str, uid: Option<&str>| ObjectMeta {
+        name: Some("awaken-session-1-cfg-0".into()),
+        uid: uid.map(str::to_owned),
+        resource_version: Some("rv-1".into()),
+        annotations: Some(std::collections::BTreeMap::from([(
+            SANDBOX_ATTEMPT_ANNOTATION.into(),
+            attempt.into(),
+        )])),
+        labels: Some(std::collections::BTreeMap::from([(
+            crate::SANDBOX_ATTEMPT_LABEL.into(),
+            k8s_attempt_label(attempt),
+        )])),
+        owner_references: Some(vec![OwnerReference {
+            api_version: "v1".into(),
+            kind: "Pod".into(),
+            name: "awaken-session-1".into(),
+            uid: owner_uid.into(),
+            controller: Some(true),
+            block_owner_deletion: Some(false),
+        }]),
+        ..Default::default()
+    };
+    let exact = metadata("attempt-1", "pod-uid-1", Some("content-uid-1"));
+    assert_eq!(
+        projected_content_delete_preconditions(
+            &exact,
+            "awaken-session-1",
+            "pod-uid-1",
+            "attempt-1",
+        )
+        .unwrap(),
+        Some(kube::api::Preconditions {
+            uid: Some("content-uid-1".into()),
+            resource_version: Some("rv-1".into()),
+        }),
+        "P1"
+    );
+    assert!(
+        projected_content_delete_preconditions(
+            &exact,
+            "awaken-session-1",
+            "pod-uid-1",
+            "attempt-2",
+        )
+        .unwrap()
+        .is_none(),
+        "P2"
+    );
+    assert!(
+        projected_content_delete_preconditions(
+            &exact,
+            "awaken-session-1",
+            "pod-uid-2",
+            "attempt-1",
+        )
+        .unwrap()
+        .is_none(),
+        "P3"
+    );
+    assert!(
+        projected_content_delete_preconditions(
+            &metadata("attempt-1", "pod-uid-1", None),
+            "awaken-session-1",
+            "pod-uid-1",
+            "attempt-1",
+        )
+        .is_err(),
+        "P4"
+    );
+}
+
+#[test]
+fn pod_observation_projects_only_api_facts_for_the_shared_decision() {
+    /* K8s observation-projection cause/effect table.
+     * Causes: C1 Pod UID/resourceVersion present/missing; C2 immutable
+     * fingerprint present/missing; C3 Pod creating/terminal/terminating.
+     * Effects: E1 emit exact incarnation+fingerprint facts and shared phase;
+     * E2 fail closed on incomplete API identity; E3 mark deletion-in-progress
+     * indeterminate, never unavailable. Rules: O1 complete(C1)+C2+C3=>E1;
+     * O2 missing(C1)=>E2; O3 terminating(C3)=>E3. The provider-neutral
+     * `sandbox_observation` tests own the later Ready/Unavailable decision.
+     */
+    let mut pod = Pod {
+        metadata: ObjectMeta {
+            name: Some("awaken-session-1".into()),
+            uid: Some("pod-uid-1".into()),
+            resource_version: Some("rv-1".into()),
+            annotations: Some(std::collections::BTreeMap::from([
+                (SANDBOX_ADOPTION_ANNOTATION.into(), "adoption-1".into()),
+                (
+                    SANDBOX_REALIZATION_ANNOTATION.into(),
+                    "fingerprint-1".into(),
+                ),
+            ])),
+            ..Default::default()
+        },
+        status: Some(k8s_openapi::api::core::v1::PodStatus {
+            phase: Some("Failed".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let terminal = observed_pod(&pod).expect("O1");
+    assert_eq!(terminal.incarnation.identity, "pod-uid-1", "O1");
+    assert_eq!(terminal.incarnation.version.as_deref(), Some("rv-1"), "O1");
+    assert_eq!(
+        terminal.adoption_fingerprint.as_deref(),
+        Some("adoption-1"),
+        "O1"
+    );
+    assert_eq!(terminal.fingerprint.as_deref(), Some("fingerprint-1"), "O1");
+    assert_eq!(terminal.phase, ExistingRealizationPhase::Terminal, "O1");
+
+    pod.metadata.uid = None;
+    assert!(observed_pod(&pod).is_err(), "O2");
+    pod.metadata.uid = Some("pod-uid-1".into());
+    pod.metadata.deletion_timestamp =
+        serde_json::from_str("\"2026-08-29T00:00:00Z\"").expect("valid Kubernetes timestamp");
+    assert_eq!(
+        observed_pod(&pod).unwrap().phase,
+        ExistingRealizationPhase::Indeterminate,
+        "O3"
+    );
+}
 
 #[tokio::test]
 async fn labels_without_live_policy_evidence_never_create_a_capability() {
@@ -621,6 +995,7 @@ fn plan_with_memory(mounts: Vec<crate::MemoryMount>) -> ContainerPlan {
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: crate::NetworkMode::Open,
+        egress_identity: Default::default(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits {
             memory_bytes: Some(1 << 30),
@@ -641,10 +1016,15 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
     /* Memory projection cause/effect decision table — KM1:
      * C1 the canonical MemoryMounter produced a bounded snapshot; C2 access is
      * read-only or read-write; C3 the Pod has no Resource-authority network
-     * credential. C1+C2+C3 => E1 one emptyDir per mount + one runtime-only
-     * projector, E2 Agent access matches C2, E3 no memoryd/second database,
-     * ConfigMap size ceiling, or network client exists in the Pod. Snapshot/harvest failures are covered
-     * by the provider lifecycle table and fail before success is published.
+     * credential; C4 projection is delayed, completed with the same effect, or
+     * carries foreign effect evidence. C1+C2+C3 => E1 one emptyDir per mount +
+     * one runtime-only projector, E2 Agent access matches C2, E3 no memoryd,
+     * second database, ConfigMap size ceiling, or network client exists in the
+     * Pod. C4 delayed => E4 Agent waits without observing the empty volume;
+     * same-effect completion => E5 replay does not clear/project twice; foreign
+     * evidence => E6 fail closed before Memory mutation. Snapshot/harvest
+     * failures are covered by the provider lifecycle table and fail before
+     * success is published.
      */
     let plan = plan_with_memory(vec![
         crate::MemoryMount {
@@ -660,7 +1040,19 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
             snapshot_tar: empty_memory_tar(),
         },
     ]);
-    let pod = build_pod("run-1", &plan, &None, None, &[]);
+    let effect_fence =
+        ContainerEffectFence::new("memory-projection-1", "owner-1", "runtime-1", 1, u64::MAX)
+            .unwrap();
+    let pod = build_pod_with_continuation(
+        "run-1",
+        &plan,
+        &None,
+        None,
+        &[],
+        None,
+        Some(&effect_fence),
+        None,
+    );
     let spec = pod.spec.unwrap();
 
     // Agent + Memory projector + isolated input projector; no second Memory implementation.
@@ -668,14 +1060,21 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
     assert_eq!(spec.containers[0].name, "agent");
     assert_eq!(spec.containers[1].name, memory::PROJECTOR);
     assert!(spec.init_containers.is_none());
-    // One emptyDir per store, the three writable-rootfs dirs, and the live
-    // read-only input tree. Large snapshots are streamed, not ConfigMaps.
+    // One emptyDir per store, the three writable-rootfs dirs, the live
+    // read-only input tree, and the projection-completion rendezvous. Large
+    // snapshots are streamed, not ConfigMaps.
     let volumes = spec.volumes.as_ref().unwrap();
-    assert_eq!(volumes.len(), 2 + 3 + 1);
+    assert_eq!(volumes.len(), 2 + 3 + 1 + 1);
     assert!(volumes.iter().all(|volume| volume.empty_dir.is_some()));
-    // the agent mounts both memory volumes + writable dirs + live inputs.
+    // The agent mounts both memory volumes + writable dirs + live inputs +
+    // the read-only projection-completion rendezvous.
     let agent = &spec.containers[0];
-    assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3 + 1);
+    assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3 + 1 + 1);
+    assert_eq!(
+        agent.command.as_ref().unwrap(),
+        &memory::gated_agent_command(&plan.command, &effect_fence),
+        "KM1/E4"
+    );
     let mounts = agent.volume_mounts.as_ref().unwrap();
     assert_eq!(
         mounts
@@ -701,8 +1100,19 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
     );
     assert_eq!(
         spec.containers[1].volume_mounts.as_ref().unwrap().len(),
-        2,
-        "one projector owns only the writable sides of both Memory volumes"
+        3,
+        "one projector owns the writable Memory sides and completion marker"
+    );
+    assert_eq!(
+        spec.containers[1]
+            .env
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|env| env.name == memory::PROJECTION_FENCE_ENV)
+            .and_then(|env| env.value.as_deref()),
+        Some(memory::projection_fence_value(&effect_fence).as_str()),
+        "KM1/E5-E6"
     );
 }
 
@@ -981,12 +1391,15 @@ fn build_pod_injects_the_reverse_dial_rendezvous() {
 #[tokio::test]
 async fn accept_reverse_receives_the_pods_outbound_dial() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    // Bind an ephemeral rendezvous; a stand-in "pod" dials it and the host accepts.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // Cause/effect rule: C1 an ephemeral listener stays bound under one owner;
+    // C2 a stand-in Pod dials its exact resolved address. R1 C1+C2 accepts the
+    // bytes on that same listener without a drop/rebind port-allocation race.
+    let listener = crate::net::ReverseListen::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener); // free the port for accept_reverse to bind
 
-    let host = tokio::spawn(async move { channel::accept_reverse(addr).await });
+    let host = tokio::spawn(async move { accept_reverse_on(listener).await });
     // Give the host a moment to bind, then dial like an egress-fenced pod would.
     let mut pod = loop {
         match tokio::net::TcpStream::connect(addr).await {

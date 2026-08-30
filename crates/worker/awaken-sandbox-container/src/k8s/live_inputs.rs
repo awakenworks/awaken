@@ -187,6 +187,7 @@ mod tests {
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            egress_identity: Default::default(),
             requests: pc::ResourceRequests::default(),
             limits: Default::default(),
             filesystem_continuity: pc::FilesystemContinuity::Retained,

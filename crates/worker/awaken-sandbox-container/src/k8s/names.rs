@@ -77,6 +77,16 @@ pub(super) fn continuation_claim_name(id: &str) -> String {
     format!("awc-{id}")
 }
 
+/// Project the canonical retained claim from a managed Pod locator. This is
+/// the inverse owned by the same module as the forward Pod/claim projections;
+/// callers must not reconstruct either prefix independently.
+pub(super) fn continuation_claim_for_pod(pod_name: &str) -> Result<String, RuntimeError> {
+    let runtime_id = pod_name
+        .strip_prefix("awaken-")
+        .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
+    Ok(continuation_claim_name(runtime_id))
+}
+
 /// Deterministic ConfigMap name for the i-th inline-content mount.
 pub(super) fn configmap_name(id: &str, i: usize) -> String {
     format!("{}-cfg-{i}", pod_name(id))
@@ -134,12 +144,15 @@ mod tests {
          * Session scope contains `_`/`:`; C2 two scopes would collide under lossy
          * replacement; C3 a scope contains uppercase or Unicode; C4 every derived
          * resource/label name and the maximum index must fit Kubernetes limits;
-         * C5 scope is empty or its reversible form is overlong. Effects: E1 emit a
+         * C5 scope is empty or its reversible form is overlong; C6 a claim is
+         * projected back from a valid/foreign Pod identity. Effects: E1 emit a
          * deterministic RFC-1123-safe identity; E2 round-trip every short scope
          * exactly, proving injectivity; E3 use one Pod identity for all names and
          * keep them within 63/253 bytes; E4 reject empty scope; E5 map arbitrary
-         * long scopes to a full collision-resistant digest. Rules: N1 C1|C3=>E1+E2;
-         * N2 C1+C2=>E2; N3 C1+C4=>E3; N4 empty C5=>E4; N5 long C5=>E3+E5.
+         * long scopes to a full collision-resistant digest; E6 derive the exact
+         * canonical claim from a managed Pod and reject every foreign prefix.
+         * Rules: N1 C1|C3=>E1+E2; N2 C1+C2=>E2; N3 C1+C4=>E3; N4 empty
+         * C5=>E4; N5 long C5=>E3+E5; N6 managed/foreign C6=>E6.
          */
         let session = "sesn_fnv1a64:a13b83a56e2f77d0";
         let runtime_id = k8s_runtime_id(session).unwrap();
@@ -173,6 +186,15 @@ mod tests {
             "N3 Secret: {secret}"
         );
         assert_eq!(cfg_owner_label(&runtime_id), pod, "N3 cleanup owner");
+        assert_eq!(
+            continuation_claim_for_pod(&pod).unwrap(),
+            claim,
+            "N6 exact inverse"
+        );
+        assert!(
+            continuation_claim_for_pod("foreign-session").is_err(),
+            "N6 foreign prefix"
+        );
 
         assert!(k8s_runtime_id("").is_err(), "N4");
 

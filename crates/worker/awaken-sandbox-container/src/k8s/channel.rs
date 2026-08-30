@@ -117,11 +117,17 @@ where
 pub(super) async fn accept_reverse(
     addr: std::net::SocketAddr,
 ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
-    use awaken_connection::ListenSide as _;
-
     let listen = crate::net::ReverseListen::bind(addr)
         .await
         .map_err(super::backend)?;
+    accept_reverse_on(listen).await
+}
+
+pub(super) async fn accept_reverse_on(
+    listen: crate::net::ReverseListen,
+) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+    use awaken_connection::ListenSide as _;
+
     let channel = listen.accept().await.map_err(super::backend)?;
     Ok(Box::new(channel))
 }
