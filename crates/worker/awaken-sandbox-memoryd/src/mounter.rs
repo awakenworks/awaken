@@ -216,10 +216,12 @@ impl MemoryMounter for MemoryStoreMounter {
 
     async fn reconcile_recovered_copy(
         &self,
-        store_id: &str,
+        operation_reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
         files: &[(String, Vec<u8>)],
         access: MountAccess,
     ) -> Result<(), SandboxError> {
+        evidence.validate()?;
         if access != MountAccess::ReadWrite {
             return Ok(());
         }
@@ -248,18 +250,16 @@ impl MemoryMounter for MemoryStoreMounter {
                 }
                 std::fs::write(destination, bytes).map_err(sandbox_err)?;
             }
-            let mut snapshot = copy::snapshot(&*self.fs, store_id)
-                .await
+            let mut snapshot = copy::CopySnapshot::from_materialization_heads(&evidence.heads)
                 .map_err(sandbox_err)?;
-            let report = copy::harvest(&*self.fs, store_id, &root, &mut snapshot)
+            let report = copy::harvest(&*self.fs, operation_reference, &root, &mut snapshot)
                 .await
                 .map_err(sandbox_err)?;
             if !report.conflicts.is_empty() {
-                tracing::warn!(
-                    store = %store_id,
-                    conflicts = ?report.conflicts,
-                    "recovered memory copy preserved concurrent durable heads"
-                );
+                return Err(sandbox_err(format!(
+                    "recovered Memory copy preserved {} concurrent durable head conflict(s)",
+                    report.conflicts.len()
+                )));
             }
             Ok(())
         }
@@ -395,13 +395,28 @@ mod tests {
 
     #[tokio::test]
     async fn recovered_copy_reconciles_surviving_files_without_a_live_guard() {
+        // Recovered-copy cause/effect rule M1: exact persisted base A + surviving
+        // edits B authorizes the same CAS harvest as a live CopyMount; no fresh
+        // snapshot may replace A at recovery time, and successful writes become
+        // the only durable heads before the Sandbox can be removed.
         let durable = Arc::new(VolatileMemoryRepository::new());
-        durable.create("s", "/note.md", "before").await.unwrap();
+        let original = durable.create("s", "/note.md", "before").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable.clone());
+        let evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "s",
+            "/workspace/memory",
+            vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                path: original.path,
+                id: original.id,
+                content_sha256: original.content_sha256,
+            }],
+        )
+        .unwrap();
 
         mounter
             .reconcile_recovered_copy(
                 "s",
+                &evidence,
                 &[
                     ("note.md".into(), b"after".to_vec()),
                     ("nested/new.md".into(), b"new".to_vec()),

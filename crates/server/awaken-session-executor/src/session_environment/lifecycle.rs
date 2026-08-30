@@ -7,7 +7,7 @@ use super::environment::{EnvironmentQuiescenceProof, EnvironmentStopProof};
 use super::session_hand::HandStopProof;
 
 impl SessionEnvironment {
-    pub(super) fn sandbox(&self) -> &dyn pc::Sandbox {
+    pub(crate) fn sandbox(&self) -> &dyn pc::Sandbox {
         match self {
             Self::Workdir(sandbox) => sandbox.as_ref(),
             Self::Namespace { sandbox, .. } => sandbox.as_ref(),

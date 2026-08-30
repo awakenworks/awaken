@@ -167,7 +167,8 @@ pub trait MemoryMounter: Send + Sync {
     /// conflict-safe durable-head rules as ordinary copy teardown.
     async fn reconcile_recovered_copy(
         &self,
-        _store_id: &str,
+        _operation_reference: &str,
+        _evidence: &MemoryMaterializationEvidence,
         _files: &[(String, Vec<u8>)],
         _access: MountAccess,
     ) -> Result<(), SandboxError> {
