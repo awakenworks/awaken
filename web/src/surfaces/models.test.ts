@@ -6,6 +6,7 @@ import {
   providerConfigurationDefaults,
   providerDraftDefaults,
   credentialReusableForProvider,
+  providerModelCountLabel,
 } from "./provider-connection-panel";
 import { visibleAgents } from "../lib/visible-agents";
 
@@ -99,6 +100,14 @@ describe("provider credential compatibility", () => {
     expect(credentialReusableForProvider(credential("oauth"), openai)).toBe(false);
     expect(credentialReusableForProvider(credential("vault", "anthropic"), openai)).toBe(false);
     expect(credentialReusableForProvider(credential("vault", null), openai)).toBe(false);
+  });
+});
+
+describe("provider model count copy", () => {
+  it("uses natural singular and plural labels", () => {
+    expect(providerModelCountLabel(1, "en")).toBe("1 model");
+    expect(providerModelCountLabel(3, "en")).toBe("3 models");
+    expect(providerModelCountLabel(3, "zh")).toBe("3 个模型");
   });
 });
 

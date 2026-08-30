@@ -8,6 +8,7 @@ import {
 import type { SessionEvent } from "./api/types";
 import {
   gateManagedSessionAdmissionWhileSending,
+  isInitialManagedSessionPreparation,
   mergeCommittedSessionCache,
   reconcileSessionSendResponse,
   sessionProjectionErrorKey,
@@ -163,5 +164,29 @@ describe("Session receipt-to-query projection decision table", () => {
       canInterrupt: false,
     });
     expect(gateManagedSessionAdmissionWhileSending(projected, false)).toBe(projected);
+  });
+
+  /**
+   * Cause/effect table for the one public-state ambiguity: both an initial
+   * worker preparation and recovery are projected as `rescheduling`. Only a
+   * healthy, authoritatively loaded, empty history with an unknown Event phase
+   * proves the former. Every missing or contradictory fact stays denied.
+   */
+  it("opens only a proven-empty initial worker preparation", () => {
+    const unknown = projectManagedSessionRuntime([]);
+    const running = { ...unknown, phase: "running" as const };
+
+    expect(isInitialManagedSessionPreparation(true, 0, unknown, "rescheduling"))
+      .toBe(true);
+    expect(isInitialManagedSessionPreparation(false, 0, unknown, "rescheduling"))
+      .toBe(false);
+    expect(isInitialManagedSessionPreparation(true, 1, unknown, "rescheduling"))
+      .toBe(false);
+    expect(isInitialManagedSessionPreparation(true, 0, running, "rescheduling"))
+      .toBe(false);
+    expect(isInitialManagedSessionPreparation(true, 0, unknown, "idle"))
+      .toBe(false);
+    expect(isInitialManagedSessionPreparation(true, 0, unknown, undefined))
+      .toBe(false);
   });
 });

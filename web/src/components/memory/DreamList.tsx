@@ -5,12 +5,14 @@ import type { DreamPage, DreamStatus } from "../../lib/api/types";
 import { api, ws } from "../../lib/api/client";
 import { dreamMemoryStoreId, dreamSessionIds } from "../../lib/dreams";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, EmptyState, Pill, Segmented, SkeletonRows, TextField } from "../ui";
+import { Button, Card, EmptyState, Pill, Segmented, SkeletonRows, TechnicalId, TextField } from "../ui";
 import DreamCreateModal from "./DreamCreateModal";
+import { dateTimeLabel, identifierLabel, statusLabel } from "../../lib/presentation";
 
 export function DreamStatusPill({ status }: { status: DreamStatus }) {
+  const app = useApp();
   const tone = status === "completed" ? "ok" : status === "failed" ? "danger" : status === "canceled" ? "neutral" : status === "running" ? "agent" : "info";
-  return <Pill tone={tone} dot={status === "running"}>{status}</Pill>;
+  return <Pill tone={tone} dot={status === "running"}>{statusLabel(status, app.locale)}</Pill>;
 }
 
 export default function DreamList({ storeId }: { storeId?: string }) {
@@ -58,15 +60,18 @@ export default function DreamList({ storeId }: { storeId?: string }) {
       <TextField type="datetime-local" label={app.t("Created before", "创建早于")} value={createdBefore} onChange={(event) => setCreatedBefore(event.target.value)} />
       {(createdAfter || createdBefore) && <Button onClick={() => { setCreatedAfter(""); setCreatedBefore(""); }}>{app.t("Clear dates", "清除时间")}</Button>}
     </div>
-    <Card style={{ padding: 0, overflow: "hidden" }}>
+    <Card className="responsive-table-card" style={{ padding: 0, overflow: "hidden" }}>
       <div className="grid-scroll"><table className="table">
         <thead><tr><th>Dream</th><th>{app.t("Status", "状态")}</th><th>{app.t("Source", "来源")}</th><th>{app.t("Sessions", "会话")}</th><th>{app.t("Model", "模型")}</th><th>{app.t("Created", "创建时间")}</th><th>{app.t("Output", "输出")}</th></tr></thead>
         {dreams.isLoading ? <SkeletonRows rows={4} cols={7} /> : <tbody>
           {rows.map((dream) => <tr key={dream.id} data-click="true" onClick={() => nav(`/w/${wsId}/memory/dreams/${dream.id}`)}>
-            <td className="mono">{dream.id}</td><td><DreamStatusPill status={dream.status} /></td>
-            <td className="mono mut">{dreamMemoryStoreId(dream) ?? "—"}</td><td>{dreamSessionIds(dream).length}</td>
-            <td className="mono">{dream.model.id}</td><td className="mut">{new Date(dream.created_at).toLocaleString()}</td>
-            <td className="mono mut">{dream.outputs[0]?.memory_store_id ?? "—"}</td>
+            <td data-label="Dream"><strong>{app.t("Dream run", "Dream 运行")}</strong><TechnicalId value={dream.id} /></td>
+            <td data-label={app.t("Status", "状态")}><DreamStatusPill status={dream.status} /></td>
+            <td data-label={app.t("Source", "来源")}>{dreamMemoryStoreId(dream) ? <>{app.t("Memory Store", "记忆库")}<TechnicalId value={dreamMemoryStoreId(dream)!} /></> : "—"}</td>
+            <td data-label={app.t("Sessions", "会话")}>{dreamSessionIds(dream).length}</td>
+            <td data-label={app.t("Model", "模型")}>{identifierLabel(dream.model.id)}</td>
+            <td data-label={app.t("Created", "创建时间")} className="mut">{dateTimeLabel(dream.created_at, app.locale)}</td>
+            <td data-label={app.t("Output", "输出")}>{dream.outputs[0]?.memory_store_id ? <>{app.t("Memory Store", "记忆库")}<TechnicalId value={dream.outputs[0].memory_store_id} /></> : "—"}</td>
           </tr>)}
           {rows.length === 0 && <tr><td colSpan={7}><EmptyState title={app.t("No Dreams yet", "还没有 Dream")} hint={app.t("Start one from reviewed Sessions and a source Memory Store.", "从已检查的会话和来源记忆库启动一次 Dream。")}/></td></tr>}
         </tbody>}

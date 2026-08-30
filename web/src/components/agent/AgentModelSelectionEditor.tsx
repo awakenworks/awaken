@@ -1,6 +1,13 @@
 import type { AgentConfig, ModelSelection, RuntimeCap } from "../../lib/api/types";
-import { acpModelChoices, availableAcpRuntimes } from "../../lib/agent-model-selection";
+import {
+  acpModelChoices,
+  defaultSelectionForRuntime,
+  executionRuntimeId,
+} from "../../lib/agent-model-selection";
 import { useApp } from "../../lib/app-state";
+import { runtimeStatus } from "../../lib/readiness";
+import { Link } from "react-router";
+import RuntimeCapabilitySummary from "./RuntimeCapabilitySummary";
 
 interface Props {
   model: AgentConfig["model"];
@@ -22,6 +29,14 @@ function selectionValue(model: AgentConfig["model"]): string {
   return JSON.stringify(model);
 }
 
+function harnessModelValue(model: AgentConfig["model"]): string {
+  if (typeof model !== "object" || !("mode" in model)
+    || (model.mode !== "backend_default" && model.mode !== "backend_exact")) return "";
+  return JSON.stringify(model.mode === "backend_default"
+    ? { mode: model.mode, backend_ref: model.backend_ref }
+    : { mode: model.mode, backend_ref: model.backend_ref, model_ref: model.model_ref });
+}
+
 export default function AgentModelSelectionEditor({
   model,
   readyModels,
@@ -34,15 +49,16 @@ export default function AgentModelSelectionEditor({
   const current = providerModelId(model);
   const providerModels =
     current && !readyModels.includes(current) ? [current, ...readyModels] : readyModels;
-  const availableAcp = availableAcpRuntimes(runtimes);
-  const choices = acpModelChoices(runtimes);
+  const runtimeId = executionRuntimeId(model);
+  const selectedRuntime = runtimes.find((candidate) => candidate.id === runtimeId);
+  const choices = acpModelChoices(selectedRuntime ? [selectedRuntime] : []);
   const selected =
     typeof model === "object" && "mode" in model
       && (model.mode === "backend_default" || model.mode === "backend_exact")
       ? model
       : null;
   const runtime = selected
-    ? availableAcp.find((candidate) => candidate.id === selected.backend_ref)
+    ? runtimes.find((candidate) => candidate.id === selected.backend_ref)
     : undefined;
   const setConfiguration = (
     configuration: NonNullable<
@@ -55,12 +71,62 @@ export default function AgentModelSelectionEditor({
   return (
     <>
       <label className="row" style={{ justifyContent: "space-between" }}>
-        <span>{app.t("Model", "模型")}</span>
-        <button className="manage-link" onClick={onManage}>
-          {app.t("Manage ↗", "管理 ↗")}
-        </button>
+        <span>{app.t("Execution runtime", "执行 Runtime")}</span>
+        {runtimeId === "awaken" ? (
+          <button className="manage-link" onClick={onManage}>
+            {app.t("Manage models ↗", "管理模型 ↗")}
+          </button>
+        ) : (
+          <Link className="manage-link" to={`/w/${encodeURIComponent(app.workspaceId)}/protocols#protocol-acp`}>
+            {app.t("ACP setup ↗", "ACP 设置 ↗")}
+          </Link>
+        )}
       </label>
-      {providerModels.length > 0 || availableAcp.length > 0 ? (
+      <select
+        className="input"
+        aria-label={app.t("Execution runtime", "执行 Runtime")}
+        value={runtimeId}
+        onChange={(event) => {
+          if (event.target.value === "awaken") {
+            onChange({ mode: "auto" });
+            return;
+          }
+          const next = runtimes.find((candidate) => candidate.id === event.target.value);
+          const selection = next && defaultSelectionForRuntime(next);
+          if (selection) onChange(selection);
+        }}
+      >
+        <option value="awaken">{app.t("Native Awaken", "Native Awaken")}</option>
+        {runtimes.filter((candidate) => candidate.kind === "acp").map((candidate) => {
+          const status = runtimeStatus(candidate);
+          const suffix = status === "ready"
+            ? app.t("ready", "就绪")
+            : status === "login_required"
+              ? app.t("login required", "需要登录")
+              : app.t("not detected", "未检测到");
+          return (
+            <option key={candidate.id} value={candidate.id} disabled={status !== "ready"}>
+              {candidate.label} · ACP · {suffix}
+            </option>
+          );
+        })}
+      </select>
+      <span className="mut" style={{ fontSize: 12 }}>
+        {runtimeId === "awaken"
+          ? app.t(
+              "Awaken runs the model loop directly. Environment and governance stay the same when you switch Harnesses.",
+              "Awaken 直接运行模型循环；切换 Harness 时，Environment 与治理能力保持不变。",
+            )
+          : app.t(
+              "The selected ACP Harness runs the model loop inside the same Awaken Session and Environment.",
+              "所选 ACP Harness 在同一个 Awaken Session 与 Environment 中运行模型循环。",
+            )}
+      </span>
+
+      <label style={{ marginTop: 12 }}>
+        {runtimeId === "awaken" ? app.t("Model", "模型") : app.t("Harness model", "Harness 模型")}
+      </label>
+      {runtimeId === "awaken" && (providerModels.length > 0) ? (
         <select
           className="input mono"
           aria-label={app.t("Model", "模型")}
@@ -76,18 +142,31 @@ export default function AgentModelSelectionEditor({
               {id}{!readyModels.includes(id) ? app.t("  ⚠ no credential", "  ⚠ 无凭证") : ""}
             </option>
           ))}
+        </select>
+      ) : runtimeId !== "awaken" && choices.length > 0 ? (
+        <select
+          className="input mono"
+          aria-label={app.t("Harness model", "Harness 模型")}
+          value={harnessModelValue(model)}
+          onChange={(event) => {
+            const next = JSON.parse(event.target.value) as Extract<ModelSelection, { mode: "backend_default" | "backend_exact" }>;
+            onChange(selected?.configuration ? { ...next, configuration: selected.configuration } : next);
+          }}
+        >
           {choices.map((choice) => (
-            <option key={choice.key} value={selectionValue(choice.selection)}>
-              {choice.label}
-            </option>
+            <option key={choice.key} value={harnessModelValue(choice.selection)}>{choice.label}</option>
           ))}
         </select>
       ) : (
         <div className="banner gate">
           <span>◌</span>
           <span>{app.t(
-            "No runnable model is available. Open Models, connect a provider, and verify a real response before continuing.",
-            "没有可运行模型。请打开“模型”，连接供应商并验证一次真实响应后继续。",
+            runtimeId === "awaken"
+              ? "No runnable model is available. Open Models, connect a provider, and verify a real response before continuing."
+              : "This ACP Harness is not ready. Install it, sign in, and refresh its capability probe.",
+            runtimeId === "awaken"
+              ? "没有可运行模型。请打开“模型”，连接供应商并验证一次真实响应后继续。"
+              : "该 ACP Harness 尚未就绪。请完成安装和登录，再刷新能力探测。",
           )}</span>
         </div>
       )}
@@ -145,6 +224,7 @@ export default function AgentModelSelectionEditor({
           )}
         </span>
       )}
+      <RuntimeCapabilitySummary model={model} runtime={selectedRuntime} />
     </>
   );
 }

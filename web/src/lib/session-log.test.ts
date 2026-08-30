@@ -5,6 +5,7 @@ import {
   sessionErrorText,
   spanDurationMs,
   textOf,
+  toolDiagnostics,
   traceSpans,
 } from "./session-log";
 
@@ -57,6 +58,26 @@ describe("Session presentation projections", () => {
     expect(spans[0]?.detail).toEqual({ q: "SF" });
     expect(spans[1]?.error).toBe(true);
     expect(spans[1]?.durationMs).toBe(250);
+  });
+
+  it("aggregates tool outcomes only from exact committed result pairs", () => {
+    // Cause graph: C1 repeated tool calls, C2 success/failure/pending result,
+    // C3 valid/invalid anchors. Effects: E1 exact counts, E2 failures stay
+    // distinct from pending, E3 median uses only valid completed durations.
+    const rows = toolDiagnostics([
+      ev({ id: "a1", type: "agent.tool_use", name: "search", processed_at: "2020-01-01T00:00:00.000Z" }),
+      ev({ id: "a2", type: "agent.tool_use", name: "search", processed_at: "2020-01-01T00:00:01.000Z" }),
+      ev({ id: "a3", type: "agent.tool_use", name: "search", processed_at: "bad" }),
+      ev({ id: "a4", type: "agent.custom_tool_use", name: "publish", processed_at: "2020-01-01T00:00:03.000Z" }),
+      ev({ id: "r1", type: "agent.tool_result", tool_use_id: "a1", processed_at: "2020-01-01T00:00:00.100Z" }),
+      ev({ id: "r2", type: "agent.tool_result", tool_use_id: "a2", is_error: true, processed_at: "2020-01-01T00:00:01.300Z" }),
+      ev({ id: "r3", type: "agent.tool_result", tool_use_id: "a3", processed_at: "2020-01-01T00:00:02.000Z" }),
+      ev({ id: "orphan", type: "agent.tool_result", tool_use_id: "missing", is_error: true }),
+    ]);
+    expect(rows).toEqual([
+      { name: "publish", calls: 1, completed: 0, failures: 0, medianDurationMs: undefined },
+      { name: "search", calls: 3, completed: 3, failures: 1, medianDurationMs: 200 },
+    ]);
   });
 
   it("turns provider quota failures into an actionable message", () => {

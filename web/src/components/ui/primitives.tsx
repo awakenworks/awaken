@@ -91,6 +91,16 @@ export function EmptyState({ title, hint, action }: { title: string; hint?: stri
   );
 }
 
+export function TechnicalId({ value }: { value: string }) {
+  const app = useApp();
+  return (
+    <details className="technical-id" onClick={(event) => event.stopPropagation()}>
+      <summary>{app.t("Technical ID", "技术 ID")}</summary>
+      <code>{value}</code>
+    </details>
+  );
+}
+
 // ---- skeletons ----
 export function Skeleton({ width = "100%", height = 12 }: { width?: number | string; height?: number }) {
   return <SharedSkeleton className="skeleton" width={width} height={height} />;

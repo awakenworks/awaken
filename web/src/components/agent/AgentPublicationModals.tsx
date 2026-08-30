@@ -5,7 +5,7 @@ import ConfigDiff from "./ConfigDiff";
 import PublicationSnapshotSummary from "./PublicationSnapshotSummary";
 
 export interface QuickRunIntent {
-  environmentId?: string;
+  environmentId: string;
   task: string;
 }
 
@@ -73,7 +73,7 @@ export default function AgentPublicationModals({
             config={config}
           />
           <Card style={{ marginTop: 12 }}>
-            <div><strong>{app.t("Environment", "Environment")}</strong> · <code>{quickRunIntent.environmentId ?? "default"}</code></div>
+            <div><strong>{app.t("Environment", "Environment")}</strong> · <code>{quickRunIntent.environmentId}</code></div>
             <div style={{ marginTop: 8 }}><strong>{app.t("First task", "首次任务")}</strong></div>
             <p style={{ whiteSpace: "pre-wrap" }}>{quickRunIntent.task}</p>
           </Card>

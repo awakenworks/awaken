@@ -1,5 +1,5 @@
 // Presentational wrapper over a GateState: renders a skeleton while loading, the
-// "designed but not mounted" banner when absent, an error line on other failures,
+// a user-facing capability state when absent, an error line on other failures,
 // and delegates to `children(data)` when the face is live. Surfaces stay declarative:
 //   const g = useGate<Foo>("/v1/foo");
 //   return <Gate state={g} endpoint="/v1/foo">{(foo) => <FooView data={foo} />}</Gate>;
@@ -11,15 +11,17 @@ import { Skeleton } from "../ui";
 
 export default function Gate<T>({
   state,
-  endpoint,
+  endpoint: _endpoint,
   note,
+  action,
   children,
   loading,
 }: {
   state: GateState<T>;
-  /** Human-readable endpoint shown in the gate banner. */
+  /** Endpoint used by the caller to identify this capability. Never shown. */
   endpoint: string;
   note?: string;
+  action?: ReactNode;
   children: (data: T) => ReactNode;
   /** Custom loading node (default: a skeleton). */
   loading?: ReactNode;
@@ -34,12 +36,11 @@ export default function Gate<T>({
           <span>◌</span>
           <span>
             {app.t(
-              "This surface is designed but its backend face is not mounted yet: ",
-              "该界面已设计,后端面尚未就绪:",
+              "This optional capability is not available in this deployment.",
+              "当前部署未提供这项可选能力。",
             )}
-            <code>{endpoint}</code>
-            {note ? ` — ${note}` : null}{" "}
-            {app.t("See design/web-ui.md §7 for the roadmap.", "路线见 design/web-ui.md §7。")}
+            {note ? <> {note}</> : null}
+            {action ? <span className="row" style={{ marginTop: 10 }}>{action}</span> : null}
           </span>
         </div>
       );

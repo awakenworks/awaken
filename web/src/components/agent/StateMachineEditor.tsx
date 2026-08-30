@@ -185,7 +185,7 @@ function MachineEditor({
     <Card style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
       <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
         <div>
-          <div style={{ fontWeight: 650, fontSize: 13 }}>{app.t("1 · Instance & lifetime", "1 · 实例与生命周期")}</div>
+          <div style={{ fontWeight: 650, fontSize: 13 }}>{app.t("1 · Instance, lifetime & concurrency", "1 · 实例、生命周期与并发")}</div>
           <div className="mut" style={{ fontSize: 11, marginTop: 2 }}>
             {machine.scope === "run"
               ? app.t("Reset when a new run starts", "新 run 启动时重置")
@@ -206,7 +206,7 @@ function MachineEditor({
           </select>
         </Labeled>
         <Labeled label={app.t("Instance key", "实例 key")}>
-          <input {...inp} style={{ ...inp.style, width: 135 }} placeholder="{path}" value={machine.key ?? ""} onChange={(e) => onChange({ ...machine, key: e.target.value || undefined })} />
+          <input {...inp} style={{ ...inp.style, width: 135 }} placeholder="{file_path}" value={machine.key ?? ""} onChange={(e) => onChange({ ...machine, key: e.target.value || undefined })} />
         </Labeled>
         <Labeled label={app.t("Normalize", "标准化")}>
           <select className="input mono" style={{ height: 30 }} value={machine.key_normalizer ?? "none"} onChange={(e) => onChange({ ...machine, key_normalizer: e.target.value as SmMachine["key_normalizer"] })}>
@@ -226,6 +226,19 @@ function MachineEditor({
           <input type="checkbox" checked={machine.strict ?? false} onChange={(e) => onChange({ ...machine, strict: e.target.checked || undefined })} />
           {app.t("deny unmatched tools", "拒绝未声明工具")}
         </label>
+      </div>
+
+      <div className="mut" role="note" style={{ fontSize: 11, lineHeight: 1.5, padding: "8px 10px", borderRadius: 8, background: "var(--soft)" }}>
+        <strong style={{ color: "var(--fg)" }}>{app.t("Concurrency boundary", "并发边界")}: </strong>
+        {machine.key
+          ? app.t(
+              `Matching calls with the same rendered ${machine.key} run serially; different keys may run in parallel. Edit Scope and Instance key above to change that boundary.`,
+              `渲染后 ${machine.key} 相同的匹配调用串行执行，不同 key 可并行执行。可直接编辑上方的作用域和实例 key 来调整边界。`,
+            )
+          : app.t(
+              "This machine has one shared instance, so all matching calls run serially. Set an Instance key to allow independent resources to run in parallel.",
+              "此状态机只有一个共享实例，因此所有匹配调用均串行执行。设置实例 key 后，不同资源即可并行执行。",
+            )}
       </div>
 
       <div style={{ background: "var(--surface)", borderRadius: 8, boxShadow: "inset 0 0 0 1px var(--line)", padding: 6 }}>
@@ -292,7 +305,7 @@ function TransitionRow({
           {...inp}
           className="input mono"
           style={{ ...inp.style, flex: 1, minWidth: 190 }}
-          placeholder={kind === "tool" ? 'write(path ~ "*")' : "step.before_inference"}
+          placeholder={kind === "tool" ? 'write(file_path ~ "*")' : "step.before_inference"}
           value={triggerText(transition.on)}
           onChange={(e) => onChange({ ...transition, on: kind === "tool" ? e.target.value : { event: e.target.value } })}
         />

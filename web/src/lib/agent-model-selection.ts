@@ -6,6 +6,21 @@ export interface AcpModelChoice {
   selection: Extract<ModelSelection, { mode: "backend_default" | "backend_exact" }>;
 }
 
+export function isAcpModelSelection(model: ModelSelection | { id: string } | string): boolean {
+  return typeof model === "object" && "mode" in model
+    && (model.mode === "backend_default" || model.mode === "backend_exact");
+}
+
+export function executionRuntimeId(model: ModelSelection | { id: string } | string): string {
+  return isAcpModelSelection(model)
+    ? (model as Extract<ModelSelection, { mode: "backend_default" | "backend_exact" }>).backend_ref
+    : "awaken";
+}
+
+export function defaultSelectionForRuntime(runtime: RuntimeCap): AcpModelChoice["selection"] | null {
+  return acpModelChoices([runtime])[0]?.selection ?? null;
+}
+
 export function availableAcpRuntimes(runtimes: RuntimeCap[]): RuntimeCap[] {
   return runtimes.filter(
     (runtime) => runtime.kind === "acp" && runtime.local?.login_state === "available",

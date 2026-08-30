@@ -11,7 +11,8 @@ import { useApp } from "../lib/app-state";
 import { WORKSPACE_JOURNEY, hasSurface, navPath } from "../lib/navigation/paths";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import { StatusPill } from "./sessions";
-import { Button, Card } from "../components/ui";
+import { Button, Card, TechnicalId } from "../components/ui";
+import { entityDisplayName, identifierLabel, sessionDisplayTitle } from "../lib/presentation";
 import ReadinessPanel from "../components/app/ReadinessPanel";
 
 export default function WorkspaceOverviewSurface() {
@@ -74,7 +75,7 @@ export default function WorkspaceOverviewSurface() {
           <span className="label">{app.t("Running now", "正在运行")}</span>
         </button>
       </div>
-      <Card style={{ padding: 0 }}>
+      <Card className="responsive-table-card" style={{ padding: 0 }}>
         <div className="row session-ledger__header" style={{ padding: "13px 16px" }}>
           <span className="ledger-signal" aria-hidden="true" />
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Recent session evidence", "最近会话证据")}</h2>
@@ -82,14 +83,17 @@ export default function WorkspaceOverviewSurface() {
         </div>
         <table className="table">
           <thead>
-            <tr><th>{app.t("Session", "会话")}</th><th>{app.t("Title", "标题")}</th><th>{app.t("State", "状态")}</th><th><span className="sr-only">{app.t("Open", "打开")}</span></th></tr>
+            <tr><th>{app.t("Session", "会话")}</th><th>Agent</th><th>{app.t("State", "状态")}</th><th><span className="sr-only">{app.t("Open", "打开")}</span></th></tr>
           </thead>
           <tbody>
             {recent.map((s) => (
               <tr key={s.id} data-click="true" onClick={() => nav(`/w/${wsId}/sessions/${s.id}`)}>
-                <td className="mono">{s.id}</td>
-                <td>{s.title || <span className="mut">(untitled)</span>}</td>
-                <td>
+                <td data-label={app.t("Session", "会话")}>
+                  <strong>{sessionDisplayTitle(s.title, s.agent.id, app.locale)}</strong>
+                  <TechnicalId value={s.id} />
+                </td>
+                <td data-label="Agent">{entityDisplayName(s.agent.name, identifierLabel(s.agent.id))}</td>
+                <td data-label={app.t("State", "状态")}>
                   <StatusPill session={s} />
                 </td>
                 <td style={{ textAlign: "right", color: "var(--fg3)" }}>▸</td>
@@ -98,7 +102,7 @@ export default function WorkspaceOverviewSurface() {
             {!sessions.error && recent.length === 0 && (
               <tr>
                 <td className="mut" colSpan={4}>
-                  {sessions.isLoading ? "…" : app.t("No sessions yet.", "还没有会话。")}
+                  {sessions.isLoading ? "…" : app.t("No Session evidence yet. Publish an Agent and complete a real run to establish the first result.", "还没有 Session 证据。请发布 Agent 并完成一次真实运行，建立首个结果。")}
                 </td>
               </tr>
             )}

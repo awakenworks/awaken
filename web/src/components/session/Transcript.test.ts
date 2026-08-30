@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { userFacingRunError } from "./Transcript";
+import { toolRegionLabel, userFacingRunError } from "./Transcript";
 
 describe("userFacingRunError", () => {
   it("turns package capability failures into an actionable Environment message", () => {
@@ -14,5 +14,12 @@ describe("userFacingRunError", () => {
       "runtime execution failed: durable run did not settle; dispatch pool never drove it to completion",
       false,
     )).toContain("Retry once");
+  });
+});
+
+describe("toolRegionLabel", () => {
+  it("gives every tool card a stable localized accessible name", () => {
+    expect(toolRegionLabel("read", false)).toBe("Tool read");
+    expect(toolRegionLabel("read", true)).toBe("工具 read");
   });
 });

@@ -1,10 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import type { AgentConfig, Environment, Page, RuntimeCap } from "../../lib/api/types";
-import { api, ws } from "../../lib/api/client";
+import {
+  type AgentConfig,
+  type Environment,
+  type Page,
+  type RuntimeCap,
+} from "../../lib/api/types";
+import { api, BUILTIN_LOCAL_ENVIRONMENT_ID, ws } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
 import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
 import { Button, Card, Pill, TextAreaField, TextField } from "../ui";
+import { entityDisplayName, identifierLabel } from "../../lib/presentation";
 
 interface StarterTemplate {
   id: string;
@@ -99,11 +105,11 @@ export default function AgentQuickstart({
   runPending: boolean;
   onPatch: (patch: Partial<AgentConfig>) => void;
   onManageModels: () => void;
-  onReviewRun: (environmentId: string | undefined, task: string) => void;
+  onReviewRun: (environmentId: string, task: string) => void;
 }) {
   const app = useApp();
   const [selectedTemplate, setSelectedTemplate] = useState("task-assistant");
-  const [environmentId, setEnvironmentId] = useState("");
+  const [environmentId, setEnvironmentId] = useState(BUILTIN_LOCAL_ENVIRONMENT_ID);
   const [task, setTask] = useState(app.t(
     "Introduce yourself in one sentence and explain how you would approach your configured role.",
     "用一句话介绍自己，并说明你会如何完成当前配置的职责。",
@@ -122,7 +128,13 @@ export default function AgentQuickstart({
       description: app.t(template.description, template.descriptionZh),
       system: template.system,
       max_steps: template.maxSteps,
-      tools: Array.from(new Set([...config.tools, ...tools])),
+      tools: [
+        ...config.tools.filter((tool) => typeof tool !== "string"),
+        ...Array.from(new Set([
+          ...config.tools.filter((tool): tool is string => typeof tool === "string"),
+          ...tools,
+        ])),
+      ],
       plugins: Array.from(new Set([...config.plugins, ...plugins])),
     });
     setTask(app.t(template.firstTask, template.firstTaskZh));
@@ -130,8 +142,13 @@ export default function AgentQuickstart({
 
   const readiness = [
     {
+      ready: Boolean(config.name?.trim()),
+      label: app.t("Display name", "显示名称"),
+      detail: config.name?.trim() || app.t("Required", "必填"),
+    },
+    {
       ready: config.id.trim().length > 0,
-      label: app.t("Agent id", "Agent id"),
+      label: app.t("Stable Agent ID", "稳定 Agent ID"),
       detail: config.id.trim() || app.t("Required", "必填"),
     },
     {
@@ -171,7 +188,14 @@ export default function AgentQuickstart({
           ))}
         </div>
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("2 · Name this Agent", "2 · 为 Agent 命名")}</h2>
+          <h2 className="section-title">{app.t("2 · Name and identify this Agent", "2 · 为 Agent 命名并设置标识")}</h2>
+          <TextField
+            label={app.t("Display name", "显示名称")}
+            hint={app.t("The human-readable name shown throughout the Console.", "在 Console 各处显示的人类可读名称。")}
+            placeholder={app.t("Release Readiness Reviewer", "发布就绪审查 Agent")}
+            value={config.name ?? ""}
+            onChange={(event) => onPatch({ name: event.target.value })}
+          />
           <TextField
             label={app.t("Agent ID", "Agent ID")}
             hint={app.t("A stable identifier used by APIs and Sessions. It cannot be changed after creation.", "供 API 和会话使用的稳定标识；创建后不能修改。")}
@@ -200,15 +224,17 @@ export default function AgentQuickstart({
           <label className="field">
             <span>{app.t("Environment for this run", "本次运行的 Environment")}</span>
             <select
-              className="input mono"
+              className="input"
               aria-label={app.t("Environment for this run", "本次运行的 Environment")}
               value={environmentId}
               onChange={(event) => setEnvironmentId(event.target.value)}
             >
-              <option value="">{app.t("Default runtime", "默认运行环境")}</option>
-              {(environments.data?.data ?? []).map((environment) => (
+              <option value={BUILTIN_LOCAL_ENVIRONMENT_ID}>{app.t("Local · built-in", "本地 · 内置")}</option>
+              {(environments.data?.data ?? []).filter((environment) => (
+                environment.id !== BUILTIN_LOCAL_ENVIRONMENT_ID
+              )).map((environment) => (
                 <option key={environment.id} value={environment.id}>
-                  {environment.name} · {environment.id}
+                  {entityDisplayName(environment.name, identifierLabel(environment.id))}
                 </option>
               ))}
             </select>
@@ -260,7 +286,7 @@ export default function AgentQuickstart({
             variant="primary"
             style={{ width: "100%", marginTop: 12, justifyContent: "center" }}
             disabled={!readiness.every((item) => item.ready) || runPending}
-            onClick={() => onReviewRun(environmentId || undefined, task.trim())}
+            onClick={() => onReviewRun(environmentId, task.trim())}
           >
             {runPending ? app.t("Starting…", "正在启动…") : app.t("Review, publish & run", "审阅、发布并运行")} ➤
           </Button>

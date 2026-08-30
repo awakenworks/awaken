@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import { Card, EmptyState, Pill } from "../ui";
 import type { Session } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
@@ -8,9 +9,12 @@ function objectOf(value: unknown): Record<string, unknown> {
     : {};
 }
 
-export default function SessionIntegrations({ session }: { session?: Session }) {
+export default function SessionIntegrations({ session, workspaceId }: { session?: Session; workspaceId: string }) {
   const app = useApp();
   const servers = (session?.agent.mcp_servers ?? []).map(objectOf);
+  const agentHref = session?.agent.id
+    ? `/w/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(session.agent.id)}?stage=build&section=integrations`
+    : null;
   return (
     <Card style={{ marginTop: 10 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -25,6 +29,15 @@ export default function SessionIntegrations({ session }: { session?: Session }) 
           {servers.length} {app.t("connected", "已连接")}
         </Pill>
       </div>
+      {agentHref && (
+        <div className="banner info" style={{ marginTop: 10 }}>
+          <span>{app.t(
+            "These connections are the immutable Session snapshot. Editing the current Agent affects only future Sessions after publication.",
+            "这些连接来自不可变的 Session 快照。编辑当前 Agent 只会在重新发布后影响新的 Session。",
+          )}</span>
+          <Link to={agentHref}>{app.t("Open current MCP configuration →", "打开当前 MCP 配置 →")}</Link>
+        </div>
+      )}
       {servers.length === 0 ? (
         <EmptyState
           title={app.t("No MCP servers connected.", "没有已连接的 MCP 服务器。")}
