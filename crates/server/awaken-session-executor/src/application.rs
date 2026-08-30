@@ -1038,18 +1038,17 @@ impl crate::SharedHost {
                 continue;
             }
             let renewal = async {
-                let directive = match control
-                    .begin_session_realization(awaken_session_contract::BeginSessionRealization {
-                        session_id: session_id.clone(),
-                        target: awaken_session_contract::SessionRealizationTarget {
-                            owner: lease.owner.clone(),
-                            runtime_incarnation: lease.runtime_incarnation.clone(),
-                            lease_expires_at_unix_ms: requested_expiry_unix_ms,
-                            renew_existing_lease: true,
-                            reassign_existing_lease: false,
-                        },
-                    })
-                    .await
+                let renewal_command = || awaken_session_contract::BeginSessionRealization {
+                    session_id: session_id.clone(),
+                    target: awaken_session_contract::SessionRealizationTarget {
+                        owner: lease.owner.clone(),
+                        runtime_incarnation: lease.runtime_incarnation.clone(),
+                        lease_expires_at_unix_ms: requested_expiry_unix_ms,
+                        renew_existing_lease: true,
+                        reassign_existing_lease: false,
+                    },
+                };
+                let mut directive = match control.begin_session_realization(renewal_command()).await
                 {
                     Ok(directive) => directive,
                     Err(error)
@@ -1070,18 +1069,39 @@ impl crate::SharedHost {
                     self.install_session_realization_lease(session_id, directive.lease.clone());
                     return Ok::<bool, crate::HostError>(true);
                 };
-                crate::host::HostWorkerResolver::drive_session_realization(
-                    self,
-                    control.as_ref(),
-                    session_id,
-                    directive,
-                    None,
-                    None,
-                    false,
-                )
-                .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))?;
-                Ok::<bool, crate::HostError>(true)
+                // A Session command can advance the aggregate after Begin but
+                // before Activate/Acknowledge. Keep the one realization lock,
+                // re-read Control, and replay the same idempotent driver. This
+                // closes the renewal-versus-successor-Run race without a second
+                // projection owner or a provider-specific retry path.
+                const MAX_CONTROL_CONFLICT_ATTEMPTS: usize = 2;
+                for attempt in 0..MAX_CONTROL_CONFLICT_ATTEMPTS {
+                    match crate::host::HostWorkerResolver::drive_session_realization_raw(
+                        self,
+                        control.as_ref(),
+                        session_id,
+                        directive,
+                        None,
+                        None,
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(()) => return Ok::<bool, crate::HostError>(true),
+                        Err(awaken_session_contract::SessionRealizationDriveError::Control(
+                            awaken_session_contract::SessionRealizationControlFailure::Conflict,
+                        )) if attempt + 1 < MAX_CONTROL_CONFLICT_ATTEMPTS => {
+                            directive = control
+                                .begin_session_realization(renewal_command())
+                                .await
+                                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                        }
+                        Err(error) => {
+                            return Err(crate::HostError::internal(error.to_string()));
+                        }
+                    }
+                }
+                unreachable!("bounded realization conflict loop returns on every branch")
             }
             .await;
             if matches!(renewal, Ok(true)) {
