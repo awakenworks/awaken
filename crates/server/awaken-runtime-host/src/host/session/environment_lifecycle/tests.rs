@@ -1135,6 +1135,60 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
 }
 
 #[tokio::test]
+async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident() {
+    // Projection-order cause/effect decision table: C1 an Unmaterialized
+    // FrozenSessionProjection is read before the lifecycle guard; C2 the exact
+    // create Candidate is installed while C1 waits; C3 the binding sink commits
+    // and the same Candidate becomes Resident before C1 installs; C4 durable
+    // retirement has already moved the owner to Retiring/Vacant. Effects: E1
+    // C1+C2 retains the exact hidden Candidate and returns success; E2 C1+C3
+    // retains the exact Resident Arc/identity and returns success; E3 C1+C4 may
+    // confirm Vacant but never disposes a live owner. Rules S1=C1+C2=>E1,
+    // S2=C1+C3=>E2; the existing retirement tests own S3=C1+C4=>E3. This makes
+    // stale projection replay a no-write operation instead of an unrecoverable
+    // rescheduling loop.
+    let thread = "stale-unmaterialized-projection";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let candidate = host
+        .begin_session_environment_preparation(thread, environment.clone())
+        .expect("S1 Candidate");
+
+    host.install_session_environment_owner_projection(
+        thread,
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .expect("S1 stale projection is a no-write replay");
+    let retained = host
+        .prepared_session_environment(thread)
+        .expect("S1 Candidate retained");
+    assert!(candidate.exact_matches(&retained), "S1 exact Candidate");
+    assert!(
+        host.session_environment(thread).await.is_none(),
+        "S1 hidden"
+    );
+
+    let published = host
+        .publish_prepared_session_environment(thread, &candidate, identity(thread))
+        .expect("S2 publish exact Candidate");
+    host.install_session_environment_owner_projection(
+        thread,
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    )
+    .expect("S2 stale projection is a no-write replay");
+    let resident = host
+        .session_environment(thread)
+        .await
+        .expect("S2 Resident retained");
+    assert!(Arc::ptr_eq(&published, &resident), "S2 exact Resident Arc");
+    assert!(Arc::ptr_eq(&environment, &resident), "S2 provider Arc");
+}
+
+#[tokio::test]
 async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     // Cause/effect table for the background-task/C2-b proof-sync overlap: C1 an
     // exact durable Resident owns one Arc+handle; C2 its physical sandbox id is
