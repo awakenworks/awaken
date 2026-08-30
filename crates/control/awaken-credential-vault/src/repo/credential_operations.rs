@@ -1017,6 +1017,107 @@ fn material_ref_for(id: &CredentialSourceId, version: i64, slot: &str) -> crate:
     crate::SecretRef(format!("sec:{}:r{version}:{slot}", id.0))
 }
 
+fn validate_rotatable_source(
+    source: &CredentialSource,
+    id: &CredentialSourceId,
+) -> Result<(), CredentialError> {
+    if source.kind != CredentialKind::Vault || source.status != CredentialStatus::Active {
+        return Err(CredentialError::NotActive(id.0.clone()));
+    }
+    Ok(())
+}
+
+fn validate_targetless_writeback_source(
+    source: &CredentialSource,
+    id: &CredentialSourceId,
+) -> Result<(), CredentialError> {
+    validate_rotatable_source(source, id)?;
+    if source.descriptor.is_some() {
+        return Err(CredentialError::InvalidSource(
+            "described credentials require an exact target and cannot use targetless write-back"
+                .into(),
+        ));
+    }
+    source
+        .material_ref
+        .as_ref()
+        .ok_or_else(|| CredentialError::MissingMaterialRef(id.0.clone()))?;
+    Ok(())
+}
+
+fn sandbox_writeback_material_ref(
+    id: &CredentialSourceId,
+    expected_version: i64,
+    writeback_id: &str,
+) -> Result<crate::SecretRef, CredentialError> {
+    if expected_version <= 0 || writeback_id.trim().is_empty() {
+        return Err(CredentialError::InvalidSource(
+            "credential write-back requires a positive revision and stable write-back id".into(),
+        ));
+    }
+    Ok(crate::SecretRef(format!(
+        "sec:{}:sandbox-writeback:r{expected_version}:{}:{writeback_id}",
+        id.0,
+        writeback_id.len(),
+    )))
+}
+
+/// Persist one targetless credential refresh under the existing source-only
+/// material WAL/CAS, and recognize the exact published successor after a lost
+/// response. The deterministic logical material reference is only command
+/// identity: [`CredentialMutationIntent`] still adds and owns the random
+/// physical writer-attempt suffix.
+pub async fn write_back_credential_material_for_effect(
+    id: &CredentialSourceId,
+    expected_version: i64,
+    writeback_id: &str,
+    material: awaken_agent_contract::RedactedString,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let logical_ref = sandbox_writeback_material_ref(id, expected_version, writeback_id)?;
+    let current = repo.get(id).await?;
+    validate_targetless_writeback_source(&current, id)?;
+
+    if current.version == expected_version {
+        return rotate_credential_materials_exact_with_primary_ref(
+            id,
+            expected_version,
+            CredentialMaterialPatch {
+                primary: Some(material),
+                auxiliary: BTreeMap::new(),
+                descriptor: None,
+            },
+            Some(logical_ref),
+            store,
+            repo,
+        )
+        .await;
+    }
+
+    let replay_version = expected_version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    let current_ref = current
+        .material_ref
+        .as_ref()
+        .expect("targetless write-back source validated material");
+    if current.version != replay_version
+        || !logical_material_ref_matches(Some(current_ref), Some(&logical_ref))
+    {
+        return Err(CredentialError::MutationConflict(
+            "credential write-back identity does not match the current revision".into(),
+        ));
+    }
+    let published = store.get(current_ref).await?;
+    if published.expose_secret() != material.expose_secret() {
+        return Err(CredentialError::MutationConflict(
+            "credential write-back identity resolved to different sealed material".into(),
+        ));
+    }
+    Ok(current)
+}
+
 /// Rotate an exact credential revision and all requested material slots in one
 /// WAL/CAS transaction. A stale expected revision fails before any new secret is
 /// written.
@@ -1053,9 +1154,7 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
             "credential revision changed before material rotation".into(),
         ));
     }
-    if before.kind != CredentialKind::Vault || before.status != CredentialStatus::Active {
-        return Err(CredentialError::NotActive(id.0.clone()));
-    }
+    validate_rotatable_source(&before, id)?;
     let effective_descriptor = patch.descriptor.as_ref().or(before.descriptor.as_ref());
     if let Some(descriptor) = effective_descriptor {
         descriptor
