@@ -14,8 +14,29 @@ import type {
 import { useApp } from "../lib/app-state";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import { Button, Card, Modal, Pill, SecretField, Skeleton, useConfirm, useToast } from "../components/ui";
+import { credentialKindLabel, statusLabel } from "../lib/presentation";
 
 const CLAUDE_CODE_SETUP_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+
+const PROVIDER_NAMES: Record<string, string> = {
+  anthropic: "Anthropic",
+  deepseek: "DeepSeek",
+  google_ai_studio: "Google AI Studio",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  vertex_ai: "Vertex AI",
+};
+
+export function credentialSourceDisplayName(source: CredentialSource, locale: "en" | "zh"): string {
+  if (source.provider_id) {
+    const provider = PROVIDER_NAMES[source.provider_id]
+      ?? source.provider_id.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+    return locale === "zh" ? `${provider} 模型凭证` : `${provider} model credential`;
+  }
+  if (source.env_key) return locale === "zh" ? `${source.env_key} 运行凭证` : `${source.env_key} runtime credential`;
+  if (source.protocol_endpoint_id) return locale === "zh" ? `${source.protocol_endpoint_id} 协议凭证` : `${source.protocol_endpoint_id} protocol credential`;
+  return locale === "zh" ? "Worker 提供的凭证" : "Worker-provided credential";
+}
 
 function SourceRow({ source, probeModel }: { source: CredentialSource; probeModel?: string }) {
   const app = useApp();
@@ -53,25 +74,31 @@ function SourceRow({ source, probeModel }: { source: CredentialSource; probeMode
   const isClaudeSetupToken = source.env_key === CLAUDE_CODE_SETUP_TOKEN_ENV;
   return (
     <tr>
-      <td className="mono">{source.id}</td>
-      <td>
-        <Pill tone="neutral">{source.kind}</Pill>
+      <td data-label={app.t("Credential", "凭证")}>
+        <strong>{credentialSourceDisplayName(source, app.locale)}</strong>
+        <details className="technical-id">
+          <summary>{app.t("Technical ID", "技术 ID")}</summary>
+          <code>{source.id}</code>
+        </details>
       </td>
-      <td>{source.provider_id ?? source.env_key ?? "—"}</td>
-      <td>
-        <Pill tone={statusTone}>{source.status}</Pill>
+      <td data-label={app.t("Kind", "类型")}>
+        <Pill tone="neutral">{credentialKindLabel(source.kind, app.locale)}</Pill>
       </td>
-      <td>
+      <td data-label={app.t("Provider / environment", "供应商 / 环境")}>{source.provider_id ?? source.env_key ?? "—"}</td>
+      <td data-label={app.t("Status", "状态")}>
+        <Pill tone={statusTone}>{statusLabel(source.status, app.locale)}</Pill>
+      </td>
+      <td data-label={app.t("Last probe", "最近探针")}>
         {validate.data && (
           <Pill
             tone={validate.data.status === "valid" ? "ok" : validate.data.status === "invalid" ? "danger" : "neutral"}
           >
-            {validate.data.status} · {validate.data.adapter_kind}
+            {statusLabel(validate.data.status, app.locale)} · {validate.data.adapter_kind}
           </Pill>
         )}
         {validate.error instanceof Error && <span className="err">{validate.error.message}</span>}
       </td>
-      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+      <td className="responsive-table-actions" style={{ textAlign: "right", whiteSpace: "nowrap" }}>
         <Button
           variant="ghost"
           style={{ height: 26 }}
@@ -155,14 +182,14 @@ export default function CredentialsSurface() {
           </Button>
         </span>
       </div>
-      <Card style={{ padding: 0 }}>
+      <Card className="responsive-table-card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Kind</th>
-              <th>Provider / env</th>
-              <th>Status</th>
+              <th>{app.t("Credential", "凭证")}</th>
+              <th>{app.t("Kind", "类型")}</th>
+              <th>{app.t("Provider / environment", "供应商 / 环境")}</th>
+              <th>{app.t("Status", "状态")}</th>
               <th>{app.t("Last probe", "最近探针")}</th>
               <th />
             </tr>
