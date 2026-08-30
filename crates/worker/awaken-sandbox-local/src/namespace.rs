@@ -22,14 +22,13 @@ use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use crate::provider::{resolve_source, restrict_to_owner, verify};
+use crate::provider::{resolve_source, verify};
 use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
-    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
-    provision_repo_at, push_repo_to_at, scan_skill_dir_at,
+    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, provision_repo_at,
+    push_repo_to_at, scan_skill_dir_at,
 };
 
-mod adoption;
 mod control;
 mod seatbelt;
 use control::{
@@ -56,7 +55,7 @@ async fn run_os_native_probe() -> bool {
         sandbox_exec_argv(&RenderInput {
             host_workspace: std::path::Path::new("/private/var/empty"),
             host_outputs: std::path::Path::new("/private/var/empty"),
-            outputs_path: "/mnt/session/outputs",
+            outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT,
             mounts: &[],
             env: &[],
             network: &pc::NetworkPolicy::None,
@@ -113,9 +112,7 @@ pub enum RenderMountBoundary {
     General,
     /// A MemoryStore child bind whose `/mnt/memory` parent must remain read-only.
     ManagedMemoryStore,
-    /// Runtime-owned rendezvous projected read-only into the workload. The host
-    /// may create/remove sockets in its private backing directory while the
-    /// Agent can connect but cannot unlink, replace, or symlink the endpoint.
+    /// Runtime-owned rendezvous projected read-only into the workload.
     PrivateRendezvous,
 }
 
@@ -140,15 +137,13 @@ fn sandbox_mount_destination(dest: &str) -> String {
     if dest.starts_with('/') {
         dest.to_string()
     } else {
-        format!("/workspace/{dest}")
+        pc::WorkspaceLayout::child(dest)
     }
 }
 
 fn workspace_relative(logical: &str) -> &str {
-    logical
-        .strip_prefix("/workspace/")
+    pc::WorkspaceLayout::relative(logical)
         .or_else(|| logical.strip_prefix("workspace/"))
-        .or_else(|| (logical == "/workspace").then_some(""))
         .or_else(|| (logical == "workspace").then_some(""))
         .unwrap_or_else(|| logical.trim_start_matches('/'))
 }
@@ -158,7 +153,7 @@ fn host_projection_path(
     host_workspace: &std::path::Path,
     logical: &str,
 ) -> Result<PathBuf, pc::SandboxError> {
-    if !logical.starts_with('/') || logical == "/workspace" || logical.starts_with("/workspace/") {
+    if !logical.starts_with('/') || pc::WorkspaceLayout::contains(logical) {
         IsolatedRoot::new(host_workspace)
             .resolve(workspace_relative(logical))
             .map_err(err)
@@ -167,64 +162,42 @@ fn host_projection_path(
     }
 }
 
-type RealizedMemoryMount = (RenderMount, pc::RealizedMount, Box<dyn pc::MemoryMount>);
-
-async fn realize_memory_mount(
-    memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
-    req: &pc::MountRequirement,
-    host: &std::path::Path,
-) -> Result<Option<RealizedMemoryMount>, pc::SandboxError> {
-    let pc::MountSource::MemoryStore {
-        store_id,
-        materialization_reference,
-        write_consistency,
-    } = &req.source
-    else {
-        return Ok(None);
-    };
-    let Some(mounter) = memory_mounter
-        .read()
-        .expect("memory mounter lock poisoned")
-        .clone()
-    else {
-        return Err(err(format!(
-            "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
-            req.mount_id
-        )));
-    };
-    let guard = mounter
-        .mount(
-            materialization_reference.as_deref().unwrap_or(store_id),
-            host,
-            req.access,
-        )
-        .await?;
-    if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-        && guard.realization() != pc::Realization::Fuse
-    {
-        guard.teardown().await?;
-        return Err(err(format!(
-            "mount {:?}: memory_store requires write-through FUSE realization",
-            req.mount_id
-        )));
+fn replay_render_layout(
+    root: &IsolatedRoot,
+    host_workspace: &std::path::Path,
+    spec: &pc::SandboxSpec,
+) -> Result<Vec<RenderMount>, pc::SandboxError> {
+    let mut layout = spec
+        .mounts
+        .iter()
+        .map(|mount| {
+            Ok(RenderMount {
+                host: host_projection_path(root, host_workspace, &mount.mount_path)?,
+                dest: mount.mount_path.clone(),
+                read_only: mount.access == pc::MountAccess::ReadOnly,
+                boundary: if matches!(mount.source, pc::MountSource::MemoryStore { .. }) {
+                    RenderMountBoundary::ManagedMemoryStore
+                } else {
+                    RenderMountBoundary::General
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, pc::SandboxError>>()?;
+    if let Some(directory) = control_directory_for(root, &spec.control_services)? {
+        layout.push(private_control_mount(directory));
     }
-    let realization = guard.realization();
-    Ok(Some((
-        RenderMount {
-            host: host.to_path_buf(),
-            dest: req.mount_path.clone(),
-            read_only: req.access == pc::MountAccess::ReadOnly,
-            boundary: RenderMountBoundary::ManagedMemoryStore,
-        },
-        pc::RealizedMount {
-            mount_id: req.mount_id.clone(),
-            mount_path: req.mount_path.clone(),
-            access: req.access,
-            realization,
-            content_hash: None,
-        },
-        guard,
-    )))
+    Ok(layout)
+}
+
+fn control_directory_for(
+    root: &IsolatedRoot,
+    control_services: &std::collections::BTreeSet<SandboxControlServiceKind>,
+) -> Result<Option<PathBuf>, pc::SandboxError> {
+    if control_services.contains(&SandboxControlServiceKind::RepositoryGitCredential) {
+        private_control_host_directory(root).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Render a `bwrap` command line (unprivileged, Linux). Deterministic and pure.
@@ -329,7 +302,7 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
     }
     a.push(s("--bind"));
     a.push(input.host_workspace.to_string_lossy().into_owned());
-    a.push(s("/workspace"));
+    a.push(s(pc::WorkspaceLayout::ROOT));
     a.push(s("--bind"));
     a.push(input.host_outputs.to_string_lossy().into_owned());
     a.push(s(input.outputs_path));
@@ -342,7 +315,7 @@ fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String
     // as bwrap argv. This keeps process-secret values out of `/proc/*/cmdline`.
     a.push(s("--chdir"));
     a.push(s(if input.cwd.is_empty() {
-        "/workspace"
+        pc::WorkspaceLayout::ROOT
     } else {
         input.cwd
     }));
@@ -371,6 +344,18 @@ pub struct NamespaceProvider {
 }
 
 impl NamespaceProvider {
+    /// The durable handle discriminator owned by this platform's namespace
+    /// adapter. Runtime-side adoption preflight consumes this same classifier,
+    /// so handle validation cannot drift from the provider that later opens it.
+    #[must_use]
+    pub fn provider_kind() -> pc::NamespaceProviderKind {
+        if cfg!(target_os = "macos") {
+            pc::NamespaceProviderKind::Seatbelt
+        } else {
+            pc::NamespaceProviderKind::Bubblewrap
+        }
+    }
+
     pub fn new(base: impl Into<PathBuf>) -> Self {
         Self {
             base: base.into(),
@@ -464,27 +449,23 @@ impl NamespaceProvider {
     }
 
     /// Realize the mounts under `root`, all-or-nothing: any failure reaps the tree.
-    /// Returns the bind layout, the realized refs, and any live memory-store guards
-    /// (torn down / harvested at dispose).
+    /// The caller retains every acquired Memory guard immediately, including a
+    /// guard whose post-mount validation fails, so compensation cannot consume
+    /// or silently discard a failed teardown.
     async fn realize_layout(
         &self,
         root: &IsolatedRoot,
         host_workspace: &std::path::Path,
         spec: &pc::SandboxSpec,
-    ) -> Result<
-        (
-            Vec<RenderMount>,
-            Vec<pc::RealizedMount>,
-            Vec<Box<dyn pc::MemoryMount>>,
-            Vec<PathBuf>,
-        ),
-        pc::SandboxError,
-    > {
+        memory_mounts: &mut Vec<Box<dyn pc::MemoryMount>>,
+        memory_materializations: &mut Vec<pc::MemoryMaterializationEvidence>,
+        mutation_guard: &crate::realization_marker::ProviderCreationGuard,
+    ) -> Result<(Vec<RenderMount>, Vec<pc::RealizedMount>), pc::SandboxError> {
+        let root_identity = mutation_guard
+            .root_identity()?
+            .ok_or_else(|| err("namespace layout has no exact admitted root identity"))?;
         let mut layout = Vec::new();
         let mut realized = Vec::new();
-        let mut memory_mounts: Vec<Box<dyn pc::MemoryMount>> = Vec::new();
-        // Host paths of realized secrets — shredded at dispose (ADR-0023).
-        let mut secret_paths: Vec<PathBuf> = Vec::new();
         for req in &spec.mounts {
             let host = host_projection_path(root, host_workspace, &req.mount_path)?;
             if matches!(req.source, pc::MountSource::CacheVolume { .. }) {
@@ -498,12 +479,30 @@ impl NamespaceProvider {
             // materialized files on the copy fallback) which then binds into the namespace
             // — live write-through FUSE-in-bwrap works (ADR-0053 item 2); copy harvests on
             // dispose.
-            if let Some((rendered, mount, guard)) =
-                realize_memory_mount(&self.memory_mounter, req, &host).await?
-            {
-                layout.push(rendered);
+            let is_memory = matches!(&req.source, pc::MountSource::MemoryStore { .. });
+            if is_memory {
+                mutation_guard.validate_before_mutation()?;
+            }
+            let memory =
+                crate::mount_memory_requirement(&self.memory_mounter, req, &host, memory_mounts)
+                    .await?;
+            // The external mounter may finish after the admission observed
+            // above. Revalidate under the same held creation guard before the
+            // realized mode/evidence can enter the completion receipt.
+            if memory.is_some() {
+                mutation_guard.validate_before_mutation()?;
+            }
+            if let Some((mount, materialization)) = memory {
+                layout.push(RenderMount {
+                    host,
+                    dest: req.mount_path.clone(),
+                    read_only: req.access == pc::MountAccess::ReadOnly,
+                    boundary: RenderMountBoundary::ManagedMemoryStore,
+                });
                 realized.push(mount);
-                memory_mounts.push(guard);
+                if let Some(materialization) = materialization {
+                    memory_materializations.push(materialization);
+                }
                 continue;
             }
             let secret_broker = self
@@ -529,15 +528,18 @@ impl NamespaceProvider {
             match &bytes {
                 Some(bytes) => {
                     verify(&req.source, bytes)?; // fail closed on content-hash mismatch
-                    if let Some(parent) = host.parent() {
-                        std::fs::create_dir_all(parent).map_err(err)?;
-                    }
-                    std::fs::write(&host, bytes).map_err(err)?;
-                    // A realized secret is owner-only on disk (0600) before it is
-                    // bind-mounted; still shredded on dispose via `secret_paths`.
-                    if matches!(req.source, pc::MountSource::Secret { .. }) {
-                        restrict_to_owner(&host)?;
-                    }
+                    let relative = host
+                        .strip_prefix(root.root())
+                        .map_err(|_| err("namespace mount escaped its exact sandbox root"))?;
+                    mutation_guard.validate_before_mutation()?;
+                    awaken_sandbox_fs::write_relative_file_atomic(
+                        root.root(),
+                        root_identity,
+                        relative,
+                        bytes,
+                        0o600,
+                    )
+                    .map_err(err)?;
                 }
                 None if req.required => {
                     return Err(err(format!(
@@ -546,10 +548,18 @@ impl NamespaceProvider {
                     )));
                 }
                 None => {
-                    if let Some(parent) = host.parent() {
-                        std::fs::create_dir_all(parent).map_err(err)?;
-                    }
-                    std::fs::write(&host, b"").map_err(err)?;
+                    let relative = host
+                        .strip_prefix(root.root())
+                        .map_err(|_| err("namespace mount escaped its exact sandbox root"))?;
+                    mutation_guard.validate_before_mutation()?;
+                    awaken_sandbox_fs::write_relative_file_atomic(
+                        root.root(),
+                        root_identity,
+                        relative,
+                        b"",
+                        0o600,
+                    )
+                    .map_err(err)?;
                 }
             }
             layout.push(RenderMount {
@@ -565,11 +575,8 @@ impl NamespaceProvider {
                 realization: pc::Realization::Bind,
                 content_hash: bytes.as_ref().map(|b| content_fingerprint(b)),
             });
-            if matches!(req.source, pc::MountSource::Secret { .. }) {
-                secret_paths.push(host);
-            }
         }
-        Ok((layout, realized, memory_mounts, secret_paths))
+        Ok((layout, realized))
     }
 }
 
@@ -610,11 +617,90 @@ impl pc::SandboxProvider for NamespaceProvider {
         Ok(Box::new(self.create_sandbox(spec).await?))
     }
 
+    async fn create_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(
+            self.create_sandbox_for_effect(spec, effect_fence, None)
+                .await?,
+        ))
+    }
+
+    async fn observe(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        handle.namespace_payload(Self::provider_kind())?;
+        crate::realization_marker::observe_adoption(
+            &crate::sandbox_dir(&self.base, &handle.sandbox_id),
+            handle.realization_fingerprint(),
+            handle.filesystem_effect_fence()?,
+            handle.filesystem_physical_incarnation()?,
+            None,
+        )
+    }
+
+    async fn observe_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        handle.namespace_payload(Self::provider_kind())?;
+        if handle.realization_fingerprint()
+            != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
+        {
+            return Ok(pc::SandboxObservation::Incompatible {
+                reason: "Namespace sandbox handle does not match the effective observation spec"
+                    .into(),
+            });
+        }
+        crate::realization_marker::observe_adoption(
+            &crate::sandbox_dir(&self.base, &handle.sandbox_id),
+            handle.realization_fingerprint(),
+            handle.filesystem_effect_fence()?,
+            handle.filesystem_physical_incarnation()?,
+            Some(effect_fence),
+        )
+    }
+
     async fn adopt(
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(self.adopt_sandbox(handle).await?))
+    }
+
+    async fn adopt_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(
+            self.adopt_sandbox_for_effect(spec, handle, effect_fence)
+                .await?,
+        ))
+    }
+
+    async fn prepare_terminal_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+        Ok(self
+            .prepare_terminal_sandbox_for_effect(
+                spec,
+                handle,
+                expected_effect_fence,
+                terminal_effect_fence,
+            )
+            .await?
+            .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 }
 
@@ -625,6 +711,28 @@ impl NamespaceProvider {
     pub async fn create_sandbox(
         &self,
         spec: &pc::SandboxSpec,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        self.create_sandbox_inner(spec, None, None).await
+    }
+
+    pub async fn create_sandbox_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: &pc::SandboxEffectFence,
+        source_handle: Option<&pc::SandboxHandle>,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        if let Some(handle) = source_handle {
+            handle.namespace_payload(Self::provider_kind())?;
+        }
+        self.create_sandbox_inner(spec, Some(effect_fence), source_handle)
+            .await
+    }
+
+    async fn create_sandbox_inner(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: Option<&pc::SandboxEffectFence>,
+        source_handle: Option<&pc::SandboxHandle>,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
         pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
         // Neither bwrap nor the Seatbelt adapter can enforce a DNS-host allowlist;
@@ -638,49 +746,295 @@ impl NamespaceProvider {
         let base_env = spec.env.clone();
 
         let raw_root = crate::sandbox_dir(&self.base, &spec.scope);
-        std::fs::create_dir_all(&raw_root).map_err(err)?;
-        // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
-        // operations against the canonical vnode path, so build every rule/env/cwd
-        // from one canonical root or write grants can miss their target.
-        let root = IsolatedRoot::new(std::fs::canonicalize(&raw_root).map_err(err)?);
-        let host_workspace = root.resolve("/workspace").map_err(err)?;
-        std::fs::create_dir_all(&host_workspace).map_err(err)?;
-        let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
-        std::fs::create_dir_all(&host_outputs).map_err(err)?;
+        let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
+        let mut realization_guard = match effect_fence {
+            Some(effect_fence) => crate::realization_marker::ProviderCreationGuard::Current(
+                Box::new(crate::realization_marker::begin(
+                    &raw_root,
+                    &realization_fingerprint,
+                    effect_fence,
+                    source_handle
+                        .map(crate::realization_marker::rebuild_source)
+                        .transpose()?,
+                    None,
+                )?),
+            ),
+            None if source_handle.is_none() => {
+                crate::realization_marker::ProviderCreationGuard::Legacy(
+                    crate::realization_marker::begin_legacy(&raw_root)?,
+                )
+            }
+            None => return Err(err("sandbox rebuild requires an aggregate effect fence")),
+        };
+        let raw_isolated_root = IsolatedRoot::new(raw_root.clone());
+        let raw_workspace = raw_isolated_root
+            .resolve(pc::WorkspaceLayout::ROOT)
+            .map_err(err)?;
+        let raw_secret_paths = spec
+            .mounts
+            .iter()
+            .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+            .map(|mount| {
+                host_projection_path(&raw_isolated_root, &raw_workspace, &mount.mount_path)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let (mut layout, realized, memory_mounts, secret_paths) =
-            match self.realize_layout(&root, &host_workspace, spec).await {
-                Ok(v) => v,
-                Err(e) => {
-                    // On a failed layout, `realize_layout`'s already-realized guards drop
-                    // as it returns: a FUSE mount unmounts via its handle's Drop, and a
-                    // copy's files are reaped with the directory below (no harvest — the
-                    // durable store is left untouched on an aborted create).
-                    let _ = std::fs::remove_dir_all(root.root());
-                    return Err(e);
+        // The completed root and mount decisions are authoritative in the marker
+        // receipt. Replay preserves every surviving Bind/Copy projection and uses
+        // the same MemoryMounter only to reacquire a process-owned FUSE guard; it
+        // never re-extracts ordinary inputs or invents a different realization.
+        if let Some(receipt) = realization_guard.completed_receipt()?.cloned() {
+            let (realized, memory_materializations) =
+                crate::replay_completion_receipt(spec, &receipt, pc::Realization::Bind)?;
+            let raw_identity = realization_guard
+                .root_identity()?
+                .ok_or_else(|| err("Ready Namespace sandbox has no root identity"))?;
+            let canonical_root = std::fs::canonicalize(&raw_root).map_err(err)?;
+            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root).map_err(err)?
+                != raw_identity
+            {
+                return Err(err(
+                    "namespace sandbox root changed identity during Ready replay",
+                ));
+            }
+            let root = IsolatedRoot::new(canonical_root);
+            let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
+            let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
+            let secret_paths = spec
+                .mounts
+                .iter()
+                .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+                .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
+                .collect::<Result<Vec<_>, _>>()?;
+            let layout = replay_render_layout(&root, &host_workspace, spec)?;
+            let host_paths = layout
+                .iter()
+                .take(spec.mounts.len())
+                .map(|mount| mount.host.clone())
+                .collect::<Vec<_>>();
+            let memory_mounts = crate::replay_memory_mount_guards(
+                &self.memory_mounter,
+                spec,
+                &realized,
+                &host_paths,
+                || realization_guard.validate_before_mutation(),
+            )
+            .await?;
+            let control_directory = layout
+                .iter()
+                .find(|mount| mount.boundary == RenderMountBoundary::PrivateRendezvous)
+                .map(|mount| mount.host.clone());
+            let realization = match realization_guard.complete(&receipt) {
+                Ok(realization) => realization,
+                Err(cause) => {
+                    let teardown = crate::compensate_memory_mounts(memory_mounts).await;
+                    return Err(match teardown {
+                        Ok(()) => cause,
+                        Err(teardown) => err(format!(
+                            "Namespace Ready replay publication failed: {cause}; Memory replay teardown failed: {teardown}"
+                        )),
+                    });
                 }
             };
-        let control_directory = if spec
-            .control_services
-            .contains(&SandboxControlServiceKind::RepositoryGitCredential)
-        {
-            match private_control_host_directory(&root) {
-                Ok(directory) => {
-                    layout.push(private_control_mount(directory.clone()));
-                    Some(directory)
-                }
-                Err(error) => {
-                    crate::compensate_memory_mounts(memory_mounts).await?;
-                    let _ = std::fs::remove_dir_all(root.root());
-                    return Err(error);
-                }
+            return Ok(NamespaceSandbox {
+                id: spec.scope.clone(),
+                realization_root: raw_root,
+                root,
+                outputs_path: spec.outputs_path.clone(),
+                host_workspace,
+                host_outputs,
+                base_env,
+                inherit_agent_stderr: self.inherit_agent_stderr,
+                secret_broker: self.secret_broker.clone(),
+                network: spec.network.clone(),
+                control_services: spec.control_services.clone(),
+                control_directory,
+                control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
+                layout: std::sync::RwLock::new(layout),
+                realized,
+                secret_paths,
+                memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+                memory_materializations: std::sync::Mutex::new(memory_materializations),
+                memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
+                memory_mounter: self.memory_mounter.clone(),
+                realization,
+                terminal_removal: std::sync::Mutex::new(None),
+                owned_paths: std::sync::Mutex::new(
+                    spec.mounts
+                        .iter()
+                        .map(|mount| mount.mount_path.clone())
+                        .collect(),
+                ),
+                adopted_handle: None,
+            });
+        }
+        if realization_guard.is_incomplete() {
+            crate::shred_secret_paths_at(
+                &raw_isolated_root,
+                realization_guard.root_identity()?,
+                &raw_secret_paths,
+            )?;
+        }
+        realization_guard.prepare_root()?;
+        let mut memory_mounts = Vec::new();
+        let mut memory_materializations = Vec::new();
+        let realization = async {
+            // `/var` is a symlink to `/private/var` on macOS. Seatbelt evaluates some
+            // operations against the canonical vnode path, so build every rule/env/cwd
+            // from one canonical root or write grants can miss their target.
+            let raw_identity =
+                awaken_sandbox_fs::directory_identity_nofollow(&raw_root).map_err(err)?;
+            let canonical_root = std::fs::canonicalize(&raw_root).map_err(err)?;
+            if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root).map_err(err)?
+                != raw_identity
+            {
+                return Err(err(
+                    "namespace sandbox root changed identity during canonicalization",
+                ));
             }
-        } else {
-            None
+            let root = IsolatedRoot::new(canonical_root);
+            let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
+            let secret_paths = spec
+                .mounts
+                .iter()
+                .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+                .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
+                .collect::<Result<Vec<_>, _>>()?;
+            realization_guard.validate_before_mutation()?;
+            awaken_sandbox_fs::create_relative_directory_all(
+                root.root(),
+                raw_identity,
+                std::path::Path::new(pc::WorkspaceLayout::ROOT.trim_start_matches('/')),
+            )
+            .map_err(err)?;
+            let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
+            realization_guard.validate_before_mutation()?;
+            awaken_sandbox_fs::create_relative_directory_all(
+                root.root(),
+                raw_identity,
+                std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
+            )
+            .map_err(err)?;
+
+            // Creating starts from an exact-owned empty root; Ready response-loss
+            // recovery preserves the root and reconciles only the immutable
+            // spec-owned mount destinations through this same leaf implementation.
+            let (mut layout, realized) = self
+                .realize_layout(
+                    &root,
+                    &host_workspace,
+                    spec,
+                    &mut memory_mounts,
+                    &mut memory_materializations,
+                    &realization_guard,
+                )
+                .await?;
+            let control_directory = control_directory_for(&root, &spec.control_services)?;
+            if let Some(directory) = control_directory.clone() {
+                layout.push(private_control_mount(directory));
+            }
+            let receipt = crate::realization_marker::RealizationCompletionReceipt::new(
+                &realized,
+                memory_materializations.clone(),
+            )?;
+            let (realized, canonical_materializations) =
+                crate::replay_completion_receipt(spec, &receipt, pc::Realization::Bind)?;
+            memory_materializations = canonical_materializations;
+            Ok::<_, pc::SandboxError>((
+                root,
+                host_workspace,
+                host_outputs,
+                layout,
+                realized,
+                secret_paths,
+                control_directory,
+                receipt,
+            ))
+        }
+        .await;
+        let (
+            root,
+            host_workspace,
+            host_outputs,
+            layout,
+            realized,
+            secret_paths,
+            control_directory,
+            receipt,
+        ) = match realization {
+            Ok(realization) => realization,
+            Err(cause) => {
+                let teardown =
+                    crate::compensate_memory_mounts(std::mem::take(&mut memory_mounts)).await;
+                let shredding = if realization_guard.is_incomplete() {
+                    crate::shred_secret_paths_at(
+                        &raw_isolated_root,
+                        realization_guard.root_identity()?,
+                        &raw_secret_paths,
+                    )
+                } else {
+                    Ok(())
+                };
+                if teardown.is_err() || shredding.is_err() {
+                    return Err(err(format!(
+                        "namespace realization failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+                        teardown
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                        shredding
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                    )));
+                }
+                if let Err(cleanup) = realization_guard.abort_creation() {
+                    return Err(err(format!(
+                        "namespace realization failed: {cause}; exact-owned cleanup failed: {cleanup}"
+                    )));
+                }
+                return Err(cause);
+            }
+        };
+        let realization = match realization_guard.complete(&receipt) {
+            Ok(realization) => realization,
+            Err(cause) => {
+                let teardown =
+                    crate::compensate_memory_mounts(std::mem::take(&mut memory_mounts)).await;
+                let shredding = if realization_guard.is_incomplete() {
+                    crate::shred_secret_paths_at(
+                        &raw_isolated_root,
+                        realization_guard.root_identity()?,
+                        &raw_secret_paths,
+                    )
+                } else {
+                    Ok(())
+                };
+                if teardown.is_err() || shredding.is_err() {
+                    return Err(err(format!(
+                        "namespace Ready publication failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+                        teardown
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                        shredding
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                    )));
+                }
+                if let Err(cleanup) = realization_guard.abort_creation() {
+                    return Err(err(format!(
+                        "namespace Ready publication failed: {cause}; exact-owned cleanup failed: {cleanup}"
+                    )));
+                }
+                return Err(cause);
+            }
         };
 
         Ok(NamespaceSandbox {
             id: spec.scope.clone(),
+            realization_root: raw_root,
             root,
             outputs_path: spec.outputs_path.clone(),
             host_workspace,
@@ -696,8 +1050,324 @@ impl NamespaceProvider {
             realized,
             secret_paths,
             memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+            memory_materializations: std::sync::Mutex::new(memory_materializations),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
+            realization,
+            terminal_removal: std::sync::Mutex::new(None),
+            owned_paths: std::sync::Mutex::new(
+                spec.mounts
+                    .iter()
+                    .map(|mount| mount.mount_path.clone())
+                    .collect(),
+            ),
             adopted_handle: None,
+        })
+    }
+
+    /// Re-open a namespace sandbox from its durable handle so companion
+    /// capabilities operate on the Run's existing environment.
+    pub async fn adopt_sandbox(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        self.adopt_sandbox_inner(None, handle, None, None).await
+    }
+
+    pub async fn adopt_sandbox_with_control_services(
+        &self,
+        handle: &pc::SandboxHandle,
+        control_services: &std::collections::BTreeSet<SandboxControlServiceKind>,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        self.adopt_sandbox_inner(None, handle, None, Some(control_services))
+            .await
+    }
+
+    pub async fn adopt_sandbox_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        self.adopt_sandbox_inner(Some(spec), handle, Some(effect_fence), None)
+            .await
+    }
+
+    /// Reconstruct only the exact terminal participant for a `Removing`
+    /// namespace realization. Copy participants retain their exact durable
+    /// evidence; an exact Ready receipt may reacquire only its process-owned
+    /// FUSE guard through the canonical MemoryMounter. No launcher or ordinary
+    /// adoption effect occurs on this seam.
+    pub async fn prepare_terminal_sandbox_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Option<NamespaceSandbox>, pc::SandboxError> {
+        let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
+        let (id, outputs_path, base_env, network, owned_paths) = if let Some(handle) = handle {
+            let payload = handle.namespace_payload(Self::provider_kind())?;
+            if handle.realization_fingerprint() != Some(&fingerprint)
+                || payload.outputs_path != spec.outputs_path
+                || payload.base_env != spec.env
+                || payload.network != spec.network
+                || payload.control_services != spec.control_services
+            {
+                return Err(err(
+                    "Namespace terminal handle does not match the effective authorization spec",
+                ));
+            }
+            (
+                handle.sandbox_id.as_str(),
+                payload.outputs_path.as_str(),
+                payload.base_env.clone(),
+                payload.network.clone(),
+                handle.owned_paths().unwrap_or_default().to_vec(),
+            )
+        } else {
+            (
+                spec.scope.as_str(),
+                spec.outputs_path.as_str(),
+                spec.env.clone(),
+                spec.network.clone(),
+                spec.mounts
+                    .iter()
+                    .map(|mount| mount.mount_path.clone())
+                    .collect(),
+            )
+        };
+        let raw_root = crate::sandbox_dir(&self.base, id);
+        let root = IsolatedRoot::new(raw_root.clone());
+        let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
+        let host_outputs = root.resolve(outputs_path).map_err(err)?;
+        let secret_paths = spec
+            .mounts
+            .iter()
+            .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+            .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
+            .collect::<Result<_, _>>()?;
+        let replay_layout = replay_render_layout(&root, &host_workspace, spec)?;
+        let host_paths = replay_layout
+            .iter()
+            .take(spec.mounts.len())
+            .map(|mount| mount.host.clone())
+            .collect::<Vec<_>>();
+        // The provider-neutral terminal Memory owner performs the one typed
+        // preflight->takeover->receipt/FUSE replay sequence. Namespace only
+        // supplies its root/path projection and wraps the returned participant.
+        let terminal = crate::prepare_terminal_memory_replay(
+            &self.memory_mounter,
+            &raw_root,
+            &fingerprint,
+            spec,
+            handle,
+            expected_effect_fence,
+            terminal_effect_fence,
+            pc::Realization::Bind,
+            &host_paths,
+        )
+        .await?;
+        let Some(crate::TerminalMemoryReplay {
+            realization,
+            removal,
+            owned_root_present,
+            realized,
+            materializations,
+            memory_mounts,
+        }) = terminal
+        else {
+            return Ok(None);
+        };
+        let layout = if realized.is_empty() || !owned_root_present {
+            Vec::new()
+        } else {
+            replay_layout
+        };
+        Ok(Some(NamespaceSandbox {
+            id: id.to_owned(),
+            realization_root: raw_root,
+            root,
+            outputs_path: outputs_path.to_owned(),
+            host_workspace,
+            host_outputs,
+            base_env,
+            inherit_agent_stderr: self.inherit_agent_stderr,
+            secret_broker: self.secret_broker.clone(),
+            network,
+            control_services: spec.control_services.clone(),
+            control_directory: None,
+            control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
+            layout: std::sync::RwLock::new(layout),
+            realized,
+            secret_paths,
+            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+            memory_materializations: std::sync::Mutex::new(materializations),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
+            memory_mounter: self.memory_mounter.clone(),
+            realization: crate::realization_marker::LiveRealization::Current(realization),
+            terminal_removal: std::sync::Mutex::new(Some(removal)),
+            owned_paths: std::sync::Mutex::new(owned_paths),
+            adopted_handle: None,
+        }))
+    }
+
+    async fn adopt_sandbox_inner(
+        &self,
+        spec: Option<&pc::SandboxSpec>,
+        handle: &pc::SandboxHandle,
+        effect_fence: Option<&pc::SandboxEffectFence>,
+        requested_control_services: Option<&std::collections::BTreeSet<SandboxControlServiceKind>>,
+    ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        let payload = handle.namespace_payload(Self::provider_kind())?;
+        let requested_control_services = spec
+            .map(|spec| &spec.control_services)
+            .or(requested_control_services);
+        let control_services = pc::validate_adopted_sandbox_control_services(
+            requested_control_services,
+            &payload.control_services,
+            &Self::capabilities(),
+        )
+        .map_err(err)?;
+        if let Some(spec) = spec
+            && (handle.realization_fingerprint()
+                != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
+                || payload.outputs_path != spec.outputs_path
+                || payload.base_env != spec.env
+                || payload.network != spec.network)
+        {
+            return Err(err(
+                "Namespace sandbox handle does not match the effective adoption spec",
+            ));
+        }
+        let outputs_path = payload.outputs_path.clone();
+        let raw_root = crate::sandbox_dir(&self.base, &handle.sandbox_id);
+        let verified = crate::realization_marker::verify_adoption(
+            &raw_root,
+            handle.realization_fingerprint(),
+            handle.filesystem_effect_fence()?,
+            handle.filesystem_physical_incarnation()?,
+            effect_fence,
+        )?;
+        let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
+        let current_evidence = verified.as_ref().map(|(evidence, _)| evidence.clone());
+        let realization = match verified {
+            Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
+            None => crate::realization_marker::LiveRealization::LegacyAdopted,
+        };
+        let raw_identity =
+            awaken_sandbox_fs::directory_identity_nofollow(&raw_root).map_err(err)?;
+        if realization
+            .current()
+            .is_some_and(|evidence| evidence.root_identity() != raw_identity)
+        {
+            return Err(err(
+                "namespace sandbox root was substituted after fenced adoption",
+            ));
+        }
+        let canonical_root = std::fs::canonicalize(&raw_root).map_err(err)?;
+        if awaken_sandbox_fs::directory_identity_nofollow(&canonical_root).map_err(err)?
+            != raw_identity
+        {
+            return Err(err(
+                "namespace sandbox root changed identity during adoption",
+            ));
+        }
+        let root = IsolatedRoot::new(canonical_root);
+        let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
+        let host_outputs = root.resolve(&outputs_path).map_err(err)?;
+        let secret_paths = if let Some(spec) = spec {
+            spec.mounts
+                .iter()
+                .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+                .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
+                .collect::<Result<_, _>>()?
+        } else {
+            Vec::new()
+        };
+        let legacy_control_directory = if spec.is_none() {
+            control_directory_for(&root, &control_services)?
+        } else {
+            None
+        };
+        // Finish every fallible provider-specific path projection before the
+        // shared adoption owner can reacquire an external FUSE participant.
+        let mut layout = if let Some(spec) = spec {
+            replay_render_layout(&root, &host_workspace, spec)?
+        } else {
+            Vec::new()
+        };
+        let host_paths = spec.map(|spec| {
+            layout
+                .iter()
+                .take(spec.mounts.len())
+                .map(|mount| mount.host.clone())
+                .collect::<Vec<_>>()
+        });
+        let (realized, materializations, memory_mounts) = if let Some(receipt) = completion.as_ref()
+        {
+            let crate::AdoptionMemoryReplay {
+                realized,
+                materializations,
+                memory_mounts,
+            } = crate::prepare_adoption_memory_replay(
+                &self.memory_mounter,
+                &raw_root,
+                current_evidence.as_ref(),
+                effect_fence,
+                spec,
+                receipt,
+                handle,
+                pc::Realization::Bind,
+                host_paths.as_deref(),
+            )
+            .await?;
+            (realized, materializations, memory_mounts)
+        } else {
+            (
+                Vec::new(),
+                handle
+                    .memory_materializations()?
+                    .unwrap_or_default()
+                    .to_vec(),
+                Vec::new(),
+            )
+        };
+        let control_directory = layout
+            .iter()
+            .find(|mount| mount.boundary == RenderMountBoundary::PrivateRendezvous)
+            .map(|mount| mount.host.clone())
+            .or(legacy_control_directory);
+        if spec.is_none()
+            && let Some(directory) = control_directory.clone()
+        {
+            layout.push(private_control_mount(directory));
+        }
+        Ok(NamespaceSandbox {
+            id: handle.sandbox_id.clone(),
+            realization_root: raw_root,
+            root,
+            outputs_path,
+            host_workspace,
+            host_outputs,
+            base_env: payload.base_env.clone(),
+            inherit_agent_stderr: self.inherit_agent_stderr,
+            secret_broker: self.secret_broker.clone(),
+            network: payload.network.clone(),
+            control_services,
+            control_directory,
+            control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
+            layout: std::sync::RwLock::new(layout),
+            realized,
+            secret_paths,
+            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
+            memory_materializations: std::sync::Mutex::new(materializations),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
+            memory_mounter: self.memory_mounter.clone(),
+            realization,
+            terminal_removal: std::sync::Mutex::new(None),
+            owned_paths: std::sync::Mutex::new(handle.owned_paths().unwrap_or_default().to_vec()),
+            adopted_handle: handle.restoration().map(|_| handle.clone()),
         })
     }
 }
@@ -705,6 +1375,10 @@ impl NamespaceProvider {
 /// A realized OS-confined environment (bubblewrap on Linux, Seatbelt on macOS).
 pub struct NamespaceSandbox {
     id: String,
+    /// Stable provider pathname that owns marker/stage publication. The
+    /// execution root may be canonicalized for Seatbelt, but lifecycle evidence
+    /// must never silently migrate to that alternate spelling.
+    realization_root: PathBuf,
     root: IsolatedRoot,
     outputs_path: String,
     host_workspace: PathBuf,
@@ -718,19 +1392,53 @@ pub struct NamespaceSandbox {
     control_publication: Arc<NamespaceControlPublicationRegistry>,
     layout: std::sync::RwLock<Vec<RenderMount>>,
     realized: Vec<pc::RealizedMount>,
-    /// Host paths of realized secrets, shredded at dispose before the tree is reaped
-    /// (ADR-0023). Empty after an `adopt`.
+    /// Host paths of realized secrets, shredded at dispose before the tree is
+    /// reaped (ADR-0023). Unfenced legacy adoption has no frozen projection;
+    /// exact spec-aware adoption reconstructs these paths.
     secret_paths: Vec<PathBuf>,
-    /// Live memory-store mounts, harvested / unmounted at dispose before the tree is
-    /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
+    /// Live memory-store mounts, harvested / unmounted at dispose before the
+    /// tree is reaped. Exact spec-aware adoption reacquires Ready FUSE guards;
+    /// unfenced adoption rejects FUSE because it cannot reconstruct one.
     memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    /// Canonical durable heads for copy-backed Memory mounts.
+    memory_materializations: std::sync::Mutex<Vec<pc::MemoryMaterializationEvidence>>,
+    /// One process-local exact-evidence/effect acknowledgement. Durable Memory
+    /// heads remain owned by the handle and store; this only gates guard drain
+    /// against physical disposal.
+    memory_reconciliation_ack: pc::MemoryReconciliationAck,
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
-    /// Exact reader-owned wire handle retained only across adoption. Phase A
-    /// never constructs restoration evidence or a host-bind runtime locator.
+    /// One coherent marker/legacy realization authority.
+    realization: crate::realization_marker::LiveRealization,
+    terminal_removal: std::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
+    owned_paths: std::sync::Mutex<Vec<String>>,
+    /// Complete Phase-A future restoration wire retained only for pass-through.
+    /// Ordinary P/V2 handles remain derived from the provider marker authority.
     adopted_handle: Option<pc::SandboxHandle>,
 }
 
 impl NamespaceSandbox {
+    fn root_identity_for_access(
+        &self,
+    ) -> Result<Option<awaken_sandbox_fs::DirectoryIdentity>, pc::SandboxError> {
+        self.realization.root_identity_for_access(self.root.root())
+    }
+
+    fn require_root_identity(
+        &self,
+    ) -> Result<awaken_sandbox_fs::DirectoryIdentity, pc::SandboxError> {
+        self.realization.require_root_identity(self.root.root())
+    }
+
+    /// Reserve one provider-visible path in the durable V2 handle before a
+    /// live projection effect starts. Reservations remain monotonic so crash
+    /// recovery never loses evidence for a possibly materialized tree.
+    pub fn reserve_owned_path(&self, path: &str) {
+        let mut owned = self.owned_paths.lock().expect("owned paths lock poisoned");
+        if !owned.iter().any(|current| current == path) {
+            owned.push(path.to_string());
+        }
+    }
+
     fn workspace_root(&self) -> IsolatedRoot {
         IsolatedRoot::new(self.host_workspace.clone())
     }
@@ -741,7 +1449,14 @@ impl NamespaceSandbox {
         subdir: &str,
         files: &[(String, Vec<u8>, bool)],
     ) -> Result<(), pc::SandboxError> {
-        materialize_read_only_tree_at(&self.workspace_root(), workspace_relative(subdir), files)
+        let root_identity = self.require_root_identity()?;
+        let sandbox_relative = pc::WorkspaceLayout::child(workspace_relative(subdir));
+        materialize_read_only_tree_at(
+            &self.root,
+            root_identity,
+            sandbox_relative.trim_start_matches('/'),
+            files,
+        )
     }
 
     /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
@@ -753,34 +1468,35 @@ impl NamespaceSandbox {
     /// Remove only the runtime-owned resource projection while retaining the
     /// Session workspace and every non-resource file.
     pub fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
-        let projection = self.root.resolve(".mnt").map_err(err)?;
-        match std::fs::symlink_metadata(&projection) {
-            Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
-                std::fs::remove_file(projection).map_err(err)
-            }
-            Ok(_) => std::fs::remove_dir_all(projection).map_err(err),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(err(error)),
-        }
+        let root_identity = self.require_root_identity()?;
+        awaken_sandbox_fs::remove_relative_entry_exact(
+            self.root.root(),
+            root_identity,
+            std::path::Path::new(
+                pc::WorkspaceLayout::RESOURCE_PROJECTION_ROOT.trim_start_matches('/'),
+            ),
+        )
+        .map_err(err)
     }
 
     pub fn provision_repo(
         &self,
-        logical: &str,
-        url: &str,
-        initial_branch: Option<&str>,
-        initial_commit: Option<&str>,
+        plan: &pc::RepositoryRealizationPlan,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
+        self.require_root_identity()?;
+        plan.validate_mount_path()?;
         provision_repo_at(
             &self.workspace_root(),
-            workspace_relative(logical),
-            url,
-            initial_branch,
-            initial_commit,
+            workspace_relative(&plan.mount_path),
+            &plan.transport_url,
+            plan.initial_branch.as_deref(),
+            plan.initial_commit.as_deref(),
             credential,
         )
-        .map_err(err)
+        .map_err(err)?;
+        self.reserve_owned_path(&plan.mount_path);
+        Ok(())
     }
 
     pub fn push_repo(
@@ -789,6 +1505,10 @@ impl NamespaceSandbox {
         expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
+        self.require_root_identity()
+            .map_err(pc::RepositoryPublicationError::Unavailable)?;
+        plan.validate_mount_path()
+            .map_err(pc::RepositoryPublicationError::Unavailable)?;
         push_repo_to_at(
             &self.workspace_root(),
             workspace_relative(&plan.mount_path),
@@ -798,16 +1518,55 @@ impl NamespaceSandbox {
         )
     }
 
-    pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
-        if subdir.starts_with('/') && !subdir.starts_with("/workspace") {
-            list_files_at(&self.root, subdir.trim_start_matches('/'))
+    pub fn list_files(&self, subdir: &str) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
+        let has_copy_materializations = !self
+            .memory_materializations
+            .lock()
+            .map_err(|_| err("Memory materializations lock poisoned"))?
+            .is_empty();
+        let Some(identity) = self.root_identity_for_access()? else {
+            if has_copy_materializations {
+                return Err(err(
+                    "copy-backed Memory lost its exact namespace root before reconciliation",
+                ));
+            }
+            return Ok(Vec::new());
+        };
+        let files = if subdir.starts_with('/') && !pc::WorkspaceLayout::contains(subdir) {
+            list_files_at(&self.root, identity, subdir.trim_start_matches('/'))
         } else {
-            list_files_at(&self.workspace_root(), workspace_relative(subdir))
+            let sandbox_relative = pc::WorkspaceLayout::child(workspace_relative(subdir));
+            list_files_at(
+                &self.root,
+                identity,
+                sandbox_relative.trim_start_matches('/'),
+            )
+        }?;
+        // A recovered copy must never turn concurrent physical-root loss into
+        // an empty CAS candidate. The bytes above are descriptor-captured; this
+        // postcheck distinguishes a missing-root convenience result.
+        if has_copy_materializations {
+            self.require_root_identity()?;
         }
+        Ok(files)
     }
 
-    pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
-        scan_skill_dir_at(&self.workspace_root(), workspace_relative(subdir))
+    pub fn scan_skill_dir(
+        &self,
+        subdir: &str,
+    ) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
+        let Some(identity) = self.root_identity_for_access()? else {
+            return Ok(Vec::new());
+        };
+        let logical_subdir = workspace_relative(subdir);
+        let sandbox_relative = pc::WorkspaceLayout::child(logical_subdir);
+        scan_skill_dir_at(
+            &self.root,
+            identity,
+            sandbox_relative.trim_start_matches('/'),
+            logical_subdir,
+        )
+        .map_err(Into::into)
     }
 
     pub fn materialize_inline(
@@ -815,32 +1574,35 @@ impl NamespaceSandbox {
         logical: &str,
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
-        let path = jailed_at(&self.workspace_root(), workspace_relative(logical)).map_err(err)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(err)?;
-        }
-        std::fs::write(&path, contents).map_err(err)?;
-        restrict_to_owner(&path)
+        let root_identity = self.require_root_identity()?;
+        let sandbox_relative = pc::WorkspaceLayout::child(workspace_relative(logical));
+        awaken_sandbox_fs::write_relative_file_atomic(
+            self.root.root(),
+            root_identity,
+            std::path::Path::new(sandbox_relative.trim_start_matches('/')),
+            contents,
+            0o600,
+        )
+        .map_err(err)
     }
 
     /// Remove one dynamically projected workspace path. Missing paths are an
     /// idempotent success and lexical traversal is rejected by the shared jail.
     pub fn remove_inline(&self, logical: &str) -> Result<(), pc::SandboxError> {
-        let path = self
-            .workspace_root()
-            .resolve(workspace_relative(logical))
-            .map_err(err)?;
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path).map_err(err),
-            Ok(_) => std::fs::remove_file(path).map_err(err),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(err(error)),
-        }
+        let root_identity = self.require_root_identity()?;
+        let sandbox_relative = pc::WorkspaceLayout::child(workspace_relative(logical));
+        awaken_sandbox_fs::remove_relative_entry_exact(
+            self.root.root(),
+            root_identity,
+            std::path::Path::new(sandbox_relative.trim_start_matches('/')),
+        )
+        .map_err(err)
     }
 
     /// Revoke a dynamically attached mount and its runtime-owned backing path.
     /// Non-mount workspace paths retain the ordinary lexical removal behavior.
     pub fn remove_mount(&self, logical: &str) -> Result<(), pc::SandboxError> {
+        let root_identity = self.require_root_identity()?;
         let removed = {
             let mut layout = self.layout.write().expect("namespace layout lock poisoned");
             let before = layout.len();
@@ -851,17 +1613,16 @@ impl NamespaceSandbox {
             return self.remove_inline(logical);
         }
         let path = host_projection_path(&self.root, &self.host_workspace, logical)?;
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path).map_err(err),
-            Ok(_) => std::fs::remove_file(path).map_err(err),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(err(error)),
-        }
+        let relative = path
+            .strip_prefix(self.root.root())
+            .map_err(|_| err("namespace mount path escaped its sandbox root"))?;
+        awaken_sandbox_fs::remove_relative_entry_exact(self.root.root(), root_identity, relative)
+            .map_err(err)
     }
 
     fn translate_macos_path(&self, value: &str) -> Option<String> {
         let mut mappings: Vec<(&str, &std::path::Path)> = vec![
-            ("/workspace", &self.host_workspace),
+            (pc::WorkspaceLayout::ROOT, &self.host_workspace),
             (&self.outputs_path, &self.host_outputs),
         ];
         let layout = self.layout.read().expect("namespace layout lock poisoned");
@@ -930,7 +1691,8 @@ impl NamespaceSandbox {
             )
             .apply(process);
         } else {
-            crate::RuntimePathEnv::new("/workspace", self.outputs_path.clone()).apply(process);
+            crate::RuntimePathEnv::new(pc::WorkspaceLayout::ROOT, self.outputs_path.clone())
+                .apply(process);
         }
         for var in &command.env {
             process.env(&var.name, var.value.expose());
@@ -1005,6 +1767,7 @@ impl NamespaceSandbox {
         &self,
         command: pc::Command,
     ) -> Result<(Box<dyn pc::ProcessHandle>, Box<dyn AgentChannel>), pc::SandboxError> {
+        self.require_root_identity()?;
         let command = self.materialize_command(command).await?;
         let argv = self.render_argv(&command)?;
         let mut cmd = TokioCommand::new(&argv[0]);
@@ -1033,181 +1796,18 @@ impl NamespaceSandbox {
     }
 }
 
-#[async_trait]
-impl pc::Sandbox for NamespaceSandbox {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn handle(&self) -> pc::SandboxHandle {
-        if let Some(handle) = &self.adopted_handle {
-            return handle.clone();
-        }
-        pc::SandboxHandle::namespace(
-            if cfg!(target_os = "macos") {
-                pc::NamespaceProviderKind::Seatbelt
-            } else {
-                pc::NamespaceProviderKind::Bubblewrap
-            },
-            &self.id,
-            pc::NamespaceSandboxHandleV1 {
-                outputs_path: self.outputs_path.clone(),
-                base_env: self.base_env.clone(),
-                network: self.network.clone(),
-                control_services: self.control_services.clone(),
-            },
+#[path = "namespace/sandbox_contract.rs"]
+mod sandbox_contract;
+impl NamespaceSandbox {
+    fn shred_secrets(&self) -> Result<(), pc::SandboxError> {
+        crate::shred_secret_paths_at(
+            &self.root,
+            self.root_identity_for_access()?,
+            &self.secret_paths,
         )
-    }
-
-    async fn spawn(
-        &self,
-        command: pc::Command,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        let stdio = command.stdio;
-        let command = self.materialize_command(command).await?;
-        let argv = self.render_argv(&command)?;
-        let mut cmd = TokioCommand::new(&argv[0]);
-        awaken_local_process::configure_process_group(&mut cmd);
-        cmd.args(&argv[1..]);
-        self.configure_command(&mut cmd, &command)?;
-        let (out, e) = match stdio {
-            pc::Stdio::Inherit => (ProcStdio::inherit(), ProcStdio::inherit()),
-            pc::Stdio::Piped => (ProcStdio::piped(), ProcStdio::piped()),
-            pc::Stdio::Null => (ProcStdio::null(), ProcStdio::null()),
-        };
-        cmd.stdout(out).stderr(e);
-        let child = cmd.spawn().map_err(err)?;
-        Ok(Box::new(LocalProcess::spawned(child)))
-    }
-
-    async fn attach(
-        &self,
-        req: pc::MountRequirement,
-    ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        // Dynamic mount decision table:
-        // Inline bytes + RO/RW -> materialize and add one bind;
-        // any source requiring an external resolver -> reject without layout change.
-        pc::validate_mount_requirements(
-            std::slice::from_ref(&req),
-            &NamespaceProvider::capabilities(),
-        )
-        .map_err(err)?;
-        let host = host_projection_path(&self.root, &self.host_workspace, &req.mount_path)?;
-        if let Some((rendered, realized, guard)) =
-            realize_memory_mount(&self.memory_mounter, &req, &host).await?
-        {
-            let mut retained = self.memory_mounts.lock().await;
-            let mut layout = self.layout.write().expect("namespace layout lock poisoned");
-            layout.retain(|mount| mount.dest != req.mount_path);
-            layout.push(rendered);
-            retained.push(guard);
-            return Ok(realized);
-        }
-        let (contents, content_hash) = match &req.source {
-            pc::MountSource::Inline { contents } => (contents.as_bytes(), None),
-            pc::MountSource::InlineBytes {
-                contents,
-                content_hash,
-            } => (contents.as_slice(), content_hash.clone()),
-            _ => {
-                return Err(err(format!(
-                    "runtime attach for mount {:?} requires a provider-owned resolver",
-                    req.mount_id
-                )));
-            }
-        };
-        verify(&req.source, contents)?;
-        if let Some(parent) = host.parent() {
-            std::fs::create_dir_all(parent).map_err(err)?;
-        }
-        std::fs::write(&host, contents).map_err(err)?;
-        restrict_to_owner(&host)?;
-        let mut layout = self.layout.write().expect("namespace layout lock poisoned");
-        layout.retain(|mount| mount.dest != req.mount_path);
-        layout.push(RenderMount {
-            host,
-            dest: req.mount_path.clone(),
-            read_only: req.access == pc::MountAccess::ReadOnly,
-            boundary: RenderMountBoundary::General,
-        });
-        Ok(pc::RealizedMount {
-            mount_id: req.mount_id,
-            mount_path: req.mount_path,
-            access: req.access,
-            realization: pc::Realization::Bind,
-            content_hash,
-        })
-    }
-
-    async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
-        Ok(
-            crate::artifacts::scan_outputs(&self.host_outputs, &self.outputs_path)?
-                .into_iter()
-                .map(|(a, _)| a)
-                .collect(),
-        )
-    }
-
-    async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        for (artifact, host) in
-            crate::artifacts::scan_outputs(&self.host_outputs, &self.outputs_path)?
-        {
-            if artifact.id == id {
-                return std::fs::read(&host).map_err(err);
-            }
-        }
-        Err(err(format!("no artifact with id {id:?}")))
-    }
-
-    fn realized(&self) -> &[pc::RealizedMount] {
-        &self.realized
-    }
-
-    async fn process(
-        &self,
-        _process_id: &str,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(err(
-            "local namespace tier cannot reattach to a process across owners",
-        ))
-    }
-
-    async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        Ok(if self.root.root().exists() {
-            pc::SandboxStatus::Ready
-        } else {
-            pc::SandboxStatus::Terminated
-        })
-    }
-
-    async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
-        Ok(())
-    }
-
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        // Order: harvest memory (reads edits back) → shred secrets → reap the tree, so
-        // a promised memory write-back is never lost and no credential lingers on disk.
-        self.control_publication.close_for_dispose().await;
-        self.release_memory_mounts().await?;
-        for path in &self.secret_paths {
-            if let Ok(meta) = std::fs::metadata(path) {
-                let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);
-            }
-        }
-        let root = self.root.root();
-        if root.exists() {
-            std::fs::remove_dir_all(root).map_err(err)?;
-        }
-        if let Some(control_directory) = &self.control_directory {
-            match std::fs::remove_dir_all(control_directory) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(err(error)),
-            }
-        }
-        Ok(())
     }
 }
 
 #[cfg(test)]
+#[path = "namespace/tests.rs"]
 mod tests;

@@ -186,8 +186,8 @@ impl SessionEnvironment {
         root: FileReadRoot,
     ) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
         match self {
-            Self::Workdir(sandbox) => Ok(sandbox.list_files(root.local_logical())),
-            Self::Namespace { sandbox, .. } => Ok(sandbox.list_files(root.local_logical())),
+            Self::Workdir(sandbox) => sandbox.list_files(root.local_logical()),
+            Self::Namespace { sandbox, .. } => sandbox.list_files(root.local_logical()),
             Self::Container { sandbox, .. } => {
                 let root = match root {
                     #[cfg(test)]
@@ -210,7 +210,7 @@ impl SessionEnvironment {
         matches!(self, Self::Container { sandbox, .. } if sandbox.is_recovered())
     }
 
-    pub(crate) fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
+    pub(crate) fn scan_skill_dir(&self, subdir: &str) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
             Self::Namespace { sandbox, .. } => sandbox.scan_skill_dir(subdir),

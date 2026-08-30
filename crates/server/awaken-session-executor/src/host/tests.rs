@@ -5392,7 +5392,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
         host.session_environment("published-skill-thread")
             .await
             .expect("S1 sandbox")
-            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
+            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR).unwrap()
             .iter()
             .any(|file| file.id == selected),
         "S1/E2"
@@ -5430,7 +5430,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             .session_environment("selected-without-delivery")
             .await
             .expect("S2 sandbox")
-            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
+            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR).unwrap()
             .is_empty(),
         "S2"
     );
@@ -5490,7 +5490,7 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             .session_environment("unselected-delivery")
             .await
             .expect("S3 sandbox")
-            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
+            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR).unwrap()
             .is_empty(),
         "S3"
     );
@@ -5902,7 +5902,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .await
         .expect("L10 claimed-style executable context");
     let environment = executable.env.as_ref().expect("L10/E2 eager Environment");
-    let files = environment.scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR);
+    let files = environment.scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR).unwrap();
     let materialized = files
         .iter()
         .find(|file| file.id == "release-signal")

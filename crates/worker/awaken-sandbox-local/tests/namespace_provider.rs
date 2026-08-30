@@ -369,11 +369,14 @@ async fn an_unbound_host_path_is_invisible_inside_the_namespace() {
 
 /// Ungated companion to `dispose_reaps_and_shreds_a_secret_mounted_sandbox`: prove the
 /// credential bytes are actually ZEROED (not merely unlinked) before the tree is reaped.
-/// A second hard link to the secret inode, kept OUTSIDE the reaped tree, observes the
-/// in-place zero-write (`std::fs::write` truncates the inode) that both local tiers do —
-/// the namespace-tier twin of the Workdir `shred_tests` "reads zeros" assertion.
 #[tokio::test]
 async fn dispose_zeroes_the_credential_bytes_before_reaping() {
+    // Cause/effect decision table: C1 the exact secret is one unaliased regular
+    // file; C2 an already-open descriptor observes that inode without adding a
+    // directory alias. R1 C1+C2 => disposal overwrites the full credential,
+    // fsyncs it, and only then reaps the tree; the retained descriptor reads the
+    // zero bytes. A hard-linked target is the distinct fail-closed R2 rule in
+    // sandbox-fs and must never be introduced merely as a test observer.
     let tmp = tempfile::tempdir().unwrap();
     let mut s = spec("t-shred-zero");
     s.mounts.push(pc::MountRequirement {
@@ -394,18 +397,17 @@ async fn dispose_zeroes_the_credential_bytes_before_reaping() {
     // The realized credential path (root layout: <base>/<scope>/workspace/.auth).
     let secret = tmp.path().join("t-shred-zero/workspace/.auth");
     assert_eq!(std::fs::read(&secret).unwrap(), b"sk-secret");
-    // A second hard link OUTSIDE the reaped tree observes the same inode after dispose.
-    let observe = tmp.path().join("observe.auth");
-    std::fs::hard_link(&secret, &observe).unwrap();
-    assert_eq!(std::fs::read(&observe).unwrap(), b"sk-secret");
+    let mut observer = std::fs::File::open(&secret).unwrap();
 
     sandbox.dispose().await.unwrap();
 
-    // The directory entry is gone, but the surviving hard link proves the bytes were
-    // overwritten with zeros in place — a shred, not just an unlink.
+    // The directory entry is gone, but the retained descriptor proves the bytes
+    // were overwritten with zeros in place — a shred, not just an unlink.
     assert!(!secret.exists(), "the sandbox tree was reaped");
+    let mut observed = Vec::new();
+    std::io::Read::read_to_end(&mut observer, &mut observed).unwrap();
     assert_eq!(
-        std::fs::read(&observe).unwrap(),
+        observed,
         vec![0u8; 9],
         "the credential bytes must be zeroed before reap, not merely unlinked"
     );
@@ -660,6 +662,14 @@ async fn file_store_mount_is_realized_as_a_bind() {
 
 #[tokio::test]
 async fn content_hash_mismatch_and_all_or_nothing() {
+    // Mount-realization cause/effect table: C1 source bytes match/mismatch the
+    // declared digest; C2 every required source resolves/one is absent; C3 a
+    // Memory mount guard was acquired before a later failure. R1 match+all
+    // required => publish one complete layout; R2 mismatch or missing required
+    // => publish none and reap the exact root; R3 acquired Memory guard+later
+    // failure => retain that guard with its materialization evidence until
+    // compensation finishes. This test exercises R2; Memory lifecycle tests
+    // exercise the coupled guard/evidence success and teardown paths in R1/R3.
     let tmp = tempfile::tempdir().unwrap();
     // mismatch
     let mut spec = spec("t-hash");

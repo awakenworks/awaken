@@ -1,4 +1,3 @@
-
 use super::*;
 use awaken_provisioning_contract::{
     IsolationClass, MountAccess, MountLifetime, MountRequirement, MountSource, NetworkPolicy,
@@ -68,7 +67,7 @@ async fn dispose_shreds_a_materialized_secret_before_reaping() {
     assert_eq!(std::fs::read(&path).unwrap(), b"sk-secret");
 
     // Shred overwrites the bytes with zeros (runs before the directory is reaped).
-    sandbox.shred_secrets();
+    sandbox.shred_secrets().unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), vec![0u8; 9]);
 
     // A non-secret mount is NOT tracked (only credentials are shredded).
@@ -287,6 +286,31 @@ fn bare_spec(scope: &str) -> SandboxSpec {
     let mut s = secret_spec(scope);
     s.mounts = Vec::new();
     s
+}
+
+#[tokio::test]
+async fn legacy_local_adoption_reemits_v1_without_invented_evidence() {
+    // Compatibility rule: a V1 row may support a non-Repository adoption,
+    // but it cannot become V2 or gain owned paths merely by crossing a new
+    // provider process.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let scope = "legacy-local-v1";
+    std::fs::create_dir_all(crate::sandbox_dir(tmp.path(), scope)).unwrap();
+    let legacy = pc::SandboxHandle::local(
+        scope,
+        pc::LocalSandboxHandleV1 {
+            outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.into(),
+            base_env: Vec::new(),
+            continuation_excluded_paths: Vec::new(),
+            deny_tool_egress: false,
+        },
+    );
+    let adopted = provider.adopt_sandbox(&legacy).await.unwrap();
+    let emitted = Sandbox::handle(&adopted);
+    assert_eq!(emitted, legacy);
+    assert!(emitted.realization_fingerprint().is_none());
+    assert!(emitted.owned_paths().is_none());
 }
 
 #[tokio::test]

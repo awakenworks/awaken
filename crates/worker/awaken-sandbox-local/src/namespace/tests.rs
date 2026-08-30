@@ -1,4 +1,3 @@
-
 use super::*;
 use tokio::io::AsyncReadExt as _;
 
@@ -58,17 +57,6 @@ fn ns_spec(scope: &str, mounts: Vec<pc::MountRequirement>) -> pc::SandboxSpec {
         command: Vec::new(),
         deny_tool_egress: false,
     }
-}
-
-// Restore capability rule: C1=Namespace owns no durable cross-process
-// restore/adoption substrate; E1=advertise no checkpoint format so provider
-// selection fails closed before any physical side effect. This intentionally
-// forbids treating its process-local directory as a durable restore target.
-#[test]
-fn namespace_does_not_advertise_checkpoint_restore_without_a_durable_substrate() {
-    let tmp = tempfile::tempdir().unwrap();
-    let provider = NamespaceProvider::new(tmp.path());
-    assert!(pc::SandboxProvider::checkpoint_formats(&provider).is_empty());
 }
 
 #[tokio::test]
@@ -173,7 +161,7 @@ async fn namespace_lifecycle_helpers_cover_adoption_and_projection_boundaries() 
         .materialize_inline("nested/value.txt", b"value")
         .unwrap();
     assert_eq!(
-        sandbox.list_files("nested"),
+        sandbox.list_files("nested").unwrap(),
         vec![("value.txt".to_string(), b"value".to_vec())]
     );
     sandbox.remove_inline("nested").unwrap();
@@ -183,11 +171,14 @@ async fn namespace_lifecycle_helpers_cover_adoption_and_projection_boundaries() 
     std::fs::create_dir_all(&outputs).unwrap();
     std::fs::write(outputs.join("result.txt"), b"result").unwrap();
     assert_eq!(
-        sandbox.list_files("/outputs"),
+        sandbox.list_files("/outputs").unwrap(),
         vec![("result.txt".to_string(), b"result".to_vec())]
     );
 
-    let projection = sandbox.root.resolve(".mnt").unwrap();
+    let projection = sandbox
+        .root
+        .resolve(pc::WorkspaceLayout::RESOURCE_PROJECTION_ROOT)
+        .unwrap();
     std::fs::create_dir_all(projection.join("resource")).unwrap();
     sandbox.clear_resource_projection().unwrap();
     sandbox.clear_resource_projection().unwrap();
@@ -222,79 +213,26 @@ async fn adoption_preserves_network_policy_and_rejects_corrupt_handles() {
         .remove("network");
     assert!(serde_json::from_value::<pc::SandboxHandle>(corrupt).is_err());
 
+    let legacy = pc::SandboxHandle::namespace(
+        NamespaceProvider::provider_kind(),
+        "t-ns-network-recovery",
+        pc::NamespaceSandboxHandleV1 {
+            outputs_path: spec.outputs_path.clone(),
+            base_env: spec.env.clone(),
+            network: pc::NetworkPolicy::None,
+            control_services: Default::default(),
+        },
+    );
+    let legacy = serde_json::from_value::<pc::SandboxHandle>(serde_json::to_value(legacy).unwrap())
+        .expect("legacy V1 remains decodable");
+    provider
+        .adopt_sandbox(&legacy)
+        .await
+        .expect("legacy non-Repository namespace remains adoptable");
+
     let mut unknown_schema = serde_json::to_value(&handle).unwrap();
-    unknown_schema["payload"]["schema"] = serde_json::json!("namespace_v2");
+    unknown_schema["payload"]["schema"] = serde_json::json!("namespace_v3");
     assert!(serde_json::from_value::<pc::SandboxHandle>(unknown_schema).is_err());
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn adoption_restores_only_exact_realized_control_topology() {
-    /* Namespace adoption cause/effect table:
-     * C1=create realizes one demanded private control mount; C2=generic
-     * adoption; C3=spec-aware adoption with the same set; C4=requested and
-     * realized differ; C5=legacy handle omits realized evidence. E1=handle
-     * persists the exact set; E2=both valid adoption ports restore the same
-     * private mount; E3=mismatch fails closed; E4=legacy ordinary adoption
-     * stays control-free. Rules: N1 C1=>E1; N2 C1+C2|C3=>E2;
-     * N3 C4=>E3; N4 C5+generic=>E4; N5 C5+new demand=>E3.
-     */
-    use pc::Sandbox as _;
-
-    let temporary = tempfile::tempdir().unwrap();
-    let provider = NamespaceProvider::new(temporary.path());
-    let mut requested = ns_spec("namespace-control-adoption", Vec::new());
-    requested
-        .control_services
-        .insert(SandboxControlServiceKind::RepositoryGitCredential);
-    let created = provider.create_sandbox(&requested).await.unwrap();
-    let handle = created.handle();
-    assert_eq!(
-        handle
-            .namespace_payload(pc::NamespaceProviderKind::Bubblewrap)
-            .unwrap()
-            .control_services,
-        requested.control_services,
-        "N1/E1"
-    );
-
-    for adopted in [
-        provider.adopt_sandbox(&handle).await.unwrap(),
-        provider
-            .adopt_sandbox_with_control_services(&handle, &requested.control_services)
-            .await
-            .unwrap(),
-    ] {
-        assert_eq!(
-            adopted.control_services, requested.control_services,
-            "N2/E2"
-        );
-        assert!(adopted.control_directory.is_some(), "N2/E2 private mount");
-    }
-    assert!(
-        provider
-            .adopt_sandbox_with_control_services(&handle, &Default::default())
-            .await
-            .is_err(),
-        "N3/E3 requested narrower"
-    );
-
-    let mut legacy = serde_json::to_value(&handle).unwrap();
-    legacy["payload"]
-        .as_object_mut()
-        .unwrap()
-        .remove("control_services");
-    let legacy: pc::SandboxHandle = serde_json::from_value(legacy).unwrap();
-    let adopted = provider.adopt_sandbox(&legacy).await.unwrap();
-    assert!(adopted.control_services.is_empty(), "N4/E4");
-    assert!(adopted.control_directory.is_none(), "N4/E4");
-    assert!(
-        provider
-            .adopt_sandbox_with_control_services(&legacy, &requested.control_services)
-            .await
-            .is_err(),
-        "N5/E3 legacy plus new demand"
-    );
 }
 
 /// Live attach cause/effect decision table:

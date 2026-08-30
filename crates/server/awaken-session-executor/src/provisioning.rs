@@ -752,7 +752,7 @@ impl SharedHost {
         workspace: &str,
         env: &crate::session_environment::SessionEnvironment,
     ) -> Result<(), ResourcePurgeError> {
-        for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
+        for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR).map_err(|error| ResourcePurgeError::Storage(error.to_string()))? {
             if let Some(result) = self
                 .skills
                 .persist_authored(workspace, &skill.id, &skill.content)

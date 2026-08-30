@@ -1,13 +1,8 @@
 //! Atomic, path-jailed projection of runtime-owned immutable trees.
 
-use std::io::Write as _;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use awaken_provisioning_contract as pc;
 
 use crate::IsolatedRoot;
-
-static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn err(error: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(error.to_string())
@@ -15,18 +10,10 @@ fn err(error: impl ToString) -> pc::SandboxError {
 
 pub(crate) fn materialize_read_only_tree_at(
     root: &IsolatedRoot,
+    root_identity: awaken_sandbox_fs::DirectoryIdentity,
     subdir: &str,
     files: &[(String, Vec<u8>, bool)],
 ) -> Result<(), pc::SandboxError> {
-    let base = root.resolve(subdir).map_err(err)?;
-    if let Ok(metadata) = std::fs::symlink_metadata(&base) {
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(err(format!("read-only tree root `{subdir}` is unsafe")));
-        }
-    } else {
-        std::fs::create_dir_all(&base).map_err(err)?;
-    }
-
     for (relative, bytes, executable) in files {
         if relative.is_empty()
             || relative.contains('\\')
@@ -42,63 +29,14 @@ pub(crate) fn materialize_read_only_tree_at(
             subdir.trim_matches('/'),
             relative.trim_start_matches('/')
         );
-        let destination = root.resolve(&logical).map_err(err)?;
-        if !destination.starts_with(&base) || relative.is_empty() {
-            return Err(err(format!("read-only tree path `{relative}` is unsafe")));
-        }
-        let parent = destination
-            .parent()
-            .ok_or_else(|| err(format!("read-only tree path `{relative}` has no parent")))?;
-        std::fs::create_dir_all(parent).map_err(err)?;
-        let mut cursor = parent.to_path_buf();
-        while cursor.starts_with(&base) {
-            if let Ok(metadata) = std::fs::symlink_metadata(&cursor)
-                && metadata.file_type().is_symlink()
-            {
-                return Err(err(format!(
-                    "read-only tree path `{relative}` crosses a symlink"
-                )));
-            }
-            if cursor == base || !cursor.pop() {
-                break;
-            }
-        }
-        if let Ok(metadata) = std::fs::symlink_metadata(&destination)
-            && (metadata.file_type().is_symlink() || !metadata.is_file())
-        {
-            return Err(err(format!("read-only tree file `{relative}` is unsafe")));
-        }
-        if !std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
-            let sequence = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
-            let write = (|| -> std::io::Result<()> {
-                let mut file = std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&temporary)?;
-                file.write_all(bytes)?;
-                file.sync_all()?;
-                drop(file);
-                std::fs::rename(&temporary, &destination)
-            })();
-            if let Err(error) = write {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(err(error));
-            }
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = if *executable { 0o500 } else { 0o400 };
-            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode))
-                .map_err(err)?;
-        }
-        #[cfg(not(unix))]
-        let mut permissions = std::fs::metadata(&destination).map_err(err)?.permissions();
-        #[cfg(not(unix))]
-        permissions.set_readonly(true);
-        #[cfg(not(unix))]
-        std::fs::set_permissions(&destination, permissions).map_err(err)?;
+        awaken_sandbox_fs::write_relative_file_atomic(
+            root.root(),
+            root_identity,
+            std::path::Path::new(&logical),
+            bytes,
+            if *executable { 0o500 } else { 0o400 },
+        )
+        .map_err(err)?;
     }
     Ok(())
 }
@@ -115,9 +53,12 @@ mod tests {
     fn preserves_binary_permissions_and_rejects_unsafe_paths() {
         let temp = tempfile::tempdir().unwrap();
         let root = IsolatedRoot::new(temp.path().join("skill-tree"));
+        std::fs::create_dir(root.root()).unwrap();
+        let identity = awaken_sandbox_fs::directory_identity_nofollow(root.root()).unwrap();
         let binary = vec![0, 159, 146, 150, 255];
         materialize_read_only_tree_at(
             &root,
+            identity,
             ".skills/greet",
             &[
                 ("SKILL.md".into(), b"# greet".to_vec(), false),
@@ -155,12 +96,14 @@ mod tests {
 
         materialize_read_only_tree_at(
             &root,
+            identity,
             ".skills/greet",
             &[("SKILL.md".into(), b"# greet".to_vec(), false)],
         )
         .unwrap();
         materialize_read_only_tree_at(
             &root,
+            identity,
             ".skills/greet",
             &[("SKILL.md".into(), b"# greet v2".to_vec(), false)],
         )
@@ -176,6 +119,7 @@ mod tests {
             assert!(
                 materialize_read_only_tree_at(
                     &root,
+                    identity,
                     ".skills/bad",
                     &[(relative.into(), Vec::new(), false)],
                 )
@@ -187,6 +131,7 @@ mod tests {
         assert!(
             materialize_read_only_tree_at(
                 &root,
+                identity,
                 "unsafe-root",
                 &[("value".into(), Vec::new(), false)],
             )
@@ -197,6 +142,7 @@ mod tests {
         assert!(
             materialize_read_only_tree_at(
                 &root,
+                identity,
                 "unsafe-destination",
                 &[("dir".into(), b"not-a-directory".to_vec(), false)],
             )
@@ -212,6 +158,7 @@ mod tests {
             assert!(
                 materialize_read_only_tree_at(
                     &root,
+                    identity,
                     "unsafe-parent",
                     &[("link/value".into(), Vec::new(), false)],
                 )
