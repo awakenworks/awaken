@@ -14,6 +14,7 @@ pub(super) struct ProjectedToolIndex {
     pub(super) sources: HashSet<(String, String)>,
 }
 
+#[derive(Clone)]
 pub(super) struct SessionRecord {
     pub(super) agent_id: String,
     pub(super) session: Session,

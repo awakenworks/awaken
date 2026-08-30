@@ -1181,12 +1181,22 @@ impl ManagedState {
         }
 
         let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let previous_event_ids = record
+        // Build the complete disposable projection on a private snapshot. A
+        // transcript can be observed between its ToolUse and ToolResult commits,
+        // and any later validation/canonicalization error must not retain the
+        // earlier mutations (message-consumption marks, cursors, or Events) in
+        // this process. Durable Session/Runtime facts remain the sole recovery
+        // authority; only a fully valid projection replaces the warm cache.
+        let mut staged_record = sessions
+            .get(session_id)
+            .cloned()
+            .ok_or(StateError::NotFound)?;
+        let previous_event_ids = staged_record
             .events
             .iter()
             .map(|event| event.id.clone())
             .collect::<std::collections::HashSet<_>>();
+        let record = &mut staged_record;
         merge_durable_inbound_projections(record, durable_inbound_projections);
         record.primary_thread_usage = primary_thread_usage;
         let unseen_budget_reach = budget_reach_projections
@@ -1965,7 +1975,9 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
-        self.broadcast_new_event_ids(session_id, record, &previous_event_ids);
+        let committed_record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        *committed_record = staged_record;
+        self.broadcast_new_event_ids(session_id, committed_record, &previous_event_ids);
         Ok(true)
     }
 }

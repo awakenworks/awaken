@@ -2937,6 +2937,151 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
 }
 
 #[tokio::test]
+async fn failed_committed_projection_does_not_poison_warm_recovery() {
+    // Cause/effect graph: C1 one stable committed prefix contains a valid
+    // assistant Message followed by a ToolResult whose ToolUse has not yet
+    // entered that prefix; C2 projecting C1 performs earlier append/cursor/
+    // message-consumption work before tool correlation detects the invalid
+    // suffix; C3 a later stable prefix inserts the missing ToolUse before that
+    // same result; C4 a live subscriber spans both refreshes. Effects: E1 C1+C2
+    // returns the existing fail-closed error; E2 no staged Event, cursor, or
+    // message-consumption mutation reaches the warm SessionRecord and C4 sees
+    // no broadcast; E3 C3 recovers in the same process without restart and
+    // emits the valid text/call/result exactly once; E4 replay is idempotent.
+    // Constraint: durable Session, lifecycle, and transcript stores remain the
+    // only authorities; the process cache is replaced only after the complete
+    // projection and canonicalization succeed.
+    //
+    // | Rule | Prefix | Prior failed refresh | Repair | Effects |
+    // |---|---|---|---|---|
+    // | A1 | text + orphan result | no | no | E1,E2 |
+    // | A2 | text + use + result | yes | yes | E3 |
+    // | A3 | same valid prefix | recovered | unchanged | E4 |
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    state
+        .application
+        .begin_activity(&session.id)
+        .await
+        .expect("commit running Session activity");
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        1,
+        &session.id,
+        &RunId("run-atomic-projection".into()),
+        RunLifecycleEventKind::Running,
+        RunState::Running,
+    ));
+    let visible = Message::text(
+        MessageId("message-before-orphan-result".into()),
+        Role::Assistant,
+        "visible only after the complete prefix validates",
+    );
+    let result = Message::new(
+        MessageId("message-orphan-result".into()),
+        Role::Tool,
+        vec![ContentBlock::ToolResult {
+            tool_use_id: "call-atomic-projection".into(),
+            content: vec![ContentBlock::text("recovered")],
+            is_error: false,
+        }],
+    );
+    runtime.replace_committed_messages(vec![(2, visible.clone()), (3, result.clone())]);
+    let (_, mut live) = state.stream_subscribe(&session.id).unwrap();
+
+    let error = state
+        .refresh_committed_events(&session.id)
+        .await
+        .expect_err("A1/E1 orphan ToolResult fails closed");
+    assert!(
+        error
+            .to_string()
+            .contains("call-atomic-projection` has no preceding tool-use identity"),
+        "A1/E1 preserves the actionable correlation failure: {error}"
+    );
+    assert!(
+        state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data
+            .is_empty(),
+        "A1/E2 no partial Event projection survives"
+    );
+    assert_eq!(
+        state.lifecycle_cursor(&session.id).unwrap(),
+        RunLifecycleCursor::default(),
+        "A1/E2 no cursor mutation survives"
+    );
+    assert!(
+        !state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&session.id)
+            .unwrap()
+            .message_was_projected(&session.id, &visible.id.0),
+        "A1/E2 no message-consumption mutation survives"
+    );
+    assert!(
+        matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "A1/E2 no failed projection is broadcast"
+    );
+
+    let tool_use = Message::new(
+        MessageId("message-recovered-tool-use".into()),
+        Role::Assistant,
+        vec![ContentBlock::tool_use(
+            "call-atomic-projection",
+            "shell",
+            serde_json::json!({"command":"true"}),
+        )],
+    );
+    runtime.replace_committed_messages(vec![(2, visible), (3, tool_use), (4, result)]);
+    state
+        .refresh_committed_events(&session.id)
+        .await
+        .expect("A2/E3 repaired durable prefix recovers without restart");
+    let recovered = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    for event_type in ["agent.message", "agent.tool_use", "agent.tool_result"] {
+        assert_eq!(
+            recovered
+                .iter()
+                .filter(|event| event.type_str() == event_type)
+                .count(),
+            1,
+            "A2/E3 {event_type} recovered exactly once"
+        );
+    }
+    state
+        .refresh_committed_events(&session.id)
+        .await
+        .expect("A3/E4 identical prefix replays");
+    assert_eq!(
+        state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data,
+        recovered,
+        "A3/E4 replay is idempotent"
+    );
+}
+
+#[tokio::test]
 async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
     // Causes: the fixtures below establish `root terminal defers idle until the session activity
     // cas settles` with the concrete inputs, state, dependencies, and failure triggers used by this
