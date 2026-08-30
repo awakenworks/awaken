@@ -183,20 +183,7 @@ impl GenaiExecutor {
 #[async_trait]
 impl LlmExecutor for GenaiExecutor {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
-        let options = self.chat_options(&request, false)?;
-
-        let response = tokio::time::timeout(
-            self.timeout,
-            self.client.exec_chat(model, genai_request, Some(&options)),
-        )
-        .await
-        // A timeout is retryable: the same call may succeed on retry.
-        .map_err(|_| Error::Timeout("model call timed out".to_string()))?
-        .map_err(|err| classify_error(&err.to_string()))?;
-
-        require_usable_response(from_genai_response(response))
+        self.infer_non_streaming(request, None).await
     }
 
     async fn infer_streaming(
@@ -315,7 +302,11 @@ impl LlmExecutor for GenaiExecutor {
                 }
                 // Committed response: genai's parsed, ordered content and usage.
                 ChatStreamEvent::End(end) => {
-                    stop_reason = end.captured_stop_reason.as_ref().and_then(map_stop_reason);
+                    stop_reason = end
+                        .captured_stop_reason
+                        .as_ref()
+                        .map(map_stop_reason)
+                        .transpose()?;
                     captured = end.captured_content;
                     usage = end.captured_usage.as_ref().map(map_usage);
                     if let Some(r) = end.captured_reasoning_content {
@@ -365,6 +356,30 @@ impl LlmExecutor for GenaiExecutor {
 }
 
 impl GenaiExecutor {
+    async fn infer_non_streaming(
+        &self,
+        request: ChatRequest,
+        max_tokens_override: Option<u32>,
+    ) -> Result<ChatResponse> {
+        let model = request.model_binding.model_ref.clone();
+        let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
+        let mut options = self.chat_options(&request, false)?;
+        if let Some(max_tokens) = max_tokens_override {
+            options = options.with_max_tokens(max_tokens);
+        }
+
+        let response = tokio::time::timeout(
+            self.timeout,
+            self.client.exec_chat(model, genai_request, Some(&options)),
+        )
+        .await
+        // A timeout is retryable: the same call may succeed on retry.
+        .map_err(|_| Error::Timeout("model call timed out".to_string()))?
+        .map_err(|err| classify_error(&err.to_string()))?;
+
+        require_usable_response(from_genai_response(response)?)
+    }
+
     fn chat_options(
         &self,
         request: &ChatRequest,
@@ -494,6 +509,23 @@ pub enum CredentialProbe {
     Unknown,
 }
 
+/// Total tri-state reduction after the transport adapter has classified whether
+/// a failed request is an authentication rejection. Success always wins; every
+/// non-authentication failure remains inconclusive rather than retiring a key.
+#[must_use]
+pub const fn credential_probe_outcome(
+    succeeded: bool,
+    authentication_rejected: bool,
+) -> CredentialProbe {
+    if succeeded {
+        CredentialProbe::Valid
+    } else if authentication_rejected {
+        CredentialProbe::Invalid
+    } else {
+        CredentialProbe::Unknown
+    }
+}
+
 /// Live-probe an Anthropic-compatible LLM credential by making a minimal, one-token
 /// request against `base_url` with `api_key` for `model`. A success is `Valid`; a
 /// clear authentication/permission rejection is `Invalid`; anything else (rate
@@ -523,8 +555,8 @@ pub async fn probe_credential(
         }],
         tools: Vec::new(),
     };
-    match executor.infer(request).await {
-        Ok(_) => CredentialProbe::Valid,
+    match executor.infer_non_streaming(request, Some(1)).await {
+        Ok(_) => credential_probe_outcome(true, false),
         Err(error) => {
             let message = error.to_string().to_lowercase();
             const AUTH: &[&str] = &[
@@ -539,11 +571,7 @@ pub async fn probe_credential(
                 "permission",
                 "forbidden",
             ];
-            if AUTH.iter().any(|needle| message.contains(needle)) {
-                CredentialProbe::Invalid
-            } else {
-                CredentialProbe::Unknown
-            }
+            credential_probe_outcome(false, AUTH.iter().any(|needle| message.contains(needle)))
         }
     }
 }
@@ -821,17 +849,22 @@ pub fn from_genai_tool_call(call: &GenaiToolCall) -> ToolCall {
 }
 
 /// Map a `genai::ChatResponse` onto the neutral `ChatResponse`.
-pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse {
+pub fn from_genai_response(response: genai::chat::ChatResponse) -> Result<ChatResponse> {
     let output = with_reasoning(
         map_assistant_output(&response.content),
         response.reasoning_content.as_deref(),
         ResponseTransport::NonStreaming,
     );
-    ChatResponse {
+    let stop_reason = response
+        .stop_reason
+        .as_ref()
+        .map(map_stop_reason)
+        .transpose()?;
+    Ok(ChatResponse {
         output,
         usage: Some(map_usage(&response.usage)),
-        stop_reason: response.stop_reason.as_ref().and_then(map_stop_reason),
-    }
+        stop_reason,
+    })
 }
 
 fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
@@ -929,17 +962,19 @@ mod visible_response_tests {
 }
 
 /// Map the SDK's stop reason onto the neutral one. A provider-specific reason
-/// the SDK cannot classify (`Other`) maps to `None` — unknown, treated by the
-/// loop as a natural end.
-pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Option<StopReason> {
+/// the SDK cannot classify (`Other`) fails at this adapter boundary instead of
+/// being erased into `None` and mistaken for a natural end by Runtime.
+pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Result<StopReason> {
     use genai::chat::StopReason as GenaiStopReason;
     match reason {
-        GenaiStopReason::Completed(_) => Some(StopReason::NaturalEnd),
-        GenaiStopReason::MaxTokens(_) => Some(StopReason::MaxTokens),
-        GenaiStopReason::ToolCall(_) => Some(StopReason::ToolUse),
-        GenaiStopReason::StopSequence(_) => Some(StopReason::StopSequence),
-        GenaiStopReason::ContentFilter(_) => Some(StopReason::ContentFilter),
-        GenaiStopReason::Other(_) => None,
+        GenaiStopReason::Completed(_) => Ok(StopReason::NaturalEnd),
+        GenaiStopReason::MaxTokens(_) => Ok(StopReason::MaxTokens),
+        GenaiStopReason::ToolCall(_) => Ok(StopReason::ToolUse),
+        GenaiStopReason::StopSequence(_) => Ok(StopReason::StopSequence),
+        GenaiStopReason::ContentFilter(_) => Ok(StopReason::ContentFilter),
+        GenaiStopReason::Other(_) => Err(Error::Provider(
+            "model returned an unclassified stop reason".into(),
+        )),
     }
 }
 
@@ -1173,6 +1208,31 @@ mod classify_tests {
     }
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn credential_probe_tri_state_is_total_and_fail_safe() {
+        let succeeded = kani::any::<bool>();
+        let authentication_rejected = kani::any::<bool>();
+        let outcome = credential_probe_outcome(succeeded, authentication_rejected);
+        if succeeded {
+            assert_eq!(outcome, CredentialProbe::Valid);
+        } else if authentication_rejected {
+            assert_eq!(outcome, CredentialProbe::Invalid);
+        } else {
+            assert_eq!(outcome, CredentialProbe::Unknown);
+        }
+    }
+
+    #[kani::proof]
+    fn unclassified_provider_stop_reason_fails_closed() {
+        let result = map_stop_reason(&genai::chat::StopReason::Other(String::new()));
+        assert!(matches!(result, Err(Error::Provider(_))));
+    }
+}
+
 #[cfg(test)]
 mod hermetic_tests {
     //! Network-free coverage for the paths that previously only had `#[ignore]`
@@ -1329,6 +1389,38 @@ mod hermetic_tests {
             }
         });
         format!("http://{addr}/")
+    }
+
+    /// Return one fixed JSON response and retain the exact HTTP request. The
+    /// credential-probe contract test uses this instead of a mock at the neutral
+    /// port so the final provider wire, including `max_tokens`, is exercised.
+    async fn spawn_capturing_status_server(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds");
+        let addr = listener.local_addr().expect("addr");
+        let requests = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accepts probe request");
+            let mut buf = [0u8; 8192];
+            let read = socket.read(&mut buf).await.expect("reads probe request");
+            seen.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&buf[..read]).into_owned());
+            let response = format!(
+                "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("writes probe response");
+        });
+        (format!("http://{addr}/"), requests)
     }
 
     async fn spawn_json_pages(
@@ -1587,6 +1679,41 @@ mod hermetic_tests {
             outcome,
             CredentialProbe::Unknown,
             "a transient 503 must probe Unknown, not Invalid"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn credential_probe_uses_one_token_and_no_tools_on_the_provider_wire() {
+        // Cause/effect decision table:
+        // C1 a credential probe is requested; C2 the selected endpoint answers
+        // successfully. E1 exactly one output token is requested; E2 no tool is
+        // exposed; E3 the tiny probe prompt is the only message; E4 success is
+        // Valid. Constraint: normal inference options are unchanged because the
+        // bound is applied only by the canonical non-streaming executor path's
+        // probe override. Rule P1=C1+C2=>E1+E2+E3+E4.
+        let response = r#"{"id":"msg_probe","type":"message","role":"assistant","content":[{"type":"text","text":"p"}],"model":"claude-test","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}"#;
+        let (base_url, requests) = spawn_capturing_status_server("HTTP/1.1 200 OK", response).await;
+
+        let outcome = probe_credential(base_url, "probe-secret", "claude-test").await;
+        assert_eq!(outcome, CredentialProbe::Valid, "P1/E4");
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "one bounded probe request");
+        let (_, body) = requests[0]
+            .split_once("\r\n\r\n")
+            .expect("HTTP request has a body");
+        let request: serde_json::Value = serde_json::from_str(body).expect("JSON probe body");
+        assert_eq!(request["max_tokens"], 1, "P1/E1");
+        assert_eq!(
+            request["messages"].as_array().map(Vec::len),
+            Some(1),
+            "P1/E3"
+        );
+        assert_eq!(request["messages"][0]["content"], "ping", "P1/E3");
+        assert!(request.get("tools").is_none(), "P1/E2");
+        assert!(
+            !body.contains("probe-secret"),
+            "secret stays in the auth header"
         );
     }
 }
