@@ -564,6 +564,8 @@ pub awaken_runtime_contract::llm::StopReason::MaxTokens
 pub awaken_runtime_contract::llm::StopReason::NaturalEnd
 pub awaken_runtime_contract::llm::StopReason::StopSequence
 pub awaken_runtime_contract::llm::StopReason::ToolUse
+impl awaken_runtime_contract::llm::StopReason
+pub const fn awaken_runtime_contract::llm::StopReason::admits_continuation(self, bool, bool, usize, usize) -> bool
 pub struct awaken_runtime_contract::llm::AssistantOutput
 pub awaken_runtime_contract::llm::AssistantOutput::blocks: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 impl awaken_runtime_contract::llm::AssistantOutput
