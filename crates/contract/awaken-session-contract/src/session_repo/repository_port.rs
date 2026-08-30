@@ -185,7 +185,18 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// Implementations preserve the intrinsic Workspace partition in the same
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
-    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError>;
+    async fn reconcilable_sessions_page(
+        &self,
+        _after: Option<&SessionRecoveryCursor>,
+    ) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+        Err(SessionRepositoryError::Unavailable(
+            "Session repository does not support paged reconciliation scans".into(),
+        ))
+    }
+
+    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+        self.reconcilable_sessions_page(None).await
+    }
 
     /// Count one typed Environment phase across every canonical live Session
     /// row. Unsupported adapters fail closed; a recovery batch is not global.

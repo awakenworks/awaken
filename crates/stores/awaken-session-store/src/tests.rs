@@ -2647,3 +2647,54 @@ fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
         "RS2/E1 canonical opener cannot read the forged shape"
     );
 }
+
+
+
+#[tokio::test]
+async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_once() {
+    /* Reconciliation page cause/effect decision table. C1 the durable index
+     * contains fewer than, exactly, or more than RECOVERY_BATCH_SIZE
+     * decode-valid rows; C2 the caller supplies no cursor or the exact cursor
+     * returned by page one; C3 every row still needs reconciliation. Effects:
+     * E1 each page returns at most the fixed batch size; E2 a full page with a
+     * successor returns its exclusive keyset cursor; E3 following that cursor
+     * returns every later row exactly once; E4 the terminal page has no cursor.
+     * R1 <batch+None=>E1+E4 is covered by the ordinary recovery tests;
+     * R2 batch+1+None=>E1+E2; R3 R2 cursor=>E1+E3+E4. Cursor pagination changes
+     * no durable row, quarantine rule, queue, or reconciliation predicate. */
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = SqliteManagedSessionRepository::open(
+        &dir.path().join("recovery-pages.db").to_string_lossy(),
+    )
+    .unwrap();
+    let total = usize::try_from(RECOVERY_BATCH_SIZE).unwrap() + 1;
+    let expected = (0..total)
+        .map(|index| format!("paged-{index:03}"))
+        .collect::<Vec<_>>();
+    for session_id in &expected {
+        create_fixture(&sqlite, "workspace", sample(session_id), Vec::new()).await;
+    }
+
+    let first = sqlite.reconcilable_sessions_page(None).await.unwrap();
+    assert_eq!(
+        first.sessions.len(),
+        usize::try_from(RECOVERY_BATCH_SIZE).unwrap(),
+        "R2/E1 fixed first page"
+    );
+    let cursor = first.next_cursor.clone().expect("R2/E2 next page");
+    assert_eq!(cursor.session_id(), expected[total - 2], "R2/E2");
+
+    let second = sqlite
+        .reconcilable_sessions_page(Some(&cursor))
+        .await
+        .unwrap();
+    assert_eq!(second.sessions.len(), 1, "R3/E1");
+    assert!(second.next_cursor.is_none(), "R3/E4 terminal page");
+    let observed = first
+        .sessions
+        .into_iter()
+        .chain(second.sessions)
+        .map(|scoped| scoped.session.session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(observed, expected, "R3/E3 no duplicate or missing row");
+}

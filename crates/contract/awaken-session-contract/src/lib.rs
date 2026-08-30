@@ -138,8 +138,9 @@ pub use model_resolution::{
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
     ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
-    SessionResourceManifest, repository_transport_credential_target,
-    repository_transport_credential_usage, repository_transport_material_binding,
+    SessionResourceCompatibilityFacts, SessionResourceManifest, SessionResourceTransition,
+    repository_transport_credential_target, repository_transport_credential_usage,
+    repository_transport_material_binding,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
@@ -200,3 +201,5 @@ pub use tool_configuration::SessionToolConfiguration;
 
 pub use environment::{SourceReleasePreparationEffect, SourceReleasePreparedReceipt};
 pub use session_realization::realization_lease_generation_authorizes;
+
+pub use session_repo::SessionRecoveryCursor;

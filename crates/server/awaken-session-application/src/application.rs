@@ -747,7 +747,7 @@ async fn reconcile_work_dispatches(
     environments: &dyn SessionEnvironmentSource,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
-    let sessions = match sessions.reconcilable_sessions().await {
+    let sessions = match crate::scan_all_reconcilable_sessions(sessions).await {
         Ok(sessions) => sessions,
         Err(error) => {
             report.failures.push(WorkDispatchFailure {

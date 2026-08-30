@@ -1,6 +1,11 @@
 //! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
+
+mod pending;
+pub use pending::*;
+mod run_coordination;
+pub use run_coordination::*;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -9,129 +14,6 @@ use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
-
-/// The tool a run awaits: its id, model-visible name/input, and whether it is
-/// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
-/// confirmation (`agent.tool_use{ask}`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Pending {
-    pub tool_use_id: String,
-    pub name: String,
-    pub input: serde_json::Value,
-    pub client_executed: bool,
-}
-
-impl Pending {
-    /// Classify the externally answerable value directly from the one committed
-    /// [`awaken_agent_contract::agent::awaiting::ResumeTicket`]. Host execution,
-    /// Session application, and protocol recovery must all use this decoder so
-    /// warm and cold reads cannot disagree with the committed projection.
-    pub fn from_resume_ticket(
-        ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
-    ) -> Option<Self> {
-        Self::from_await_target(ticket.target())
-    }
-
-    /// Rebuild the same externally answerable projection from a historical
-    /// committed Awaiting fact after its active resume ticket has been consumed.
-    /// Both live and cold paths share this decoder so they cannot classify the
-    /// closed target differently.
-    pub fn from_await_target(
-        target: &awaken_agent_contract::agent::awaiting::AwaitTarget,
-    ) -> Option<Self> {
-        use awaken_agent_contract::agent::awaiting::{AwaitTarget, ToolAwaitReason};
-
-        match target {
-            AwaitTarget::ToolCall {
-                reason: reason @ (ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution),
-                call_id,
-                tool,
-            } => Some(Self {
-                tool_use_id: call_id.clone(),
-                name: tool.tool_id.clone(),
-                input: tool.arguments.clone(),
-                client_executed: *reason == ToolAwaitReason::ClientExecution,
-            }),
-            AwaitTarget::RemoteInput { call_id, .. } => Some(Self {
-                tool_use_id: call_id.clone(),
-                name: "agent_input".to_string(),
-                input: serde_json::json!({ "reason": target.reason().as_stream_str() }),
-                client_executed: true,
-            }),
-            AwaitTarget::ToolCall {
-                reason: ToolAwaitReason::ScheduledAction | ToolAwaitReason::Delegation,
-                ..
-            }
-            | AwaitTarget::Pause(_) => None,
-        }
-    }
-}
-
-/// Stable child-Run relationship projected at a session boundary. Runtime owns
-/// the relationship; Managed and other adapters only render it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DelegatedRun {
-    pub run_id: RunId,
-    pub parent_call_id: String,
-    pub agent_id: String,
-    pub status: DelegationStatus,
-}
-
-/// Stable view of the runtime-owned delegation authority after the parent Run
-/// has crossed a terminal fence and reached quiescence.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DelegatedRunSnapshot {
-    pub delegated_runs: Vec<DelegatedRun>,
-    /// Ordinary logical child Threads admitted under this Session's dispatch
-    /// affinity. These remain distinct from synchronous delegated Runs.
-    pub coordinated_thread_ids: Vec<awaken_agent_contract::agent::thread::Id>,
-    /// Monotonic committed-state position from which `delegated_runs` was rebuilt.
-    pub watermark: u64,
-    /// Backend-wide commit high-water read only after terminal quiescence. This
-    /// is the immutable first-listability anchor for the Session terminal wire
-    /// projection; it is intentionally distinct from `commands.len()`.
-    pub runtime_commit_cursor: u64,
-}
-
-/// Session-approved delivery that resumes one exact committed budget pause.
-/// The activity epoch is newly admitted for this continuation; durable dispatch
-/// implementations atomically rotate their existing row to this coordinate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionBudgetResumeDelivery {
-    pub session_id: String,
-    pub thread_id: awaken_agent_contract::agent::thread::Id,
-    pub run_id: RunId,
-    pub correlation_id: String,
-    /// The claimed Run's next committed-operation ordinal while this exact
-    /// pause is current. It is read from committed recovery truth, remains
-    /// stable while Awaiting, and advances when the same Run pauses again.
-    pub pause_generation: u64,
-    /// Existing durable Session activity coordinate carried by a dispatch row.
-    /// The application transfers it to `session_activity_epoch` atomically;
-    /// foreground Runs without a row carry `None`.
-    pub prior_session_activity_epoch: Option<u64>,
-    pub session_activity_epoch: u64,
-}
-
-/// One committed budget pause paired with its authoritative generation.
-///
-/// The generation is derived from the Run recovery snapshot rather than a
-/// separate counter or pause registry. This makes repeated BudgetReached
-/// pauses in the same Run distinct while keeping exact update replay stable.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionBudgetResumeTicket {
-    pub ticket: awaken_agent_contract::agent::awaiting::ResumeTicket,
-    pub pause_generation: u64,
-    pub prior_session_activity_epoch: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionBudgetResumeDisposition {
-    /// The durable dispatch row accepted the resume and new epoch.
-    Dispatched,
-    /// The exact ticket was already consumed by an earlier delivery/replay.
-    Stale,
-}
 
 /// The result of running one settled Step (a new Run, or a resume).
 ///

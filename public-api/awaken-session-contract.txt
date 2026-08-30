@@ -595,6 +595,7 @@ pub enum awaken_session_contract::SessionInputError
 pub awaken_session_contract::SessionInputError::InvalidBindingId(alloc::string::String)
 pub awaken_session_contract::SessionInputError::InvalidCredentialPin(alloc::string::String)
 pub awaken_session_contract::SessionInputError::InvalidSkillPin(alloc::string::String)
+pub awaken_session_contract::SessionInputError::InvalidTransition(alloc::string::String)
 pub awaken_session_contract::SessionInputError::MountCollision(alloc::string::String)
 pub awaken_session_contract::SessionInputError::Registry(awaken_resource_contract::registry::ResourceRegistryError)
 pub awaken_session_contract::SessionInputError::UnknownBinding(alloc::string::String)
@@ -1243,14 +1244,15 @@ pub fn awaken_session_contract::ResolvedRepositoryCredential::validate_for_repos
 pub struct awaken_session_contract::ResolvedSessionResources
 impl awaken_session_contract::ResolvedSessionResources
 pub fn awaken_session_contract::ResolvedSessionResources::attach(&self, awaken_session_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
+pub fn awaken_session_contract::ResolvedSessionResources::compatibility_facts(&self) -> awaken_session_contract::SessionResourceCompatibilityFacts
 pub fn awaken_session_contract::ResolvedSessionResources::detach(&self, &awaken_resource_contract::input::BindingId) -> core::result::Result<(Self, awaken_session_contract::ResolvedInput), awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::ResolvedSessionResources::inputs(&self) -> &[awaken_session_contract::ResolvedInput]
 pub fn awaken_session_contract::ResolvedSessionResources::into_parts(self) -> (alloc::vec::Vec<awaken_session_contract::ResolvedInput>, alloc::vec::Vec<awaken_session_contract::ResolvedSkillBinding>)
 pub fn awaken_session_contract::ResolvedSessionResources::replace(&self, awaken_session_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
+pub fn awaken_session_contract::ResolvedSessionResources::sandbox_layout_bindings(&self) -> alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
 pub fn awaken_session_contract::ResolvedSessionResources::skills(&self) -> &[awaken_session_contract::ResolvedSkillBinding]
 pub fn awaken_session_contract::ResolvedSessionResources::try_new(alloc::vec::Vec<awaken_session_contract::ResolvedInput>, alloc::vec::Vec<awaken_session_contract::ResolvedSkillBinding>) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::ResolvedSessionResources::update_input(&self, &awaken_resource_contract::input::BindingId, impl core::ops::function::FnOnce(&mut awaken_session_contract::ResolvedInput)) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
-pub fn awaken_session_contract::ResolvedSessionResources::validate_new_binding(&self, &awaken_resource_contract::input::BindingId, &str) -> core::result::Result<(), awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::ResolvedSessionResources::with_skills(self, alloc::vec::Vec<awaken_session_contract::ResolvedSkillBinding>) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_session_contract::ResolvedSessionResources
 pub fn awaken_session_contract::ResolvedSessionResources::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
@@ -1566,10 +1568,15 @@ pub awaken_session_contract::SessionRealizationTarget::lease_expires_at_unix_ms:
 pub awaken_session_contract::SessionRealizationTarget::owner: alloc::string::String
 pub awaken_session_contract::SessionRealizationTarget::reassign_existing_lease: bool
 pub awaken_session_contract::SessionRealizationTarget::runtime_incarnation: alloc::string::String
+pub struct awaken_session_contract::SessionRecoveryCursor(_)
+impl awaken_session_contract::SessionRecoveryCursor
+pub fn awaken_session_contract::SessionRecoveryCursor::after_session_id(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_session_contract::SessionRecoveryCursor::session_id(&self) -> &str
 pub struct awaken_session_contract::SessionRecoveryQuarantine
 pub awaken_session_contract::SessionRecoveryQuarantine::reason: alloc::string::String
 pub awaken_session_contract::SessionRecoveryQuarantine::session_id: alloc::string::String
 pub struct awaken_session_contract::SessionRecoveryScan
+pub awaken_session_contract::SessionRecoveryScan::next_cursor: core::option::Option<awaken_session_contract::SessionRecoveryCursor>
 pub awaken_session_contract::SessionRecoveryScan::quarantined: alloc::vec::Vec<awaken_session_contract::SessionRecoveryQuarantine>
 pub awaken_session_contract::SessionRecoveryScan::sessions: alloc::vec::Vec<awaken_session_contract::ScopedPersistedSession>
 pub struct awaken_session_contract::SessionRepositoryPublicationCleanup
@@ -1612,6 +1619,12 @@ pub awaken_session_contract::SessionResourceActivation::resource_id: awaken_reso
 pub awaken_session_contract::SessionResourceActivation::revision: u64
 pub awaken_session_contract::SessionResourceActivation::session_id: alloc::string::String
 pub awaken_session_contract::SessionResourceActivation::state: awaken_session_contract::ActivationState
+pub struct awaken_session_contract::SessionResourceCompatibilityFacts
+impl awaken_session_contract::SessionResourceCompatibilityFacts
+pub const fn awaken_session_contract::SessionResourceCompatibilityFacts::has_credentialed_repository(self) -> bool
+pub const fn awaken_session_contract::SessionResourceCompatibilityFacts::has_readonly_input(self) -> bool
+pub const fn awaken_session_contract::SessionResourceCompatibilityFacts::has_repository(self) -> bool
+pub const fn awaken_session_contract::SessionResourceCompatibilityFacts::has_resources(self) -> bool
 pub struct awaken_session_contract::SessionResourceManifest
 pub awaken_session_contract::SessionResourceManifest::resources: awaken_session_contract::ResolvedSessionResources
 pub awaken_session_contract::SessionResourceManifest::revision: u64
@@ -1641,6 +1654,7 @@ pub fn awaken_session_contract::SessionResourceState::complete_repository_retire
 pub fn awaken_session_contract::SessionResourceState::complete_terminal_release(&mut self, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_session_contract::SessionResourceState::desired(&self) -> &awaken_session_contract::ResolvedSessionResources
 pub fn awaken_session_contract::SessionResourceState::desired_generation(&self) -> (u64, &awaken_session_contract::ResolvedSessionResources)
+pub fn awaken_session_contract::SessionResourceState::ensure_terminal_repository_retirements(&mut self) -> bool
 pub fn awaken_session_contract::SessionResourceState::from_active(awaken_session_contract::ResolvedSessionResources) -> Self
 pub fn awaken_session_contract::SessionResourceState::has_active(&self) -> bool
 pub fn awaken_session_contract::SessionResourceState::has_references(&self) -> bool
@@ -1653,6 +1667,15 @@ pub fn awaken_session_contract::SessionResourceState::resource_references(&self)
 pub fn awaken_session_contract::SessionResourceState::revise_unattempted_pending(&mut self, &str, awaken_session_contract::ResolvedSessionResources) -> core::result::Result<u64, awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::rollback(&mut self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::start_attempt(&mut self) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
+pub struct awaken_session_contract::SessionResourceTransition
+impl awaken_session_contract::SessionResourceTransition
+pub fn awaken_session_contract::SessionResourceTransition::desired(&self) -> &awaken_session_contract::SessionResourceManifest
+pub fn awaken_session_contract::SessionResourceTransition::new(awaken_session_contract::SessionResourceManifest, awaken_session_contract::SessionResourceManifest) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
+pub fn awaken_session_contract::SessionResourceTransition::operation_fingerprint(&self) -> alloc::string::String
+pub fn awaken_session_contract::SessionResourceTransition::previous(&self) -> &awaken_session_contract::SessionResourceManifest
+pub fn awaken_session_contract::SessionResourceTransition::reversed(&self) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_session_contract::SessionResourceTransition
+pub fn awaken_session_contract::SessionResourceTransition::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_session_contract::SessionRevision(pub u64)
 pub struct awaken_session_contract::SessionRunCommandFingerprint(_)
 impl awaken_session_contract::SessionRunCommandFingerprint
@@ -1859,6 +1882,7 @@ pub fn awaken_session_contract::ManagedSessionRepository::list_by_owner<'life0, 
 pub fn awaken_session_contract::ManagedSessionRepository::owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::pending_lifecycle<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::ManagedLifecycleFact>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::reconcilable_sessions<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionRecoveryScan, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::ManagedSessionRepository::reconcilable_sessions_page<'life0, 'life1, 'async_trait>(&'life0 self, core::option::Option<&'life1 awaken_session_contract::SessionRecoveryCursor>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionRecoveryScan, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::replay_create<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 awaken_session_contract::IdempotencyRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::PersistedSession>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::sessions_referencing_credential_source<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_credential_contract::CredentialSourceId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::PersistedSession>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::sessions_referencing_vault<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::PersistedSession>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

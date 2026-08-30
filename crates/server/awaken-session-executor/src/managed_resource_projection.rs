@@ -416,3 +416,312 @@ impl crate::ManagedHost {
         Ok(staged)
     }
 }
+
+
+
+impl ManagedHost {
+
+    /// Wire the live resource-invariant port used at activation and Memory use.
+    /// Configuration was already selected by the Session control plane; this port
+    /// only validates trusted Workspace ownership, lifecycle state, and the frozen
+    /// config version. It does not make an authorization decision.
+    #[must_use]
+    pub fn with_resource_validator(
+        mut self,
+        validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
+    ) -> Self {
+        self.resource_validator = Some(validator);
+        self
+    }
+
+    /// Install the Repository-specific live binding guard used by a distributed
+    /// Worker without granting it Resource Registry database access.
+    #[must_use]
+    pub fn with_repository_binding_verifier(
+        mut self,
+        verifier: Arc<dyn RepositoryBindingVerifier<awaken_dispatch::RunClaim>>,
+    ) -> Self {
+        self.repository_binding_verifier = Some(verifier);
+        self
+    }
+
+    /// Install the same Repository binding boundary under terminal Session
+    /// publication authority. Remote implementations require the exact durable
+    /// command plus realization lease; local registry implementations reuse the
+    /// generic verifier and therefore retain one Resource/config validation path.
+    #[must_use]
+    pub fn with_repository_publication_binding_verifier(
+        mut self,
+        verifier: Arc<
+            dyn RepositoryBindingVerifier<(
+                awaken_session_contract::SessionRepositoryPublicationCommand,
+                awaken_session_contract::SessionRealizationLease,
+            )>,
+        >,
+    ) -> Self {
+        self.repository_publication_binding_verifier = Some(verifier);
+        self
+    }
+
+    /// Realize an already-resolved, secret-free manifest. The pinned Memory/
+    /// Repository configuration in `inputs` remains authoritative; the per-item
+    /// validation in `stage_resolved_input` checks only current ownership/state
+    /// and the frozen version's integrity. No Agent binding or current config is
+    /// configured here.
+    pub(super) async fn compile_effective_inputs(
+        &self,
+        thread: &str,
+        workspace: &str,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_dispatch::RunClaim>,
+    ) -> Result<CompiledEffectiveInputs, RunError> {
+        let mut all = crate::provisioning::StagedResources::default();
+        let mut memory_bindings = std::collections::HashMap::new();
+        for input in inputs.inputs() {
+            let one = self.stage_resolved_input(workspace, input, claim).await?;
+            // Read this exact projection before merging it. Two bindings may
+            // legally reference the same store with different access, and a
+            // prior mount must never become the authority for the later one.
+            let materialization_reference = one.mounts.iter().find_map(|mount| {
+                if let awaken_provisioning_contract::MountSource::MemoryStore {
+                    materialization_reference,
+                    ..
+                } = &mount.source
+                {
+                    materialization_reference.clone()
+                } else {
+                    None
+                }
+            });
+            if let Some((binding_id, memory)) = self
+                .compile_memory_binding(thread, workspace, input, materialization_reference)
+                .await?
+            {
+                memory_bindings.insert(binding_id, memory);
+            }
+            all.mounts.extend(one.mounts);
+            all.prompts.extend(one.prompts);
+            all.memory_prompts.extend(one.memory_prompts);
+            all.binding_checks.extend(one.binding_checks);
+            all.repositories.extend(one.repositories);
+        }
+
+        Ok(CompiledEffectiveInputs {
+            staged: all,
+            memory_bindings,
+        })
+    }
+
+    /// Compile the one Memory-specific leaf shared by ordinary Session staging
+    /// and post-commit recovery from a frozen dispatch. The caller owns Resource
+    /// selection and may install the result into a resident Session slot; this
+    /// leaf only binds one already-resolved input and never opens an Environment.
+    pub(super) async fn compile_memory_binding(
+        &self,
+        session_thread: &str,
+        workspace: &str,
+        input: &awaken_session_contract::ResolvedInput,
+        materialization_reference: Option<String>,
+    ) -> Result<Option<(String, Arc<crate::memory::BoundMemory>)>, RunError> {
+        let awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id,
+            config,
+        } = &input.source
+        else {
+            return Ok(None);
+        };
+        let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
+        if let Some(reference) = &materialization_reference {
+            // Remote Memory claim decision table: active + exact config =>
+            // snapshot preflight succeeds; archived/config-changed/stale claim
+            // fails before the mounter reuses a prior projection.
+            self.host
+                .memory_repository()
+                .snapshot_heads(reference)
+                .await
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        }
+        let handle = self.host.platform_memory_handle(
+            materialization_reference
+                .clone()
+                .unwrap_or_else(|| memory_store_id.to_string()),
+            writable,
+        );
+        let resource_validator = if materialization_reference.is_some() {
+            None
+        } else {
+            Some(
+                self.resource_validator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "Memory extraction requires a configured resource binding validator",
+                        )
+                    })?
+                    .clone(),
+            )
+        };
+        Ok(Some((
+            input.binding_id.to_string(),
+            Arc::new(self.host.memory.bind(
+                session_thread,
+                workspace,
+                handle,
+                resource_validator,
+                config,
+                writable,
+            )),
+        )))
+    }
+
+    /// Install one already-resolved Session resource manifest. This is shared by
+    /// managed Session creation and cold durable workers; neither path reads Agent
+    /// defaults or selects a newer mutable-resource configuration.
+    pub(super) async fn stage_resource_manifest(
+        &self,
+        thread: &str,
+        workspace: &str,
+        resource_revision: u64,
+        resources: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_dispatch::RunClaim>,
+    ) -> Result<(), RunError> {
+        let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+            workspace,
+            resource_revision,
+            resources.clone(),
+        );
+        // The authority-side recovery path may first reconcile a retained or
+        // pending generation and then prepare the complete Session projection.
+        // Both operations carry the same canonical manifest. Avoid compiling and
+        // installing it twice; claimed Workers remain excluded because every
+        // claim must revalidate live Resource state even when the pin is equal.
+        if claim.is_none() && self.host.thread_resource_manifest(thread).as_ref() == Some(&desired)
+        {
+            return Ok(());
+        }
+        let versions = self
+            .host
+            .skills
+            .load_pinned(workspace, resources.skills(), claim)
+            .await
+            .map_err(skill_store_run_error)?;
+        let compiled = self
+            .compile_effective_inputs(thread, workspace, resources, claim)
+            .await?;
+        // Publish only after every fallible Resource/Skill read has succeeded.
+        // The slot lock then exposes one complete logical Resource generation;
+        // failed compilation leaves no workspace, manifest, prompt, or binding
+        // residue that a later attempt could mistake for Session truth.
+        self.host.register_thread_workspace(thread, workspace);
+        self.install_effective_inputs(thread, workspace, desired.revision, resources, compiled)
+            .await?;
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.skills = Some(versions));
+        Ok(())
+    }
+
+    pub(super) async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
+        use crate::provisioning::ResourceBindingCheck;
+
+        // This method is entered only through the SessionRuntime application
+        // port. Preserve that neutral identity before dispatch so a claiming
+        // Worker enters the frozen Session realization path.
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.session_dispatch = true);
+        let checks = self
+            .host
+            .session_slots
+            .read(thread, |slot| slot.resources.binding_checks.clone())
+            .unwrap_or_default();
+        if checks.is_empty() {
+            return Ok(());
+        }
+        let workspace = self.host.thread_workspace(thread);
+        for check in checks {
+            match check {
+                ResourceBindingCheck::MemoryStore {
+                    memory_store_id,
+                    config_version,
+                } => self
+                    .resource_validator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "memory resources require a configured resource binding validator",
+                        )
+                    })?
+                    .verify_memory_binding(&workspace, &memory_store_id, config_version)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+                ResourceBindingCheck::Repository {
+                    repository_id,
+                    config_version,
+                    claim,
+                    ..
+                } => self
+                    .repository_binding_verifier
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "repository resources require a configured binding verifier",
+                        )
+                    })?
+                    .verify(&workspace, &repository_id, config_version, claim.as_ref())
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Wire runtime credential injection for the already-frozen Session bindings
+    /// and Repository realization.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_credentials(
+        self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    ) -> Self {
+        self.with_credential_materializer(PinnedCredentialMaterializer::new(credentials, secrets))
+    }
+
+    /// Reuse the process startup's canonical exact materializer for MCP and
+    /// Repository realization instead of constructing a peer over the same stores.
+    #[must_use]
+    pub fn with_credential_materializer(
+        mut self,
+        materializer: PinnedCredentialMaterializer,
+    ) -> Self {
+        self.credentials = Some(materializer);
+        self
+    }
+
+    /// Install the credential adapter's exact OAuth refresh port. The Host
+    /// retains only this factory and never receives Credential/Secret Store
+    /// handles.
+    #[must_use]
+    pub fn with_credential_refresh_factory(
+        mut self,
+        factory: Arc<dyn CredentialRefreshFactory>,
+    ) -> Self {
+        self.credential_refresh_factory = Some(factory);
+        self
+    }
+
+    /// Replace the local Host MCP realization adapter with one downstream
+    /// implementation of the same exact-generation Session port. This is the
+    /// sole injection seam used by durable Worker commands; desired state and
+    /// credential selection remain outside the implementation.
+    #[must_use]
+    pub fn with_mcp_attachment_realizer(
+        mut self,
+        realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
+    ) -> Self {
+        self.mcp_realizer = Some(realizer);
+        self
+    }}
+
+use super::*;

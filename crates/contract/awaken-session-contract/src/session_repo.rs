@@ -313,34 +313,6 @@ pub enum SessionRepositoryError {
     InvalidMutation(String),
 }
 
-/// Closed supervisor policy for persistence failures. Retryable outages remain
-/// pending; corrupt durable truth is isolated for operator repair; command and
-/// concurrency failures are returned without background replay.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionRepositoryRecoveryAction {
-    Retry,
-    Quarantine,
-    Reject,
-}
-
-/// One corrupt durable Session row isolated by the authoritative store scan.
-/// The raw aggregate is deliberately absent so recovery reporting cannot leak
-/// persisted configuration or credentials.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionRecoveryQuarantine {
-    pub session_id: String,
-    pub reason: String,
-}
-
-/// Complete result of one recovery scan. Store adapters own row decoding and
-/// durable quarantine, so callers receive healthy work and isolation evidence
-/// from one authority instead of maintaining a parallel recovery registry.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SessionRecoveryScan {
-    pub sessions: Vec<ScopedPersistedSession>,
-    pub quarantined: Vec<SessionRecoveryQuarantine>,
-}
-
 // In-memory and durable adapters live outward in `awaken-session-store`.
 // Workspace ownership is persisted atomically beside each row through `create`;
 // authorization scope decorators do not belong in this resource persistence port.
@@ -1288,3 +1260,5 @@ const fn session_delete_request_plan(
         request_cleanup: transition_to_deleting,
     }
 }
+
+pub use recovery::{SessionRepositoryRecoveryAction, SessionRecoveryQuarantine, SessionRecoveryScan, SessionRecoveryCursor};
