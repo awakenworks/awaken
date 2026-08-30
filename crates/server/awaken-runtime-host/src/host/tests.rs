@@ -10671,6 +10671,63 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
 }
 
 #[tokio::test]
+async fn background_task_fails_closed_on_a_database_less_worker() {
+    // Cause/effect decision table:
+    // R1 Native + co-located owner + selected BackgroundTask -> construct the
+    // ordinary Runtime context; R2 Native + database-less Worker + selected
+    // BackgroundTask -> reject before tool advertisement or Environment side
+    // effects. ACP is the existing independent fail-closed partition. Until a
+    // claim-fenced completion-attention transport exists, accepting R2 could
+    // strand the process-local completion on a different Worker.
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("background-agent")
+        .model(test_model_binding())
+        .plugins([awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string()])
+        .plugin_config([(
+            awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string(),
+            serde_json::json!({"tools": []}),
+        )])
+        .build();
+
+    SharedHost::new(Arc::new(OkModel), "stub")
+        .ctx_for_snapshot_with_sandbox(
+            "background-local",
+            Some("background-agent"),
+            Some(snapshot.clone()),
+            None,
+        )
+        .await
+        .expect("R1 co-located Native context");
+
+    let worker = SharedHost::new(Arc::new(OkModel), "stub").with_worker_upstream(
+        awaken_worker_transport_security::WorkerUpstream::new("http://coordinator.invalid"),
+    );
+    let error = match worker
+        .ctx_for_snapshot_with_sandbox(
+            "background-worker",
+            Some("background-agent"),
+            Some(snapshot),
+            None,
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("R2 database-less Worker must reject BackgroundTask"),
+    };
+    assert_eq!(error.kind, HostErrorKind::BadRequest, "R2 classification");
+    assert!(
+        error.message.contains("co-located Session application"),
+        "R2 actionable boundary: {error}"
+    );
+    assert!(
+        worker
+            .session_environment("background-worker")
+            .await
+            .is_none(),
+        "R2 no Environment side effect"
+    );
+}
+
+#[tokio::test]
 async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     // Cause/effect graph: C1=remote A2A backend; C2=local Environment input.
     // Effects: E1=A2A-only IO context has no Environment and no Hand;

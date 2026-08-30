@@ -1,14 +1,17 @@
 //! Product post-commit execution of the state-owned BackgroundTask aggregate.
 //!
 //! This adapter observes committed Running claims and invokes their canonical
-//! ordinary tool through Runtime. It writes no database and creates no hidden
-//! Run. Completion stays process-local until the extension's StepStart hook
-//! folds it into the next ordinary Thread commit.
+//! ordinary tool through Runtime. It writes no database. Completion stays
+//! process-local while a deterministic ordinary Session Run wakes the same
+//! Thread; the extension's StepStart hook folds the fenced candidate before
+//! inference and the normal Thread commit remains the only persistence path.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_background_task::{
@@ -22,11 +25,112 @@ use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
 use awaken_runtime_contract::tool::{ToolConcurrency, ToolOutput};
+use awaken_session_contract::{RunErrorKind, SessionRunBackgroundApplication, stable_fingerprint};
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::HostCommit;
 
 const OBSERVER_ID: &str = "awaken.background-task.executor.v1";
+const ATTENTION_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+];
+
+fn attention_identity(
+    thread_id: &awaken_runtime_contract::ThreadId,
+    task_id: &BackgroundTaskId,
+    fence: &TaskFence,
+) -> String {
+    stable_fingerprint(&(
+        "background-task-attention-v1",
+        thread_id.0.as_str(),
+        task_id.as_str(),
+        fence.worker_id.as_str(),
+        fence.epoch,
+    ))
+}
+
+fn attention_message(
+    thread_id: &awaken_runtime_contract::ThreadId,
+    task_id: &BackgroundTaskId,
+    fence: &TaskFence,
+) -> (String, Message) {
+    let identity = attention_identity(thread_id, task_id, fence);
+    let operation_id = format!("background-task-attention-{identity}");
+    let message = Message::text(
+        MessageId(format!("background-task-attention-message-{identity}")),
+        Role::System,
+        format!(
+            "Background task {} has produced a terminal completion candidate.\n\n\
+             The runtime reconciles the latest fenced task state before this inference. \
+             Use get_background_task with this task_id to inspect the authoritative status \
+             and result. Decide whether to incorporate it, cancel related work, or continue \
+             without it. Do not repeat work already completed by the task.",
+            task_id.as_str()
+        ),
+    );
+    (operation_id, message)
+}
+
+async fn publish_attention(
+    application: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
+    thread_id: &awaken_runtime_contract::ThreadId,
+    task_id: &BackgroundTaskId,
+    fence: &TaskFence,
+) {
+    let Some(application) = application.and_then(|application| application.upgrade()) else {
+        return;
+    };
+    let (operation_id, message) = attention_message(thread_id, task_id, fence);
+    let attempts = ATTENTION_RETRY_DELAYS
+        .iter()
+        .copied()
+        .map(Some)
+        .chain(std::iter::once(None));
+    for (attempt, retry_delay) in attempts.enumerate() {
+        match application
+            .submit_session_run_background(
+                &operation_id,
+                &thread_id.0,
+                None,
+                vec![message.clone()],
+                None,
+            )
+            .await
+        {
+            Ok(_) => return,
+            Err(error) if error.kind == RunErrorKind::BadRequest => {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    %operation_id,
+                    %error,
+                    "background task attention Run was definitively rejected"
+                );
+                return;
+            }
+            Err(error) if retry_delay.is_some() => {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    %operation_id,
+                    %error,
+                    attempt = attempt + 1,
+                    "background task attention Run publication is retrying"
+                );
+                tokio::time::sleep(retry_delay.expect("guarded by is_some")).await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    %operation_id,
+                    %error,
+                    "background task attention Run publication exhausted process-local retries"
+                );
+                return;
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 struct BackgroundAdmission {
@@ -96,6 +200,7 @@ pub(crate) struct BackgroundTaskTerminalObserver {
     session_id: String,
     environment_generation: String,
     admission: Arc<BackgroundAdmission>,
+    attention: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
 }
 
 impl BackgroundTaskTerminalObserver {
@@ -109,6 +214,7 @@ impl BackgroundTaskTerminalObserver {
         supervisor: Arc<BackgroundTaskSupervisor>,
         session_id: String,
         environment_generation: String,
+        attention: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
     ) -> Self {
         Self {
             runtime,
@@ -120,6 +226,7 @@ impl BackgroundTaskTerminalObserver {
             session_id,
             environment_generation,
             admission: Arc::new(BackgroundAdmission::default()),
+            attention,
         }
     }
 
@@ -158,31 +265,35 @@ impl BackgroundTaskTerminalObserver {
             match PreparedToolExecutor::new(self.runtime.clone(), &self.snapshot, context) {
                 Ok(prepared) => Arc::new(prepared),
                 Err(error) => {
-                    self.supervisor
-                        .complete(task_id, Self::completion(fence, Err(error.to_string())));
+                    let completion = Self::completion(fence.clone(), Err(error.to_string()));
+                    self.supervisor.complete(task_id.clone(), completion);
+                    publish_attention(self.attention.clone(), &thread_id, &task_id, &fence).await;
                     return;
                 }
             };
         let resolved = match prepared.execution(&call) {
             Ok(resolved) => resolved,
             Err(error) => {
-                self.supervisor
-                    .complete(task_id, Self::completion(fence, Err(error.to_string())));
+                let completion = Self::completion(fence.clone(), Err(error.to_string()));
+                self.supervisor.complete(task_id.clone(), completion);
+                publish_attention(self.attention.clone(), &thread_id, &task_id, &fence).await;
                 return;
             }
         };
         if resolved.recovery != expected.recovery || resolved.concurrency != expected.concurrency {
             self.supervisor.complete(
-                task_id,
+                task_id.clone(),
                 Self::completion(
-                    fence,
+                    fence.clone(),
                     Err("canonical tool execution facts changed after the committed claim".into()),
                 ),
             );
+            publish_attention(self.attention.clone(), &thread_id, &task_id, &fence).await;
             return;
         }
         let state = Store::rebuild(&self.commit.committed_state(&thread_id));
         let supervisor = self.supervisor.clone();
+        let attention = self.attention.clone();
         let admission = self.admission.clone();
         let class = BackgroundWorkClass::SharedEnvironment {
             session_id: self.session_id.clone(),
@@ -209,13 +320,14 @@ impl BackgroundTaskTerminalObserver {
                 };
                 let completion = if cancellation.is_cancelled() {
                     BackgroundTaskCompletion {
-                        fence,
+                        fence: fence.clone(),
                         end: BackgroundTaskEnd::Cancelled,
                     }
                 } else {
-                    Self::completion(fence, result)
+                    Self::completion(fence.clone(), result)
                 };
-                supervisor.complete(task_id, completion);
+                supervisor.complete(task_id.clone(), completion);
+                publish_attention(attention, &thread_id, &task_id, &fence).await;
             })
             .await;
     }
@@ -285,6 +397,231 @@ mod tests {
         RawTool, ToolCall, ToolError, ToolOutputSpiller, ToolRecoveryPolicy, ToolResource,
         ToolResourceAccess,
     };
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct AttentionCall {
+        operation_id: String,
+        thread: String,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        traceparent: Option<String>,
+    }
+
+    struct RecordingAttentionApplication {
+        transient_failures: AtomicUsize,
+        definitive_rejection: bool,
+        calls: Mutex<Vec<AttentionCall>>,
+    }
+
+    impl RecordingAttentionApplication {
+        fn accepting(transient_failures: usize) -> Self {
+            Self {
+                transient_failures: AtomicUsize::new(transient_failures),
+                definitive_rejection: false,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn rejecting() -> Self {
+            Self {
+                transient_failures: AtomicUsize::new(0),
+                definitive_rejection: true,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SessionRunBackgroundApplication for RecordingAttentionApplication {
+        async fn submit_session_run_background(
+            &self,
+            operation_id: &str,
+            thread: &str,
+            agent: Option<String>,
+            messages: Vec<Message>,
+            traceparent: Option<String>,
+        ) -> Result<RunId, awaken_session_contract::RunApplicationError> {
+            self.calls
+                .lock()
+                .expect("attention calls mutex poisoned")
+                .push(AttentionCall {
+                    operation_id: operation_id.to_string(),
+                    thread: thread.to_string(),
+                    agent,
+                    messages,
+                    traceparent,
+                });
+            if self.definitive_rejection {
+                return Err(awaken_session_contract::RunError::bad_request(
+                    "definitive test rejection",
+                ));
+            }
+            if self
+                .transient_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(awaken_session_contract::RunError::unavailable(
+                    "transient test failure",
+                ));
+            }
+            Ok(awaken_session_contract::session_run_id(
+                thread,
+                operation_id,
+            ))
+        }
+    }
+
+    #[test]
+    fn attention_identity_and_system_input_are_fenced_and_minimal() {
+        // Cause/effect decision table:
+        // R1 same Thread+task+fence -> same operation/message identity;
+        // R2 epoch changes -> both identities change, so a reclaimed attempt
+        // cannot alias an old completion; R3 any terminal kind/arguments/result
+        // -> payload contains only task id plus an instruction to read canonical
+        // state, never completion content or invocation secrets.
+        let thread = ThreadId("attention-thread".into());
+        let task = BackgroundTaskId::new("attention-task").expect("task id");
+        let first = TaskFence {
+            worker_id: "worker-secret".into(),
+            epoch: 1,
+        };
+        let second = TaskFence {
+            worker_id: "worker-secret".into(),
+            epoch: 2,
+        };
+        let (operation_a, message_a) = attention_message(&thread, &task, &first);
+        let (operation_retry, message_retry) = attention_message(&thread, &task, &first);
+        let (operation_b, message_b) = attention_message(&thread, &task, &second);
+
+        assert_eq!(operation_a, operation_retry, "R1 operation identity");
+        assert_eq!(message_a, message_retry, "R1 message identity");
+        assert_ne!(operation_a, operation_b, "R2 operation fence");
+        assert_ne!(message_a.id, message_b.id, "R2 message fence");
+        assert_eq!(message_a.role, Role::System, "R3 system input");
+        let text = message_a.text_content();
+        assert!(text.contains(task.as_str()), "R3 task reference");
+        assert!(text.contains("get_background_task"), "R3 state lookup");
+        assert!(!text.contains("worker-secret"), "R3 no worker identity");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attention_publication_retries_ambiguous_failures_with_one_identity_only() {
+        // Cause/effect decision table:
+        // R4 no application/expired Weak -> no publication and task truth stays
+        // untouched; R5 unavailable/internal response -> retry the identical
+        // Session command; R6 eventual acceptance -> stop after one successful
+        // admission; R7 BadRequest -> stop immediately because rejection is
+        // definitive. Exact operation identity makes response-loss retry safe.
+        let thread = ThreadId("attention-thread".into());
+        let task = BackgroundTaskId::new("attention-task").expect("task id");
+        let fence = TaskFence {
+            worker_id: "worker".into(),
+            epoch: 1,
+        };
+
+        publish_attention(None, &thread, &task, &fence).await;
+
+        let accepting = Arc::new(RecordingAttentionApplication::accepting(2));
+        let accepting_port: Arc<dyn SessionRunBackgroundApplication> = accepting.clone();
+        publish_attention(
+            Some(Arc::downgrade(&accepting_port)),
+            &thread,
+            &task,
+            &fence,
+        )
+        .await;
+        {
+            let calls = accepting
+                .calls
+                .lock()
+                .expect("attention calls mutex poisoned");
+            assert_eq!(calls.len(), 3, "R5-R6 two retries then acceptance");
+            assert!(calls.windows(2).all(|pair| pair[0] == pair[1]), "R5");
+            assert!(calls.iter().all(|call| {
+                call.thread == thread.0
+                    && call.agent.is_none()
+                    && call.traceparent.is_none()
+                    && call.messages.len() == 1
+                    && call.messages[0].role == Role::System
+            }));
+        }
+
+        let rejecting = Arc::new(RecordingAttentionApplication::rejecting());
+        let rejecting_port: Arc<dyn SessionRunBackgroundApplication> = rejecting.clone();
+        publish_attention(
+            Some(Arc::downgrade(&rejecting_port)),
+            &thread,
+            &task,
+            &fence,
+        )
+        .await;
+        assert_eq!(
+            rejecting
+                .calls
+                .lock()
+                .expect("attention calls mutex poisoned")
+                .len(),
+            1,
+            "R7 definitive rejection is not retried"
+        );
+
+        let exhausted = Arc::new(RecordingAttentionApplication::accepting(usize::MAX));
+        let exhausted_port: Arc<dyn SessionRunBackgroundApplication> = exhausted.clone();
+        publish_attention(
+            Some(Arc::downgrade(&exhausted_port)),
+            &thread,
+            &task,
+            &fence,
+        )
+        .await;
+        assert_eq!(
+            exhausted
+                .calls
+                .lock()
+                .expect("attention calls mutex poisoned")
+                .len(),
+            ATTENTION_RETRY_DELAYS.len() + 1,
+            "R5 bounded retries cannot retain Session Environment forever"
+        );
+    }
+
+    #[test]
+    fn session_background_application_composition_is_single_assignment_and_weak() {
+        // Cause/effect decision table: R8 vacant slot + application -> one weak
+        // executable edge; R9 occupied slot + another install -> reject without
+        // replacement; R10 all external strong owners drop -> SharedHost does
+        // not retain the Session application. This prevents both a second Run
+        // admission owner and an Arc ownership cycle.
+        let host = Arc::new(crate::SharedHost::new(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "stub",
+        ));
+        let managed = crate::ManagedHost::new(host.clone());
+        let application = Arc::new(RecordingAttentionApplication::accepting(0));
+        let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
+        managed
+            .install_session_background_run_application(Arc::downgrade(&port))
+            .expect("R8 first install");
+        assert_eq!(
+            managed.install_session_background_run_application(Arc::downgrade(&port)),
+            Err(crate::SessionRunBackgroundInstallError::AlreadyInstalled),
+            "R9 single assignment",
+        );
+        drop(application);
+        drop(port);
+        assert!(
+            host.session_background_runs
+                .read()
+                .expect("Session background Run application lock poisoned")
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .is_none(),
+            "R10 weak ownership edge"
+        );
+    }
 
     fn write_claim(resource: &str) -> ToolConcurrency {
         ToolConcurrency::Resources(vec![ToolResourceAccess::Write(ToolResource::new(
@@ -479,7 +816,9 @@ mod tests {
         // C4 another plugin owns an AfterTool workflow hook -> E4 detached target
         // execution never advances that foreground-only workflow event;
         // C5 the canonical output spiller is bound -> E5 completion retains only
-        // its stable materialized result reference, not a parallel output store.
+        // its stable materialized result reference, not a parallel output store;
+        // C6 a Session background Run port is installed -> E6 one same-Thread
+        // System attention command is submitted after process completion.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-test"));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
@@ -501,6 +840,8 @@ mod tests {
             crate::LocalCommitAdapter::projected(memory),
         )));
         let background = Arc::new(BackgroundRuns::new());
+        let attention = Arc::new(RecordingAttentionApplication::accepting(0));
+        let attention_port: Arc<dyn SessionRunBackgroundApplication> = attention.clone();
         let mut snapshot = snapshot();
         snapshot
             .resolved_spec
@@ -515,6 +856,7 @@ mod tests {
             supervisor.clone(),
             "session".into(),
             "generation".into(),
+            Some(Arc::downgrade(&attention_port)),
         );
         let thread_id = ThreadId("thread".into());
         let origin_run = RunId("origin".into());
@@ -554,7 +896,7 @@ mod tests {
             .expect("claim");
         commit
             .commit(ThreadCommit::assemble(
-                thread_id,
+                thread_id.clone(),
                 RunDisposition::ended(origin_run, awaken_runtime_contract::EndCause::NaturalEnd),
                 true,
                 Vec::new(),
@@ -574,6 +916,14 @@ mod tests {
             .expect("duplicate delivery");
         assert!(background.drain(std::time::Duration::from_secs(2)).await);
         assert_eq!(counter.0.load(Ordering::SeqCst), 1, "C3/E1");
+        let attention_calls = attention
+            .calls
+            .lock()
+            .expect("attention calls mutex poisoned");
+        assert_eq!(attention_calls.len(), 1, "C3/E6 one attention Run");
+        assert_eq!(attention_calls[0].thread, thread_id.0, "C3/E6 owner");
+        assert_eq!(attention_calls[0].messages[0].role, Role::System, "C3/E6");
+        drop(attention_calls);
         assert_eq!(after_tool_calls.load(Ordering::SeqCst), 0, "C4/E4");
         let completion = supervisor.completion(&task.id).expect("C3/E2 completion");
         assert_eq!(completion.fence, fence);

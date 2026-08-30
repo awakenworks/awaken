@@ -268,6 +268,13 @@ pub struct SharedHost {
     pub(crate) agent_coordination: std::sync::RwLock<
         Option<std::sync::Weak<dyn awaken_session_contract::SessionAgentCoordination>>,
     >,
+    /// Weak composition edge to the existing Session Run admission owner.
+    /// BackgroundTask completion uses this port only to publish a deterministic
+    /// same-Thread attention Run; task lifecycle and result truth remain in
+    /// committed Thread State.
+    pub(crate) session_background_runs: std::sync::RwLock<
+        Option<std::sync::Weak<dyn awaken_session_contract::SessionRunBackgroundApplication>>,
+    >,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. A database-less Worker carries a fail-closed adapter;
     /// immutable claim-scoped reads use `file_content_source` instead.

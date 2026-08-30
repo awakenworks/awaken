@@ -176,5 +176,6 @@ awaken-run-ingress = { workspace = true }
 awaken-store-inmem.workspace = true
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
+awaken-ext-background-task.workspace = true
 # Restart-persistence test: a management router rebuilt over the same tempdir.
 tempfile = "3"

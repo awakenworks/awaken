@@ -681,6 +681,7 @@ dependencies = [
  "awaken-environment-execution-application",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
+ "awaken-ext-background-task",
  "awaken-ext-mcp",
  "awaken-ext-memory",
  "awaken-ext-skills",

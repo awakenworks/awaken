@@ -73,14 +73,16 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
 }
 
 #[tokio::test]
-async fn background_protocol_uses_the_canonical_session_admission_without_observing() {
+async fn background_attention_uses_canonical_session_admission_without_observing() {
     // Cause/effect decision table: C1 a durable Session exists; C2 the caller
     // requests background observation; C3 reservation succeeds; C4 the exact
     // Session activity receipt commits. Effects: E1 one PreservePrior command
     // is reserved; E2 the same Run id and non-zero epoch are activated once;
-    // E3 the HTTP caller can return while the Session remains Running. Failure
-    // rule B2: C3 or C4 false => no executable delivery. Constraint K1: neither
-    // Host enqueue nor a second background lifecycle is available to this port.
+    // E3 the caller can return while the Session remains Running; E4 a
+    // BackgroundTask reminder remains ordinary Role::System Run input rather
+    // than Session state or a special notification payload. Failure rule B2:
+    // C3 or C4 false => no executable delivery. Constraint K1: neither Host
+    // enqueue nor a second background lifecycle is available to this port.
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
@@ -110,8 +112,8 @@ async fn background_protocol_uses_the_canonical_session_admission_without_observ
             None,
             vec![awaken_agent_contract::agent::message::Message::text(
                 awaken_agent_contract::agent::message::Id("background-input".into()),
-                awaken_agent_contract::agent::message::Role::User,
-                "run later",
+                awaken_agent_contract::agent::message::Role::System,
+                "inspect the completed background task",
             )],
             None,
         )
@@ -122,6 +124,11 @@ async fn background_protocol_uses_the_canonical_session_admission_without_observ
         let reservations = runtime.reservations.lock().unwrap();
         assert_eq!(reservations.len(), 1, "B1/E1");
         assert_eq!(reservations[0].run_id, run_id, "B1/E1 exact Run");
+        assert_eq!(
+            reservations[0].messages[0].role,
+            awaken_agent_contract::agent::message::Role::System,
+            "B1/E4 system attention input",
+        );
         assert_eq!(
             reservations[0].replacement,
             awaken_session_contract::SessionRunReplacement::PreservePrior,

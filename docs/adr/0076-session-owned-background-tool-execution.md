@@ -137,13 +137,17 @@ returning.
 - a committed cancellation absorbs a racing success;
 - malformed persisted JSON never resets or disappears as an empty task set;
 - management results never expose invocation arguments;
+- completion attention uses one fence-derived idempotent Session command and
+  carries no result, progress, invocation, or credential payload;
+- `StepStart` reconciliation precedes the attention Run's inference;
 - Runtime and runtime-contract contain no BackgroundTask service or repository.
 
 Cause-graph and decision-table tests cover typed schema generation, configuration
 partitions, deterministic replay, Runtime ThreadCommit integration, list/get/
 cancel behavior, shape drift, claim competition, lease boundaries, stale fences,
 remote waits, cancellation races, indeterminate recovery, overflow atomicity,
-and the absence of persistence dependencies. Kani proves cancellation
+completion publication retry, same-Session attention, pre-inference folding,
+fail-closed remote placement, and the absence of persistence dependencies. Kani proves cancellation
 monotonicity and terminal absorption. Architecture and feature-ledger checkers
 make the dependency and evidence claims executable.
 
@@ -167,9 +171,46 @@ Completion is intentionally not a post-terminal database write. It remains a
 fenced process-local projection until the extension's `StepStart` hook folds it
 into the next ordinary Run commit. A process loss therefore leaves the durable
 Running lease authoritative: the next Run either reclaims a replayable attempt
-with a higher epoch or ends a non-replayable attempt as indeterminate. A remote
-Worker uses the same mechanism against its claim-updated recovery projection;
-it owns no SQL connection and sends no plugin-specific payload to Coordinator.
+with a higher epoch or ends a non-replayable attempt as indeterminate.
+
+Completion also publishes one deterministic **attention Run** through the
+existing `SessionRunBackgroundApplication`. This changes no task truth: it is
+an ordinary same-Thread Session Run admitted through the canonical reservation,
+Session activity receipt, and dispatch path. `SharedHost` retains only a weak
+composition edge to that application, so the wiring neither creates an
+ownership cycle nor becomes a second admission owner. Its operation and Message
+identities are derived from `(Thread, task id, worker, epoch)`. An ambiguous
+application failure retries the exact command with short bounded backoff;
+`BadRequest` is definitive. Session admission idempotency therefore covers the
+response-loss window without a notification table or retry ledger.
+
+The attention input is `Role::System` and contains only the task id plus an
+instruction to call `get_background_task`. It never embeds invocation arguments,
+credentials, progress, or result content. `StepStart` remains the lifecycle
+owner and runs before inference, so a matching completion is first staged as
+`Ended` and then the Agent reads that authoritative state. `BeforeInference`
+is not used: it would turn task reconciliation into request-only context
+decoration and require an unrelated ContextMessages capability. A stale
+completion may still cause a harmless “candidate” reminder, but its fence can
+never finish a newer attempt. The Agent decides whether to incorporate the
+result, cancel related work, or continue; it does not delete lifecycle truth.
+
+The attention Run is the only direct Session effect. The detached tool itself
+does not mutate the Session aggregate. While attention executes, the existing
+Session activity makes the Session `Running`; normal settlement returns it to
+`Idle` or its ordinary terminal state. Child-Agent reports keep their distinct
+`SessionAgentCoordination` and Outbox/Inbox path because they cross Thread
+ownership and carry relationship provenance; BackgroundTask completion is a
+same-Thread state wake and does not reuse `send_message`.
+
+A database-less Worker currently fails closed before Environment, MCP, tool, or
+commit realization when BackgroundTask is selected. Its completion projection
+is process-local, and there is not yet a claim-fenced Worker-to-Coordinator
+attention command that guarantees the follow-up Run returns to that process.
+Pretending to support that placement could strand completion or present an
+unreconciled reminder. Distributed enablement requires extending the existing
+claimed Session control transport, not routing through the generic cross-Thread
+message service or adding a BackgroundTask repository.
 
 ACP backends fail Session construction when this plugin is selected. Their tool
 execution authority lives in the external ACP process and cannot yet provide the
@@ -189,6 +230,17 @@ the wrapped tool as a second event would advance workflow state outside the Run
 commit that owns that state. The prepared executor still reuses the canonical
 catalog, authorization, placement, recovery, concurrency, cancellation, panic
 isolation, and output-spill paths.
+
+There is no BackgroundTask TTL, deletion command, or progress stream in this
+decision. Terminal values remain ordinary Thread State and follow the Thread's
+existing retention/erasure policy. The execution lease is not a user timeout:
+it fences ownership and enables recovery. Tool-specific deadlines remain part
+of the canonical ordinary tool. A future terminal-compaction policy may replace
+old terminal payloads with tombstones at a Thread-owned commit boundary, but it
+must not let the Agent erase active tasks, add a task-local GC clock, or create
+a parallel result store. Progress should be added only when a canonical tool
+can expose monotone, bounded, non-secret progress with a stable cursor; it is not
+required for the completion decision because the Agent reads terminal state.
 
 ## Consequences
 
