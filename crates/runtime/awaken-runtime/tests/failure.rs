@@ -391,15 +391,17 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
     );
 }
 
-/// Cause/effect design: C1 every model response is truncated by max tokens; C2
-/// the continuation retry budget is two. Effects: E1 the Runtime performs one
-/// initial inference plus two continuations; E2 exhaustion lets the accumulated
-/// text-only Step stand as NaturalEnd. Decision rule X1=C1+C2=>E1+E2; recovery
-/// before exhaustion is covered by the preceding continuation test.
-/// Constraints/invariants: the continuation budget is exact and bounded; a
-/// text-only partial may stand, but no extra request exceeds the configured two.
+/// Cause/effect design: C1 every model response is text-only and stopped by
+/// MaxTokens; C2 the continuation budget is two; C3 a commit coordinator is
+/// present. Effects: E1 exactly one initial request plus two continuations; E2
+/// the last partial is committed; E3 exhaustion is an explicit inference fault,
+/// never NaturalEnd; E4 no prompt authorizes a request beyond the budget.
+/// Decision rule X1=C1+C2+C3=>E1+E2+E3+E4; recovery before exhaustion is covered
+/// by `max_tokens_truncation_continues_in_place_and_recovers`.
+/// Constraints/invariants: the budget is exact and bounded; durable partial
+/// evidence survives the terminal failure; incomplete output is never success.
 #[tokio::test]
-async fn max_tokens_budget_exhausted_lets_the_partial_step_stand() {
+async fn max_tokens_budget_exhaustion_commits_partial_and_fails_explicitly() {
     let calls = Arc::new(AtomicUsize::new(0));
     // Every response truncates; the per-Step budget (2) bounds the continuations.
     let runtime = Runtime::new()
@@ -409,13 +411,35 @@ async fn max_tokens_budget_exhausted_lets_the_partial_step_stand() {
         }))
         .with_max_continuation_retries(2);
 
-    let context = RuntimeRunContext::new();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
-    // The still-truncated response stands as a text-only natural end.
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert!(
+        matches!(
+            outcome,
+            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. }))
+                if code == "max_tokens_exhausted"
+        ),
+        "X1/E3: incomplete output must fail explicitly, got {outcome:?}"
+    );
     // 1 initial response + 2 continuation Steps.
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let texts = commit
+        .committed()
+        .messages
+        .iter()
+        .map(|message| awaken_agent_contract::agent::content::extract_text(&message.content))
+        .collect::<Vec<_>>();
+    assert!(texts.iter().any(|text| text == "chunk-2"), "X1/E2");
+    assert_eq!(
+        texts
+            .iter()
+            .filter(|text| text.starts_with("Your response was cut off"))
+            .count(),
+        2,
+        "X1/E4: only requests within the budget receive continuation prompts"
+    );
 }
 
 #[tokio::test]
@@ -565,6 +589,11 @@ async fn permanent_failures_do_not_trip_the_circuit_breaker() {
 
 #[tokio::test]
 async fn max_tokens_with_tool_calls_skips_continuation() {
+    // Cause/effect design: C1 MaxTokens is reported with a complete ToolUse;
+    // C2 the tool is executable. Effects: E1 no text-continuation prompt is
+    // injected; E2 the tool call follows the ordinary tool path; E3 the next
+    // model response may end naturally. Rule T1=C1+C2=>E1+E2+E3.
+    // Constraint: stop-reason recovery must never override tool-call causality.
     let calls = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new().with_llm(Arc::new(TruncatedToolCallLlm {
         calls: calls.clone(),

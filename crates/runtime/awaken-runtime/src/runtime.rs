@@ -174,7 +174,8 @@ pub struct Runtime {
     /// How retryable inference failures are retried (attempts and backoff).
     retry_policy: crate::retry::LlmRetryPolicy,
     /// How many continuation rounds a `MaxTokens`-truncated text step may use
-    /// per step before the partial output stands as the step.
+    /// per step before the last partial is committed with an explicit terminal
+    /// incomplete-output failure.
     max_continuation_retries: usize,
     /// The nth consecutive failed inference step ends the run. 1 (the default)
     /// means a single failure is terminal; a higher value absorbs failures at
