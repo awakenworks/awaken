@@ -23,6 +23,7 @@ export {
   EmptyState,
   Skeleton,
   SkeletonRows,
+  TechnicalId,
   UsageBadges,
   usageTotal,
 } from "./primitives";

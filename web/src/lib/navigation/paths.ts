@@ -42,10 +42,11 @@ export const NAV: NavItem[] = [
   { key: "models", label: "Models & providers", labelZh: "模型与供应商", group: "connect", path: "/w/:ws/models" },
   { key: "mcp", label: "MCP overview", labelZh: "MCP 概览", group: "connect", path: "/w/:ws/mcp", surface: "managed_runtime" },
   { key: "protocols", label: "API & protocols", labelZh: "API 与协议", group: "connect", path: "/w/:ws/protocols", surface: "managed_runtime" },
+  { key: "webhooks", label: "Webhooks", labelZh: "Webhooks", group: "connect", path: "/w/:ws/webhooks", surface: "managed_runtime" },
   { key: "a2a", label: "A2A federation", labelZh: "A2A 联邦", group: "connect", path: "/w/:ws/a2a-servers", surface: "managed_runtime" },
 
   { key: "access", label: "Access", labelZh: "访问控制", group: "govern", path: "/w/:ws/access", surface: "access_management" },
-  { key: "vaults", label: "Runtime secrets", labelZh: "运行秘密", group: "govern", path: "/w/:ws/vaults", surface: "managed_runtime" },
+  { key: "vaults", label: "Runtime secrets", labelZh: "运行时凭证", group: "govern", path: "/w/:ws/vaults", surface: "managed_runtime" },
   { key: "settings", label: "Settings", labelZh: "设置", group: "govern", path: "/w/:ws/settings" },
 ];
 
@@ -72,6 +73,7 @@ export const WORKSPACE_JOURNEY: readonly WorkspaceJourneyStep[] = [
   { number: "02", label: "Build", labelZh: "构建", detail: "One publishable Agent definition", detailZh: "一个可发布的 Agent 定义", destination: primarySurface("agents") },
   { number: "03", label: "Run", labelZh: "运行", detail: "A Session on the reviewed Agent version", detailZh: "基于已审阅 Agent 版本的 Session", destination: primarySurface("sessions") },
   { number: "04", label: "Observe", labelZh: "观察", detail: "Committed events, artifacts, and usage", detailZh: "已提交事件、产物与用量", destination: primarySurface("artifacts") },
+  { number: "05", label: "Integrate", labelZh: "接入", detail: "API key, protocol, and runnable SDK guide", detailZh: "API Key、协议与可运行 SDK 指南", destination: primarySurface("protocols") },
 ];
 
 /** Capability-derived navigation projection. The backend remains the security

@@ -39,6 +39,7 @@ describe("console information architecture", () => {
       "connect",
       "connect",
       "connect",
+      "connect",
       "govern",
       "govern",
       "govern",
@@ -54,6 +55,10 @@ describe("console information architecture", () => {
     expect(NAV.find((item) => item.key === "mcp")).toMatchObject({
       group: "connect",
       path: "/w/:ws/mcp",
+    });
+    expect(NAV.find((item) => item.key === "webhooks")).toMatchObject({
+      group: "connect",
+      path: "/w/:ws/webhooks",
     });
     expect(NAV.some((item) => item.key === "credentials")).toBe(false);
   });
@@ -71,20 +76,22 @@ describe("console information architecture", () => {
    * Overview journey decision table.
    * Causes: C1 an operator enters the Workspace overview; C2 NAV owns the
    * current route for every destination; C3 labels may be English or Chinese.
-   * Effects: E1 the product intent is Connect→Build→Run→Observe; E2 every step
+   * Effects: E1 the product intent is Connect→Build→Run→Observe→Integrate; E2 every step
    * reuses the exact NAV object and therefore its canonical route; E3 locale
    * changes copy only, never ownership or order. Rule R1: C1+C2+C3 ->
    * E1+E2+E3, with no parallel route registry or lifecycle state.
    */
   it("expresses the Agent proof journey over canonical navigation references", () => {
-    expect(WORKSPACE_JOURNEY.map((step) => step.label)).toEqual(["Connect", "Build", "Run", "Observe"]);
+    expect(WORKSPACE_JOURNEY.map((step) => step.label)).toEqual(["Connect", "Build", "Run", "Observe", "Integrate"]);
     expect(WORKSPACE_JOURNEY.map((step) => step.destination)).toEqual([
       NAV.find((item) => item.key === "models"),
       NAV.find((item) => item.key === "agents"),
       NAV.find((item) => item.key === "sessions"),
       NAV.find((item) => item.key === "artifacts"),
+      NAV.find((item) => item.key === "protocols"),
     ]);
     expect(navPath(WORKSPACE_JOURNEY[2].destination, "workspace-a")).toBe("/w/workspace-a/sessions");
+    expect(navPath(WORKSPACE_JOURNEY[4].destination, "workspace-a")).toBe("/w/workspace-a/protocols");
   });
 
   /**
@@ -123,11 +130,12 @@ describe("console information architecture", () => {
    * effects respectively. These four rows cover every branch of workspaceLabel.
    */
   it("bounds opaque workspace coordinates without changing short authored names", () => {
-    expect(workspaceLabel("default")).toBe("Default");
+    expect(workspaceLabel("default")).toBe("Default Workspace");
     expect(workspaceLabel("awaken:personal:acct_0123456789")).toBe("Personal Workspace");
-    expect(workspaceLabel("product-design")).toBe("product-design");
+    expect(workspaceLabel("workspace_local_126cc_18cbbe83d0355538")).toBe("Local Workspace");
+    expect(workspaceLabel("product-design")).toBe("Product Design Workspace");
     expect(workspaceLabel("workspace_abcdefghijklmnopqrstuvwxyz_0123456789")).toBe(
-      "workspace_ab…23456789",
+      "Workspace",
     );
   });
 });

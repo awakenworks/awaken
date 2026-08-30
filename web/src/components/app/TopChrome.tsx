@@ -1,5 +1,5 @@
 import { MenuPopover } from "@awaken/ui";
-import { useApp, workspaceLabel } from "../../lib/app-state";
+import { useApp } from "../../lib/app-state";
 import { suiteHubUrl, useSuiteNavigation } from "../../lib/suite-navigation";
 
 export function openPalette() {
@@ -8,10 +8,10 @@ export function openPalette() {
 
 function AwakenMark() {
   return (
-    <span className="awaken-mark" aria-hidden="true">
-      <span>A</span>
-      <i />
-    </span>
+    <svg className="awaken-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none">
+      <path data-silhouette="A" d="M14.2 6h3.6l8.6 20h-3L16 8.4 8.6 26h-3Z" fill="var(--mark-primary)" />
+      <circle data-role="decision" cx="16" cy="20.2" r="2.5" fill="var(--mark-decision)" />
+    </svg>
   );
 }
 
@@ -70,11 +70,11 @@ export default function TopChrome() {
       <span className="crumb-sep" />
       <div className="workspace-context" title={app.workspaceId}>
         <span className="mut">{app.t("Workspace", "工作区")}</span>
-        <strong>{workspaceLabel(app.workspaceId)}</strong>
+        <strong>{app.workspaceName}</strong>
       </div>
 
       <span style={{ flex: 1 }} />
-      <div className="row" style={{ gap: 8 }}>
+      <div className="topbar-actions">
         <button className="search-box" onClick={openPalette}>
           <SearchIcon />
           <span>{app.t("Search…", "搜索…")}</span>
@@ -86,6 +86,20 @@ export default function TopChrome() {
         <button className="chrome-btn" onClick={app.toggleTheme} title={app.t("Switch theme", "切换主题")} aria-label={app.t("Switch theme", "切换主题")}>
           <ThemeIcon dark={app.theme === "dark"} />
         </button>
+        <MenuPopover
+          aria-label={app.t("Account and organization", "账号与组织")}
+          content={<div className="identity-menu">
+            <small>{app.t("Signed in as", "当前用户")}</small>
+            <strong>{app.userName}</strong>
+            <span>{app.organizationName}</span>
+            <span className="mono mut" title={app.workspaceId}>{app.workspaceName}</span>
+          </div>}
+          placement="bottom-end"
+        >
+          <button className="chrome-btn identity-trigger" type="button" title={app.userName} aria-label={app.t(`Account: ${app.userName}`, `账号：${app.userName}`)}>
+            {app.userName.trim().charAt(0).toUpperCase() || "U"}
+          </button>
+        </MenuPopover>
       </div>
     </header>
   );

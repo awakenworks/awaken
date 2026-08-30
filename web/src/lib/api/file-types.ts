@@ -1,5 +1,10 @@
-/** One FileCatalog projection. An Agent output is distinguished by purpose and
- * Session/path provenance; it does not become a second Artifact aggregate. */
+/** One official beta Files projection. A Session-scoped File is an output;
+ * an unscoped File is a reusable Workspace input. */
+export interface FileScope {
+  id: string;
+  type: "session";
+}
+
 export interface FileArtifact {
   id: string;
   type: string;
@@ -8,9 +13,7 @@ export interface FileArtifact {
   size_bytes?: number;
   created_at?: string;
   downloadable?: boolean;
-  purpose?: "input" | "artifact";
-  session_id?: string | null;
-  logical_path?: string | null;
+  scope?: FileScope | null;
 }
 
 export interface FileListResponse {

@@ -14,16 +14,24 @@ export const DEFAULT_WS = "default";
 /** Human presentation for an opaque Workspace coordinate. Hosted personal
  * scopes must not leak account-length identifiers into product chrome. */
 export function workspaceLabel(id: string): string {
-  if (!id || id === DEFAULT_WS) return "Default";
+  if (!id || id === DEFAULT_WS) return "Default Workspace";
   if (id.startsWith("awaken:personal:")) return "Personal Workspace";
-  if (id.length <= 28) return id;
-  return `${id.slice(0, 12)}…${id.slice(-8)}`;
+  if (/^(workspace|wrkspc)_local_/i.test(id)) return "Local Workspace";
+  const value = id.replace(/^(workspace|wrkspc|ws)[_:-]/i, "");
+  if (value.length > 32 || (/^[a-f\d-]+$/i.test(value) && value.length >= 20)) return "Workspace";
+  const name = value.split(/[-_:]+/).filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+  return /workspace/i.test(name) ? name : `${name || "Default"} Workspace`;
 }
 
 interface AppState {
   /** The active workspace (tenancy scope). `DEFAULT_WS` = the flat default scope. */
   workspaceId: string;
+  workspaceName: string;
+  organizationName: string;
+  userName: string;
   setWorkspaceId: (id: string) => void;
+  setIdentityPresentation: (value: { workspaceName?: string; organizationName?: string; userName?: string }) => void;
   theme: string;
   toggleTheme: () => void;
   locale: Locale;
@@ -49,6 +57,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState(
     () => globalThis.location?.pathname.match(/^\/w\/([^/]+)/)?.[1] ?? DEFAULT_WS,
   );
+  const [identityPresentation, setIdentityPresentation] = useState({
+    workspaceName: "",
+    organizationName: "",
+    userName: "",
+  });
   // Awaken Agents brand defaults to dark (awaken-theme.js BRANDS.agents.defaultMode).
   const [theme, setTheme] = useState(() => localStorage.getItem("awaken.console.theme") ?? "dark");
   const [locale, setLocale] = useState<Locale>(
@@ -75,7 +88,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppState = useMemo(
     () => ({
       workspaceId,
+      workspaceName: identityPresentation.workspaceName || workspaceLabel(workspaceId),
+      organizationName: identityPresentation.organizationName || "Local Organization",
+      userName: identityPresentation.userName || "Local operator",
       setWorkspaceId,
+      setIdentityPresentation: (next) => setIdentityPresentation((current) => ({ ...current, ...next })),
       theme,
       toggleTheme: () => setTheme(theme === "dark" ? "light" : "dark"),
       locale,
@@ -83,7 +100,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       t: (en, zh) => (locale === "zh" ? zh : en),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workspaceId, theme, locale],
+    [workspaceId, theme, locale, identityPresentation],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

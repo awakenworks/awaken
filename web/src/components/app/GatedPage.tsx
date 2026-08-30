@@ -5,7 +5,8 @@
 
 import { useGate } from "../../lib/useGate";
 import { useApp } from "../../lib/app-state";
-import { Card } from "../ui";
+import { useNavigate, useParams } from "react-router";
+import { Button, Card } from "../ui";
 import Gate from "./Gate";
 
 export default function GatedPage({
@@ -13,28 +14,45 @@ export default function GatedPage({
   endpoint,
   probe,
   note,
+  fallback,
+  fallbackLabel,
+  fallbackLabelZh,
 }: {
   title: string;
-  /** Human-readable endpoint(s) shown in the gate banner. */
+  /** Endpoint used to probe capability availability. */
   endpoint: string;
   /** The single callable path to probe (defaults to the first token of `endpoint`). */
   probe?: string;
   note?: string;
+  fallback?: string;
+  fallbackLabel?: string;
+  fallbackLabelZh?: string;
 }) {
   const app = useApp();
+  const navigate = useNavigate();
+  const { ws: workspace = "default" } = useParams();
   const path = probe ?? endpoint.split(/[ ·]/)[0];
   const state = useGate<unknown>(path);
 
   return (
     <Card>
       <h2>{title}</h2>
-      <Gate state={state} endpoint={endpoint} note={note}>
+      <Gate
+        state={state}
+        endpoint={endpoint}
+        note={note}
+        action={fallback && fallbackLabel ? (
+          <Button variant="primary" onClick={() => navigate(`/w/${workspace}/${fallback}`)}>
+            {app.t(fallbackLabel, fallbackLabelZh ?? fallbackLabel)}
+          </Button>
+        ) : undefined}
+      >
         {(data) => (
           <>
             <p className="hint" role="status">
               {app.t(
-                `This optional capability is enabled at ${path}, but this Console version does not yet provide a safe guided workflow for it. Use the API documentation instead of editing raw data here.`,
-                `可选能力已在 ${path} 启用，但当前 Console 尚未提供安全的引导式流程。请使用 API 文档，不要在此直接编辑原始数据。`,
+                "This capability is enabled, but this Console version does not provide a guided workflow for it. Use the API documentation for now.",
+                "这项能力已经启用，但当前 Console 尚未提供引导式流程。请暂时使用 API 文档。",
               )}
             </p>
             <span className="sr-only">{JSON.stringify(data)}</span>

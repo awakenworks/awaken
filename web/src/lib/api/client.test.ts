@@ -8,12 +8,15 @@ import type {
 } from "@awaken/managed-sdk-oracle/current-types";
 import {
   API_BETAS,
+  AUTHENTICATION_REQUIRED_EVENT,
   ApiClientError,
   IdempotencyScope,
   api,
+  applicationProtocolFetch,
   betaForPath,
   createManagedSession,
   getToken,
+  issueApplicationAccessToken,
   setResolvedWorkspace,
   workspaceFromPath,
   workspaceIdForRequest,
@@ -27,6 +30,25 @@ import type {
   SessionThread,
   SessionThreadUsage,
 } from "./types";
+
+describe("Application Access Token transport", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("omits Console cookies and owns the narrow bearer", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    await applicationProtocolFetch("application-token", "/v1/ag-ui", {
+      method: "POST",
+      headers: { authorization: "Bearer management-token", "content-type": "application/json" },
+      body: "{}",
+    });
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get("authorization")).toBe("Bearer application-token");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(init.credentials).toBe("omit");
+  });
+});
 
 describe("idempotent mutation identity", () => {
   it("reuses an exact payload after timeout and rotates when intent changes", () => {
@@ -181,6 +203,7 @@ describe("API beta cause/effect graph", () => {
   // Cause graph:
   //   API family ─┬─ memory ────────> memory beta only
   //               ├─ skills ────────> skills beta only
+  //               ├─ files ─────────> Files beta only
   //               ├─ managed ───────> managed beta
   //               ├─ dreams ────────> managed + dreaming betas
   //               └─ admin/other ───> no beta
@@ -197,7 +220,8 @@ describe("API beta cause/effect graph", () => {
     ["/v1/deployments/run-1", API_BETAS.managed],
     ["/v1/dreams", `${API_BETAS.managed},${API_BETAS.dreaming}`],
     ["/v1/config/agents/agent-1", undefined],
-    ["/v1/files", undefined],
+    ["/v1/files", API_BETAS.files],
+    ["/v1/workspaces/team-a/files?scope_id=sesn_1", API_BETAS.files],
   ];
 
   it.each(cases)("maps %s to its exact beta", (path, expected) => {
@@ -243,6 +267,36 @@ describe("API beta cause/effect graph", () => {
       expect(headers["content-type"]).toBeUndefined();
     }
   });
+
+  it("issues application access with only the canonical server-owned grant fields", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "aat_1",
+      object: "application_access_token",
+      token_type: "Bearer",
+      access_token: "opaque-test-token",
+      expires_at: "2026-08-28T00:00:00Z",
+      protocols: ["ai-sdk"],
+      operations: ["thread.run", "thread.messages.read"],
+    }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetch);
+
+    await issueApplicationAccessToken({
+      protocols: ["ai-sdk"],
+      operations: ["thread.run", "thread.messages.read"],
+      thread_bindings: [{ external_thread_id: "thread-1", managed_session_id: "sesn_1" }],
+      expires_in_seconds: 300,
+    });
+
+    expect(JSON.parse(String((fetch.mock.calls[0][1] as RequestInit).body))).toEqual({
+      protocols: ["ai-sdk"],
+      operations: ["thread.run", "thread.messages.read"],
+      thread_bindings: [{ external_thread_id: "thread-1", managed_session_id: "sesn_1" }],
+      expires_in_seconds: 300,
+    });
+  });
 });
 
 describe("workspace identity cause/effect graph", () => {
@@ -268,6 +322,8 @@ describe("workspace identity cause/effect graph", () => {
     expect(ws("/v1/config/workspace-context")).toBe(
       "/v1/workspaces/awaken%3Atenant/config/workspace-context",
     );
+    vi.stubGlobal("location", { pathname: "/w/default/overview" });
+    expect(ws("/v1/config/workspace-context")).toBe("/v1/config/workspace-context");
     vi.stubGlobal("location", { pathname: "/" });
     expect(ws("/v1/config/workspace-context")).toBe("/v1/config/workspace-context");
   });
@@ -300,5 +356,36 @@ describe("structured API failure evidence", () => {
       requestId: "req-7",
     });
     expect(error.message).toContain("refresh revision 7");
+  });
+
+  it("surfaces typed config-extension errors without a redundant outer type", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { type: "invalid_request_error", message: "private endpoint rejected" },
+    }), { status: 400, headers: { "content-type": "application/json" } })));
+
+    const error = await api.put("/v1/config/webhook-subscriptions/wh_1", {}).catch((cause) => cause);
+    expect(error).toMatchObject({
+      status: 400,
+      code: "invalid_request_error",
+      message: "private endpoint rejected",
+    });
+  });
+
+  it("turns every expired bearer into one browser-wide sign-in transition", async () => {
+    const events = new EventTarget();
+    const listener = vi.fn();
+    events.addEventListener(AUTHENTICATION_REQUIRED_EVENT, listener);
+    vi.stubGlobal("window", events);
+    globalThis.sessionStorage.setItem("awaken.product.session-bearer", "expired-token");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      type: "error",
+      error: { type: "authentication_error", message: "session expired" },
+    }), { status: 401, headers: { "content-type": "application/json" } })));
+
+    const error = await api.get("/v1/session").catch((cause) => cause);
+
+    expect(error).toMatchObject({ status: 401, code: "authentication_error" });
+    expect(getToken()).toBe("");
+    expect(listener).toHaveBeenCalledOnce();
   });
 });

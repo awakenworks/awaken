@@ -58,6 +58,12 @@ export interface Page<T> {
   next_page: string | null;
 }
 
+/** Managed CRUD collections use Anthropic's opaque cursor shape. */
+export interface CursorPage<T> {
+  data: T[];
+  next_page: string | null;
+}
+
 // ---- IAM (embedded) ----
 
 export interface IamTokenView {
@@ -70,6 +76,14 @@ export interface IamTokenView {
   expires_at?: string;
   revoked_at?: string;
   [k: string]: unknown;
+}
+
+export interface IamTokenMintResponse {
+  token?: string;
+  secret?: string;
+  cleartext?: string;
+  value?: string;
+  api_token?: IamTokenView;
 }
 
 // ---- managed sessions ----
@@ -105,81 +119,19 @@ export type CreateSessionRequest = Omit<SessionCreateParams, "betas">;
 export type ContentBlock = ManagedSessionContentBlock;
 export type { FileArtifact, FileListResponse } from "./file-types";
 
-// ---- environments ----
-
-export type EnvNetworking =
-  | { type: "unrestricted" }
-  | { type: "limited"; allowed_hosts?: string[]; allow_package_managers?: boolean; allow_mcp_servers?: boolean };
-export interface EnvironmentPackages {
-  type?: "packages";
-  apt?: string[];
-  cargo?: string[];
-  gem?: string[];
-  go?: string[];
-  npm?: string[];
-  pip?: string[];
-}
-
-/** A sandbox mount made visible inside the isolated worker. */
-export interface SandboxMount {
-  mount_path: string;
-  access: "read_only" | "read_write";
-}
-/** Egress policy: full, deny-by-default allowlist, or none. */
-export type SandboxNetwork =
-  | { mode: "unrestricted" }
-  | { mode: "allowlist"; hosts?: string[] }
-  | { mode: "none" };
-/** An Awaken sandbox-policy value projected to the backend `SandboxSpec`.
- * It is deliberately separate from the official Environment config union. */
-export interface SandboxConfig {
-  isolation?: "workdir" | "namespace" | "container";
-  mounts?: SandboxMount[];
-  network?: SandboxNetwork;
-  limits?: { cpu_millis?: number | null; memory_bytes?: number | null };
-}
-export interface EnvironmentConfig {
-  type: "cloud" | "self_hosted";
-  networking?: EnvNetworking;
-  packages?: EnvironmentPackages;
-}
-export interface Environment {
-  id: string;
-  type: "environment";
-  name: string;
-  description?: string;
-  config: EnvironmentConfig;
-  metadata: Record<string, string>;
-  archived_at?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export type SandboxProvisioning = "eager" | "on_tool_use";
-export interface SandboxExecutionPolicy {
-  id: string;
-  version: number;
-  config: SandboxConfig;
-  provisioning: SandboxProvisioning;
-  disabled: boolean;
-}
-export interface SandboxPolicyBinding {
-  environment_id: string;
-  policy_id?: string;
-  version?: number;
-  provisioning: SandboxProvisioning;
-}
-
-/** An environment's durable work queue state (GET /v1/environments/:id/work/stats):
- * `depth` = items queued (waiting to be claimed), `pending` = items a worker has
- * claimed and is processing. */
-export interface WorkQueueStats {
-  type: "work_queue_stats";
-  depth: number;
-  pending: number;
-  oldest_queued_at?: string | null;
-  workers_polling: number;
-}
+export type {
+  Environment,
+  EnvironmentConfig,
+  EnvironmentPackages,
+  EnvNetworking,
+  SandboxConfig,
+  SandboxExecutionPolicy,
+  SandboxMount,
+  SandboxNetwork,
+  SandboxPolicyBinding,
+  SandboxProvisioning,
+  WorkQueueStats,
+} from "./environment-types";
 
 // ---- Agent default inputs (ADR-0063) ---------------------------------------
 export type InputResourceKind = "file" | "memory_store" | "repository";
@@ -320,6 +272,74 @@ export interface DelegationLimits {
   max_total: number;
 }
 
+export interface InferenceOptions {
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  speed?: "standard" | "fast";
+  inference_geo?: "us" | "eu" | "apac" | "cn" | "jp" | "au" | "ca" | "uk" | "hk";
+}
+
+export interface CompactionStrategy {
+  /** Omit to derive the trigger from the selected model's usable context window. */
+  window?: number;
+  /** Omit to use the runtime's safe recent-turn default. */
+  keep_recent?: number;
+}
+
+export interface ModelCandidate {
+  provider_identity_ref: string;
+  model_ref: string;
+  backend_ref: string;
+}
+
+export interface CustomClientTool {
+  type: "custom";
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface AgentMcpHttpServer {
+  type?: "url";
+  name: string;
+  url: string;
+  credential?: { id: string; revision: number };
+  prompts_as_skills?: boolean;
+}
+
+export interface AgentMcpSandboxServer {
+  type: "sandbox_stdio";
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  prompts_as_skills?: boolean;
+}
+
+export type AgentMcpServer = AgentMcpHttpServer | AgentMcpSandboxServer;
+
+export interface AgentToolsetConfig {
+  name: string;
+  enabled?: boolean;
+  permission_policy?: { type: "always_allow" | "always_ask" };
+  type?: string;
+  allowed_domains?: string[];
+  blocked_domains?: string[];
+  max_content_tokens?: number;
+  user_location?: Record<string, string>;
+}
+
+export interface AgentToolset {
+  type: "agent_toolset_20260401" | "mcp_toolset";
+  mcp_server_name?: string;
+  configs?: AgentToolsetConfig[];
+  default_config?: {
+    enabled?: boolean;
+    permission_policy?: { type: "always_allow" | "always_ask" };
+  };
+}
+
+export type AgentTool = string | CustomClientTool | AgentToolset;
+
 export interface AgentConfig {
   id: string;
   /** Optimistic-concurrency revision returned by the config plane. */
@@ -331,14 +351,15 @@ export interface AgentConfig {
   model: ModelSelection | { id: string; speed?: string } | string;
   system?: string;
   metadata?: Record<string, string>;
-  tools: string[];
-  mcp_servers: unknown[];
+  tools: AgentTool[];
+  inference?: InferenceOptions;
+  model_candidates?: ModelCandidate[];
+  tool_patterns?: string[];
+  mcp_servers: AgentMcpServer[];
   skills: unknown[];
   multiagent?: MultiagentConfig | null;
   /** Omitted means the backend compatibility default (8 / 8 / 64). */
   delegation_limits?: DelegationLimits;
-  /** Logical deployment Hand id; transport remains typed deployment config. */
-  hand?: string | null;
   disabled_at?: string | null;
   archived_at?: string | null;
   // extensions (our differentiated value, additive to the managed object):
@@ -356,7 +377,7 @@ export interface AgentConfig {
   tool_discovery?: ToolDiscoverySettings;
   /** Advanced persisted fields surfaced in the lossless JSON editor. */
   recovery_policies?: Record<string, unknown>;
-  compaction?: unknown;
+  compaction?: CompactionStrategy | null;
 }
 export type ToolExposure = "eager" | "on_demand";
 export type ToolSelector =
@@ -409,6 +430,7 @@ export interface PublishResult {
 
 export type {
   Capabilities,
+  ManagedToolsetCap,
   PluginCap,
   PolicyCap,
   RuntimeCap,
@@ -417,17 +439,7 @@ export type {
   ToolCap,
 } from "./capability-types";
 
-// ---- permission policy (the `permission` plugin_config section) ----
-export type PermissionBehavior = "allow" | "ask" | "deny";
-export interface PermissionRuleConfig {
-  pattern: string;
-  behavior: PermissionBehavior;
-}
-export interface PermissionConfig {
-  default_behavior?: PermissionBehavior;
-  mode?: string;
-  rules?: PermissionRuleConfig[];
-}
+export type { PermissionBehavior, PermissionConfig, PermissionRuleConfig } from "./permission-types";
 
 export type { Vault, VaultCredential, VaultCredentialAuth } from "./vault-types";
 export type { MemoryEntry, MemoryStore, MemoryVersion } from "./memory-types";

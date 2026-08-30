@@ -1,37 +1,34 @@
-/* Design tokens (design/web-ui.md §5): neutral chrome, amber accent (needs a
- * human), agent purple (AI activity), red spark. Two themes via data-theme. */
+/* Awaken Agents uses the same watermetal console identity as awakenworks.com:
+ * teal for product action and Agent activity, amber when a person is needed,
+ * and the red spark for exceptional attention. */
 
 :root,
 [data-theme="light"] {
   color-scheme: light;
-  --bg: #ffffff;
-  --canvas: #fafafa;
+  --bg: #f4f6f7;
+  --canvas: #eef1f3;
   --surface: #ffffff;
-  --soft: #f7f7f7;
-  --muted: #f4f4f4;
-  --rail: #f7f7f5;
-  --sunk: #efefec;
-  --fg: #0a0a0a;
-  --fg-strong: #000000;
-  --fg2: #555555;
-  --fg3: #8e8e8e;
-  --line: #e6e6e6;
-  --line-strong: #d1d1d1;
-  --edge: rgba(20, 20, 18, 0.08);
+  --soft: #f0f2f4;
+  --muted: #eef1f3;
+  --rail: #f4f6f7;
+  --sunk: #e0e4e8;
+  --fg: #080d12;
+  --fg-strong: #080d12;
+  --fg2: #565f68;
+  --fg3: #8a939c;
+  --line: #e0e4e8;
+  --line-strong: #c4ccd3;
+  --edge: rgba(8, 13, 18, 0.09);
 
-  /* Primary accent = indigo (hue 265) — the "Awaken Agents · 开发者" brand from
-   * the design handoff (awaken-theme.js BRANDS.agents). Sibling to Awaken Flow's
-   * amber (BRANDS.flow) over one shared neutral chrome. Amber stays the
-   * needs-human signal (--warn); violet stays agent activity (--agent). */
-  --accent: oklch(56% 0.16 265);
-  --accent-hover: oklch(50% 0.16 263);
-  --accent-ink: oklch(46% 0.15 262);
-  --accent-tint: oklch(56% 0.16 265 / 0.14);
+  --accent: #0f7d8c;
+  --accent-hover: #0b626f;
+  --accent-ink: #0b626f;
+  --accent-tint: rgb(15 125 140 / 0.13);
   --accent-fg: #ffffff;
 
-  --agent: oklch(56% 0.15 300);
-  --agent-ink: oklch(42% 0.16 300);
-  --agent-tint: oklch(56% 0.15 300 / 0.1);
+  --agent: #0f7d8c;
+  --agent-ink: #0b626f;
+  --agent-tint: rgb(15 125 140 / 0.1);
   --agent-fg: #ffffff;
 
   --spark: #cf4040;
@@ -52,31 +49,31 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0a0a0a;
-  --canvas: #111111;
-  --surface: #161616;
-  --soft: #1a1a1a;
-  --muted: #161616;
-  --rail: #121212;
-  --sunk: #0d0d0d;
-  --fg: #ededed;
-  --fg-strong: #ffffff;
-  --fg2: #9a9a9a;
-  --fg3: #5e5e5e;
-  --line: #232323;
-  --line-strong: #2f2f2f;
+  --bg: #0b1216;
+  --canvas: #0e171c;
+  --surface: #131e23;
+  --soft: #1d2b32;
+  --muted: #131e23;
+  --rail: #0e171c;
+  --sunk: #0b1216;
+  --fg: #d6dde1;
+  --fg-strong: #f1f6f8;
+  --fg2: #93a0a7;
+  --fg3: #66747d;
+  --line: #28373e;
+  --line-strong: #3c4d55;
   --edge: rgba(255, 255, 255, 0.09);
 
-  --accent: oklch(62% 0.16 265);
-  --accent-hover: oklch(66% 0.16 267);
-  --accent-ink: oklch(80% 0.14 269);
-  --accent-tint: oklch(62% 0.16 265 / 0.18);
-  --accent-fg: oklch(98% 0.01 265);
+  --accent: #3fb3c2;
+  --accent-hover: #57c3d1;
+  --accent-ink: #57c3d1;
+  --accent-tint: rgb(63 179 194 / 0.18);
+  --accent-fg: #03161a;
 
-  --agent: oklch(70% 0.135 270);
-  --agent-ink: oklch(80% 0.11 275);
-  --agent-tint: oklch(70% 0.135 270 / 0.16);
-  --agent-fg: #14102a;
+  --agent: #3fb3c2;
+  --agent-ink: #57c3d1;
+  --agent-tint: rgb(63 179 194 / 0.16);
+  --agent-fg: #03161a;
 
   --spark: #fa6863;
   --ok: oklch(74% 0.13 150);
@@ -95,10 +92,13 @@
 }
 
 :root {
-  /* Awaken core (handoff LOCKED): mono-first UI, 4px radius, red spark.
-   * awaken-theme.js CORE — shared across all three products. */
-  --font-sans: "JetBrains Mono", "Noto Sans SC", ui-monospace, monospace;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* Match awakenworks.com body typography without a network font dependency.
+   * Monospace remains reserved for code, endpoints, identifiers, and compact
+   * technical evidence. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei",
+    "Hiragino Sans GB", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --r-sm: 4px;
   --r-md: 4px;
   --r-lg: 4px;

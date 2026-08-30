@@ -38,6 +38,10 @@ describe("Workspace readiness decision table", () => {
       .every((item) => item.status === "ready")).toBe(true);
     expect(deriveReadiness({ ...empty, acp: 1, publishedAgents: 1 })
       .every((item) => item.status === "ready")).toBe(true);
+    expect(deriveReadiness({ ...empty, acp: 1 }, true)[0]).toMatchObject({
+      label: "模型或 ACP",
+      status: "ready",
+    });
   });
 
   it("R4 treats installed and authenticated ACP observations separately", () => {

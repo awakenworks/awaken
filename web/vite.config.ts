@@ -20,6 +20,20 @@ const apiProxy = () => ({
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("/@tanstack/")) return "query-vendor";
+          if (id.includes("/react-router/")) return "router-vendor";
+          if (id.includes("/@ai-sdk/") || id.includes("/ai/")) return "assistant-vendor";
+          if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/scheduler/")) return "react-vendor";
+          return undefined;
+        },
+      },
+    },
+  },
   resolve: {
     dedupe: ["react", "react-dom"],
   },

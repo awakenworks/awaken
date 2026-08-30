@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <title>Awaken Agents</title>
+  <style>
+    svg { --mark-primary: #68ced9; --mark-decision: #a392ff; }
+    .surface { fill: #0e171c; }
+    @media (prefers-color-scheme: light) {
+      svg { --mark-primary: #0f6f7b; --mark-decision: #5c43b2; }
+      .surface { fill: #eef1f3; }
+    }
+  </style>
+  <rect class="surface" width="32" height="32" rx="8"/>
+  <path data-silhouette="A" d="M14.2 6h3.6l8.6 20h-3L16 8.4 8.6 26h-3Z" fill="var(--mark-primary)"/>
+  <circle data-role="decision" cx="16" cy="20.2" r="2.5" fill="var(--mark-decision)"/>
+</svg>

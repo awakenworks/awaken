@@ -45,7 +45,9 @@ export function deriveReadiness(facts: ReadinessFacts, zh = false): ReadinessIte
       id: "supply",
       label: facts.managedModels
         ? zh ? "模型" : "Models"
-        : zh ? "模型与连接" : "Models and connections",
+        : facts.models === 0 && facts.acp > 0
+          ? zh ? "模型或 ACP" : "Models or ACP"
+          : zh ? "模型与连接" : "Models and connections",
       detail: supplyReady
         ? facts.managedModels
           ? zh ? `${facts.models} 个云端托管模型可用` : `${facts.models} Cloud-managed models available`

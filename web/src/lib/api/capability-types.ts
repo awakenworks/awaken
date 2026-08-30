@@ -5,6 +5,24 @@ export interface ToolCap {
   description: string;
   parameters: Record<string, unknown>;
 }
+export interface ManagedToolsetMemberCap {
+  name: string;
+  description?: string | null;
+  input_schema?: Record<string, unknown> | null;
+  available: boolean;
+  configurable_fields: string[];
+}
+export interface ManagedToolsetCap {
+  type: "agent_toolset_20260401" | "mcp_toolset";
+  source_kind: "agent" | "mcp";
+  dynamic_members: boolean;
+  default_config: {
+    enabled: boolean;
+    permission_policy: { type: "always_allow" | "always_ask" };
+  };
+  members?: ManagedToolsetMemberCap[];
+  member_configurable_fields?: string[];
+}
 export interface PluginCap {
   id: string;
   config_sections: string[];
@@ -52,6 +70,7 @@ export interface SandboxCapability {
 export interface Capabilities {
   runtime_version: string;
   tools: ToolCap[];
+  toolsets?: ManagedToolsetCap[];
   plugins: PluginCap[];
   policies?: PolicyCap[];
   runtimes?: RuntimeCap[];

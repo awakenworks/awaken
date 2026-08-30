@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import {
   ApiClientError,
+  AUTHENTICATION_REQUIRED_EVENT,
   api,
   clearProductSessionBearer,
   getToken,
@@ -29,13 +30,35 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    // Initialization owns its own 401 -> setup transition. Listening while the
+    // gate is already checking would turn that expected 401 into a restart
+    // loop: /v1/session -> auth event -> initialize -> /v1/session. The global
+    // event is only needed after authenticated product screens are mounted.
+    if (state !== "ready") return;
+    const requireAuthentication = () => {
+      queryClient.clear();
+      setError("");
+      setToken("");
+      setState("checking");
+      setAttempt((current) => current + 1);
+    };
+    window.addEventListener(AUTHENTICATION_REQUIRED_EVENT, requireAuthentication);
+    return () => window.removeEventListener(AUTHENTICATION_REQUIRED_EVENT, requireAuthentication);
+  }, [queryClient, state]);
+
+  useEffect(() => {
     let active = true;
     async function initialize() {
       let navigation;
       try {
         navigation = await queryClient.fetchQuery(suiteNavigationQuery);
-      } catch {
-        if (active) setState("unavailable");
+      } catch (cause) {
+        if (!active) return;
+        if (cause instanceof ApiClientError && cause.status === 401) {
+          setState("setup");
+        } else {
+          setState("unavailable");
+        }
         return;
       }
       const bootstrap = hostedBootstrapDecision(
@@ -84,10 +107,16 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
         }
       }
       try {
-        await resolveWorkspaceContext();
+        const context = await resolveWorkspaceContext();
+        app.setIdentityPresentation({
+          workspaceName: context.workspace_display_name,
+          organizationName: context.organization_display_name,
+          userName: context.user_display_name,
+        });
         if (active) setState("ready");
-      } catch {
-        if (active) setState("unavailable");
+      } catch (cause) {
+        if (!active) return;
+        setState(cause instanceof ApiClientError && cause.status === 401 ? "setup" : "unavailable");
       }
     }
     void initialize();
@@ -99,7 +128,12 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
     setError("");
     try {
       await api.post("/v1/auth/local/exchange", { setup_token: token.trim() });
-      await resolveWorkspaceContext();
+      const context = await resolveWorkspaceContext();
+      app.setIdentityPresentation({
+        workspaceName: context.workspace_display_name,
+        organizationName: context.organization_display_name,
+        userName: context.user_display_name,
+      });
       setToken("");
       setState("ready");
     } catch (cause) {

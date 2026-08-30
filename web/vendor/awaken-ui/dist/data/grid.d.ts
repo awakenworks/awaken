@@ -48,9 +48,15 @@ export interface DataGridProps<Row> {
     readonly pageSize?: number;
     readonly loading?: boolean;
     readonly toolbar?: ReactNode;
+    /** Render a label-value card view below 760px while retaining the native table
+     * for wider viewports. Products opt in after checking their cell content. */
+    readonly mobileCards?: boolean;
+    /** Accessible label for the per-card action when `onRowClick` is present. */
+    readonly mobileRowActionLabel?: ReactNode | ((row: Row) => ReactNode);
+    readonly renderMobileLoading?: () => ReactNode;
     readonly renderLoading: (columns: number) => ReactNode;
     readonly renderEmpty: () => ReactNode;
     readonly classes?: DataGridClasses;
 }
-export declare function DataGrid<Row>({ rows, columns, rowKey, state, labels, filter, onRowClick, pageSize, loading, toolbar, renderLoading, renderEmpty, classes, }: DataGridProps<Row>): import("react/jsx-runtime").JSX.Element;
+export declare function DataGrid<Row>({ rows, columns, rowKey, state, labels, filter, onRowClick, pageSize, loading, toolbar, mobileCards, mobileRowActionLabel, renderMobileLoading, renderLoading, renderEmpty, classes, }: DataGridProps<Row>): import("react/jsx-runtime").JSX.Element;
 //# sourceMappingURL=grid.d.ts.map

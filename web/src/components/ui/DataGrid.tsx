@@ -5,7 +5,7 @@ import {
 import type { ReactNode } from "react";
 import { useApp } from "../../lib/app-state";
 import type { ListState } from "../../lib/useListState";
-import { EmptyState, SkeletonRows } from "./primitives";
+import { EmptyState, Skeleton, SkeletonRows } from "./primitives";
 
 export type Column<Row> = DataGridColumn<Row>;
 
@@ -52,6 +52,8 @@ export function DataGrid<Row>({
         previous: <>← {app.t("Prev", "上一页")}</>,
         searchPlaceholder: searchPlaceholder ?? app.t("Filter…", "过滤…"),
       }}
+      mobileCards
+      mobileRowActionLabel={app.t("Open", "打开")}
       renderEmpty={() => (
         <EmptyState
           hint={emptyHint}
@@ -59,6 +61,7 @@ export function DataGrid<Row>({
         />
       )}
       renderLoading={(columns) => <SkeletonRows cols={columns} rows={4} />}
+      renderMobileLoading={() => <div className="card" style={{ padding: 12 }}><Skeleton height={48} /></div>}
     />
   );
 }
