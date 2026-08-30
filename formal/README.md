@@ -248,8 +248,11 @@ production logic.
   deliberately retained as an external idempotency assumption.
 - `AuthzKernel.tla`, `LiveInbox.tla`, and `CheckpointRecovery.tla` cover total
   request classification, ordered editable process-local input (including
-  atomic exact-permutation reorder, replace, remove, drain, and close), and
-  crash-safe streaming watermark/checkpoint behavior. `LiveInboxProof.tla`
+  atomic exact-permutation reorder, replace, remove, drain, close, and the
+  pause-before-input-before-idle safe-boundary decision), and crash-safe
+  streaming watermark/checkpoint behavior. `LiveInbox` deliberately models the
+  process-local fold as best-effort rather than duplicating durable ingress.
+  `LiveInboxProof.tla`
   proves that reorder has no partially applied outcome and every invalid
   request is a stuttering transition.
 - `ServiceLifecycle.tla` covers the process-wide recurring-task registry:
