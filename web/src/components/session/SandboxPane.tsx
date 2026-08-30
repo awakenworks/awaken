@@ -41,6 +41,7 @@ import {
   inspectProtocolSse,
   protocolEventType,
   previewToolLabel,
+  retainProtocolEvents,
   type PreviewAccess,
   type PreviewProtocol,
   type PreviewProtocolEvent,
@@ -186,13 +187,13 @@ function ProtocolPreview({
     type: string,
     payload: unknown,
   ) => {
-    setProtocolEvents((current) => [...current.slice(-119), {
+    setProtocolEvents((current) => retainProtocolEvents([...current, {
       id: ++eventSequence.current,
       protocol: eventProtocol,
       direction,
       type,
       payload,
-    }]);
+    }], 120));
   }, []);
   const inspectFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
     let payload: unknown = init?.body;
