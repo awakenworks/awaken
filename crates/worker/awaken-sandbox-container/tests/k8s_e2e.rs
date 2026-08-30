@@ -11,6 +11,7 @@
 #![cfg(feature = "k8s")]
 
 mod common;
+mod k8s_common;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,12 +28,17 @@ use awaken_sandbox_container::k8s::{
     DEFAULT_REPOSITORY_GIT_CONTROL_PORT, K8sRuntime, K8sSandboxControlForwarder,
 };
 use awaken_sandbox_container::{
-    ContainerEnvironment, ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime,
-    ContainerSandbox, ContainerState, ResidentHandConfig, SandboxControlService,
-    SandboxControlServiceKind, SandboxControlServicePublisher, WarmContainerPool, command_of,
+    ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
+    ContainerProvider, ContainerRealizationIntent, ContainerRuntime, ContainerSandbox,
+    ContainerState, ResidentHandConfig, SandboxControlService, SandboxControlServiceKind,
+    SandboxControlServicePublisher, WarmContainerPool, command_of,
 };
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
+use k8s_common::{
+    container_environment, container_id, disposal_authorization, effect_fence, fixture_image,
+    spec_with_command,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Default)]
@@ -72,6 +78,18 @@ fn require_live_cluster() -> bool {
     true
 }
 
+fn session_argv() -> Vec<String> {
+    vec!["sh".into(), "-c".into(), "sleep 300".into()]
+}
+
+fn session_image() -> String {
+    std::env::var("AWAKEN_K8S_SESSION_IMAGE").unwrap_or_else(|_| "awaken-sandbox:local".to_string())
+}
+
+fn spec(scope: &str, image: String) -> pc::SandboxSpec {
+    spec_with_command(scope, image, session_argv())
+}
+
 /// A stdio agent fixture. Session-owned Kubernetes environments execute an agent via
 /// the Pod exec subresource; they do not create a second, direct TCP control path.
 fn agent_argv() -> Vec<String> {
@@ -80,38 +98,6 @@ fn agent_argv() -> Vec<String> {
           \"$AWAKEN_PROJECT_DIR\" \"$AWAKEN_OUTPUTS_DIR\"; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
     vec!["sh".into(), "-c".into(), script.into()]
-}
-
-fn session_argv() -> Vec<String> {
-    vec!["sh".into(), "-c".into(), "sleep 300".into()]
-}
-
-fn fixture_image() -> String {
-    std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string())
-}
-
-fn container_environment(image: String) -> pc::EnvironmentKind {
-    pc::EnvironmentKind::Image { reference: image }
-}
-
-fn spec(scope: &str, image: String) -> pc::SandboxSpec {
-    pc::SandboxSpec {
-        scope: scope.into(),
-        isolation: pc::IsolationClass::Container,
-        environment: Some(container_environment(image)),
-        command: session_argv(),
-        deny_tool_egress: false,
-        mounts: Vec::new(),
-        env: Vec::new(),
-        packages: Default::default(),
-        network: pc::NetworkPolicy::Unrestricted,
-        outputs_path: "/mnt/session/outputs".into(),
-        requests: Default::default(),
-        limits: pc::ResourceLimits::default(),
-        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-        lease_ttl_secs: None,
-        control_services: Default::default(),
-    }
 }
 
 /// A busybox fixture that reads the ConfigMap-projected file at `/acp-config/config.toml`
@@ -228,11 +214,11 @@ fn grep_binary_argv() -> Vec<String> {
 }
 
 async fn exchange(
-    sandbox: &ContainerSandbox<K8sRuntime>,
+    sandbox: &dyn ContainerEnvironment,
     argv: Vec<String>,
 ) -> Result<String, pc::SandboxError> {
     let process = sandbox
-        .spawn_agent(pc::Command {
+        .spawn_agent_process(pc::Command {
             argv,
             cwd: String::new(),
             env: Vec::new(),
@@ -354,13 +340,12 @@ fn kubectl(args: &[&str]) -> std::process::Output {
 }
 
 fn pod_of(sandbox: &ContainerSandbox<K8sRuntime>) -> String {
-    pc::Sandbox::handle(sandbox)
-        .container_payload()
-        .expect("the provider handle owns a typed Kubernetes payload")
-        .container_id
-        .clone()
+    container_id(&pc::Sandbox::handle(sandbox))
 }
 
+/// Failure-only teardown for credential broker cases that deliberately prove
+/// production disposal rejected before mutation. It is never the cleanup
+/// success oracle and is not used after an expected successful disposal.
 fn cleanup_credential_pod(pod: &str) {
     let secret = format!("{pod}-credential-0");
     let _ = kubectl(&["delete", "pod", pod, "--ignore-not-found", "--wait=true"]);
@@ -499,11 +484,13 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
 }
 
 /// Kubernetes warm-capacity cause/effect design:
-/// C1=reachable cluster, C2=mount-less exact shape, C3=target one, C4=Session
-/// consumes the warm Pod, C5=capacity shutdown runs. E1=prewarm returns only
-/// after the Pod is Ready, E2=Session receives that Pod without a cold create,
-/// E3=shutdown deletes only unused capacity, E4=the active Session Pod remains
-/// live until its own dispose, then reaches Gone.
+/// C1=reachable cluster, C2=mount-less Ephemeral exact shape, C3=target one,
+/// C4=Session consumes the warm Pod, C5=capacity shutdown runs. E1=prewarm
+/// returns only after the Pod is Ready, E2=Session receives that Pod without a
+/// cold create or retained PVC, E3=shutdown deletes only unused capacity,
+/// E4=the active Session Pod remains live until its own dispose, then reaches
+/// Gone. The Retained row is owned by the poolable-shape unit table and must
+/// yield zero rather than bypassing its receipt-fenced identity rule.
 /// Decision rule: (C1,C2,C3,C4,C5)->(E1,E2,E3,E4).
 #[tokio::test]
 async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_session() {
@@ -519,7 +506,8 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
     let image = fixture_image();
     let provider = Arc::new(ContainerProvider::new(runtime.clone(), image.clone()));
     let pool = WarmContainerPool::new(provider, 1);
-    let session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()), image);
+    let mut session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()), image);
+    session_spec.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
 
     assert_eq!(pool.prewarm(&session_spec, 1).await.unwrap(), 1, "E1");
     assert_eq!(pool.ready_len(&session_spec), 1);
@@ -751,8 +739,9 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let got = exchange(&sandbox, agent_argv())
         .await
         .expect("exchange ACP frames over the Kubernetes exec channel");
-    let _ = pc::Sandbox::dispose(&sandbox).await;
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("KRP1 E3 production exact disposal removes the Pod");
 
     assert!(
         got.contains("sandboxed reply:/workspace:/mnt/session/outputs"),
@@ -864,12 +853,16 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
 #[tokio::test]
 async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     /* Cause/effect recovery decision table — KLI2:
-     * C1 a reachable cluster already has the exact Session Pod; C2 desired Managed
-     * Files change from path/value A to path/value B; C3 all other environment facts
-     * are unchanged. C1+C2+C3 => E1 create adopts the same Pod realization (no 500),
-     * E2 B is projected before create returns, E3 obsolete A is absent, and E4 no
-     * per-file ConfigMap exists. !C3 is covered by k8s_it K1 and must still fail
-     * closed as a genuinely different realization.
+     * C1 a fenced create produced the exact Session Pod plus durable V2 handle;
+     * C2 recovery presents that handle with the byte-identical frozen creation
+     * spec and same live effect; C3 the separately owned live Managed File
+     * manifest changes from path/value A to path/value B. C1+C2+C3 => E1 adopt
+     * reuses the same Pod without a create/re-fingerprint path, E2 the canonical
+     * live projection port removes A and projects B, E3 no per-file ConfigMap
+     * exists, E4 source-dependent preparation leaves the Pod live, and E5 the
+     * separately admitted physical phase removes it. A changed creation spec is deliberately excluded: K1 in
+     * k8s_it proves it fails closed rather than conflating mutable manifest state
+     * with immutable realization identity.
      */
     if !require_live_cluster() {
         return;
@@ -883,20 +876,43 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image());
 
-    let first = provider
-        .create_container(&managed_input_spec(&scope, path_a, "generation-a"))
-        .await
-        .expect("create the initial Session Pod and project A");
-    let pod = pod_of(&first);
+    let first_spec = managed_input_spec(&scope, path_a, "generation-a");
+    let next_spec = managed_input_spec(&scope, path_b, "generation-b");
+    let create_fence = effect_fence(&scope, "create", "manifest-owner", 1);
+    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &first_spec,
+        Some(&create_fence),
+        ContainerRealizationIntent::Create,
+    )
+    .await
+    .expect("create the initial Session Pod and project A");
+    let handle = first.handle();
+    let pod = container_id(&handle);
     let read_a = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path_a]);
     assert!(read_a.status.success());
     assert_eq!(String::from_utf8_lossy(&read_a.stdout), "generation-a");
 
-    let recovered = provider
-        .create_container(&managed_input_spec(&scope, path_b, "generation-b"))
+    drop(first);
+    let recovered = ContainerEnvironmentProvider::adopt_environment_for_effect(
+        &provider,
+        ContainerEnvironmentAdoption::new(&first_spec, &handle),
+        Some(&create_fence),
+    )
+    .await
+    .expect("recover the stable Pod from its frozen spec and exact V2 handle");
+    assert_eq!(container_id(&recovered.handle()), pod);
+    assert!(
+        recovered.supports_live_mount_replacement(&first_spec.mounts, &next_spec.mounts),
+        "KLI2 mutable manifest is admitted by the existing live projection owner"
+    );
+    recovered
+        .remove_live_input_path(path_a)
         .await
-        .expect("a changed Managed File manifest must reuse the stable Pod");
-    assert_eq!(pod_of(&recovered), pod);
+        .expect("KLI2 remove obsolete path through the live projection port");
+    pc::Sandbox::attach(recovered.as_ref(), next_spec.mounts[0].clone())
+        .await
+        .expect("KLI2 project the replacement path through the live projection port");
     let old_absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path_a]);
     assert!(old_absent.status.success());
     let read_b = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path_b]);
@@ -914,7 +930,19 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     assert!(configmaps.status.success());
     assert!(configmaps.stdout.is_empty());
 
-    pc::Sandbox::dispose(&recovered).await.unwrap();
+    let terminal_fence = effect_fence(&scope, "terminal", "manifest-owner", 2);
+    recovered
+        .prepare_disposal_for_effect(&terminal_fence)
+        .await
+        .expect("KLI2/E4 prepare source-dependent effects");
+    assert!(
+        kubectl(&["get", "pod", &pod]).status.success(),
+        "KLI2/E4 preparation has zero physical effect"
+    );
+    recovered
+        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .await
+        .expect("KLI2/E5 exact physical cleanup");
 }
 
 #[tokio::test]
@@ -943,7 +971,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         .expect("create the agent Pod with a ConfigMap-backed inline mount");
     let pod = pod_of(&sandbox);
 
-    // The ConfigMap must exist (created before the Pod, referenced as a volume).
+    // The Pod-owned ConfigMap must exist after realization and before readiness.
     let cm = kubectl(&[
         "get",
         "configmap",
@@ -970,8 +998,9 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     let got = exchange(&sandbox, cat_mount_argv())
         .await
         .expect("read the ConfigMap mount from the agent exec");
-    let _ = pc::Sandbox::dispose(&sandbox).await;
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("KMR1 E3 production exact disposal removes the Pod and ConfigMap");
 
     // The ConfigMap held the inline bytes verbatim.
     assert_eq!(
@@ -1017,18 +1046,27 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
     let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
-    let provider = ContainerProvider::new(Arc::new(runtime), fixture_image());
-    provider.install_memory_mounter(Arc::new(MemoryStoreMounter::copy_only(memory.clone())));
+    let image = session_image();
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
+    let terminal_mounter = Arc::new(MemoryStoreMounter::copy_only(memory.clone()));
+    provider.install_memory_mounter(terminal_mounter.clone());
 
     // Live Pod Memory decision table:
-    // C1=two authoritative snapshots; C2=RW Agent volume; C3=RO Agent volume;
-    // C4=unbound parent path; C5=terminal dispose. R1 C1+C2 => E1 seeded read,
-    // mutation and harvested durable update; R2 C1+C3 => E2 seeded read, kernel
-    // rejects mutation and durable head stays unchanged; R3 C1+C4 => E3 sealed
-    // parent rejects an unowned path; R4 R1+R2+C5 => E4 one projector harvests
-    // both exact volumes through the retained MemoryMounter.
+    // C0=the accepted production Session image carries the canonical
+    // `awaken-sandbox read-tree-nofollow` helper; C1=two authoritative snapshots;
+    // C2=RW Agent volume; C3=RO Agent volume; C4=unbound parent path; C5=create
+    // and terminal effects are durable and exact. R1 C0+C1+C2+C5 => E1 seeded
+    // read, mutation and harvested durable update; R2 C0+C1+C3+C5 => E2 seeded
+    // read, kernel rejects mutation and durable head stays unchanged; R3
+    // C0+C1+C4+C5 => E3 sealed parent rejects an unowned path; R4 R1+R2+C5 =>
+    // E4 the image-local nofollow scanner snapshots each exact volume, the
+    // existing terminal reconciliation port commits RW bytes before the
+    // provider preparation receipt, preparation leaves the Pod live, and only
+    // the separately admitted physical phase removes it. Missing C0 is an
+    // image-acceptance failure, never a shell fallback; missing C5 is owned by
+    // the runtime unit table and fails before native Memory projection.
     let scope = format!("k8s-memory-boundary-{}", std::process::id());
-    let mut memory_spec = spec(&scope, fixture_image());
+    let mut memory_spec = spec(&scope, image);
     memory_spec.mounts = vec![
         memory_mount(
             "rw-memory",
@@ -1043,10 +1081,15 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
             pc::MountAccess::ReadOnly,
         ),
     ];
-    let sandbox = provider
-        .create_container(&memory_spec)
-        .await
-        .expect("create Pod with two MemoryStore volumes");
+    let create_fence = effect_fence(&scope, "create", "memory-owner", 1);
+    let sandbox = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &memory_spec,
+        Some(&create_fence),
+        ContainerRealizationIntent::Create,
+    )
+    .await
+    .expect("create fenced Pod with two MemoryStore volumes");
     let probe = concat!(
         "read _p; ",
         "test \"$(cat /mnt/memory/rw/note.md)\" = rw-seed; ",
@@ -1057,16 +1100,63 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         "printf '%s\\n' '{\"type\":\"message\",\"text\":\"memory-boundary-ok\"}'; ",
         "printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'"
     );
-    let got = exchange(&sandbox, vec!["sh".into(), "-ec".into(), probe.into()])
-        .await
-        .expect("exercise MemoryStore paths through a real Pod exec");
+    let got = exchange(
+        sandbox.as_ref(),
+        vec!["sh".into(), "-ec".into(), probe.into()],
+    )
+    .await
+    .expect("exercise MemoryStore paths through a real Pod exec");
     assert!(
         got.contains("memory-boundary-ok"),
         "live probe completed: {got:?}"
     );
-    pc::Sandbox::dispose(&sandbox)
+    let terminal_fence = effect_fence(&scope, "terminal", "memory-owner", 2);
+    let handle = sandbox.handle();
+    let evidence = handle
+        .memory_materializations()
+        .expect("K8s Memory handle is current V2")
+        .expect("K8s Memory handle records the complete Copy evidence");
+    assert_eq!(evidence.len(), 2, "R4/C1 exact Memory evidence set");
+    for materialization in evidence {
+        let requirement = memory_spec
+            .mounts
+            .iter()
+            .find(|requirement| requirement.mount_path == materialization.mount_path)
+            .expect("R4 each materialization joins one frozen mount");
+        let files = sandbox
+            .read_files(&materialization.mount_path)
+            .await
+            .expect("R4 snapshot the exact native Memory root")
+            .into_iter()
+            .map(|file| (file.path, file.bytes))
+            .collect::<Vec<_>>();
+        pc::MemoryMounter::reconcile_recovered_copy(
+            terminal_mounter.as_ref(),
+            &materialization.store_id,
+            materialization,
+            &files,
+            requirement.access,
+        )
         .await
-        .expect("terminal disposal harvests both Memory volumes");
+        .expect("R4 reconcile through the canonical terminal Memory port");
+    }
+    sandbox
+        .acknowledge_memory_reconciliation(&terminal_fence, evidence)
+        .await
+        .expect("R4 acknowledge the complete reconciled evidence set");
+    sandbox
+        .prepare_disposal_for_effect(&terminal_fence)
+        .await
+        .expect("R4 prepare source-dependent cleanup after Memory is durable");
+    let pod = container_id(&handle);
+    assert!(
+        kubectl(&["get", "pod", &pod]).status.success(),
+        "R4 provider preparation has zero physical effect"
+    );
+    sandbox
+        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .await
+        .expect("R4 physical disposal runs only after preparation");
 
     assert_eq!(
         memory
@@ -1095,10 +1185,11 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
 #[tokio::test]
 async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     /* By-reference mount FMECA rule KMR2. C1 the File id exists in the injected
-     * BlobSource; C2 its bytes are UTF-8; C3 the Pod becomes runnable.
-     * C1+C2+C3 => E1 resolve once through the canonical BlobSource, E2 project
-     * the exact bytes, E3 make them readable only at the requested path. Missing
-     * and corrupt content are covered at the provider boundary before mutation.
+     * BlobSource; C2 its bytes are UTF-8; C3 the Pod becomes runnable; C4 exact
+     * production disposal is requested. C1+C2+C3 => E1 resolve once through the
+     * canonical BlobSource, E2 project the exact bytes, E3 make them readable
+     * only at the requested path; C4=>E4 exact disposal succeeds. Missing and
+     * corrupt content are covered at the provider boundary before mutation.
      */
     if !require_live_cluster() {
         return;
@@ -1138,8 +1229,9 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     let got = exchange(&sandbox, cat_mount_argv())
         .await
         .expect("read the resolved File mount from the agent exec");
-    let _ = pc::Sandbox::dispose(&sandbox).await;
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("KMR2 E4 production exact disposal removes the Pod");
 
     // The Pod read the ConfigMap-projected file whose bytes the provider resolved from the
     // BlobSource by the File's content id — the full by-reference → ConfigMap → pod path.
@@ -1152,9 +1244,10 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
 #[tokio::test]
 async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
     /* Binary mount FMECA rule KMR3. C1 the File id resolves; C2 bytes are not
-     * valid UTF-8 but contain an exact marker; C3 the Pod becomes runnable.
-     * C1+C2+C3 => E1 select ConfigMap binaryData rather than lossy text, E2
-     * preserve all bytes, E3 expose the marker to the agent at the exact path.
+     * valid UTF-8 but contain an exact marker; C3 the Pod becomes runnable; C4
+     * exact production disposal is requested. C1+C2+C3 => E1 select ConfigMap
+     * binaryData rather than lossy text, E2 preserve all bytes, E3 expose the
+     * marker to the agent at the exact path; C4=>E4 exact disposal succeeds.
      */
     if !require_live_cluster() {
         return;
@@ -1195,8 +1288,9 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
     let got = exchange(&sandbox, grep_binary_argv())
         .await
         .expect("read the binaryData mount from the agent exec");
-    let _ = pc::Sandbox::dispose(&sandbox).await;
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("KMR3 E4 production exact disposal removes the Pod");
 
     // The binary file (non-UTF-8 prefix + ASCII marker) reached the Pod intact via binaryData.
     assert!(
@@ -1228,8 +1322,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
     }
 
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".to_string());
-    let image = std::env::var("AWAKEN_K8S_SESSION_IMAGE")
-        .unwrap_or_else(|_| "awaken-sandbox:local".to_string());
+    let image = session_image();
     let scope = format!("k8s-hand-recovery-{}", std::process::id());
     let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
@@ -1354,8 +1447,7 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
     }
 
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
-    let image =
-        std::env::var("AWAKEN_K8S_SESSION_IMAGE").unwrap_or_else(|_| "awaken-sandbox:local".into());
+    let image = session_image();
     let scope = format!("k8s-resident-takeover-{}", std::process::id());
     let runtime_a = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
