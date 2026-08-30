@@ -172,6 +172,24 @@ def decode(sse):
                     ["anthropic/_streaming.py", "anthropic/_missing.py"],
                 )
 
+    def test_python_module_name_accepts_equivalent_root_aliases(self) -> None:
+        # macOS reports TemporaryDirectory paths through /var while Path.resolve
+        # canonicalizes discovered files through /private/var. A filesystem
+        # alias must not change the module identity or bypass containment.
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            real_root = container / "sdk"
+            filename = real_root / "anthropic/types/beta/widget.py"
+            filename.parent.mkdir(parents=True)
+            filename.write_text("class Widget: pass\n", encoding="utf-8")
+            alias_root = container / "sdk-alias"
+            alias_root.symlink_to(real_root, target_is_directory=True)
+
+            self.assertEqual(
+                oracle.python_module_name(alias_root, filename),
+                "anthropic.types.beta.widget",
+            )
+
     def test_managed_type_closure_follows_exact_reexported_symbols(self) -> None:
         # Symbol-closure graph: C1=a Managed resource imports one DTO through a
         # broad package initializer; C2=that DTO imports a nested DTO and the

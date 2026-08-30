@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -362,7 +362,9 @@ async function assertAgentToolset(module, Anthropic, label) {
     await edit.run({ file_path: 'note.txt', old_string: 'beta', new_string: 'gamma' });
     assert.match(await glob.run({ pattern: '**/*.txt' }), /note\.txt/u);
     assert.match(await grep.run({ pattern: 'gamma', path: '.' }), /gamma/u);
-    assert.equal(await module.resolvePath(ctx, 'note.txt'), join(workdir, 'note.txt'));
+    // The official helper returns the canonical filesystem identity. On macOS,
+    // tmpdir() uses /var while realpath uses its /private/var target.
+    assert.equal(await module.resolvePath(ctx, 'note.txt'), realpathSync(join(workdir, 'note.txt')));
     await assert.rejects(
       () => module.resolvePath(ctx, '../outside.txt'),
       /(?:outside (?:the allowed roots|the session's working directory)|escapes workdir)/u,
