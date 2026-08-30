@@ -5,6 +5,7 @@
 //! is audited as a committed `PermissionDecided` event.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -12,7 +13,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
+use awaken_ext_compact::{
+    CompactArtifact, CompactBackend, CompactConfig, CompactPlugin, CompactRequest,
+};
 use awaken_runtime::{PermissionGate, Runtime};
+use awaken_runtime_contract::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -38,10 +43,15 @@ const TICKET: &str = "perm-call-1";
 /// Calls `echo` once, then ends with text.
 struct ToolThenText {
     calls: AtomicUsize,
+    requests: Arc<Mutex<Vec<ChatRequest>>>,
 }
 #[async_trait::async_trait]
 impl LlmExecutor for ToolThenText {
-    async fn infer(&self, _r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.requests.lock().unwrap().push(request);
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
             AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -71,6 +81,35 @@ impl RawTool for EchoTool {
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.ran.fetch_add(1, Ordering::SeqCst);
         Ok(ToolOutput::ok(call.call_id, "echoed: ping"))
+    }
+}
+
+/// Deterministic implementation of the existing Compact labor port. The test
+/// counts exact requests but does not invent a cache, store, or planner.
+struct CountingCompactBackend {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl CompactBackend for CountingCompactBackend {
+    async fn prefetch(&self, _request: CompactRequest) {}
+
+    async fn latest_ready(
+        &self,
+        _scope: &str,
+        _at_most_messages: usize,
+    ) -> Option<CompactArtifact> {
+        None
+    }
+
+    async fn summarize(&self, request: CompactRequest) -> Option<CompactArtifact> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Some(CompactArtifact {
+            scope: request.scope,
+            key: request.key,
+            covered_messages: request.covered_messages,
+            summary: "durable compact summary".to_string(),
+        })
     }
 }
 
@@ -122,6 +161,7 @@ fn runtime(ran: Arc<AtomicUsize>, decision: ToolPermissionVerdict) -> Runtime {
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }))
         .with_tool(Arc::new(EchoTool { ran }))
         .with_gate(Arc::new(PermissionGate::new(Arc::new(FixedPolicy(
@@ -287,6 +327,121 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
         "session-thread-reply-operation-1"
     );
     assert_eq!(receipts[0].payload["correlation_id"], TICKET);
+}
+
+#[tokio::test]
+async fn compact_context_survives_permission_await_and_resume_without_refolding() {
+    // Cause/effect graph: C1 a long parent context crosses the hard Compact
+    // threshold; C2 the first model response requests a confirmation-gated tool;
+    // C3 an exact allow resumes the same durable Run. Effects: E1 the first leg
+    // computes and commits one summary/window before Awaiting; E2 the resumed
+    // request reuses that request-only summary; E3 the compactor runs exactly
+    // once; E4 the approved tool runs once and the Run ends naturally.
+    //
+    // | Rule | hard fold | approval | resume | Effects |
+    // | R1   | yes       | pending  | no     | E1      |
+    // | R2   | committed | allowed  | yes    | E2+E3+E4|
+    //
+    // Constraints/invariants: ContextMessages/ContextWindow remain the only
+    // context authority; Awaiting and approval add no compact cache or replay
+    // path; request-only summary text is never appended to the transcript.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let compact_backend = Arc::new(CountingCompactBackend {
+        calls: AtomicUsize::new(0),
+    });
+    let compact_config = CompactConfig {
+        keep_last: 0,
+        max_tokens: Some(1),
+        ..Default::default()
+    };
+    let compact = Arc::new(
+        CompactPlugin::new(compact_config.clone())
+            .with_backend("thread-1", compact_backend.clone()),
+    );
+
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(0),
+            requests: requests.clone(),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(PermissionGate::new(Arc::new(FixedPolicy(
+            ToolPermissionVerdict::RequireConfirmation {
+                correlation_id: TICKET.to_string(),
+            },
+        )))))
+        .with_plugin(compact);
+
+    let mut activation = activation();
+    activation.input[0] = Message {
+        id: MessageId("m1".to_string()),
+        role: Role::User,
+        content: vec![ContentBlock::text(
+            "long parent context that crosses the compact token threshold",
+        )],
+    };
+    activation
+        .snapshot
+        .resolved_spec
+        .plugin_ids
+        .push("compact".to_string());
+    activation.snapshot.resolved_spec.plugin_config.insert(
+        "compact".to_string(),
+        serde_json::to_value(compact_config).expect("compact config serializes"),
+    );
+    runtime.register_snapshot(activation.snapshot.clone());
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let first = runtime
+        .execute(activation, context(&commit))
+        .await
+        .expect("R1 awaits permission after compacting");
+    assert_eq!(first, RunState::Awaiting, "R1/E1");
+    assert_eq!(compact_backend.calls.load(Ordering::SeqCst), 1, "R1/E1");
+
+    let ticket = commit
+        .resume_ticket_for(&RunId("run-1".to_string()))
+        .expect("R1 commits the permission ticket");
+    let resumed = runtime
+        .resume(
+            ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 0),
+            commit.as_ref(),
+            context(&commit),
+        )
+        .await
+        .expect("R2 resumes from committed context state");
+    assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd), "R2/E4");
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "R2/E4");
+    assert_eq!(
+        compact_backend.calls.load(Ordering::SeqCst),
+        1,
+        "R2/E3: resume must not recompute the compact Agent"
+    );
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "one request before and after approval");
+    for (index, request) in requests.iter().enumerate() {
+        assert!(
+            request.messages.iter().any(|message| {
+                message.role == Role::System
+                    && message
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::Text { text } if text.contains("durable compact summary")))
+            }),
+            "R{}/E2: request reuses committed summary: {:?}",
+            index + 1,
+            request.messages
+        );
+    }
+    assert!(
+        commit
+            .committed_messages(&ThreadId("thread-1".to_string()))
+            .iter()
+            .all(|message| !message.text_content().contains("durable compact summary")),
+        "request-only compact context must not become transcript truth"
+    );
 }
 
 /// A model that calls a tool by its MODEL-FACING ALIAS, not the canonical id.

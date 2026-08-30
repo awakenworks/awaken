@@ -12,10 +12,12 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::{CircuitBreakerConfig, LlmRetryPolicy, Runtime};
+use awaken_runtime_contract::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error as LlmError, LlmExecutor, StopReason,
+    ThreadUsage, TokenUsage,
 };
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -128,14 +130,25 @@ impl LlmExecutor for TruncatingLlm {
         if n < self.truncated_steps {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("chunk-{n}")),
-                usage: None,
+                usage: Some(TokenUsage {
+                    prompt_tokens: 2,
+                    completion_tokens: 1,
+                    ..Default::default()
+                }),
                 stop_reason: Some(StopReason::MaxTokens),
             })
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text("the end".to_string()),
-                usage: None,
-                stop_reason: Some(StopReason::NaturalEnd),
+                usage: Some(TokenUsage {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    ..Default::default()
+                }),
+                // Provider compatibility: absence is the legacy natural-end
+                // representation. An explicit but unknown provider reason is
+                // rejected by the adapter before reaching this neutral port.
+                stop_reason: None,
             })
         }
     }
@@ -155,11 +168,10 @@ impl LlmExecutor for TruncatedToolCallLlm {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
             Ok(ChatResponse {
-                output: AssistantOutput::from_blocks(vec![ContentBlock::tool_use(
-                    "c1",
-                    "nonexistent-tool",
-                    serde_json::json!({}),
-                )]),
+                output: AssistantOutput::from_blocks(vec![
+                    ContentBlock::text("partial explanation"),
+                    ContentBlock::tool_use("c1", "nonexistent-tool", serde_json::json!({})),
+                ]),
                 usage: None,
                 stop_reason: Some(StopReason::MaxTokens),
             })
@@ -304,13 +316,17 @@ async fn transient_error_then_success_recovers() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
-/// MaxTokens live-coordinate cause/effect table: C1 response 0 truncates and
-/// commits a partial; C2 response 1 completes the same assistant step; E1 both
+/// MaxTokens live-coordinate cause/effect table: C1 response 0 truncates with
+/// usage and commits a partial; C2 response 1 completes with an absent legacy
+/// stop reason and more usage; E1 both
 /// keep the same `(run,thread,step)`; E2 C2 advances only `response`; E3 the
-/// transcript still commits partial/prompt/final. Rules M1=C1=>response 0+E3,
-/// M2=C1+C2=>response [0,1]+E1+E2+E3.
+/// transcript still commits partial/prompt/final; E4 both request tallies are
+/// committed exactly once and attributed to the selected model. Rules
+/// M1=C1=>response 0+E3, M2=C1+C2=>response [0,1]+E1+E2+E3+E4.
 /// Constraints/invariants: continuation remains in one Run/Thread/Step and only
-/// the response coordinate advances; transcript order is append-only.
+/// the response coordinate advances; transcript order is append-only; `None`
+/// preserves the legacy natural-end contract while an adapter-classified unknown
+/// reason never reaches the loop.
 #[tokio::test]
 async fn max_tokens_truncation_continues_in_place_and_recovers() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -389,6 +405,17 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
         }),
         "M1/M2 E1"
     );
+    let usage =
+        ThreadUsage::from_committed_state(&commit.committed_state(&ThreadId("thread-1".into())));
+    assert_eq!(
+        usage.by_model["m"],
+        TokenUsage {
+            prompt_tokens: 5,
+            completion_tokens: 3,
+            ..Default::default()
+        },
+        "M2/E4: truncated and final request usage is accumulated exactly once"
+    );
 }
 
 /// Cause/effect design: C1 every model response is text-only and stopped by
@@ -439,6 +466,17 @@ async fn max_tokens_budget_exhaustion_commits_partial_and_fails_explicitly() {
             .count(),
         2,
         "X1/E4: only requests within the budget receive continuation prompts"
+    );
+    let usage =
+        ThreadUsage::from_committed_state(&commit.committed_state(&ThreadId("thread-1".into())));
+    assert_eq!(
+        usage.by_model["m"],
+        TokenUsage {
+            prompt_tokens: 6,
+            completion_tokens: 3,
+            ..Default::default()
+        },
+        "X1/E2: all three truncated request tallies survive terminal failure"
     );
 }
 
@@ -589,8 +627,8 @@ async fn permanent_failures_do_not_trip_the_circuit_breaker() {
 
 #[tokio::test]
 async fn max_tokens_with_tool_calls_skips_continuation() {
-    // Cause/effect design: C1 MaxTokens is reported with a complete ToolUse;
-    // C2 the tool is executable. Effects: E1 no text-continuation prompt is
+    // Cause/effect design: C1 MaxTokens is reported with both partial text and a
+    // complete ToolUse; C2 the tool is executable. Effects: E1 no text-continuation prompt is
     // injected; E2 the tool call follows the ordinary tool path; E3 the next
     // model response may end naturally. Rule T1=C1+C2=>E1+E2+E3.
     // Constraint: stop-reason recovery must never override tool-call causality.
