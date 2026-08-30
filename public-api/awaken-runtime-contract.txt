@@ -571,6 +571,7 @@ pub awaken_runtime_contract::llm::AssistantOutput::blocks: alloc::vec::Vec<awake
 impl awaken_runtime_contract::llm::AssistantOutput
 pub fn awaken_runtime_contract::llm::AssistantOutput::from_blocks(alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_runtime_contract::llm::AssistantOutput::from_tool_calls(alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>) -> Self
+pub fn awaken_runtime_contract::llm::AssistantOutput::has_reasoning(&self) -> bool
 pub fn awaken_runtime_contract::llm::AssistantOutput::text(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::llm::AssistantOutput::text_content(&self) -> alloc::string::String
 pub fn awaken_runtime_contract::llm::AssistantOutput::tool_calls(&self) -> alloc::vec::Vec<awaken_runtime_contract::llm::ToolCall>
