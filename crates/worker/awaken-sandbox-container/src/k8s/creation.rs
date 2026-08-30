@@ -1,5 +1,7 @@
 //! Transactional realization of a Kubernetes Sandbox and retained claim.
 
+use super::names::continuation_claim_name;
+use super::realization::await_pod_deleted;
 use super::*;
 use crate::k8s_package_realization::stamp_sandbox_release_annotations;
 #[cfg(test)]
@@ -72,18 +74,7 @@ async fn reap_broken_continuation_pod(
     let Some(pod) = pods.get_opt(pod_name).await.map_err(backend)? else {
         return Ok(());
     };
-    let pod_claim = pod
-        .spec
-        .as_ref()
-        .and_then(|spec| spec.volumes.as_ref())
-        .and_then(|volumes| {
-            volumes.iter().find_map(|volume| {
-                volume
-                    .persistent_volume_claim
-                    .as_ref()
-                    .map(|claim| claim.claim_name.as_str())
-            })
-        });
+    let pod_claim = continuation::bound_claim_name(&pod)?;
     if pod_claim != Some(claim_name) {
         return Ok(());
     }
@@ -114,10 +105,11 @@ fn creation_failure_cleanup(
     failed: bool,
     pod_created: bool,
     claim_created: bool,
+    preserve_exact_restore: bool,
 ) -> CreationFailureCleanup {
     CreationFailureCleanup {
-        pod: failed && pod_created,
-        claim: failed && claim_created,
+        pod: failed && pod_created && !preserve_exact_restore,
+        claim: failed && claim_created && !preserve_exact_restore,
     }
 }
 
@@ -126,6 +118,27 @@ pub(super) async fn create(
     id: &str,
     plan: &ContainerPlan,
 ) -> Result<String, RuntimeError> {
+    create_exact(runtime, id, plan, None)
+        .await
+        .map(|target| target.container_id)
+}
+
+pub(super) async fn restore_or_adopt(
+    runtime: &K8sRuntime,
+    id: &str,
+    plan: &ContainerPlan,
+    plan_fingerprint: &str,
+    evidence: &pc::SandboxRestorationEvidence,
+) -> Result<crate::RuntimeRestoreTarget, RuntimeError> {
+    create_exact(runtime, id, plan, Some((evidence, plan_fingerprint))).await
+}
+
+async fn create_exact(
+    runtime: &K8sRuntime,
+    id: &str,
+    plan: &ContainerPlan,
+    restoration: Option<(&pc::SandboxRestorationEvidence, &str)>,
+) -> Result<crate::RuntimeRestoreTarget, RuntimeError> {
     if let Some(limit) = unenforceable_k8s_limit(&plan.limits) {
         return Err(RuntimeError::Backend(format!(
             "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \
@@ -136,7 +149,9 @@ pub(super) async fn create(
     let runtime_id = k8s_runtime_id(id)?;
     let pods = runtime.pods();
     let managed_pod_name = pod_name(&runtime_id);
-    if continuation::claim_required(plan, runtime.continuation_volume.is_some()) {
+    if restoration.is_none()
+        && continuation::claim_required(plan, runtime.continuation_volume.is_some())
+    {
         let claim_name = continuation_claim_name(&runtime_id);
         reap_broken_continuation_pod(runtime, &pods, &managed_pod_name, &claim_name).await?;
     }
@@ -147,6 +162,10 @@ pub(super) async fn create(
             .as_ref()
             .expect("claim selector requires configured continuation storage");
         let mut claim = continuation::build_claim(&runtime_id, config)?;
+        if let Some((evidence, plan_fingerprint)) = restoration {
+            realization::stamp_restoration(&mut claim, evidence);
+            realization::stamp_restoration_plan(&mut claim, plan_fingerprint);
+        }
         stamp_realization(&mut claim)?;
         Some(create_or_verify_with_status(&runtime.persistent_volume_claims(), &claim).await?)
     } else {
@@ -161,7 +180,9 @@ pub(super) async fn create(
         .is_some_and(|outcome| outcome.created);
     let mut created_pod_uid = None::<String>;
     let result = async {
-        reap_terminal_pod(&pods, &managed_pod_name).await?;
+        if restoration.is_none() {
+            reap_terminal_pod(&pods, &managed_pod_name).await?;
+        }
         let cms = runtime.configmaps();
         for (i, bind) in content_binds(plan).iter().enumerate() {
             if crate::live_inputs::manages(bind) {
@@ -201,6 +222,10 @@ pub(super) async fn create(
         if let Some(uid) = claim_uid.as_deref() {
             continuation::bind_claim_uid(&mut pod, uid);
         }
+        if let Some((evidence, plan_fingerprint)) = restoration {
+            realization::stamp_restoration(&mut pod, evidence);
+            realization::stamp_restoration_plan(&mut pod, plan_fingerprint);
+        }
         stamp_pod_realization(&mut pod)?;
         let outcome = create_or_verify_with_status(&pods, &pod).await?;
         let was_created = outcome.created;
@@ -224,12 +249,16 @@ pub(super) async fn create(
             memory::project_snapshots(runtime, &name, plan).await?;
         }
         live_inputs::project_manifest(runtime, &name, plan).await?;
-        Ok(name)
+        Ok((name, was_created))
     }
     .await;
 
-    let cleanup =
-        creation_failure_cleanup(result.is_err(), created_pod_uid.is_some(), claim_created);
+    let cleanup = creation_failure_cleanup(
+        result.is_err(),
+        created_pod_uid.is_some(),
+        claim_created,
+        restoration.is_some(),
+    );
     if cleanup.pod
         && let Some(expected_pod_uid) = created_pod_uid.as_deref()
         && let Ok(observed) = pods.get(&managed_pod_name).await
@@ -257,7 +286,14 @@ pub(super) async fn create(
             }
         }
     }
-    result
+    result.map(|(container_id, created)| crate::RuntimeRestoreTarget {
+        container_id,
+        disposition: if created {
+            pc::SandboxRestoreTargetDisposition::Created
+        } else {
+            pc::SandboxRestoreTargetDisposition::Recovered
+        },
+    })
 }
 
 #[cfg(test)]
@@ -385,16 +421,19 @@ mod tests {
     fn failed_creation_cleans_only_resources_created_by_that_attempt() {
         /* Create-failure cleanup cause/effect table.
          * Causes: C1 realization failed; C2 this attempt created the Pod; C3
-         * this attempt created the continuation claim. Effects: E1 reap the
-         * exact created Pod; E2 evaluate deletion of the exact created claim.
+         * this attempt created the continuation claim; C4 this is an exact
+         * restore target whose durable tuple must survive a lost receipt.
+         * Effects: E1 reap the exact created Pod; E2 evaluate deletion of the
+         * exact created claim; E3 preserve both for read-first replay.
          * Rules: F1 !C1=>!E1+!E2; F2 C1+C2+!C3=>E1 only (ephemeral Session);
          * F3 C1+!C2+C3=>E2 only (a peer owns the Pod); F4 C1+C2+C3=>E1+E2.
+         * F5 C1+C4=>E3 regardless of C2/C3.
          * UID/resourceVersion and claim-UID fencing remain in the existing
          * deletion owners; this kernel only prevents one condition from
          * suppressing cleanup of the other resource.
          */
         assert_eq!(
-            creation_failure_cleanup(false, true, true),
+            creation_failure_cleanup(false, true, true, false),
             CreationFailureCleanup {
                 pod: false,
                 claim: false,
@@ -402,7 +441,7 @@ mod tests {
             "F1"
         );
         assert_eq!(
-            creation_failure_cleanup(true, true, false),
+            creation_failure_cleanup(true, true, false, false),
             CreationFailureCleanup {
                 pod: true,
                 claim: false,
@@ -410,7 +449,7 @@ mod tests {
             "F2"
         );
         assert_eq!(
-            creation_failure_cleanup(true, false, true),
+            creation_failure_cleanup(true, false, true, false),
             CreationFailureCleanup {
                 pod: false,
                 claim: true,
@@ -418,12 +457,20 @@ mod tests {
             "F3"
         );
         assert_eq!(
-            creation_failure_cleanup(true, true, true),
+            creation_failure_cleanup(true, true, true, false),
             CreationFailureCleanup {
                 pod: true,
                 claim: true,
             },
             "F4"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, true, true, true),
+            CreationFailureCleanup {
+                pod: false,
+                claim: false,
+            },
+            "F5"
         );
     }
 

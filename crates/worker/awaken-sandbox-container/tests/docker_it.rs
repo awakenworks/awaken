@@ -4,12 +4,17 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features docker --test docker_it`
 #![cfg(feature = "docker")]
 
+#[path = "common/restore.rs"]
+mod common;
+
+use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{
-    ContainerPlan, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
+    ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
+    ContainerState, NetworkMode, RootfsPlan,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -66,6 +71,82 @@ async fn docker_full_lifecycle_against_a_real_daemon() {
     assert!(
         rt.inspect(&id).await.is_err() || matches!(rt.inspect(&id).await, Ok(ContainerState::Gone))
     );
+}
+
+#[tokio::test]
+async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
+    /* Live exact-restore table. C1 target absent; C2 provider wrapper is
+     * dropped before aggregate CAS; C3 a fresh Docker client retries the exact
+     * tuple; C4 the same effect carries another generation. Effects: E1 create
+     * one target and retain its bind source; E2 C2+C3 recover the same handle;
+     * E3 C4 fails without replacing it; E4 terminal disposal removes both
+     * container and retained source. Rules D1=C1=>E1; D2=C2+C3=>E2;
+     * D3=C4=>E3; D4=dispose=>E4. */
+    let Some(first_runtime) = runtime().await else {
+        return;
+    };
+    let scope = format!("docker-restore-{}", std::process::id());
+    let spec = common::exact_restore_spec(&scope);
+    let request = common::exact_restore_request(&scope);
+    let first = ContainerProvider::new(Arc::new(first_runtime), "busybox:latest")
+        .acquire_restore_environment(&spec, &request)
+        .await
+        .expect("D1 exact restore create");
+    assert_eq!(
+        first.disposition(),
+        pc::SandboxRestoreTargetDisposition::Created,
+        "D1/E1",
+    );
+    let handle = pc::Sandbox::handle(first.target().as_ref());
+    let payload = handle
+        .container_payload()
+        .expect("D1/E1 typed container handle");
+    let staging_root = match payload.runtime_handle.as_ref() {
+        Some(pc::ContainerContinuationHandle::HostBindRestoration(locator)) => {
+            std::path::PathBuf::from(locator.staging_root())
+        }
+        other => panic!("D1/E1 missing host staging evidence: {other:?}"),
+    };
+    drop(first);
+    assert!(staging_root.is_dir(), "D2 retained after wrapper drop");
+
+    let Some(retry_runtime) = runtime().await else {
+        panic!("D2 daemon disappeared after exact target creation");
+    };
+    let retry = ContainerProvider::new(Arc::new(retry_runtime), "busybox:latest");
+    let mut mismatch = request.clone();
+    mismatch.generation_id.push_str("-other");
+    assert!(
+        retry
+            .acquire_restore_environment(&spec, &mismatch)
+            .await
+            .is_err(),
+        "D3/E3",
+    );
+    let recovered = retry
+        .acquire_restore_environment(&spec, &request)
+        .await
+        .expect("D2 fresh provider recovery");
+    assert_eq!(
+        recovered.disposition(),
+        pc::SandboxRestoreTargetDisposition::Recovered,
+        "D2/E2",
+    );
+    assert_eq!(
+        pc::Sandbox::handle(recovered.target().as_ref()),
+        handle,
+        "D2/E2"
+    );
+    drop(recovered);
+    retry
+        .dispose_restored_environment(&spec, &request)
+        .await
+        .expect("D4 provider exact terminal cleanup");
+    retry
+        .dispose_restored_environment(&spec, &request)
+        .await
+        .expect("D4 provider absent replay");
+    assert!(!staging_root.exists(), "D4/E4");
 }
 
 #[tokio::test]

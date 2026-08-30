@@ -64,9 +64,11 @@ pub use sandbox::{
     RepositoryRealizationPlan, RepositoryRealizer, Sandbox, SandboxCapabilities,
     SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
     SandboxControlIncarnation, SandboxError, SandboxHandle, SandboxProvider, SandboxRequirements,
-    SandboxRestorationEvidence, SandboxStatus, SecretBroker, SelectionError, Signal,
-    StoredCheckpointObject, capability_requirements_satisfied, select_provider,
-    select_provider_with_policy,
+    SandboxRestorationEvidence, SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget,
+    SandboxRestoreTargetDisposition, SandboxStatus, SecretBroker, SelectionError, Signal,
+    StoredCheckpointObject, capability_requirements_satisfied, checkpoint_exclusions_fingerprint,
+    sandbox_spec_security_fingerprint, select_provider, select_provider_with_policy,
+    validate_checkpoint_exclusions_for_spec,
 };
 pub use spec::{
     Command, EnvironmentKind, FilesystemContinuity, MaterializedCommand, MaterializedEnvValue,

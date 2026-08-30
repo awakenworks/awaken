@@ -8,9 +8,9 @@
 //! `IsolatedRoot`), reached over the published agent port via [`crate::net`] — the
 //! same dial the Docker adapter uses. Compile-verified here; running needs `podman`.
 
-use std::ffi::{OsStr, OsString};
+#[cfg(test)]
+use std::ffi::OsString;
 use std::net::SocketAddr;
-use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,43 +19,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
-use tokio::process::{Child, Command as OsCommand};
+use tokio::process::Child;
+#[cfg(test)]
+use tokio::process::Command as OsCommand;
 
 use crate::net::TcpAgentTransport;
+
+mod command;
+mod realization;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, PackageImageProvisioner, RUNTIME_OWNER_LABEL,
-    RuntimeAgentProcess, RuntimeError, podman_run_argv, runtime_container_name,
+    RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, podman_run_argv, restoration_metadata,
+    restoration_plan_fingerprint, restore_container_name, runtime_container_name,
 };
+use command::podman_command;
+#[cfg(test)]
+use command::rootless_systemd_bus;
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-/// Resolve the canonical rootless systemd user-manager bus.
-/// Podman uses this bus to create a delegated cgroup scope; without it, resource
-/// limits fail even though the user's systemd manager and cgroup delegation are
-/// healthy. Desktop sessions may expose another live D-Bus socket that does not
-/// own `org.freedesktop.systemd1`; the XDG runtime bus is therefore the sole
-/// authority for this Podman subprocess. A missing/non-socket endpoint is not
-/// papered over: Podman remains the authority for the fail-closed diagnostic.
-fn rootless_systemd_bus(runtime_dir: Option<&OsStr>) -> Option<OsString> {
-    let bus = Path::new(runtime_dir?).join("bus");
-    let metadata = std::fs::symlink_metadata(&bus).ok()?;
-    if !metadata.file_type().is_socket() {
-        return None;
-    }
-    Some(format!("unix:path={}", bus.to_str()?).into())
-}
-
-/// Sole production constructor for Podman child processes. Keeping the
-/// rootless-session adaptation here prevents run/exec/signal from drifting into
-/// three subtly different host-environment contracts.
-fn podman_command(bin: &str) -> OsCommand {
-    let mut command = OsCommand::new(bin);
-    command.kill_on_drop(true);
-    if let Some(address) = rootless_systemd_bus(std::env::var_os("XDG_RUNTIME_DIR").as_deref()) {
-        command.env("DBUS_SESSION_BUS_ADDRESS", address);
-    }
-    command
-}
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
@@ -167,6 +148,7 @@ impl pc::ProcessHandle for PodmanExecProcess {
 #[derive(Debug, Clone)]
 pub(crate) struct CmdOutput {
     pub ok: bool,
+    pub status_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
@@ -186,6 +168,7 @@ impl CommandExec for OsCommandExec {
         let out = podman_command(bin).args(args).output().await?;
         Ok(CmdOutput {
             ok: out.status.success(),
+            status_code: out.status.code(),
             stdout: out.stdout,
             stderr: out.stderr,
         })
@@ -373,23 +356,6 @@ impl PodmanRuntime {
             )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-
-    async fn live_inputs_root(&self, container_id: &str) -> Result<PathBuf, RuntimeError> {
-        let output = self
-            .run(&[
-                "inspect".into(),
-                "--format".into(),
-                "{{json .Mounts}}".into(),
-                container_id.into(),
-            ])
-            .await?;
-        serde_json::from_str::<Vec<PodmanMount>>(&output)
-            .map_err(backend)?
-            .into_iter()
-            .find(|mount| mount.destination == crate::LIVE_INPUTS_ROOT)
-            .map(|mount| mount.source)
-            .ok_or_else(|| backend("Podman container has no managed live-input root bind"))
     }
 
     /// Probe the binary (for tests / health checks): `Ok` iff `podman` responds.
@@ -649,23 +615,137 @@ impl ContainerRuntime for PodmanRuntime {
         let name = runtime_container_name(&self.owner_id, id);
         // Idempotent: clear any stale container of this scope first.
         let _ = self.run(&["rm".into(), "-f".into(), name.clone()]).await;
-
-        let mut args = podman_run_argv(&name, plan, &plan.rootfs);
-        // Publish the agent's internal port to an ephemeral 127.0.0.1 host port so
-        // `open_channel` can dial it (inserted after `--name <name>`, before the image).
-        if let Some(i) = args.iter().position(|a| a == &name) {
-            args.splice(
-                i + 1..i + 1,
-                [
-                    "--label".to_string(),
-                    format!("{RUNTIME_OWNER_LABEL}={}", self.owner_id),
-                    "-p".to_string(),
-                    format!("127.0.0.1::{}", self.agent_port),
-                ],
-            );
-        }
+        let args = self.container_run_args(&name, plan, std::iter::empty());
         self.run(&args).await?;
         Ok(name)
+    }
+
+    async fn recover_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(backend("Podman restore plan fingerprint mismatch"));
+        }
+        let name = restore_container_name(id);
+        if !self.container_exists(&name).await? {
+            return Ok(None);
+        }
+        let (container_id, running) = self
+            .exact_restoration_id_with_state(&name, plan_fingerprint, evidence)
+            .await?;
+        if !running {
+            // Preserve the exact named container even if the start retry is
+            // temporarily unavailable. The provider retains its physical bind
+            // before the later running-state completion observation fails.
+            let _ = self.run(&["start".into(), container_id.clone()]).await;
+        }
+        Ok(Some(RuntimeRestoreTarget {
+            container_id,
+            disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+        }))
+    }
+
+    async fn restore_or_adopt(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<RuntimeRestoreTarget, RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(backend("Podman restore plan fingerprint mismatch"));
+        }
+        let name = restore_container_name(id);
+        let labels = restoration_metadata(evidence)
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .chain(std::iter::once((
+                crate::RESTORE_PLAN_LABEL.to_string(),
+                plan_fingerprint.to_string(),
+            )));
+        let args = self.container_run_args(&name, plan, labels);
+        match self.run(&args).await {
+            Ok(_) => Ok(RuntimeRestoreTarget {
+                container_id: name,
+                disposition: pc::SandboxRestoreTargetDisposition::Created,
+            }),
+            Err(error) => self
+                .recover_restore_target(id, plan, plan_fingerprint, evidence)
+                .await?
+                .ok_or(error),
+        }
+    }
+
+    async fn restoration_evidence(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+        self.inspect_restoration(container_id)
+            .await
+            .map(|(_, evidence)| evidence)
+    }
+
+    async fn restoration_plan_fingerprint(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        self.inspect_restoration_identity(container_id)
+            .await
+            .map(|(_, _, fingerprint)| fingerprint)
+    }
+
+    async fn dispose_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<(), RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(backend("Podman restore cleanup plan fingerprint mismatch"));
+        }
+        let name = restore_container_name(id);
+        if !self.container_exists(&name).await? {
+            return Ok(());
+        }
+        // Terminal cleanup owns the exact unpublished target regardless of
+        // process state. A failed start must not make the durable target
+        // undisposable; identity and immutable-plan evidence remain mandatory.
+        self.exact_restoration_id_with_state(&name, plan_fingerprint, evidence)
+            .await?;
+        let live_inputs = self.live_inputs_root(&name).await?;
+        let staging_root = live_inputs
+            .parent()
+            .ok_or_else(|| backend("Podman restored live-input root has no staging parent"))?;
+        crate::remove_host_staging_path(staging_root)?;
+        self.run(&["rm".into(), "-f".into(), name]).await?;
+        Ok(())
+    }
+
+    async fn handle_extra(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+        if self
+            .inspect_restoration_identity_with_state(container_id)
+            .await?
+            .1
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let live_inputs = self.live_inputs_root(container_id).await?;
+        let staging_root = live_inputs
+            .parent()
+            .ok_or_else(|| backend("Podman live-input root has no staging parent"))?;
+        Ok(Some(pc::ContainerContinuationHandle::HostBindRestoration(
+            pc::HostBindRestorationHandle::for_restore(staging_root.to_string_lossy().into_owned())
+                .map_err(|error| backend(error.to_string()))?,
+        )))
     }
 
     async fn spawn(
@@ -959,6 +1039,7 @@ mod tests {
     fn ok(stdout: &str) -> CmdOutput {
         CmdOutput {
             ok: true,
+            status_code: Some(0),
             stdout: stdout.as_bytes().to_vec(),
             stderr: Vec::new(),
         }
@@ -967,8 +1048,18 @@ mod tests {
     fn err(stderr: &str) -> CmdOutput {
         CmdOutput {
             ok: false,
+            status_code: Some(125),
             stdout: Vec::new(),
             stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    fn absent() -> CmdOutput {
+        CmdOutput {
+            ok: false,
+            status_code: Some(1),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
         }
     }
 
@@ -1025,6 +1116,264 @@ mod tests {
             memory_mounts: vec![],
             rootfs: RootfsPlan::Image("img:latest".into()),
         }
+    }
+
+    fn restore_evidence() -> pc::SandboxRestorationEvidence {
+        pc::SandboxRestorationEvidence::from_exact_parts(
+            "effect-a",
+            "generation-a",
+            "checkpoint-a",
+            "digest-a",
+            "spec-a",
+            "exclusions-a",
+        )
+        .unwrap()
+    }
+
+    /* Podman exact-target table. C1 stable-name create succeeds; C2 create
+     * conflicts, `container exists` succeeds, and inspect reports the exact
+     * complete tuple on a running container; C3 the same read-first sequence
+     * reports a partial or mismatched tuple. E1=Created; E2=Recovered with the
+     * physical id; E3=fail closed without rm/recreate. Rules: P1 C1=>E1;
+     * P2 C2=>E2; P3 C3=>E3. */
+    #[tokio::test]
+    async fn restore_or_adopt_uses_immutable_podman_labels_and_never_replaces_a_conflict() {
+        let evidence = restore_evidence();
+        let restore_plan = plan();
+        let plan_fingerprint = restoration_plan_fingerprint(&restore_plan);
+        let (created_runtime, created_exec) = runtime_with(9000, |args| match args.first() {
+            Some(command) if command == "run" => ok("physical-created"),
+            other => panic!("unexpected create command: {other:?}"),
+        });
+        let created = ContainerRuntime::restore_or_adopt(
+            &created_runtime,
+            "stable-scope",
+            &restore_plan,
+            &plan_fingerprint,
+            &evidence,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            created.disposition,
+            pc::SandboxRestoreTargetDisposition::Created,
+            "P1/E1"
+        );
+        assert!(
+            created_exec.calls.lock().unwrap()[0]
+                .iter()
+                .any(|argument| argument
+                    == &format!("{}={}", crate::RESTORE_EFFECT_LABEL, evidence.effect_id())),
+            "P1 persists exact evidence"
+        );
+
+        let inspect = serde_json::json!({
+            "Id": "physical-existing",
+            "Config": { "Labels": {
+                "awaken.sandbox.restore.effect": evidence.effect_id(),
+                "awaken.sandbox.restore.generation": evidence.generation_id(),
+                "awaken.sandbox.restore.checkpoint": evidence.checkpoint_id(),
+                "awaken.sandbox.restore.checkpoint-digest": evidence.checkpoint_digest(),
+                "awaken.sandbox.restore.spec": evidence.sandbox_spec_fingerprint(),
+                "awaken.sandbox.restore.exclusions": evidence.checkpoint_exclusions_fingerprint(),
+                "awaken.sandbox.restore.plan": plan_fingerprint.as_str(),
+            }},
+            "State": { "Running": true }
+        })
+        .to_string();
+        let (recovered_runtime, recovered_exec) = runtime_with(9000, move |args| match args {
+            [command, ..] if command == "run" => err("name exists"),
+            [command, subcommand, ..] if command == "container" && subcommand == "exists" => ok(""),
+            [command, ..] if command == "inspect" => ok(&inspect),
+            other => panic!("unexpected recovery command: {other:?}"),
+        });
+        let recovered = ContainerRuntime::restore_or_adopt(
+            &recovered_runtime,
+            "stable-scope",
+            &restore_plan,
+            &plan_fingerprint,
+            &restore_evidence(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(recovered.container_id, "physical-existing", "P2/E2");
+        assert_eq!(
+            recovered.disposition,
+            pc::SandboxRestoreTargetDisposition::Recovered,
+            "P2/E2"
+        );
+        assert_eq!(
+            recovered_exec
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|args| args.first().map(String::as_str))
+                .collect::<Vec<_>>(),
+            vec![Some("run"), Some("container"), Some("inspect")],
+            "P2 read-first sequence",
+        );
+        assert!(
+            recovered_exec
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args.first().map(String::as_str) != Some("rm")),
+            "P2 never replaces a conflicting target"
+        );
+
+        let partial = serde_json::json!({
+            "Id": "physical-partial",
+            "Config": { "Labels": {
+                "awaken.sandbox.restore.effect": "effect-a"
+            }},
+            "State": { "Running": true }
+        })
+        .to_string();
+        let (partial_runtime, partial_exec) = runtime_with(9000, move |args| match args {
+            [command, ..] if command == "run" => err("name exists"),
+            [command, subcommand, ..] if command == "container" && subcommand == "exists" => ok(""),
+            [command, ..] if command == "inspect" => ok(&partial),
+            other => panic!("unexpected mismatch command: {other:?}"),
+        });
+        assert!(
+            ContainerRuntime::restore_or_adopt(
+                &partial_runtime,
+                "stable-scope",
+                &restore_plan,
+                &plan_fingerprint,
+                &restore_evidence(),
+            )
+            .await
+            .is_err(),
+            "P3/E3"
+        );
+        assert_eq!(
+            partial_exec
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|args| args.first().map(String::as_str))
+                .collect::<Vec<_>>(),
+            vec![Some("run"), Some("container"), Some("inspect")],
+            "P3 read-first sequence",
+        );
+        assert!(
+            partial_exec
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args.first().map(String::as_str) != Some("rm")),
+            "P3/E3"
+        );
+    }
+
+    /* Podman read-first table. C1 `container exists` exits 1; C2 it exits 0
+     * and inspect carries the exact tuple; C3 it exits 125/backend failure.
+     * Effects: E1 report absent without inspect/create; E2 return the same
+     * physical id as Recovered; E3 fail closed without `run`. Rules:
+     * O1=C1=>E1; O2=C2=>E2; O3=C3=>E3. */
+    #[tokio::test]
+    async fn restore_observation_distinguishes_absence_from_backend_failure() {
+        let restore_plan = plan();
+        let plan_fingerprint = restoration_plan_fingerprint(&restore_plan);
+        let (missing, missing_exec) = runtime_with(9000, |args| match args {
+            [command, subcommand, ..] if command == "container" && subcommand == "exists" => {
+                absent()
+            }
+            other => panic!("unexpected absence command: {other:?}"),
+        });
+        assert_eq!(
+            ContainerRuntime::recover_restore_target(
+                &missing,
+                "stable-scope",
+                &restore_plan,
+                &plan_fingerprint,
+                &restore_evidence(),
+            )
+            .await
+            .unwrap(),
+            None,
+            "O1/E1",
+        );
+        assert_eq!(missing_exec.calls.lock().unwrap().len(), 1, "O1/E1");
+
+        let evidence = restore_evidence();
+        let inspect = serde_json::json!({
+            "Id": "physical-existing",
+            "Config": { "Labels": {
+                "awaken.sandbox.restore.effect": evidence.effect_id(),
+                "awaken.sandbox.restore.generation": evidence.generation_id(),
+                "awaken.sandbox.restore.checkpoint": evidence.checkpoint_id(),
+                "awaken.sandbox.restore.checkpoint-digest": evidence.checkpoint_digest(),
+                "awaken.sandbox.restore.spec": evidence.sandbox_spec_fingerprint(),
+                "awaken.sandbox.restore.exclusions": evidence.checkpoint_exclusions_fingerprint(),
+                "awaken.sandbox.restore.plan": plan_fingerprint.as_str(),
+            }},
+            "State": { "Running": true }
+        })
+        .to_string();
+        let (existing, existing_exec) = runtime_with(9000, move |args| match args {
+            [command, subcommand, ..] if command == "container" && subcommand == "exists" => ok(""),
+            [command, ..] if command == "inspect" => ok(&inspect),
+            other => panic!("unexpected observation command: {other:?}"),
+        });
+        let recovered = ContainerRuntime::recover_restore_target(
+            &existing,
+            "stable-scope",
+            &restore_plan,
+            &plan_fingerprint,
+            &restore_evidence(),
+        )
+        .await
+        .unwrap()
+        .expect("O2/E2 exact target");
+        assert_eq!(recovered.container_id, "physical-existing", "O2/E2");
+        assert_eq!(
+            recovered.disposition,
+            pc::SandboxRestoreTargetDisposition::Recovered,
+            "O2/E2",
+        );
+        assert!(
+            existing_exec
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args.first().map(String::as_str) != Some("run")),
+            "O2/E2",
+        );
+
+        let (failed, failed_exec) = runtime_with(9000, |args| match args {
+            [command, subcommand, ..] if command == "container" && subcommand == "exists" => {
+                err("storage unavailable")
+            }
+            other => panic!("unexpected failure command: {other:?}"),
+        });
+        assert!(
+            ContainerRuntime::recover_restore_target(
+                &failed,
+                "stable-scope",
+                &restore_plan,
+                &plan_fingerprint,
+                &restore_evidence(),
+            )
+            .await
+            .is_err(),
+            "O3/E3",
+        );
+        assert!(
+            failed_exec
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args.first().map(String::as_str) != Some("run")),
+            "O3/E3",
+        );
     }
 
     /// Rootless-cgroup FMECA cause/effect graph. C1 XDG_RUNTIME_DIR contains the

@@ -4,10 +4,16 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features k8s --test k8s_it`
 #![cfg(feature = "k8s")]
 
+#[path = "common/restore.rs"]
+mod common;
+
+use std::sync::Arc;
+
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
-    ContainerPlan, ContainerRuntime, ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
+    ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
+    ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
 };
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
@@ -98,6 +104,109 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
 
     // Teardown deletes the Pod.
     rt.remove(&id).await.expect("delete the Pod");
+}
+
+#[tokio::test]
+async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence() {
+    /* Live Kubernetes exact-restore table. C1 Pod/PVC target absent; C2 the
+     * first provider wrapper drops before aggregate CAS; C3 a fresh kube client
+     * retries the exact tuple; C4 the same effect carries another generation.
+     * Effects: E1 create one annotated Pod/PVC and publish its PVC UID fence;
+     * E2 C2+C3 recover the identical handle; E3 C4 fails without reaping either
+     * object; E4 terminal disposal removes both. Rules KR1=C1=>E1;
+     * KR2=C2+C3=>E2; KR3=C4=>E3; KR4=dispose=>E4. */
+    let Some(first_runtime) = live_runtime().await else {
+        return;
+    };
+    let first_runtime = first_runtime.with_continuation_volume(K8sContinuationVolume {
+        storage_class_name: None,
+        size: "1Gi".into(),
+    });
+    let scope = format!("k8s-restore-{}", std::process::id());
+    let spec = common::exact_restore_spec(&scope);
+    let request = common::exact_restore_request(&scope);
+    let image =
+        std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string());
+    let first = ContainerProvider::new(Arc::new(first_runtime), image.clone())
+        .acquire_restore_environment(&spec, &request)
+        .await
+        .expect("KR1 exact Pod/PVC create");
+    assert_eq!(
+        first.disposition(),
+        pc::SandboxRestoreTargetDisposition::Created,
+        "KR1/E1",
+    );
+    let handle = pc::Sandbox::handle(first.target().as_ref());
+    let payload = handle.container_payload().expect("KR1 container payload");
+    let pod_name = payload.container_id.clone();
+    let claim_uid = match payload.runtime_handle.as_ref() {
+        Some(pc::ContainerContinuationHandle::KubernetesContinuation { claim_uid }) => {
+            claim_uid.clone()
+        }
+        other => panic!("KR1/E1 missing PVC incarnation fence: {other:?}"),
+    };
+    let claim_name = format!(
+        "awc-{}",
+        pod_name
+            .strip_prefix("awaken-")
+            .expect("KR1 managed Pod name"),
+    );
+    drop(first);
+
+    let Some(retry_runtime) = live_runtime().await else {
+        panic!("KR2 apiserver disappeared after exact target creation");
+    };
+    let retry_runtime = retry_runtime.with_continuation_volume(K8sContinuationVolume {
+        storage_class_name: None,
+        size: "1Gi".into(),
+    });
+    let retry = ContainerProvider::new(Arc::new(retry_runtime), image);
+    let mut mismatch = request.clone();
+    mismatch.generation_id.push_str("-other");
+    assert!(
+        retry
+            .acquire_restore_environment(&spec, &mismatch)
+            .await
+            .is_err(),
+        "KR3/E3",
+    );
+    let recovered = retry
+        .acquire_restore_environment(&spec, &request)
+        .await
+        .expect("KR2 fresh provider recovery");
+    assert_eq!(
+        recovered.disposition(),
+        pc::SandboxRestoreTargetDisposition::Recovered,
+        "KR2/E2",
+    );
+    assert_eq!(
+        pc::Sandbox::handle(recovered.target().as_ref()),
+        handle,
+        "KR2/E2"
+    );
+    drop(recovered);
+    retry
+        .dispose_restored_environment(&spec, &request)
+        .await
+        .expect("KR4 provider exact terminal cleanup");
+    retry
+        .dispose_restored_environment(&spec, &request)
+        .await
+        .expect("KR4 provider absent replay");
+
+    let client = kube::Client::try_default()
+        .await
+        .expect("KR4 read cleanup state");
+    let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), "default");
+    let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
+        client, "default",
+    );
+    assert!(pods.get_opt(&pod_name).await.unwrap().is_none(), "KR4/E4");
+    assert!(
+        claims.get_opt(&claim_name).await.unwrap().is_none(),
+        "KR4/E4"
+    );
+    assert!(!claim_uid.is_empty(), "KR1/E1");
 }
 
 #[tokio::test]

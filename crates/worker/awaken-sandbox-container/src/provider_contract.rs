@@ -163,14 +163,38 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 
+    /// Acquire the one physical target for an exact restore effect. Canonical
+    /// checkpoint decorators use this instead of ordinary create, so a retry or
+    /// replacement Host recovers the same container/Pod/PVC before replaying or
+    /// completing byte materialization.
+    async fn acquire_restore_environment(
+        &self,
+        _spec: &pc::SandboxSpec,
+        _request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "container provider does not implement exact restore target acquisition",
+        ))
+    }
+
     async fn restore_environment(
         &self,
         _spec: &pc::SandboxSpec,
-        _checkpoint: &pc::SandboxCheckpointRef,
+        _request: &pc::SandboxRestoreRequest,
         _store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+    ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
         Err(pc::SandboxError::new(
             "container provider does not implement checkpoint restore",
+        ))
+    }
+
+    async fn dispose_restored_environment(
+        &self,
+        _spec: &pc::SandboxSpec,
+        _request: &pc::SandboxRestoreRequest,
+    ) -> Result<(), pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "container provider does not implement exact restored-target disposal",
         ))
     }
 }

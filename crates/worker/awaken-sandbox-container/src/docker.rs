@@ -33,7 +33,8 @@ use crate::net::TcpAgentTransport;
 use crate::{
     ContainerPlan, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
     PackageImageProvisioner, RUNTIME_OWNER_LABEL, RuntimeAgentProcess, RuntimeError,
-    runtime_container_name,
+    RuntimeRestoreTarget, restoration_metadata, restoration_plan_fingerprint,
+    restore_container_name, runtime_container_name,
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -556,6 +557,72 @@ impl DockerRuntime {
         self
     }
 
+    fn container_config(
+        &self,
+        plan: &ContainerPlan,
+        labels: HashMap<String, String>,
+    ) -> Config<String> {
+        let env = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let mut exposed_ports = HashMap::new();
+        exposed_ports.insert(self.port_key(), HashMap::new());
+        Config {
+            image: Some(plan.image.clone()),
+            // A Session environment owns PID 1 and execs every attempt into the
+            // resulting namespaces. Never inherit an image entrypoint.
+            entrypoint: Some(Vec::new()),
+            cmd: Some(plan.command.clone()),
+            env: Some(env),
+            exposed_ports: Some(exposed_ports),
+            host_config: Some(self.host_config(plan)),
+            labels: Some(labels),
+            ..Default::default()
+        }
+    }
+
+    fn exact_restoration_id(
+        info: &ContainerInspectResponse,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<String, RuntimeError> {
+        let observed = Self::restoration_evidence_from_info(info)?;
+        if observed.as_ref() != Some(evidence) {
+            return Err(backend(
+                "Docker restore target belongs to a different exact effect",
+            ));
+        }
+        if Self::restoration_plan_fingerprint_from_info(info).as_deref() != Some(plan_fingerprint) {
+            return Err(backend(
+                "Docker restore target belongs to a different immutable plan",
+            ));
+        }
+        info.id
+            .clone()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| backend("Docker restore target has no container id"))
+    }
+
+    fn restoration_evidence_from_info(
+        info: &ContainerInspectResponse,
+    ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+        let labels = info
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref());
+        crate::restoration_evidence_from_metadata(
+            |key| labels.and_then(|labels| labels.get(key).cloned()),
+            "Docker container",
+        )
+    }
+
+    fn restoration_plan_fingerprint_from_info(info: &ContainerInspectResponse) -> Option<String> {
+        info.config
+            .as_ref()?
+            .labels
+            .as_ref()?
+            .get(crate::RESTORE_PLAN_LABEL)
+            .cloned()
+    }
+
     async fn resolve_package_build(
         &self,
         base_image: &str,
@@ -888,29 +955,12 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
-        let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        let mut exposed_ports = HashMap::new();
-        exposed_ports.insert(self.port_key(), HashMap::new());
         // Stable discovery and runtime-incarnation labels support diagnostics and
         // adoption. Neither label authorizes destruction.
         let mut labels = HashMap::new();
         labels.insert(MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
         labels.insert(RUNTIME_OWNER_LABEL.to_string(), self.owner_id.clone());
-        let config = Config {
-            image: Some(plan.image.clone()),
-            // A Session environment owns PID 1 and execs every attempt into the
-            // resulting namespaces.  Never inherit an image entrypoint here: the
-            // production sandbox image still carries the legacy standalone ACP
-            // entrypoint, which would otherwise receive the keepalive argv as
-            // arguments and exit immediately.
-            entrypoint: Some(Vec::new()),
-            cmd: Some(plan.command.clone()),
-            env: Some(env),
-            exposed_ports: Some(exposed_ports),
-            host_config: Some(self.host_config(plan)),
-            labels: Some(labels),
-            ..Default::default()
-        };
+        let config = self.container_config(plan, labels);
         let name = runtime_container_name(&self.owner_id, id);
         let created = match self
             .docker
@@ -981,6 +1031,190 @@ impl ContainerRuntime for DockerRuntime {
             return Err(backend(error));
         }
         Ok(created.id)
+    }
+
+    async fn recover_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(backend("Docker restore plan fingerprint mismatch"));
+        }
+        let name = restore_container_name(id);
+        let info = match self.docker.inspect_container(&name, None).await {
+            Ok(info) => info,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return Ok(None),
+            Err(error) => return Err(backend(error)),
+        };
+        let container_id = Self::exact_restoration_id(&info, plan_fingerprint, evidence)?;
+        match info.state.as_ref().and_then(|state| state.status) {
+            Some(ContainerStateStatusEnum::RUNNING) => {}
+            Some(ContainerStateStatusEnum::CREATED) => self
+                .docker
+                .start_container(&container_id, None::<StartContainerOptions<String>>)
+                .await
+                .map_err(backend)?,
+            _ => {
+                return Err(backend(
+                    "Docker exact restore target is not recoverably running",
+                ));
+            }
+        }
+        Ok(Some(RuntimeRestoreTarget {
+            container_id,
+            disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+        }))
+    }
+
+    async fn restore_or_adopt(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<RuntimeRestoreTarget, RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(backend("Docker restore plan fingerprint mismatch"));
+        }
+        let name = restore_container_name(id);
+        let mut labels = HashMap::new();
+        labels.insert(MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
+        labels.insert(RUNTIME_OWNER_LABEL.to_string(), self.owner_id.clone());
+        labels.insert(
+            crate::RESTORE_PLAN_LABEL.to_string(),
+            plan_fingerprint.to_string(),
+        );
+        labels.extend(
+            restoration_metadata(evidence)
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
+        );
+        let config = self.container_config(plan, labels);
+        match self
+            .docker
+            .create_container(
+                Some(CreateContainerOptions {
+                    name: name.clone(),
+                    platform: None,
+                }),
+                config,
+            )
+            .await
+        {
+            Ok(created) => {
+                // A failed start is still one durable named restore target. Do
+                // not unlink it here: returning its identity lets the provider
+                // retain the exact host bind, then the completion observation
+                // fails until a read-first retry starts this same container.
+                let _ = self
+                    .docker
+                    .start_container(&created.id, None::<StartContainerOptions<String>>)
+                    .await;
+                Ok(RuntimeRestoreTarget {
+                    container_id: created.id,
+                    disposition: pc::SandboxRestoreTargetDisposition::Created,
+                })
+            }
+            Err(create_error) => self
+                .recover_restore_target(id, plan, plan_fingerprint, evidence)
+                .await?
+                .ok_or_else(|| backend(create_error)),
+        }
+    }
+
+    async fn restoration_evidence(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
+        let info = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(backend)?;
+        if info.state.as_ref().and_then(|state| state.status)
+            != Some(ContainerStateStatusEnum::RUNNING)
+        {
+            return Err(backend("Docker restored target is not running"));
+        }
+        Self::restoration_evidence_from_info(&info)
+    }
+
+    async fn restoration_plan_fingerprint(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        let info = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(backend)?;
+        Ok(Self::restoration_plan_fingerprint_from_info(&info))
+    }
+
+    async fn dispose_restore_target(
+        &self,
+        id: &str,
+        plan: &ContainerPlan,
+        plan_fingerprint: &str,
+        evidence: &pc::SandboxRestorationEvidence,
+    ) -> Result<(), RuntimeError> {
+        if restoration_plan_fingerprint(plan) != plan_fingerprint {
+            return Err(backend("Docker restore cleanup plan fingerprint mismatch"));
+        }
+        let name = restore_container_name(id);
+        let info = match self.docker.inspect_container(&name, None).await {
+            Ok(info) => info,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+        };
+        let container_id = Self::exact_restoration_id(&info, plan_fingerprint, evidence)?;
+        let live_inputs = info
+            .mounts
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|mount| mount.destination.as_deref() == Some(crate::LIVE_INPUTS_ROOT))
+            .and_then(|mount| mount.source.as_deref())
+            .ok_or_else(|| backend("Docker restored target has no managed live-input root bind"))?;
+        let staging_root = std::path::Path::new(live_inputs)
+            .parent()
+            .ok_or_else(|| backend("Docker restored live-input root has no staging parent"))?;
+        crate::remove_host_staging_path(staging_root)?;
+        self.docker
+            .remove_container(
+                &container_id,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn handle_extra(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+        if self.restoration_evidence(container_id).await?.is_none() {
+            return Ok(None);
+        }
+        let live_inputs = self.live_inputs_root(container_id).await?;
+        let staging_root = live_inputs
+            .parent()
+            .ok_or_else(|| backend("Docker live-input root has no staging parent"))?;
+        Ok(Some(pc::ContainerContinuationHandle::HostBindRestoration(
+            pc::HostBindRestorationHandle::for_restore(staging_root.to_string_lossy().into_owned())
+                .map_err(|error| backend(error.to_string()))?,
+        )))
     }
 
     async fn spawn(
@@ -1336,5 +1570,90 @@ mod creation_reconciliation_tests {
         ] {
             assert_eq!(abandoned_created_container(&candidate, "runtime-a"), None);
         }
+    }
+
+    /* Docker restore-evidence table. C1=all immutable labels and plan; C2=no
+     * restore labels; C3=partial tuple; C4=complete but mismatched tuple/plan.
+     * E1=exact physical id; E2=ordinary None; E3=fail closed. Rules:
+     * D1 C1=>E1; D2 C2=>E2; D3 C3|C4=>E3. */
+    #[test]
+    fn docker_restore_labels_are_observed_as_one_atomic_exact_tuple() {
+        let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
+            "effect-a",
+            "generation-a",
+            "checkpoint-a",
+            "digest-a",
+            "spec-a",
+            "exclusions-a",
+        )
+        .unwrap();
+        let ordinary = inspected(ContainerStateStatusEnum::RUNNING, true, "runtime-a");
+        assert_eq!(
+            DockerRuntime::restoration_evidence_from_info(&ordinary).unwrap(),
+            None,
+            "D2/E2"
+        );
+
+        let mut exact = ordinary.clone();
+        exact
+            .config
+            .as_mut()
+            .unwrap()
+            .labels
+            .as_mut()
+            .unwrap()
+            .extend(
+                restoration_metadata(&evidence)
+                    .into_iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string())),
+            );
+        exact
+            .config
+            .as_mut()
+            .unwrap()
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert(crate::RESTORE_PLAN_LABEL.into(), "plan-a".into());
+        assert_eq!(
+            DockerRuntime::exact_restoration_id(&exact, "plan-a", &evidence).unwrap(),
+            "container-1",
+            "D1/E1"
+        );
+
+        let mut partial = ordinary;
+        partial
+            .config
+            .as_mut()
+            .unwrap()
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert(
+                crate::RESTORE_EFFECT_LABEL.into(),
+                evidence.effect_id().into(),
+            );
+        assert!(
+            DockerRuntime::restoration_evidence_from_info(&partial).is_err(),
+            "D3/E3 partial"
+        );
+
+        let mismatched = pc::SandboxRestorationEvidence::from_exact_parts(
+            evidence.effect_id(),
+            evidence.generation_id(),
+            evidence.checkpoint_id(),
+            "digest-a-different",
+            evidence.sandbox_spec_fingerprint(),
+            evidence.checkpoint_exclusions_fingerprint(),
+        )
+        .unwrap();
+        assert!(
+            DockerRuntime::exact_restoration_id(&exact, "plan-a", &mismatched).is_err(),
+            "D3/E3 mismatch"
+        );
+        assert!(
+            DockerRuntime::exact_restoration_id(&exact, "plan-b", &evidence).is_err(),
+            "D3/E3 plan mismatch"
+        );
     }
 }

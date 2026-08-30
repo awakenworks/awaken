@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::time::Duration;
 
+use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{DeleteParams, PostParams, Preconditions};
 use kube::{Api, Resource, ResourceExt};
@@ -34,6 +35,96 @@ where
         .get_or_insert_with(Default::default)
         .insert(REALIZATION_DIGEST_ANNOTATION.into(), digest);
     Ok(())
+}
+
+pub(crate) fn verify_realization<K>(desired: &K, observed: &K) -> Result<(), RuntimeError>
+where
+    K: Resource<DynamicType = ()>,
+{
+    let expected = desired
+        .annotations()
+        .get(REALIZATION_DIGEST_ANNOTATION)
+        .ok_or_else(|| backend("desired Kubernetes object has no realization digest"))?;
+    if observed.annotations().get(REALIZATION_DIGEST_ANNOTATION) != Some(expected)
+        || observed.meta().deletion_timestamp.is_some()
+    {
+        return Err(backend(format!(
+            "Kubernetes {} differs from the exact immutable realization",
+            K::kind(&())
+        )));
+    }
+    Ok(())
+}
+
+/// Bind one exact restore identity to a Kubernetes physical object before its
+/// immutable realization digest is calculated. Replays can therefore reuse a
+/// 409 object only when both its specification and restore triple match.
+pub(crate) fn stamp_restoration<K>(object: &mut K, evidence: &pc::SandboxRestorationEvidence)
+where
+    K: Resource<DynamicType = ()>,
+{
+    let annotations = object
+        .meta_mut()
+        .annotations
+        .get_or_insert_with(Default::default);
+    annotations.extend(
+        crate::restoration_metadata(evidence)
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string())),
+    );
+}
+
+pub(crate) fn stamp_restoration_plan<K>(object: &mut K, plan_fingerprint: &str)
+where
+    K: Resource<DynamicType = ()>,
+{
+    object
+        .meta_mut()
+        .annotations
+        .get_or_insert_with(Default::default)
+        .insert(
+            crate::RESTORE_PLAN_LABEL.to_string(),
+            plan_fingerprint.to_owned(),
+        );
+}
+
+pub(crate) fn restoration_plan_fingerprint<K>(object: &K) -> Option<&str>
+where
+    K: Resource<DynamicType = ()>,
+{
+    object
+        .annotations()
+        .get(crate::RESTORE_PLAN_LABEL)
+        .map(String::as_str)
+}
+
+pub(crate) fn verify_restoration<K>(
+    object: &K,
+    evidence: &pc::SandboxRestorationEvidence,
+) -> Result<(), RuntimeError>
+where
+    K: Resource<DynamicType = ()>,
+{
+    if restoration_evidence(object)?.as_ref() != Some(evidence) {
+        return Err(backend(format!(
+            "Kubernetes {} belongs to a different exact restore effect",
+            K::kind(&())
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn restoration_evidence<K>(
+    object: &K,
+) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError>
+where
+    K: Resource<DynamicType = ()>,
+{
+    let annotations = object.annotations();
+    crate::restoration_evidence_from_metadata(
+        |key| annotations.get(key).cloned(),
+        &format!("Kubernetes {}", K::kind(&())),
+    )
 }
 
 /// Stamp a Pod's immutable realization without treating the process-local runtime
@@ -449,6 +540,56 @@ mod tests {
         assert!(
             POD_DELETE_TIMEOUT > Duration::from_secs(30),
             "the API observation fence must not expire at the same instant as Kubernetes' default grace"
+        );
+    }
+
+    /* Kubernetes restore-evidence table. C1=no tuple; C2=all exact fields;
+     * C3=partial tuple; C4=one mismatched field. E1=ordinary object/None;
+     * E2=lossless exact evidence; E3=fail closed. Rules: K1 C1=>E1;
+     * K2 C2=>E2; K3 C3|C4=>E3. The same helper owns Pod and PVC checks. */
+    #[test]
+    fn restoration_annotations_are_atomic_exact_evidence_for_pods_and_pvcs() {
+        let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
+            "effect-a",
+            "generation-a",
+            "checkpoint-a",
+            "digest-a",
+            "spec-a",
+            "exclusions-a",
+        )
+        .unwrap();
+        let mut object = pod("Pending", false, None);
+        object.metadata.name = Some("restore-pod".into());
+        assert_eq!(restoration_evidence(&object).unwrap(), None, "K1/E1");
+        stamp_restoration(&mut object, &evidence);
+        assert_eq!(
+            restoration_evidence(&object).unwrap(),
+            Some(evidence.clone()),
+            "K2/E2"
+        );
+        verify_restoration(&object, &evidence).expect("K2/E2");
+
+        object
+            .metadata
+            .annotations
+            .as_mut()
+            .unwrap()
+            .remove(crate::RESTORE_CHECKPOINT_DIGEST_LABEL);
+        assert!(restoration_evidence(&object).is_err(), "K3/E3 partial");
+
+        stamp_restoration(&mut object, &evidence);
+        let mismatched = pc::SandboxRestorationEvidence::from_exact_parts(
+            evidence.effect_id(),
+            "generation-different",
+            evidence.checkpoint_id(),
+            evidence.checkpoint_digest(),
+            evidence.sandbox_spec_fingerprint(),
+            evidence.checkpoint_exclusions_fingerprint(),
+        )
+        .unwrap();
+        assert!(
+            verify_restoration(&object, &mismatched).is_err(),
+            "K3/E3 mismatch"
         );
     }
 

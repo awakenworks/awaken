@@ -103,7 +103,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     let mut restoring = super::continuation::hibernated_session("restore-in-progress", 100_000);
     restoring
         .environment
-        .begin_restore("restore-in-progress", 0, None, 1)
+        .begin_restore("workspace", "restore-in-progress", 0, None, 1)
         .expect("valid Restoring fixture");
     create(inner.as_ref(), restoring).await;
 

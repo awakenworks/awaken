@@ -1,5 +1,24 @@
 # Wiki Update Log
 
+## 2026-08-30 — Bind restore replay to one exact physical target
+
+- Projected the Session aggregate's one durable `Restoring` tuple through the
+  canonical provider contract, with full SandboxSpec and exact checkpoint
+  exclusion evidence rather than a Host-local restore journal.
+- Bound new operation ids to Workspace, Session and the complete typed
+  generation/realization/checkpoint tuple with one length-framed BLAKE3 owner;
+  legacy durable operations remain opaque, while Phase-B substrate admission
+  rejects noncanonical ids before effects.
+- Made Local, Docker, Podman and Kubernetes read or acquire the same fenced
+  full-digest physical target across provider replacement. All remaining tuple,
+  spec and exclusion values fence that locator rather than selecting another;
+  Namespace remains unsupported, and portable v3 checkpoint bytes remain solely
+  in deployment composition.
+- Kept Resource, MCP and process projection after the root CAS, and made
+  terminal cleanup dispose the exact unpublished target before deleting its
+  checkpoint. No open archive format, database, queue, marker or slot FSM was
+  added.
+
 ## 2026-08-30 — Reuse the Session cutover proof for continuation rollout
 
 - Extended the existing Coordinator public drain gate so requests admitted
