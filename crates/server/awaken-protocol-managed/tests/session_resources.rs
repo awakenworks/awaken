@@ -4078,7 +4078,9 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         "initial Resource manifest: {listed}"
     );
     let initial_etag = initial_headers["etag"].to_str().unwrap().to_string();
-    assert_eq!(initial_etag, "\"0\"", "M1/E1");
+    // Session creation compiles the initial (possibly empty) manifest as
+    // generation 1. Generation 0 is reserved for an uncompiled aggregate.
+    assert_eq!(initial_etag, "\"1\"", "M1/E1");
     let (status, _, rejected) = call_with_headers(
         &app,
         "PUT",
@@ -4103,7 +4105,7 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     assert_eq!(first["phase"], "active", "M1/E2");
     assert_eq!(first["resources"].as_array().unwrap().len(), 2, "M1/E2");
     let first_etag = first_headers["etag"].to_str().unwrap().to_string();
-    assert_eq!(first_etag, "\"1\"", "M1/E1");
+    assert_eq!(first_etag, "\"2\"", "M1/E1");
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M1/E2");
 
     let (status, replay_headers, replay) = call_with_headers(

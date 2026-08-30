@@ -242,7 +242,10 @@ def runtime_source_evidence(root: Path, relative_paths: Iterable[str]) -> list[d
 
 
 def python_module_name(root: Path, filename: Path) -> str:
-    relative = filename.relative_to(root).with_suffix("")
+    # macOS exposes temporary directories through both /var and /private/var.
+    # Resolve both operands before containment so equivalent filesystem paths
+    # cannot make the compatibility oracle fail before it inspects SDK code.
+    relative = filename.resolve().relative_to(root.resolve()).with_suffix("")
     parts = list(relative.parts)
     if parts[-1] == "__init__":
         parts.pop()
@@ -327,6 +330,7 @@ def managed_type_source_evidence(
     so an unrelated Messages DTO in a broad ``types.beta`` initializer cannot
     enlarge or satisfy the Managed compatibility claim.
     """
+    root = root.resolve()
     resource_roots = {path.resolve() for path in resource_files}
     pending: list[tuple[Path, bool]] = [
         (path, True) for path in resource_roots
