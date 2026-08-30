@@ -193,3 +193,6 @@ pub use terminal_cleanup::{
     VerifiedSessionCleanupReceipt,
 };
 pub use tool_configuration::SessionToolConfiguration;
+
+pub use environment::{SourceReleasePreparationEffect, SourceReleasePreparedReceipt};
+pub use session_realization::realization_lease_generation_authorizes;

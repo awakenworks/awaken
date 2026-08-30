@@ -237,3 +237,26 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// The atomically persisted owner scope of `session_id`.
     async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError>;
 }
+
+impl SessionRealizationLease {
+
+    /// Project the aggregate-owned realization generation into the one neutral
+    /// provider fence. Domain callers still decide whether this lease is the
+    /// current/live authority; this method only prevents adapters from growing
+    /// duplicate field mappings or operation-identity algorithms.
+    pub fn sandbox_effect_fence(
+        &self,
+        operation_id: impl Into<String>,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxEffectFence,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_provisioning_contract::SandboxEffectFence::new(
+            operation_id,
+            self.owner.clone(),
+            self.runtime_incarnation.clone(),
+            self.epoch,
+            self.expires_at_unix_ms,
+        )
+    }
+}
