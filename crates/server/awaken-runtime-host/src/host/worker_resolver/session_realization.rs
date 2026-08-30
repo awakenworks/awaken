@@ -334,6 +334,33 @@ impl HostWorkerResolver {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_run_ingress::Error> {
+        Self::drive_session_realization_raw(
+            host,
+            control,
+            session_id,
+            directive,
+            claim,
+            published_snapshot,
+            rebuild_unavailable_environment,
+        )
+        .await
+        .map_err(Self::map_session_realization_drive_error)
+    }
+
+    /// Execute the canonical realization driver without erasing its typed
+    /// Control failure. Ordinary claimed Runs use the mapped wrapper above;
+    /// lease renewal needs the exact `Conflict` variant so it can refresh one
+    /// concurrently advanced aggregate instead of revoking a still-owned
+    /// process-local projection.
+    pub(crate) async fn drive_session_realization_raw(
+        host: &SharedHost,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        session_id: &str,
+        directive: awaken_session_contract::SessionRealizationDirective,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        rebuild_unavailable_environment: bool,
+    ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
         let requires_runtime_before_effects = matches!(
             &directive.action,
             awaken_session_contract::SessionRealizationAction::Stage { mcp_stages, .. }
@@ -356,11 +383,6 @@ impl HostWorkerResolver {
             directive,
         )
         .await
-        // The canonical driver has already persisted whether an effect is
-        // retryable. Preserve that classification at the WorkQueue boundary:
-        // temporary dependency/control failures relinquish the claim, while only
-        // absorbing Session failures terminalize the Run.
-        .map_err(Self::map_session_realization_drive_error)
     }
 }
 
@@ -616,6 +638,7 @@ mod tests {
         stage: awaken_session_contract::StageMcpAttachment,
         lease: Mutex<awaken_session_contract::SessionRealizationLease>,
         begin_calls: std::sync::atomic::AtomicUsize,
+        acknowledge_conflicts_remaining: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait::async_trait]
@@ -687,6 +710,17 @@ mod tests {
             awaken_session_contract::SessionRealizationDirective,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
+            if self
+                .acknowledge_conflicts_remaining
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |remaining| remaining.checked_sub(1),
+                )
+                .is_ok()
+            {
+                return Err(awaken_session_contract::SessionRealizationControlFailure::Conflict);
+            }
             let lease = self.lease.lock().unwrap().clone();
             let action =
                 if command.published.iter().any(|generation| {
@@ -1084,15 +1118,19 @@ mod tests {
     /// heartbeat requests the same owner/incarnation/epoch lease extension.
     /// Effects: E1 extend durable and local authority without blocking; E2 never
     /// start a second Stage/Publish driver; E3 the current driver catches its
-    /// exact generation up before completion. Replacement
-    /// fencing is owned by the contract authorization table; ordinary idle
-    /// renewal is W6 in the parent resolver tests.
+    /// exact generation up before completion; E4 a concurrent aggregate CAS
+    /// refreshes through the same driver while retaining the resident projection;
+    /// E5 repeated conflict exhausts the bound and revokes the unprovable local
+    /// projection. Replacement fencing is owned by the contract authorization
+    /// table; ordinary idle renewal is W6 in the parent resolver tests.
     ///
     /// | Rule | C1 | C2 | C3 | Effect |
     /// |---|---|---|---|---|
     /// | R1 | yes | yes | yes | E1 + E2 + E3 |
     /// | R2 | no | no | yes | canonical renewal driver (W6) |
     /// | R3 | any | any | replacement | fence/revoke (authorization A2/W7) |
+    /// | R4 | no | no | same owner plus one Control conflict | refresh once; E2 + E4 |
+    /// | R5 | no | no | repeated Control conflict | bounded failure; E5 |
     #[tokio::test]
     async fn heartbeat_renewal_does_not_duplicate_an_in_flight_realization_driver() {
         let thread = "renew-during-stage";
@@ -1154,6 +1192,7 @@ mod tests {
             stage: stage.clone(),
             lease: Mutex::new(lease.clone()),
             begin_calls: std::sync::atomic::AtomicUsize::new(0),
+            acknowledge_conflicts_remaining: std::sync::atomic::AtomicUsize::new(0),
         });
         let stage_entered = Arc::new(tokio::sync::Notify::new());
         let release_stage = Arc::new(tokio::sync::Notify::new());
@@ -1238,6 +1277,57 @@ mod tests {
             Some(renewed_expiry),
             "R1/E3"
         );
+
+        let conflict_expiry = renewed_expiry + 1_000;
+        control
+            .acknowledge_conflicts_remaining
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            host.renew_due_session_realizations(renewed_expiry, conflict_expiry)
+                .await
+                .expect("R4 concurrent aggregate change refreshes"),
+            1,
+            "R4/E4"
+        );
+        assert_eq!(
+            control
+                .begin_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "R4 initial attempt plus one bounded refresh"
+        );
+        assert!(
+            host.session_slots
+                .read(thread, |slot| {
+                    slot.baseline.is_some()
+                        && slot
+                            .realization_lease
+                            .as_ref()
+                            .is_some_and(|lease| lease.expires_at_unix_ms == conflict_expiry)
+                })
+                .unwrap_or(false),
+            "R4/E2/E4 keeps one complete resident projection"
+        );
+
+        let exhausted_expiry = conflict_expiry + 1_000;
+        control
+            .acknowledge_conflicts_remaining
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            host.renew_due_session_realizations(conflict_expiry, exhausted_expiry)
+                .await
+                .expect("R5 renewal scan isolates the failed projection"),
+            0,
+            "R5/E5"
+        );
+        assert_eq!(
+            control
+                .begin_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            5,
+            "R5 stops after the bounded refresh"
+        );
+        assert!(!host.session_slots.contains(thread), "R5/E5");
     }
 
     #[tokio::test]
