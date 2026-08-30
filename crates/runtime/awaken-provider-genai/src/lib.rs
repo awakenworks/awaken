@@ -869,6 +869,14 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> Result<ChatRe
 
 fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
     if response.output.text_content().trim().is_empty() && response.output.tool_calls().is_empty() {
+        // A reasoning model can spend its entire output allowance before a
+        // public token or typed tool call fits. Preserve only the explicitly
+        // truncated form so Runtime's one bounded MaxTokens continuation owner
+        // can ask for smaller pieces. A NaturalEnd reasoning-only response is
+        // still unusable and follows the retry/failure path below.
+        if response.stop_reason == Some(StopReason::MaxTokens) && response.output.has_reasoning() {
+            return Ok(response);
+        }
         return Err(Error::Provider(
             "model returned no visible assistant content or tool call".into(),
         ));
@@ -897,24 +905,48 @@ mod visible_response_tests {
     use super::*;
 
     #[test]
-    fn reasoning_only_response_is_retryable_instead_of_committed_as_empty_success() {
-        // Test design — Causes: a provider returns private reasoning and usage
-        // but no public text or typed tool call. Effects: usability validation
-        // returns a retryable provider error. Constraints/invariants: reasoning
-        // alone is not a completed assistant response. Decision rule V1:
-        // reasoning-only=>retryable failure, never empty success.
-        let response = ChatResponse {
-            output: AssistantOutput::from_blocks(vec![ContentBlock::thinking("reasoning")]),
+    fn reasoning_only_response_distinguishes_truncation_from_empty_success() {
+        // Test design — Causes: C1 a provider returns private reasoning and
+        // usage but no public text or typed tool call; C2 stop reason is absent,
+        // NaturalEnd, or MaxTokens; C3 reasoning is useful, absent, or blank.
+        // Effects: E1 every non-truncation and empty/blank response is retryable;
+        // E2 only useful reasoning+MaxTokens reaches Runtime's bounded
+        // continuation owner. Constraints/invariants: reasoning never becomes
+        // answer text or ordinary success. Rules V1=C1+useful+NaturalEnd=>E1;
+        // V2=C1+useful+MaxTokens=>E2; V3=C1+(absent|blank)+any stop=>E1.
+        let response = |reasoning: Option<&str>, stop_reason| ChatResponse {
+            output: AssistantOutput::from_blocks(
+                reasoning.map(ContentBlock::thinking).into_iter().collect(),
+            ),
             usage: Some(TokenUsage {
                 completion_tokens: 7,
                 ..TokenUsage::default()
             }),
-            stop_reason: Some(StopReason::NaturalEnd),
+            stop_reason,
         };
 
-        let error = require_usable_response(response).unwrap_err();
+        let error =
+            require_usable_response(response(Some("reasoning"), Some(StopReason::NaturalEnd)))
+                .unwrap_err();
         assert!(matches!(error, Error::Provider(_)));
         assert!(error.is_retryable());
+        let truncated =
+            require_usable_response(response(Some("reasoning"), Some(StopReason::MaxTokens)))
+                .expect("V2/E2");
+        assert!(truncated.output.has_reasoning(), "V2/E2");
+        assert_eq!(truncated.stop_reason, Some(StopReason::MaxTokens), "V2/E2");
+        for reasoning in [None, Some(""), Some("   ")] {
+            for stop_reason in [
+                None,
+                Some(StopReason::NaturalEnd),
+                Some(StopReason::MaxTokens),
+            ] {
+                let error = require_usable_response(response(reasoning, stop_reason))
+                    .expect_err("V3/E1 blank private output is never usable");
+                assert!(matches!(error, Error::Provider(_)), "V3/E1");
+                assert!(error.is_retryable(), "V3/E1");
+            }
+        }
     }
 
     /// Textual-tool-call cause/effect graph, decision table, and FMECA. Causes:

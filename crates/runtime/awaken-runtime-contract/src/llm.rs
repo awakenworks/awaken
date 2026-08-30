@@ -95,22 +95,22 @@ pub enum StopReason {
 impl StopReason {
     /// Whether this response may consume one more in-place continuation.
     ///
-    /// This is the loop's single admission rule: only a text-bearing
-    /// `MaxTokens` response with no tool call and remaining budget may be
-    /// continued. Keeping the predicate beside the existing stop-reason type
-    /// prevents provider adapters and runtime callers from inventing parallel
-    /// interpretations of truncation.
+    /// This is the loop's single admission rule: only a `MaxTokens` response
+    /// with continuable public text or private reasoning, no tool call, and
+    /// remaining budget may be continued. Keeping the predicate beside the
+    /// existing stop-reason type prevents provider adapters and runtime callers
+    /// from inventing parallel interpretations of truncation.
     #[must_use]
     pub const fn admits_continuation(
         self,
         has_tool_calls: bool,
-        has_text: bool,
+        has_continuable_output: bool,
         completed_continuations: usize,
         max_continuations: usize,
     ) -> bool {
         matches!(self, Self::MaxTokens)
             && !has_tool_calls
-            && has_text
+            && has_continuable_output
             && completed_continuations < max_continuations
     }
 }
@@ -122,15 +122,17 @@ mod stop_reason_verification {
     #[kani::proof]
     fn max_token_continuation_requires_every_exact_guard() {
         let has_tool_calls: bool = kani::any();
-        let has_text: bool = kani::any();
+        let has_continuable_output: bool = kani::any();
         let completed_continuations: usize = kani::any();
         let max_continuations: usize = kani::any();
 
-        let expected = !has_tool_calls && has_text && completed_continuations < max_continuations;
+        let expected = !has_tool_calls
+            && has_continuable_output
+            && completed_continuations < max_continuations;
         assert_eq!(
             StopReason::MaxTokens.admits_continuation(
                 has_tool_calls,
-                has_text,
+                has_continuable_output,
                 completed_continuations,
                 max_continuations,
             ),
@@ -138,25 +140,25 @@ mod stop_reason_verification {
         );
         assert!(!StopReason::NaturalEnd.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
         assert!(!StopReason::ToolUse.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
         assert!(!StopReason::StopSequence.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
         assert!(!StopReason::ContentFilter.admits_continuation(
             has_tool_calls,
-            has_text,
+            has_continuable_output,
             completed_continuations,
             max_continuations,
         ));
@@ -197,6 +199,17 @@ impl AssistantOutput {
     /// The response's combined text across its `Text` blocks.
     pub fn text_content(&self) -> String {
         extract_text(&self.blocks)
+    }
+
+    /// Whether the provider returned private reasoning that can explain a
+    /// `MaxTokens` truncation even when no public answer or tool call fit in the
+    /// response budget. It is never answer text and is never an ordinary
+    /// successful response by itself.
+    #[must_use]
+    pub fn has_reasoning(&self) -> bool {
+        self.blocks.iter().any(
+            |block| matches!(block, ContentBlock::Thinking { text, .. } if !text.trim().is_empty()),
+        )
     }
 
     /// The tool calls this response requests, in order, projected onto the
