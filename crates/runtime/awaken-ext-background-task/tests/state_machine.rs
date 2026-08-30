@@ -2,11 +2,11 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, RemoteContinuation,
-    RemoteProtocol, TaskClaim, TaskExecutionPolicy, TaskFence,
+    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskClaim, TaskExecutionPolicy,
+    TaskFence,
 };
 use awaken_runtime_contract::tool::{
-    ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy,
+    ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
 
 fn task() -> BackgroundTask {
@@ -177,9 +177,9 @@ fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
     assert_eq!(
         remote.wait(
             &fence,
-            BackgroundWait::Remote(RemoteContinuation {
-                protocol: RemoteProtocol::Mcp,
-                server_binding: String::new(),
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: String::new(),
                 task_id: "remote-1".into(),
                 poll_interval_ms: Some(100),
             })
@@ -189,9 +189,9 @@ fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
     remote
         .wait(
             &fence,
-            BackgroundWait::Remote(RemoteContinuation {
-                protocol: RemoteProtocol::Mcp,
-                server_binding: "mcp-server".into(),
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "mcp-server".into(),
                 task_id: "remote-1".into(),
                 poll_interval_ms: Some(100),
             }),
@@ -273,9 +273,9 @@ fn exhausted_remote_observation_budget_never_claims_remote_failure() {
     remote
         .wait(
             &fence,
-            BackgroundWait::Remote(RemoteContinuation {
-                protocol: RemoteProtocol::Mcp,
-                server_binding: "mcp-server".into(),
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "mcp-server".into(),
                 task_id: "remote-at-limit".into(),
                 poll_interval_ms: Some(100),
             }),
@@ -341,9 +341,9 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
     assert_eq!(
         active.wait(
             &fence,
-            BackgroundWait::Remote(RemoteContinuation {
-                protocol: RemoteProtocol::A2a,
-                server_binding: String::new(),
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: String::new(),
                 task_id: "remote".into(),
                 poll_interval_ms: Some(100),
             }),
@@ -398,8 +398,8 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
     // R1 Running + complete remote coordinates -> Waiting with the same fence.
     // R2 Waiting + same remote identity + a new positive poll interval -> only
     //    the interval and aggregate revision advance.
-    // R3 Waiting + changed binding/task identity or zero interval -> reject and
-    //    leave the aggregate byte-for-byte unchanged.
+    // R3 Waiting + changed owner/binding/task identity or zero interval ->
+    //    reject and leave the aggregate byte-for-byte unchanged.
     // R4 expired NeverReplay Waiting with a committed remote id -> Waiting at
     //    epoch+1 with identical continuation coordinates; recovery polls that
     //    id and must not replay the original effect.
@@ -417,9 +417,9 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
             },
         )
         .expect("fresh durable request starts");
-    let initial = RemoteContinuation {
-        protocol: RemoteProtocol::Mcp,
-        server_binding: "mcp/server@generation-7".into(),
+    let initial = ToolTaskHandle {
+        owner: "mcp".into(),
+        binding: "mcp/server@generation-7".into(),
         task_id: "remote-1".into(),
         poll_interval_ms: Some(100),
     };
@@ -427,7 +427,7 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
         .wait(&first, BackgroundWait::Remote(initial.clone()))
         .expect("R1 complete continuation is durable");
 
-    let refreshed = RemoteContinuation {
+    let refreshed = ToolTaskHandle {
         poll_interval_ms: Some(250),
         ..initial.clone()
     };
@@ -438,15 +438,20 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
     assert_eq!(remote.revision, revision + 1, "R2");
 
     for invalid in [
-        RemoteContinuation {
-            server_binding: "mcp/server@generation-8".into(),
+        ToolTaskHandle {
+            owner: "another-durable-adapter".into(),
             ..refreshed.clone()
         },
-        RemoteContinuation {
+        ToolTaskHandle {
+            owner: "mcp".into(),
+            binding: "mcp/server@generation-8".into(),
+            ..refreshed.clone()
+        },
+        ToolTaskHandle {
             task_id: "remote-2".into(),
             ..refreshed.clone()
         },
-        RemoteContinuation {
+        ToolTaskHandle {
             poll_interval_ms: Some(0),
             ..refreshed.clone()
         },
@@ -525,9 +530,9 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
             },
         )
         .expect("fresh durable request starts");
-    let continuation = RemoteContinuation {
-        protocol: RemoteProtocol::Mcp,
-        server_binding: "mcp/server@generation-7".into(),
+    let continuation = ToolTaskHandle {
+        owner: "mcp".into(),
+        binding: "mcp/server@generation-7".into(),
         task_id: "remote-1".into(),
         poll_interval_ms: Some(200),
     };
@@ -625,9 +630,9 @@ fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
         BackgroundTaskLifecycle::Cancelling { wait: None, .. }
     ));
 
-    let continuation = RemoteContinuation {
-        protocol: RemoteProtocol::Mcp,
-        server_binding: "mcp/server@generation-7".into(),
+    let continuation = ToolTaskHandle {
+        owner: "mcp".into(),
+        binding: "mcp/server@generation-7".into(),
         task_id: "remote-1".into(),
         poll_interval_ms: Some(100),
     };
@@ -659,7 +664,7 @@ fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
     assert_eq!(
         remote.wait(
             &fence,
-            BackgroundWait::Remote(RemoteContinuation {
+            BackgroundWait::Remote(ToolTaskHandle {
                 task_id: "remote-2".into(),
                 ..continuation
             }),
@@ -672,11 +677,12 @@ fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
 
 #[test]
 fn legacy_cancelling_wire_without_wait_remains_compatible() {
-    // Compatibility partition: historical Cancelling values did not carry a
-    // wait field and historical Remote values did not carry a poll interval.
-    // Both absences decode as None; a present incomplete remote wait is
-    // rejected. This preserves the old wire without weakening new recovery
-    // coordinates.
+    // Cause/effect compatibility table: R1 historical Cancelling without wait
+    // -> None; R2 historical Remote protocol/server_binding and no poll delay
+    // -> the canonical opaque owner/binding handle; R3 reserialization -> only
+    // owner/binding, so one current wire is written; R4 incomplete historical
+    // coordinates -> reject. This reads the old wire without retaining a
+    // second aggregate continuation type or weakening current validation.
     let mut running = task();
     running
         .start("worker", 0, 10, replay_policy())
@@ -701,31 +707,47 @@ fn legacy_cancelling_wire_without_wait_remains_compatible() {
     waiting
         .wait(
             &waiting_fence,
-            BackgroundWait::Remote(RemoteContinuation {
-                protocol: RemoteProtocol::Mcp,
-                server_binding: "mcp-server".into(),
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "mcp-server".into(),
                 task_id: "remote-1".into(),
                 poll_interval_ms: Some(100),
             }),
         )
         .expect("fixture waits");
     let mut legacy_wait = serde_json::to_value(&waiting).expect("task serializes");
-    legacy_wait["lifecycle"]["wait"]
+    let legacy_wait_object = legacy_wait["lifecycle"]["wait"]
         .as_object_mut()
-        .expect("remote wait is an object")
-        .remove("poll_interval_ms");
+        .expect("remote wait is an object");
+    let owner = legacy_wait_object.remove("owner").expect("canonical owner");
+    legacy_wait_object.insert("protocol".into(), owner);
+    let binding = legacy_wait_object
+        .remove("binding")
+        .expect("canonical binding");
+    legacy_wait_object.insert("server_binding".into(), binding);
+    legacy_wait_object.remove("poll_interval_ms");
     let decoded_wait = serde_json::from_value::<BackgroundTask>(legacy_wait)
         .expect("historical remote wait remains readable");
     assert!(matches!(
-        decoded_wait.lifecycle,
+        &decoded_wait.lifecycle,
         BackgroundTaskLifecycle::Waiting {
-            wait: BackgroundWait::Remote(RemoteContinuation {
-                poll_interval_ms: None,
-                ..
-            }),
+            wait: BackgroundWait::Remote(handle),
             ..
-        }
+        } if handle.owner == "mcp"
+            && handle.binding == "mcp-server"
+            && handle.poll_interval_ms.is_none()
     ));
+    let current = serde_json::to_value(&decoded_wait).expect("current task serializes");
+    let current_wait = current["lifecycle"]["wait"]
+        .as_object()
+        .expect("current remote wait is an object");
+    assert!(current_wait.contains_key("owner"), "R3 canonical owner");
+    assert!(current_wait.contains_key("binding"), "R3 canonical binding");
+    assert!(!current_wait.contains_key("protocol"), "R3 old owner alias");
+    assert!(
+        !current_wait.contains_key("server_binding"),
+        "R3 old binding alias"
+    );
 
     let mut malformed = serde_json::to_value(&decoded).expect("task serializes");
     malformed["lifecycle"]["wait"] = serde_json::json!({

@@ -397,13 +397,10 @@ impl RawTool for CancelBackgroundTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        BackgroundTaskOrigin, BackgroundWait, RemoteContinuation, RemoteProtocol,
-        TaskExecutionPolicy,
-    };
+    use crate::{BackgroundTaskOrigin, BackgroundWait, TaskExecutionPolicy};
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_runtime_contract::tool::{ToolConcurrency, ToolRecoveryPolicy};
+    use awaken_runtime_contract::tool::{ToolConcurrency, ToolRecoveryPolicy, ToolTaskHandle};
 
     fn remote_task() -> BackgroundTask {
         let mut task = BackgroundTask::requested(
@@ -434,9 +431,9 @@ mod tests {
             .expect("start");
         task.wait(
             &fence,
-            BackgroundWait::Remote(RemoteContinuation {
-                protocol: RemoteProtocol::Mcp,
-                server_binding: "binding-secret".into(),
+            BackgroundWait::Remote(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "binding-secret".into(),
                 task_id: "remote-secret".into(),
                 poll_interval_ms: Some(25),
             }),

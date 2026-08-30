@@ -15,8 +15,8 @@ use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_background_task::{
     BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle,
-    BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait, RemoteContinuation,
-    RemoteProtocol, TaskFence, tasks_from_state,
+    BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait, TaskFence,
+    tasks_from_state,
 };
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -249,17 +249,7 @@ impl BackgroundTaskTerminalObserver {
 
     fn remote_wait(handle: &ToolTaskHandle) -> Result<BackgroundWait, String> {
         handle.validate().map_err(|error| error.to_string())?;
-        let protocol = match handle.owner.as_str() {
-            "mcp" => RemoteProtocol::Mcp,
-            "a2a" => RemoteProtocol::A2a,
-            owner => return Err(format!("unsupported durable tool task owner {owner:?}")),
-        };
-        Ok(BackgroundWait::Remote(RemoteContinuation {
-            protocol,
-            server_binding: handle.binding.clone(),
-            task_id: handle.task_id.clone(),
-            poll_interval_ms: handle.poll_interval_ms,
-        }))
+        Ok(BackgroundWait::Remote(handle.clone()))
     }
 
     async fn launch(
@@ -425,7 +415,7 @@ impl BackgroundTaskTerminalObserver {
         call: awaken_runtime_contract::tool::ToolCall,
         thread_id: awaken_runtime_contract::ThreadId,
         expected: awaken_ext_background_task::TaskExecutionPolicy,
-        continuation: RemoteContinuation,
+        continuation: ToolTaskHandle,
         lease_expires_at_ms: u64,
         cancelling: bool,
     ) {
@@ -503,16 +493,7 @@ impl BackgroundTaskTerminalObserver {
             .await;
             return;
         }
-        let mut handle = ToolTaskHandle {
-            owner: match continuation.protocol {
-                RemoteProtocol::Mcp => "mcp",
-                RemoteProtocol::A2a => "a2a",
-            }
-            .into(),
-            binding: continuation.server_binding,
-            task_id: continuation.task_id,
-            poll_interval_ms: continuation.poll_interval_ms,
-        };
+        let mut handle = continuation;
         if let Err(error) = handle.validate() {
             self.supervisor.complete(
                 task_id.clone(),
@@ -1440,13 +1421,13 @@ mod tests {
         }
 
         async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
-            panic!("detached MCP-like target must use start_task")
+            panic!("durable detached target must use start_task")
         }
 
         async fn start_task(&self, _call: ToolCall) -> Result<ToolTaskStart, ToolError> {
             self.starts.fetch_add(1, Ordering::SeqCst);
             Ok(ToolTaskStart::Pending(ToolTaskHandle {
-                owner: "mcp".into(),
+                owner: "fixture-durable-adapter".into(),
                 binding: "remote".into(),
                 task_id: "remote-secret-id".into(),
                 poll_interval_ms: Some(1),
@@ -1472,9 +1453,10 @@ mod tests {
         // Cause/effect decision table: R1 committed Running -> exactly one
         // start_task and a process Wait candidate; R2 candidate is committed as
         // Waiting -> the same supervisor slot resumes one poll by the saved
-        // handle; R3 explicit Completed -> terminal candidate and a distinct
-        // attention identity. Constraints: no second tools/call, no remote id
-        // in System messages, and Thread State remains the only durable truth.
+        // handle; R3 an arbitrary non-MCP adapter owner is carried opaquely;
+        // R4 explicit Completed -> terminal candidate and a distinct attention
+        // identity. Constraints: no second start, no adapter/remote id in
+        // System messages, and Thread State remains the only durable truth.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-remote"));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {

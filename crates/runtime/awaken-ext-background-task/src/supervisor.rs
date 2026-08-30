@@ -239,9 +239,9 @@ mod tests {
                 worker_id: "worker".into(),
                 epoch,
             },
-            wait: BackgroundWait::Remote(crate::RemoteContinuation {
-                protocol: crate::RemoteProtocol::Mcp,
-                server_binding: "mcp-generation".into(),
+            wait: BackgroundWait::Remote(awaken_runtime_contract::tool::ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "mcp-generation".into(),
                 task_id: "remote-task".into(),
                 poll_interval_ms: Some(50),
             }),
