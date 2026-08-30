@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex};
 use crate::memory::BoundMemory;
 use crate::provisioning::StagedResources;
 
+mod environment_owner;
+pub(crate) use environment_owner::*;
+
 /// One Session-wide delivery decision for resources that can be represented
 /// either as files or as semantic tools. The frozen Resource/Skill identities
 /// remain authoritative; this value selects only their runtime projection.
@@ -111,15 +114,14 @@ pub(crate) struct SessionRuntimeSlot {
     /// Rebuildable model-only context materialized from the Session baseline's
     /// immutable transcript-prefix reference. Never committed to this Thread.
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
-    pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
+    /// Sole live Environment owner. Every state transition is driven through
+    /// `host/session/environment_lifecycle.rs`; other modules may only inspect
+    /// Resident/occupancy projections through its read helpers.
+    pub(crate) environment_owner: SessionEnvironmentOwner,
     /// Derived once while the Session context is built. Prompt projection,
     /// mount realization, Native tools, and ACP export all consume this value;
     /// none may independently choose another delivery path.
     pub content_delivery: Option<ManagedContentDelivery>,
-    /// Durable binding that recovery must adopt. If it is present while no
-    /// environment is resident, cold context creation fails closed instead of
-    /// manufacturing an unrelated replacement.
-    pub expected_environment_binding: Option<String>,
     pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the

@@ -134,13 +134,21 @@ impl SessionApplication {
             }
             SessionEnvironmentState::Suspending {
                 operation,
+                source_effect_id,
+                source_binding,
                 generation,
                 suspend_phase: SuspendPhase::Quiescing,
                 ..
             } => {
                 let receipt = self
                     .runtime()
-                    .quiesce_session_environment(session_id, &operation, &generation)
+                    .quiesce_session_environment(
+                        session_id,
+                        &operation,
+                        &source_effect_id,
+                        &source_binding,
+                        &generation,
+                    )
                     .await?;
                 session.environment.record_quiescence(&receipt)?;
                 self.commit_continuation(&owner_scope, session, "environment-quiesced")
@@ -149,6 +157,8 @@ impl SessionApplication {
             }
             SessionEnvironmentState::Suspending {
                 operation,
+                source_effect_id,
+                source_binding,
                 generation,
                 suspend_phase: SuspendPhase::Uploading,
                 ..
@@ -166,6 +176,8 @@ impl SessionApplication {
                     workspace_id: owner_scope.clone(),
                     session_id: session_id.to_string(),
                     operation,
+                    source_effect_id: *source_effect_id,
+                    source_binding,
                     generation,
                     format: policy.checkpoint_format.clone(),
                     created_at_unix_ms: now_unix_ms,
@@ -194,6 +206,7 @@ impl SessionApplication {
             }
             SessionEnvironmentState::Suspending {
                 operation,
+                source_effect_id,
                 source_binding,
                 generation,
                 suspend_phase: SuspendPhase::ReadyToDispose,
@@ -201,7 +214,13 @@ impl SessionApplication {
             } => {
                 let receipt = self
                     .runtime()
-                    .dispose_checkpoint_source(session_id, &operation, &generation, &source_binding)
+                    .dispose_checkpoint_source(
+                        session_id,
+                        &operation,
+                        &source_effect_id,
+                        &generation,
+                        &source_binding,
+                    )
                     .await?;
                 session.environment.complete_suspend(&receipt)?;
                 self.commit_continuation(&owner_scope, session, "environment-hibernated")

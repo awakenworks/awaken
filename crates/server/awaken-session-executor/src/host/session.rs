@@ -118,100 +118,6 @@ impl SharedHost {
         }
     }
 
-    async fn persist_environment_before_publish(
-        &self,
-        thread: &str,
-        env: &crate::session_environment::SessionEnvironment,
-        kind: awaken_session_contract::SessionEnvironmentEffectKind,
-    ) -> Result<(), HostError> {
-        let binding = serde_json::to_string(&env.handle())
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let sink = self
-            .environment_binding_sink
-            .read()
-            .expect("environment binding sink lock poisoned")
-            .clone();
-        if let Some(sink) = sink {
-            if !sink
-                .owns(thread)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?
-            {
-                return Ok(());
-            }
-            let mut realization = self
-                .session_slots
-                .read(thread, |slot| slot.realization_lease.clone())
-                .flatten();
-            // FMECA/causal graph: C1 a slow K8s realization finishes under lease L1;
-            // C2 heartbeat/reclaim projects L2 before its receipt commits; C3 a
-            // second renewal projects L3 while the L2 retry is in flight. E1 never
-            // publishes under L1/L2 after either fence changed; E2 follows each
-            // exact slot notification; E3 commits only under the repository-current
-            // lease; E4 bounded churn/absence fails closed. One replacement retry
-            // is insufficient because renewal and reclaim are independent clocks.
-            const FENCE_CATCH_UP_ATTEMPTS: usize = 4;
-            let mut persisted = None;
-            for attempt in 0..FENCE_CATCH_UP_ATTEMPTS {
-                let result = sink
-                    .persist(awaken_session_contract::SessionEnvironmentReceipt::new(
-                        thread,
-                        kind,
-                        binding.clone(),
-                        realization.clone(),
-                    ))
-                    .await;
-                match result {
-                    Ok(()) => {
-                        persisted = Some(Ok(()));
-                        break;
-                    }
-                    Err(error)
-                        if error.code == "session_realization_stale"
-                            && attempt + 1 < FENCE_CATCH_UP_ATTEMPTS =>
-                    {
-                        let changed = self
-                            .session_slots
-                            .update(thread, |slot| slot.realization_changed.clone());
-                        let replacement =
-                            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                                loop {
-                                    let notified = changed.notified();
-                                    let current = self
-                                        .session_slots
-                                        .read(thread, |slot| slot.realization_lease.clone())
-                                        .flatten();
-                                    if current.is_some() && current != realization {
-                                        break current;
-                                    }
-                                    notified.await;
-                                }
-                            })
-                            .await;
-                        match replacement {
-                            Ok(replacement) => realization = replacement,
-                            Err(_) => {
-                                persisted = Some(Err(error));
-                                break;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        persisted = Some(Err(error));
-                        break;
-                    }
-                }
-            }
-            let persisted = persisted.expect("bounded binding persistence produces a result");
-            persisted.map_err(|error| {
-                HostError::internal(format!(
-                    "persist Session environment binding before use: {error}"
-                ))
-            })?;
-        }
-        Ok(())
-    }
-
     async fn bind_deferred_dispatch_before_publish(
         &self,
         thread: &str,
@@ -291,55 +197,35 @@ impl SharedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
+        self.retry_unpublished_session_environment_cleanup(thread)
+            .await?;
         if let Some(environment) = self
             .session_slots
-            .read(thread, |slot| slot.environment.clone())
+            .read(thread, |slot| slot.environment_owner.resident())
             .flatten()
         {
             return Ok(environment);
         }
-        let environment = Arc::new(
-            self.create_session_environment(&self.session_provider, &self.sandbox_spec(thread))
-                .await?,
-        );
-        if let Err(error) = self
-            .realize_thread_repositories(thread, environment.as_ref())
-            .await
-        {
-            let _ = environment.dispose().await;
-            return Err(error);
-        }
-        let binding = serde_json::to_string(&environment.handle())
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let dispatch_bound = match self
-            .bind_deferred_dispatch_before_publish(thread, &binding)
-            .await
-        {
-            Ok(bound) => bound,
-            Err(error) => {
-                let _ = environment.dispose().await;
-                return Err(error);
+        let candidate = match self.prepared_session_environment(thread) {
+            Some(candidate) => candidate,
+            None => {
+                if !self.session_environment_owner_is_vacant(thread) {
+                    return Err(HostError::internal(format!(
+                        "Session {thread} Environment transition must be recovered before tool use"
+                    )));
+                }
+                let environment = Arc::new(
+                    self.create_session_environment(
+                        &self.session_provider,
+                        &self.sandbox_spec(thread),
+                    )
+                    .await?,
+                );
+                self.begin_session_environment_preparation(thread, environment)?
             }
         };
-        if let Err(error) = self
-            .persist_environment_before_publish(
-                thread,
-                environment.as_ref(),
-                awaken_session_contract::SessionEnvironmentEffectKind::Create,
-            )
+        self.complete_prepared_session_environment(thread, &candidate, true)
             .await
-        {
-            // Once the durable claim owns this handle, keep the physical
-            // environment available for adoption. A retry repairs the Session
-            // aggregate before publishing it to the runtime.
-            if !dispatch_bound {
-                let _ = environment.dispose().await;
-            }
-            return Err(error);
-        }
-        self.session_slots
-            .update(thread, |slot| slot.environment = Some(environment.clone()));
-        Ok(environment)
     }
 
     /// Evict only the rebuildable runtime context while retaining the
@@ -375,6 +261,16 @@ impl SharedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
+        self.commit_for_read_under_lifecycle(thread).await
+    }
+
+    /// Read the authoritative commit while the caller already owns this
+    /// Session's lifecycle guard. This is the only non-reentrant seam used by
+    /// continuation quiescence; ordinary callers use [`Self::commit_for_read`].
+    pub(crate) async fn commit_for_read_under_lifecycle(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<HostCommit>, HostError> {
         if let Some(commit) = self
             .session_slots
             .read(thread, |slot| {
@@ -591,7 +487,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        adopted: Option<crate::session_environment::SessionEnvironment>,
+        mut adopted: Option<crate::session_environment::SessionEnvironment>,
         claimed_attempt: Option<ClaimedRuntimeInput>,
         force_defer_environment: bool,
     ) -> Result<Arc<SessionCtx>, HostError> {
@@ -599,6 +495,8 @@ impl SharedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
+        self.retry_unpublished_session_environment_cleanup(thread)
+            .await?;
         if let Some(ctx) = self
             .session_slots
             .read(thread, |slot| slot.runtime.clone())
@@ -748,24 +646,49 @@ impl SharedHost {
         }
         let retained = self
             .session_slots
-            .read(thread, |slot| slot.environment.clone())
+            .read(thread, |slot| slot.environment_owner.resident())
             .flatten();
-        if a2a_only && (retained.is_some() || adopted.is_some()) {
+        let prepared = self.prepared_session_environment(thread);
+        if a2a_only && (retained.is_some() || prepared.is_some() || adopted.is_some()) {
             return Err(HostError::bad_request(
                 "remote A2A execution cannot bind a local Session Environment",
             ));
         }
-        let expected_binding = self
-            .session_slots
-            .read(thread, |slot| slot.expected_environment_binding.clone())
-            .flatten();
+        if force_defer_environment && prepared.is_some() {
+            return Err(HostError::internal(
+                "Session reservation cannot complete an in-flight physical Environment",
+            ));
+        }
+        if let (Some(prepared), Some(extra)) = (&prepared, adopted.as_ref()) {
+            if prepared.environment.handle() != extra.handle() {
+                return Err(HostError::internal(format!(
+                    "thread {thread} is already preparing a different sandbox"
+                )));
+            }
+            extra.stop_bound_processes().await;
+            adopted = None;
+        }
+        let expected_binding = self.durable_session_environment_binding(thread);
         // Recovery cause/effect decision table: C1 durable binding exists; C2 a
         // matching resident/adopted environment is available. R1 !C1 may create
         // the first environment; R2 C1+C2 reuses/adopts it; R3 C1+!C2 fails
         // closed. A failed recovery must never erase C1 by creating a substitute.
-        if expected_binding.is_some() && retained.is_none() && adopted.is_none() {
+        if expected_binding.is_some()
+            && retained.is_none()
+            && prepared.is_none()
+            && adopted.is_none()
+        {
             return Err(HostError::internal(format!(
                 "Session {thread} has a durable environment binding that was not adopted"
+            )));
+        }
+        if retained.is_none()
+            && prepared.is_none()
+            && adopted.is_none()
+            && !self.session_environment_owner_is_vacant(thread)
+        {
+            return Err(HostError::internal(format!(
+                "Session {thread} Environment transition must be recovered before context construction"
             )));
         }
         let has_published_delegates = installed.as_ref().is_some_and(|snapshot| {
@@ -817,70 +740,50 @@ impl SharedHost {
                 &self.sandbox_spec(thread),
             )?;
         }
-        let deferred =
-            retained.is_none() && adopted.is_none() && (force_defer_environment || can_defer);
-        let (env, needs_provision, needs_registration) = match (retained, adopted) {
-            (Some(existing), Some(adopted)) => {
-                if existing.handle() != adopted.handle() {
-                    return Err(HostError::internal(format!(
-                        "thread {thread} is already bound to a different sandbox"
-                    )));
+        let deferred = retained.is_none()
+            && prepared.is_none()
+            && adopted.is_none()
+            && (force_defer_environment || can_defer);
+        let (env, candidate) = if let Some(candidate) = prepared {
+            (Some(candidate.environment.clone()), Some(candidate))
+        } else {
+            match (retained, adopted) {
+                (Some(existing), Some(adopted)) => {
+                    if existing.handle() != adopted.handle() {
+                        return Err(HostError::internal(format!(
+                            "thread {thread} is already bound to a different sandbox"
+                        )));
+                    }
+                    adopted.stop_bound_processes().await;
+                    (Some(existing), None)
                 }
-                adopted.stop_bound_processes().await;
-                (Some(existing), false, false)
+                (Some(existing), None) => (Some(existing), None),
+                // The adopted environment already contains its Session workspace and
+                // repositories. Re-cloning would both fail and destroy continuity.
+                (None, Some(adopted)) => {
+                    let environment = Arc::new(adopted);
+                    let candidate =
+                        self.begin_session_environment_adoption(thread, environment.clone())?;
+                    (Some(environment), Some(candidate))
+                }
+                (None, None) if a2a_only || deferred => (None, None),
+                (None, None) => {
+                    let environment = Arc::new(
+                        self.create_session_environment(
+                            self.session_environment_provider(provisioning)?,
+                            &self.sandbox_spec(thread),
+                        )
+                        .await?,
+                    );
+                    let candidate =
+                        self.begin_session_environment_preparation(thread, environment.clone())?;
+                    (Some(environment), Some(candidate))
+                }
             }
-            (Some(existing), None) => (Some(existing), false, false),
-            // The adopted environment already contains its Session workspace and
-            // repositories. Re-cloning would both fail and destroy continuity.
-            (None, Some(adopted)) => (Some(Arc::new(adopted)), false, true),
-            (None, None) if a2a_only || deferred => (None, false, false),
-            (None, None) => (
-                Some(Arc::new(
-                    self.create_session_environment(
-                        self.session_environment_provider(provisioning)?,
-                        &self.sandbox_spec(thread),
-                    )
-                    .await?,
-                )),
-                true,
-                true,
-            ),
         };
-        if needs_provision {
-            let env = env.as_ref().expect("new environment exists");
-            // Clone staged repositories only for a physically new environment.
-            // Rebuilding SessionCtx must not re-clone over a live Session workspace.
-            if let Err(error) = self.realize_thread_repositories(thread, env.as_ref()).await {
-                let _ = env.dispose().await;
-                return Err(error);
-            }
-            if let Err(error) = self
-                .persist_environment_before_publish(
-                    thread,
-                    env.as_ref(),
-                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
-                )
-                .await
-            {
-                let _ = env.dispose().await;
-                return Err(error);
-            }
-        }
-        if needs_registration {
-            let env = env.as_ref().expect("registered environment exists");
-            if !needs_provision {
-                // A dispatch-owned sandbox may be adopted after a crash between
-                // dispatch binding and Session aggregate persistence. Repair the
-                // aggregate before publishing the adopted wrapper to this runtime.
-                self.persist_environment_before_publish(
-                    thread,
-                    env.as_ref(),
-                    awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-                )
+        if let Some(candidate) = &candidate {
+            self.complete_prepared_session_environment(thread, candidate, false)
                 .await?;
-            }
-            self.session_slots
-                .update(thread, |slot| slot.environment = Some(env.clone()));
         }
         let thread_id = ThreadId(thread.to_string());
         let commit = Arc::new(self.build_commit(thread).await?);

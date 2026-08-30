@@ -694,24 +694,6 @@ impl crate::SharedHost {
         });
     }
 
-    pub(crate) fn install_expected_environment_binding(
-        &self,
-        session_id: &str,
-        binding: Option<String>,
-    ) -> Result<(), crate::HostError> {
-        self.session_slots.update(session_id, |slot| {
-            if let (Some(existing), Some(asserted)) = (&slot.expected_environment_binding, &binding)
-                && existing != asserted
-            {
-                return Err(crate::HostError::internal(format!(
-                    "Session {session_id} is already bound to a different durable environment"
-                )));
-            }
-            slot.expected_environment_binding = binding;
-            Ok(())
-        })
-    }
-
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
@@ -1136,18 +1118,15 @@ impl crate::SharedHost {
             return false;
         };
         let _lifecycle = lifecycle.lock().await;
-        self.stop_session_mcp_processes(session_id).await;
-        let Some(slot) = self.session_slots.remove(session_id) else {
-            return false;
-        };
-        if let Some(environment) = slot
-            .environment
-            .or_else(|| slot.runtime.and_then(|runtime| runtime.env.clone()))
-        {
-            environment.stop_bound_processes().await;
-        }
+        let retirement = self
+            .retire_session_environment_for_revocation(session_id)
+            .await;
         if let Some(relay) = self.mcp_relay.get() {
             relay.remove_routes(session_id);
+        }
+        if let Err(error) = retirement {
+            eprintln!("Session realization revocation retained `{session_id}` for retry: {error}");
+            return false;
         }
         true
     }
@@ -1265,7 +1244,6 @@ impl crate::SharedHost {
                     | awaken_session_contract::McpAttachmentState::Failed
             )
         });
-        let expected_environment_binding = projection.environment.binding().map(str::to_owned);
         let baseline = baseline_projection(&projection.baseline);
         let init = projection.session_init();
         match awaken_session_contract::frozen_agent_publication_decision(
@@ -1300,20 +1278,6 @@ impl crate::SharedHost {
                 "Session realization cannot replace its immutable Agent publication",
             ));
         }
-        if self
-            .session_slots
-            .read(thread, |slot| {
-                matches!(
-                    (&slot.expected_environment_binding, &expected_environment_binding),
-                    (Some(existing), Some(asserted)) if existing != asserted
-                )
-            })
-            .unwrap_or(false)
-        {
-            return Err(crate::HostError::internal(format!(
-                "Session {thread} is already bound to a different durable environment"
-            )));
-        }
         let environment_projection = crate::provisioning::project_environment(&init.environment);
         if self
             .session_slots
@@ -1345,7 +1309,7 @@ impl crate::SharedHost {
         } else {
             let occupied = self.session_slots.read(thread, |slot| {
                 (
-                    slot.runtime.is_some() || slot.environment.is_some(),
+                    slot.runtime.is_some() || slot.environment_owner.has_local_environment(),
                     slot.resources.mounts.clone(),
                 )
             });
@@ -1388,7 +1352,11 @@ impl crate::SharedHost {
             };
             installed.map_err(|error| crate::HostError::internal(error.to_string()))?;
         }
-        self.install_expected_environment_binding(thread, expected_environment_binding)?;
+        self.install_session_environment_owner_projection(
+            thread,
+            &projection.workspace_id,
+            &projection.environment,
+        )?;
         self.project_session_init(thread, &init)?;
         self.install_session_request_context(thread, projection.request_context.clone());
         self.session_slots.update(thread, |slot| {

@@ -986,8 +986,7 @@ mod tests {
                 .await
                 .unwrap(),
         ));
-        host.session_slots
-            .update(thread, |slot| slot.environment = Some(environment));
+        host.install_test_resident_session_environment(thread, environment);
         let output_dir = storage
             .path()
             .join(thread)
@@ -1255,9 +1254,7 @@ mod tests {
                 .await
                 .unwrap(),
         ));
-        failed_host
-            .session_slots
-            .update(thread, |slot| slot.environment = Some(failed_environment));
+        failed_host.install_test_resident_session_environment(thread, failed_environment);
         let failed_output = failed_storage
             .path()
             .join(thread)
