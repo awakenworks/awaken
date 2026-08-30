@@ -160,10 +160,15 @@ impl SessionEnvironmentOwner {
                     *self = Self::Vacant;
                     Ok(())
                 }
+                // A FrozenSessionProjection may be read before this process
+                // commits the create/adopt receipt, then wait on the lifecycle
+                // guard while that receipt publishes the exact Candidate. Its
+                // Unmaterialized value is therefore older than the local
+                // Candidate/Resident owner and cannot unbind or reject it. A
+                // real durable retirement first moves the local owner through
+                // Retiring, so retaining these phases does not hide cleanup.
                 Self::Preparing(SessionEnvironmentPreparation::Candidate(_))
-                | Self::Resident(_) => Err(HostError::internal(
-                    "durable Session Environment became unbound while a local owner remained live",
-                )),
+                | Self::Resident(_) => Ok(()),
             },
             ProjectedEnvironmentOwner::AwaitingAdoption { identity, binding } => {
                 if let Some(existing) = owned_binding(self)
