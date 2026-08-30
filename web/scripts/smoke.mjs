@@ -199,7 +199,7 @@ await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefi
 const mem = await step("create memory store", "POST", "/v1/memory_stores", { name: "smoke-mem" }, (s, p) => (s === 200 || s === 201) && typeof p.id === "string");
 await step("list memory stores", "GET", "/v1/memory_stores", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === mem.id));
 // A File input and a Skill capability use distinct lifecycle/configuration paths.
-const file = await uploadStep("upload file", "/v1/files", "notes.txt", "text/plain", "the port is 8080", { purpose: "agent" }, (s, p) => s === 200 && typeof p.id === "string");
+const file = await uploadStep("upload file", "/v1/files", "notes.txt", "text/plain", "the port is 8080", {}, (s, p) => s === 200 && typeof p.id === "string");
 const skill = await uploadStep("create skill", "/v1/skills", "SKILL.md", "text/markdown", "# Greeter\nSay hello.", { name: "smoke-skill" }, (s, p) => s === 200 && typeof p.id === "string");
 await step("list skills (durable store)", "GET", "/v1/skills", undefined, (s, p) => s === 200 && p.data.some((x) => x.id === skill.id));
 await step("bind typed inputs to agent (memory/file)", "PUT", "/v1/config/agents/smoke-agent/resources", {
