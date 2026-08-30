@@ -9,12 +9,15 @@ import { Button, Card, Pill } from "../ui";
 import { useApp } from "../../lib/app-state";
 import type { AdvancedSection } from "./agent-editor-navigation";
 import AgentIntegrationsEditor from "./AgentIntegrationsEditor";
+import AgentCompactionEditor from "./AgentCompactionEditor";
 import AgentRawEditor from "./AgentRawEditor";
 import BehaviorCard from "./BehaviorCard";
 import ConfigDiff from "./ConfigDiff";
 import PublicationSnapshotSummary from "./PublicationSnapshotSummary";
+import { isAcpModelSelection } from "../../lib/agent-model-selection";
+import AgentVersionHistory from "./AgentVersionHistory";
 
-const PRODUCTIZED_PLUGINS = new Set(["compact", "memory", "web_search", "state_machine"]);
+const PRODUCTIZED_PLUGINS = new Set(["compact", "memory", "web_search", "state_machine", "background_task"]);
 
 export default function AgentAdvanced({
   section,
@@ -24,6 +27,7 @@ export default function AgentAdvanced({
   plugins,
   credentials,
   resourceRevision,
+  isNew,
   published,
   publishPending,
   changed,
@@ -40,6 +44,7 @@ export default function AgentAdvanced({
   plugins: PluginCap[];
   credentials: CredentialSource[];
   resourceRevision: number;
+  isNew: boolean;
   published: boolean;
   publishPending: boolean;
   changed: (path: string) => boolean;
@@ -56,6 +61,7 @@ export default function AgentAdvanced({
     { key: "source", label: "Raw configuration", zh: "原始配置" },
     { key: "release", label: "Release & diff", zh: "发布与差异" },
   ];
+  const acp = isAcpModelSelection(config.model);
   const renderBehavior = (plugin: PluginCap) => (
     <BehaviorCard
       key={plugin.id}
@@ -65,6 +71,13 @@ export default function AgentAdvanced({
       config={(config.plugin_config[plugin.id] as Record<string, unknown>) ?? {}}
       credentials={credentials}
       changed={changed(`plugin_config.${plugin.id}`)}
+      availability={plugin.id === "background_task" && acp ? {
+        supported: false,
+        detail: app.t(
+          "Background tool execution needs Native Awaken because it retains a prepared tool executor inside the runtime process.",
+          "后台工具执行需要 Native Awaken，因为它必须在 Runtime 进程内保留已准备的工具执行器。",
+        ),
+      } : undefined}
       onToggle={(enabled) => {
         if (enabled) {
           onPatch({ plugins: Array.from(new Set([...config.plugins, plugin.id])) });
@@ -116,24 +129,30 @@ export default function AgentAdvanced({
       )}
 
       {section === "extensions" && (
-        <Card>
-          <h2 className="section-title">{app.t("Runtime extensions", "运行时扩展")}</h2>
-          <p className="hint">{app.t(
-            "Low-frequency runtime mechanisms live here. Common capabilities remain in Build under the task they serve.",
-            "低频运行机制集中在这里；常用能力仍按用户任务保留在构建页。",
-          )}</p>
-          {extensionPlugins.length > 0 ? (
-            <div className="stack">{extensionPlugins.map(renderBehavior)}</div>
-          ) : (
-            <div className="banner info">
-              <span>✓</span>
-              <span>{app.t(
-                "No additional runtime plugins are advertised by this host.",
-                "当前 Host 没有提供其他运行时 Plugin。",
-              )}</span>
-            </div>
-          )}
-        </Card>
+        <div className="stack">
+          <AgentCompactionEditor
+            value={config.compaction}
+            onChange={(compaction) => onPatch({ compaction })}
+          />
+          <Card>
+            <h2 className="section-title">{app.t("Runtime extensions", "运行时扩展")}</h2>
+            <p className="hint">{app.t(
+              "Low-frequency runtime mechanisms live here. Common capabilities remain in Build under the task they serve.",
+              "低频运行机制集中在这里；常用能力仍按用户任务保留在构建页。",
+            )}</p>
+            {extensionPlugins.length > 0 ? (
+              <div className="stack">{extensionPlugins.map(renderBehavior)}</div>
+            ) : (
+              <div className="banner info">
+                <span>✓</span>
+                <span>{app.t(
+                  "No additional runtime plugins are advertised by this host.",
+                  "当前 Host 没有提供其他运行时 Plugin。",
+                )}</span>
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       {section === "source" && (
@@ -166,6 +185,7 @@ export default function AgentAdvanced({
             resources={resources}
             config={config}
           />
+          <AgentVersionHistory agentId={config.id} enabled={!isNew} />
           <div style={{ marginTop: 16 }}>
             <strong>{app.t("Configuration changes", "配置差异")}</strong>
             <div style={{ marginTop: 10 }}>

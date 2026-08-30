@@ -85,7 +85,7 @@ export function modelTestAgentConfig(model: string): AgentConfig {
     name: `Model test · ${model}`,
     description: "Internal Agent used to verify a published model connection.",
     model: { id: model },
-    system: "Reply briefly to verify this model connection.",
+    system: "Follow the user's requested output format exactly. Do not add explanation.",
     metadata: { "awaken.internal": "model-test" },
     tools: [],
     mcp_servers: [],
@@ -189,7 +189,7 @@ function TestChat({ model }: { model: string }) {
         sessionStatus={session.data?.status}
         autoMessage={{
           id: `model-test-${sid}`,
-          text: "Reply with a short confirmation that this model connection is working.",
+          text: "Reply with exactly: MODEL READY",
         }}
         placeholder={app.t("Say hello…", "打个招呼…")}
         onLatency={setLatencyMs}
@@ -316,7 +316,7 @@ export default function ModelsSurface() {
         />
       ))}
 
-      <Card style={{ padding: 0 }}>
+      <Card className="responsive-table-card" style={{ padding: 0 }}>
         <div className="row" style={{ padding: "13px 16px", justifyContent: "space-between" }}>
           <div className="row">
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Catalog", "模型目录")}</h2>
@@ -389,13 +389,13 @@ export default function ModelsSurface() {
                 </tr>
                 {offerings.map((o, i) => (
               <tr key={`${o.model_id}-${o.protocol_endpoint_id}-${i}`}>
-                <td className="mono">{o.model_id}</td>
-                {presentation.showSupplyInfrastructure && <td>{o.provider_id}</td>}
-                {presentation.showSupplyInfrastructure && <td className="mono mut">{o.protocol_endpoint_id}</td>}
-                {presentation.showSupplyInfrastructure && <td>
+                <td data-label={app.t("Model", "模型")} className="mono">{o.model_id}</td>
+                {presentation.showSupplyInfrastructure && <td data-label={app.t("Provider", "供应商")}>{o.provider_id}</td>}
+                {presentation.showSupplyInfrastructure && <td data-label={app.t("Endpoint", "端点")} className="mono mut">{o.protocol_endpoint_id}</td>}
+                {presentation.showSupplyInfrastructure && <td data-label={app.t("API format", "API 格式")}>
                   <Pill tone="neutral">{dialectLabel(o.dialect, app.locale === "zh")}</Pill>
                 </td>}
-                <td>
+                <td data-label={app.t("Status", "状态")}>
                   <Pill tone={(o.status ?? "active") === "active" ? "agent" : "neutral"}>
                     {(o.status ?? "active") === "active" ? app.t("Available", "可用") : app.t("Unavailable", "不可用")}
                     {!managedSupply && (
@@ -418,7 +418,7 @@ export default function ModelsSurface() {
                     </div>
                   )}
                 </td>
-                <td className="mut">
+                <td data-label={app.t("Context", "上下文")} className="mut">
                   {c?.model_attributes?.[o.model_id]?.context_window
                     ? `${fmtTokens(c.model_attributes[o.model_id].context_window!)}`
                     : "—"}
@@ -428,7 +428,7 @@ export default function ModelsSurface() {
                     </div>
                   )}
                 </td>
-                <td className="mut">
+                <td data-label={app.t("Max output", "最大输出")} className="mut">
                   {c?.model_attributes?.[o.model_id]?.max_output_tokens
                     ? `${fmtTokens(c.model_attributes[o.model_id].max_output_tokens!)}`
                     : "—"}
@@ -438,7 +438,7 @@ export default function ModelsSurface() {
                     </div>
                   )}
                 </td>
-                {presentation.allowSessionTest && <td style={{ textAlign: "right" }}>
+                {presentation.allowSessionTest && <td className="responsive-table-actions" style={{ textAlign: "right" }}>
                   <Button
                     style={{ height: 24 }}
                     disabled={(o.status ?? "active") !== "active"}

@@ -4,11 +4,20 @@
 // editor for less common SDK union variants.
 
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
 import { Link } from "react-router";
-import type { AgentConfig, CredentialSource, Page, Skill } from "../../lib/api/types";
+import type { AgentConfig, AgentMcpServer, AgentToolsetConfig, CredentialSource, ManagedToolsetCap, Page, Skill } from "../../lib/api/types";
 import { api, ws } from "../../lib/api/client";
+import {
+  isMcpToolset,
+  mcpDefaultConfig,
+  mcpIntegrationsValid,
+  reconcileMcpToolsets,
+  removeMcpIntegration,
+  renameMcpIntegrationReferences,
+} from "../../lib/agent-toolsets";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, TextAreaField, TextField } from "../ui";
+import { Button, Card, Switch, TextAreaField, TextField } from "../ui";
 import AgentCollaborationEditor from "./AgentCollaborationEditor";
 
 type JsonObject = Record<string, unknown>;
@@ -38,12 +47,14 @@ function mcpCredentialLabel(credential: CredentialSource, t: (en: string, zh: st
 export default function AgentIntegrationsEditor({
   config,
   credentials,
+  toolsetCapabilities,
   onChange,
   onValidityChange,
   section = "all",
 }: {
   config: AgentConfig;
   credentials: CredentialSource[];
+  toolsetCapabilities?: ManagedToolsetCap[];
   onChange: (patch: Partial<AgentConfig>) => void;
   onValidityChange: (valid: boolean) => void;
   section?: "bindings" | "topology" | "all";
@@ -52,6 +63,7 @@ export default function AgentIntegrationsEditor({
   const servers = config.mcp_servers ?? [];
   const skills = config.skills ?? [];
   const metadata = config.metadata ?? {};
+  const defaultMcpPolicy = useMemo(() => mcpDefaultConfig(toolsetCapabilities), [toolsetCapabilities]);
   const skillCatalog = useQuery({
     queryKey: ["skills", app.workspaceId],
     queryFn: () => api.get<Page<Skill>>(ws("/v1/skills")),
@@ -62,23 +74,50 @@ export default function AgentIntegrationsEditor({
     && !credential.provider_id
     && !credential.env_key,
   );
-  const setServer = (index: number, patch: JsonObject) =>
-    onChange({ mcp_servers: servers.map((server, i) => i === index ? { ...objectOf(server), ...patch } : server) });
-  const replaceServer = (index: number, replacement: JsonObject) =>
-    onChange({ mcp_servers: servers.map((server, i) => i === index ? replacement : server) });
+  const syncServers = (nextServers: AgentMcpServer[], tools = config.tools, extra: Partial<AgentConfig> = {}) => {
+    const { permission: _legacyPermission, ...pluginConfig } = config.plugin_config;
+    onChange({
+      ...extra,
+      mcp_servers: nextServers,
+      tools: reconcileMcpToolsets(tools, nextServers, defaultMcpPolicy),
+      ...(nextServers.length > 0 ? { plugin_config: pluginConfig } : {}),
+    });
+  };
+  const setServer = (index: number, patch: JsonObject) => {
+    const previousName = servers[index]?.name ?? "";
+    const nextServers = servers.map((server, i) => i === index ? { ...server, ...patch } as AgentMcpServer : server);
+    const nextName = nextServers[index]?.name ?? previousName;
+    const references = previousName === nextName ? {} : renameMcpIntegrationReferences(config, previousName, nextName);
+    syncServers(nextServers, references.tools ?? config.tools, references);
+  };
+  const replaceServer = (index: number, replacement: AgentMcpServer) =>
+    syncServers(servers.map((server, i) => i === index ? replacement : server));
   const setSkill = (index: number, id: string) =>
     onChange({ skills: skills.map((skill, i) => i === index ? { ...objectOf(skill), id } : skill) });
+  const effectiveMcpValid = mcpIntegrationsValid({
+    ...config,
+    tools: reconcileMcpToolsets(config.tools, servers, defaultMcpPolicy),
+  });
+  useEffect(() => {
+    const reconciled = reconcileMcpToolsets(config.tools, servers, defaultMcpPolicy);
+    const hasLegacyPermission = servers.length > 0 && Object.hasOwn(config.plugin_config, "permission");
+    if (JSON.stringify(reconciled) !== JSON.stringify(config.tools) || hasLegacyPermission) {
+      const { permission: _legacyPermission, ...pluginConfig } = config.plugin_config;
+      onChange({ tools: reconciled, ...(hasLegacyPermission ? { plugin_config: pluginConfig } : {}) });
+    }
+  }, [config.plugin_config, config.tools, defaultMcpPolicy, onChange, servers]);
+  useEffect(() => onValidityChange(effectiveMcpValid), [effectiveMcpValid, onValidityChange]);
 
   return (
     <div className="agent-integration-stack">
       {(section === "bindings" || section === "all") && (
       <>
       <Card className="agent-config-card">
-        <h2>{app.t("Direct MCP servers", "直接 MCP 服务器")}</h2>
+        <h2>{app.t("MCP integrations", "MCP 集成")}</h2>
         <p className="hint">
           {app.t(
-            "Add the MCP servers this Agent may connect to. Their tools become available after a successful connection; configure tool permissions and labels under Tools.",
-            "添加此 Agent 可以连接的 MCP 服务器。连接成功后即可使用其工具；工具权限和名称在“工具”中配置。",
+            "Each server and its ToolSet policy are one integration. Connection, default permission, named overrides, and Prompt Skills stay together here.",
+            "每个服务器及其 ToolSet 策略构成一个集成；连接、默认权限、指定工具覆盖和 Prompt Skills 都在这里配置。",
           )}
         </p>
         <div className="banner info">
@@ -87,14 +126,32 @@ export default function AgentIntegrationsEditor({
             "Only MCP runtime credentials are listed here; model keys and worker credentials are excluded. You can also choose a categorized Vault when starting a Session.",
             "这里只列出 MCP 运行时凭证，模型 Key 和 Worker 凭证不会混入。启动 Session 时也可以选择已分类的 Vault。",
           )}{" "}
-            <Link to={`/w/${app.workspaceId}/vaults`}>{app.t("Manage Runtime Secrets ↗", "管理运行时凭证 ↗")}</Link>
+            <Link to={`/w/${app.workspaceId}/vaults`}>{app.t("Manage Runtime Secrets ↗", "管理运行时凭证 ↗")}</Link>{" · "}
+            <a
+              href={`https://awakenworks.com${app.locale === "zh" ? "/zh" : ""}/docs/agents/protocols/mcp/`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {app.t("MCP connection and ToolSet guide ↗", "MCP 连接与 ToolSet 指南 ↗")}
+            </a>
           </span>
         </div>
         {servers.map((server, index) => {
-          const value = objectOf(server);
-          const sandboxStdio = value.type === "sandbox_stdio";
+          const sandboxStdio = server.type === "sandbox_stdio";
+          const toolset = config.tools.filter(isMcpToolset).find((tool) => tool.mcp_server_name === server.name);
+          const defaults = toolset?.default_config ?? defaultMcpPolicy;
+          const configs = toolset?.configs ?? [];
+          const updateToolset = (patch: { default_config?: typeof defaults; configs?: AgentToolsetConfig[] }) => onChange({
+            tools: reconcileMcpToolsets(config.tools, servers, defaultMcpPolicy).map((tool) =>
+              isMcpToolset(tool) && tool.mcp_server_name === server.name ? { ...tool, ...patch } : tool),
+          });
           return (
-            <div className="agent-integration-row" key={index}>
+            <div className="agent-config-card mcp-integration-card" key={index}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <strong>{app.t(`MCP integration ${index + 1}`, `MCP 集成 ${index + 1}`)}</strong>
+              <span className="badge ok">{app.t("ToolSet policy attached", "已关联 ToolSet 策略")}</span>
+            </div>
+            <div className="agent-integration-row">
               <label className="field">
                 <span>{app.t("Transport", "传输方式")}</span>
                 <select
@@ -103,16 +160,16 @@ export default function AgentIntegrationsEditor({
                   onChange={(event) => replaceServer(index, event.target.value === "sandbox_stdio"
                     ? {
                         type: "sandbox_stdio",
-                        name: typeof value.name === "string" ? value.name : "",
+                        name: server.name,
                         command: "",
                         args: [],
-                        prompts_as_skills: value.prompts_as_skills === true,
+                        prompts_as_skills: server.prompts_as_skills === true,
                       }
                     : {
                         type: "url",
-                        name: typeof value.name === "string" ? value.name : "",
+                        name: server.name,
                         url: "",
-                        prompts_as_skills: value.prompts_as_skills === true,
+                        prompts_as_skills: server.prompts_as_skills === true,
                       })}
                 >
                   <option value="url">HTTP</option>
@@ -122,7 +179,7 @@ export default function AgentIntegrationsEditor({
               <TextField
                 label={app.t("Server name", "服务器名称")}
                 mono
-                value={typeof value.name === "string" ? value.name : ""}
+                value={server.name}
                 onChange={(event) => setServer(index, { name: event.target.value })}
               />
               {sandboxStdio ? (
@@ -131,14 +188,14 @@ export default function AgentIntegrationsEditor({
                     label={app.t("Sandbox command", "Sandbox 命令")}
                     mono
                     placeholder="playwright-mcp"
-                    value={typeof value.command === "string" ? value.command : ""}
+                    value={server.command}
                     onChange={(event) => setServer(index, { command: event.target.value })}
                   />
                   <TextAreaField
                     label={app.t("Arguments (one per line)", "参数（每行一个）")}
                     mono
                     rows={3}
-                    value={Array.isArray(value.args) ? value.args.filter((arg): arg is string => typeof arg === "string").join("\n") : ""}
+                    value={(server.args ?? []).join("\n")}
                     onChange={(event) => setServer(index, {
                       args: event.target.value.split("\n").filter((arg) => arg.length > 0),
                     })}
@@ -149,7 +206,7 @@ export default function AgentIntegrationsEditor({
                   label="URL"
                   mono
                   placeholder="https://mcp.example.com"
-                  value={typeof value.url === "string" ? value.url : ""}
+                  value={server.url}
                   onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
                 />
               )}
@@ -158,7 +215,7 @@ export default function AgentIntegrationsEditor({
                 <span>{app.t("Credential source", "凭据来源")}</span>
                 <select
                   className="input mono"
-                  value={credentialValue(value.credential)}
+                  value={credentialValue(server.credential)}
                   onChange={(event) => {
                     const selected = activeCredentials.find((credential) =>
                       `${credential.id}@${credential.version}` === event.target.value);
@@ -185,17 +242,47 @@ export default function AgentIntegrationsEditor({
                 <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
                 <input
                   type="checkbox"
-                  checked={value.prompts_as_skills === true}
+                  checked={server.prompts_as_skills === true}
                   onChange={(event) => setServer(index, { prompts_as_skills: event.target.checked })}
                 />
               </label>
-              <Button variant="ghost" onClick={() => onChange({ mcp_servers: servers.filter((_, i) => i !== index) })}>✕</Button>
+              <Button aria-label={app.t(`Remove ${server.name || "MCP"} integration`, `移除 ${server.name || "MCP"} 集成`)} variant="ghost" onClick={() => onChange(removeMcpIntegration(config, server.name))}>✕</Button>
+            </div>
+            <div className="mcp-policy-row">
+              <label className="field">
+                <span>{app.t("Default permission", "默认权限")}</span>
+                <select aria-label={app.t("Default permission", "默认权限")} className="input" value={defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({
+                  default_config: { ...defaults, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } },
+                })}>
+                  <option value="always_ask">{app.t("Ask before use", "使用前询问")}</option>
+                  <option value="always_allow">{app.t("Allow without asking", "无需询问即可使用")}</option>
+                </select>
+              </label>
+              <label className="field compact-switch">
+                <span>{app.t("Available by default", "默认可用")}</span>
+                <Switch checked={defaults?.enabled !== false} onChange={(event) => updateToolset({ default_config: { ...defaults, enabled: event.target.checked } })} />
+              </label>
+              <span className="mut">{app.t("New tools discovered from this server inherit this policy.", "从此服务器新发现的工具会继承该策略。")}</span>
+            </div>
+            {configs.map((entry, configIndex) => (
+              <div className="agent-integration-row mcp-tool-override" key={`${entry.name}-${configIndex}`}>
+                <TextField label={app.t("Named tool override", "指定工具覆盖")} mono value={entry.name} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, name: event.target.value } : item) })} />
+                <label className="field"><span>{app.t("Tool permission", "工具权限")}</span><select aria-label={app.t("Tool permission", "工具权限")} className="input" value={entry.permission_policy?.type ?? defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } } : item) })}><option value="always_ask">{app.t("Ask", "询问")}</option><option value="always_allow">{app.t("Allow", "允许")}</option></select></label>
+                <label className="field compact-switch"><span>{app.t("Available", "可用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, enabled: event.target.checked } : item) })} /></label>
+                <Button aria-label={app.t("Remove named override", "移除指定工具覆盖")} variant="ghost" onClick={() => updateToolset({ configs: configs.filter((_, current) => current !== configIndex) })}>✕</Button>
+              </div>
+            ))}
+            <Button variant="ghost" onClick={() => updateToolset({ configs: [...configs, { name: "", enabled: true, permission_policy: { type: defaults?.permission_policy?.type ?? "always_ask" } }] })}>+ {app.t("Named tool override", "指定工具覆盖")}</Button>
             </div>
           );
         })}
-        <Button onClick={() => onChange({ mcp_servers: [...servers, { type: "url", name: "", url: "", prompts_as_skills: false }] })}>
-          + {app.t("MCP server", "MCP 服务器")}
+        <Button onClick={() => syncServers([...servers, { type: "url", name: "", url: "", prompts_as_skills: false }])}>
+          + {app.t("MCP integration", "MCP 集成")}
         </Button>
+        {!effectiveMcpValid && <div className="err" role="alert">{app.t(
+          "Complete every server name and connection target, and keep server names unique. Awaken maintains one ToolSet policy for each valid server.",
+          "请补全每个服务器名称和连接目标，并确保服务器名称唯一。Awaken 会为每个有效服务器维护一个 ToolSet 策略。",
+        )}</div>}
       </Card>
       <Card className="agent-config-card">
         <h2>{app.t("Skill bindings", "Skill 绑定")}</h2>
@@ -212,7 +299,12 @@ export default function AgentIntegrationsEditor({
           <div className="agent-integration-row" key={index}>
             <label className="field">
               <span>{app.t("Skill", "Skill")}</span>
-              <select className="input" value={selectedId} onChange={(event) => setSkill(index, event.target.value)}>
+              <select
+                aria-label={app.t("Skill", "Skill")}
+                className="input"
+                value={selectedId}
+                onChange={(event) => setSkill(index, event.target.value)}
+              >
                 <option value="">{app.t("Choose a published Skill…", "选择已发布 Skill…")}</option>
                 {selectedId && !catalog.some((candidate) => candidate.id === selectedId) && <option value={selectedId}>{selectedId}</option>}
                 {catalog.map((candidate) => (

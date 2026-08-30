@@ -177,8 +177,59 @@
   padding: 0;
 }
 
+.ui-data-grid__cards {
+  display: none;
+}
+
 .ui-data-grid__pager {
   justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .ui-data-grid__scroll[data-mobile-cards="true"] {
+    display: none;
+  }
+
+  .ui-data-grid__cards {
+    display: grid;
+    gap: var(--ui-space-2);
+  }
+
+  .ui-data-grid__card {
+    display: grid;
+    gap: var(--ui-space-3);
+    padding: var(--ui-space-3);
+    color: var(--ui-color-text);
+    background: var(--ui-color-surface);
+    border: 1px solid var(--ui-color-border);
+    border-radius: var(--ui-radius-surface);
+  }
+
+  .ui-data-grid__card-fields {
+    display: grid;
+    gap: var(--ui-space-2);
+    margin: 0;
+  }
+
+  .ui-data-grid__card-field {
+    display: grid;
+    grid-template-columns: minmax(5.25rem, 0.38fr) minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--ui-space-3);
+    min-width: 0;
+  }
+
+  .ui-data-grid__card-field dt {
+    color: var(--ui-color-text-muted);
+    font-size: 0.75em;
+    font-weight: 600;
+  }
+
+  .ui-data-grid__card-field dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
 }
 
 .ui-button {

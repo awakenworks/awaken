@@ -9,10 +9,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useConfirm } from "../components/ui/Confirm";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, Modal, Pill, SecretField, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, SecretField, TechnicalId, TextField } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { entityDisplayName, identifierLabel } from "../lib/presentation";
 
 type RuntimeCredentialType = "environment_variable" | "static_bearer" | "mcp_oauth";
 
@@ -43,11 +44,10 @@ function CredentialRow({ vaultId, cred }: { vaultId: string; cred: VaultCredenti
   const target = cred.auth?.mcp_server_url ?? cred.auth?.secret_name ?? "—";
   return (
     <tr>
-      <td className="mono">{cred.id}</td>
       <td>
         <Pill tone="neutral">{typeInfo ? app.t(typeInfo.label, typeInfo.labelZh) : kind}</Pill>
       </td>
-      <td><strong>{cred.display_name ?? target}</strong>{cred.display_name && <div className="mono mut">{target}</div>}</td>
+      <td><strong>{entityDisplayName(cred.display_name, identifierLabel(target))}</strong>{cred.display_name && <div className="mono mut">{target}</div>}<TechnicalId value={cred.id} /></td>
       <td style={{ textAlign: "right" }}>
         {kind === "mcp_oauth" ? (
           <span className="row" style={{ justifyContent: "flex-end" }}>
@@ -118,7 +118,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   const confirmDelete = async () => {
     const ok = await confirm({
       title: app.t("Delete this vault?", "删除此 Vault?"),
-      body: app.t(`Vault ${id} and its credentials are permanently removed.`, `Vault ${id} 及其凭证将被永久移除。`),
+      body: app.t(`“${entityDisplayName(name, identifierLabel(id))}” and its credentials will be permanently removed.`, `“${entityDisplayName(name, identifierLabel(id))}”及其中的凭证将被永久移除。`),
       danger: true,
       confirmLabel: app.t("Delete", "删除"),
     });
@@ -128,9 +128,9 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   return (
     <Card style={{ padding: 0 }}>
       <div className="row" style={{ padding: "12px 16px" }}>
-        <code>{id}</code>
-        {renaming ? <span className="row"><input className="input" value={vaultName} onChange={(event) => setVaultName(event.target.value)} /><Button disabled={rename.isPending || !vaultName.trim()} onClick={() => rename.mutate()}>{app.t("Save", "保存")}</Button></span> : <button className="btn ghost" onClick={() => setRenaming(true)}>{name ?? app.t("Unnamed vault", "未命名 Vault")} · {app.t("Rename", "重命名")}</button>}
+        {renaming ? <span className="row"><input className="input" aria-label={app.t("Vault name", "Vault 名称")} value={vaultName} onChange={(event) => setVaultName(event.target.value)} /><Button disabled={rename.isPending || !vaultName.trim()} onClick={() => rename.mutate()}>{app.t("Save", "保存")}</Button></span> : <div><strong>{entityDisplayName(name, app.t("Unnamed vault", "未命名 Vault"))}</strong><TechnicalId value={id} /></div>}
         <span style={{ flex: 1 }} />
+        {!renaming && <Button variant="ghost" onClick={() => setRenaming(true)}>{app.t("Rename", "重命名")}</Button>}
         <Button variant="ghost" onClick={() => setAdding(true)}>
           + {app.t("Add credential", "添加凭证")}
         </Button>
@@ -229,30 +229,37 @@ export default function VaultsSurface() {
   const rows = (vaults.data?.data ?? []).filter((v) => !v.archived_at);
   return (
     <>
-      <div className="row" style={{ justifyContent: "space-between" }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-end" }}>
         <span className="mut" style={{ flex: 1, marginRight: 10 }}>
           {app.t(
             "Choose a category and human-readable name for each Vault. Add only credentials that share the same runtime purpose.",
             "为每个 Vault 选择分类和易读名称，并只添加用途一致的运行时凭证。",
           )}
         </span>
-        <span className="row">
-          <select className="input" aria-label={app.t("Vault category", "Vault 分类")} value={vaultCategory} onChange={(event) => setVaultCategory(event.target.value)}>
-            <option value="Integrations">{app.t("Integrations", "集成")}</option>
-            <option value="Sandbox environment">{app.t("Sandbox environment", "Sandbox 环境")}</option>
-            <option value="Shared runtime">{app.t("Shared runtime", "共享运行环境")}</option>
-          </select>
-          <input
-            className="input"
-            style={{ width: 140 }}
-            value={vaultName}
-            onChange={(e) => setVaultName(e.target.value)}
-            placeholder={app.t("Vault name", "Vault 名称")}
-          />
-          <Button variant="primary" disabled={create.isPending} onClick={() => create.mutate()}>
+        <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
+          <div className="field">
+            <label htmlFor="new-vault-category">{app.t("Category", "分类")}</label>
+            <select id="new-vault-category" className="input" value={vaultCategory} onChange={(event) => setVaultCategory(event.target.value)}>
+              <option value="Integrations">{app.t("Integrations", "集成")}</option>
+              <option value="Sandbox environment">{app.t("Sandbox environment", "Sandbox 环境")}</option>
+              <option value="Shared runtime">{app.t("Shared runtime", "共享运行环境")}</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="new-vault-name">{app.t("Vault name", "Vault 名称")}</label>
+            <input
+              id="new-vault-name"
+              className="input"
+              style={{ width: 160 }}
+              value={vaultName}
+              onChange={(e) => setVaultName(e.target.value)}
+              placeholder={app.t("for example, Docs production", "例如：文档生产环境")}
+            />
+          </div>
+          <Button type="submit" variant="primary" disabled={create.isPending || !vaultName.trim()}>
             + {app.t("Create Vault", "创建 Vault")}
           </Button>
-        </span>
+        </form>
       </div>
       {(create.error instanceof Error || vaults.error instanceof Error) && (
         <div className="err">{(create.error || vaults.error)?.message}</div>

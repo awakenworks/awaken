@@ -7,7 +7,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ChatApproval,
   ChatComposer,
+  ChatMarkdown,
   ChatMessage,
+  ChatMessageList,
   ChatThinking,
   ToolCallCard as SharedToolCallCard,
 } from "@awaken/ui";
@@ -29,6 +31,10 @@ export function userFacingRunError(message: string, zh: boolean): string {
       : "The execution worker did not complete this run. Retry once; if it repeats, restart Awaken and inspect the worker state under Trace.";
   }
   return message;
+}
+
+export function toolRegionLabel(name: string, zh: boolean): string {
+  return zh ? `工具 ${name}` : `Tool ${name}`;
 }
 
 function ToolCard({
@@ -56,7 +62,7 @@ function ToolCard({
       ? isError ? "error" : "done ✓"
       : app.t("running", "运行中");
   return (
-    <div>
+    <section aria-label={toolRegionLabel(name, app.locale === "zh")} data-tool={name}>
       <SharedToolCallCard
         name={name}
         tone={tone}
@@ -92,7 +98,7 @@ function ToolCard({
           />
         </fieldset>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -123,6 +129,8 @@ export interface TranscriptProps {
   onToolComplete?: (tool: SessionEvent, result: SessionEvent) => void;
   /** Fires after a locally started request returns to idle. */
   onRunSettled?: () => void;
+  /** Reports local/inbox activity to the owning Session controls. */
+  onRunStateChange?: (active: boolean) => void;
 }
 
 export type TranscriptViewProps = Omit<
@@ -157,6 +165,7 @@ export function TranscriptView({
   autoMessage,
   onToolComplete,
   onRunSettled,
+  onRunStateChange,
 }: TranscriptViewProps) {
   const app = useApp();
   const {
@@ -175,7 +184,6 @@ export function TranscriptView({
   } = sessionLog;
   const [draft, setDraft] = useState("");
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const handledTools = useRef(new Set<string>());
   const handledAutoMessage = useRef<string | null>(null);
   const hadLocalActivity = useRef(false);
@@ -183,6 +191,10 @@ export function TranscriptView({
   const sentAt = useRef<number | null>(null);
   const agentMsgCount = log.filter((e) => e.type === "agent.message").length;
   const prevMsgCount = useRef(agentMsgCount);
+  useEffect(() => {
+    onRunStateChange?.(running || sendPending);
+    return () => onRunStateChange?.(false);
+  }, [onRunStateChange, running, sendPending]);
   useEffect(() => {
     if (sentAt.current != null && agentMsgCount > prevMsgCount.current) {
       onLatency?.(Date.now() - sentAt.current);
@@ -201,10 +213,6 @@ export function TranscriptView({
       textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage));
     if (committed) setPendingMessage(null);
   }, [log, pendingMessage]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "nearest" });
-  }, [log.length, pendingMessage, running, sendPending]);
 
   useEffect(() => {
     if (!onToolComplete) return;
@@ -292,7 +300,23 @@ export function TranscriptView({
           {app.t("Committed Session history is inconsistent; input is disabled until the projection is reloaded.", "已提交的 Session 历史不一致；重新加载投影前已禁止输入。")}
         </div>
       )}
-      {log.map((ev) => {
+      <ChatMessageList
+        className="transcript-chat-list"
+        viewportClassName="transcript-chat-list__viewport"
+        ariaLabel={app.t("Session conversation", "Session 对话")}
+        jumpLabel={app.t("Latest", "回到底部")}
+        busy={running || sendPending}
+      >
+        {log.length === 0 && !pendingMessage && !running && !sendPending && (
+          <div className="transcript-empty-state">
+            <strong>{app.t("Start with the result you need", "先说明你需要的结果")}</strong>
+            <span>{app.t(
+              "Describe the outcome. This Agent will use the tools, skills, and policies already configured for this Session.",
+              "说明目标结果即可。Agent 会使用本次 Session 已配置的工具、Skill 和策略。",
+            )}</span>
+          </div>
+        )}
+        {log.map((ev) => {
         switch (ev.type) {
           case "user.message":
             return (
@@ -309,7 +333,14 @@ export function TranscriptView({
                 key={ev.id}
                 role="assistant"
                 authorLabel="Agent"
-                body={textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
+                body={(
+                  <ChatMarkdown
+                    body={textOf("content" in ev ? (ev.content as ContentBlock[]) : undefined)}
+                    copyCodeLabel={app.t("Copy code", "复制代码")}
+                    copiedCodeLabel={app.t("Copied", "已复制")}
+                    copyFailedLabel={app.t("Copy failed", "复制失败")}
+                  />
+                )}
               />
             );
           case "agent.tool_use":
@@ -371,26 +402,26 @@ export function TranscriptView({
               </div>
             );
         }
-      })}
-      {pendingMessage && !log.some((event) => event.type === "user.message" && textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage)) && (
-        <ChatMessage role="user" authorLabel={app.t("You", "你")} body={pendingMessage} className="transcript-pending-message">
-          <span className={sendError ? "err" : "mut"} style={{ fontSize: 10.5 }}>
-            {sendError
-              ? app.t("send failed — message retained", "发送失败——消息已保留")
-              : sendPending || running
-                ? app.t("sending…", "发送中…")
-                : app.t("sent ✓", "已发送 ✓")}
-          </span>
-        </ChatMessage>
-      )}
-      {(running || sendPending) && pendingIds.size === 0 && (
-        <ChatThinking
-          className="agent-working"
-          label={app.t("Agent is working…", "Agent 正在处理…")}
-          formatElapsed={(seconds) => `${seconds}s`}
-        />
-      )}
-      <div ref={bottomRef} />
+        })}
+        {pendingMessage && !log.some((event) => event.type === "user.message" && textOf("content" in event ? (event.content as ContentBlock[]) : undefined).endsWith(pendingMessage)) && (
+          <ChatMessage role="user" authorLabel={app.t("You", "你")} body={pendingMessage} className="transcript-pending-message">
+            <span className={sendError ? "err" : "mut"} style={{ fontSize: 10.5 }}>
+              {sendError
+                ? app.t("send failed — message retained", "发送失败——消息已保留")
+                : sendPending || running
+                  ? app.t("sending…", "发送中…")
+                  : app.t("sent ✓", "已发送 ✓")}
+            </span>
+          </ChatMessage>
+        )}
+        {(running || sendPending) && pendingIds.size === 0 && (
+          <ChatThinking
+            className="agent-working"
+            label={app.t("Agent is working…", "Agent 正在处理…")}
+            formatElapsed={(seconds) => `${seconds}s`}
+          />
+        )}
+      </ChatMessageList>
       {composer && (
         <ChatComposer
           className="transcript-composer"

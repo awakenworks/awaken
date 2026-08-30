@@ -5,9 +5,8 @@
 // you're working on. Reuses <AssistantPanel>, so it's the same engine as the /assistant
 // page. Gated the same way (the panel shows the no-model / not-installed states itself).
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useLocation } from "react-router";
-import { AssistantPanel } from "../../surfaces/assistant";
 import { assistantContextForLocation } from "../../lib/assistant-guidance";
 import { hasSurface } from "../../lib/navigation/paths";
 import { useApp } from "../../lib/app-state";
@@ -20,6 +19,9 @@ import {
 } from "../../lib/assistant-events";
 
 const OPEN_KEY = "awaken.console.assistantOpen";
+const AssistantPanel = lazy(() => import("../../surfaces/assistant").then((module) => ({
+  default: module.AssistantPanel,
+})));
 
 /** Parse the active workspace and (if on an agent editor) the agent being edited. */
 function routeContext(pathname: string): { wsId: string; targetAgentId?: string } {
@@ -73,7 +75,11 @@ export default function AssistantFab() {
   }, [open]);
 
   // The assistant is a workspace tool; hide the FAB on the workspace picker / root.
-  if (!location.pathname.startsWith("/w/") || !hasSurface(capabilities.data, "managed_runtime")) return null;
+  if (
+    !location.pathname.startsWith("/w/") ||
+    location.pathname.endsWith("/assistant") ||
+    !hasSurface(capabilities.data, "managed_runtime")
+  ) return null;
   const { wsId, targetAgentId: routeTargetAgentId } = routeContext(location.pathname);
   const targetAgentId = repair?.id ?? routeTargetAgentId;
   const surfaceContext = assistantContextForLocation(location.pathname, location.search);
@@ -95,19 +101,21 @@ export default function AssistantFab() {
           <div className="assistant-fab-body">
             {/* Keep one conversation while navigating. Every message receives the
                 latest route/Agent context, so follow-up questions retain continuity. */}
-            <AssistantPanel
-              key={wsId}
-              wsId={wsId}
-              targetAgentId={targetAgentId}
-              surfaceContext={surfaceContext}
-              autoMessage={repair ? { id: repair.requestId, text: repair.message } : undefined}
-              onAgentChanged={(changedId, paths) => {
-                window.dispatchEvent(new CustomEvent(AGENT_DRAFT_CHANGED_EVENT, { detail: { id: changedId, paths } }));
-              }}
-              onRunSettled={() => {
-                window.dispatchEvent(new CustomEvent(ASSISTANT_SETTLED_EVENT, { detail: { id: targetAgentId } }));
-              }}
-            />
+            <Suspense fallback={<div className="loading" role="status">{app.t("Loading Assistant…", "正在加载助手…")}</div>}>
+              <AssistantPanel
+                key={wsId}
+                wsId={wsId}
+                targetAgentId={targetAgentId}
+                surfaceContext={surfaceContext}
+                autoMessage={repair ? { id: repair.requestId, text: repair.message } : undefined}
+                onAgentChanged={(changedId, paths) => {
+                  window.dispatchEvent(new CustomEvent(AGENT_DRAFT_CHANGED_EVENT, { detail: { id: changedId, paths } }));
+                }}
+                onRunSettled={() => {
+                  window.dispatchEvent(new CustomEvent(ASSISTANT_SETTLED_EVENT, { detail: { id: targetAgentId } }));
+                }}
+              />
+            </Suspense>
           </div>
         </section>
       )}

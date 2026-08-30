@@ -37,9 +37,10 @@ describe("state-machine presets", () => {
   it("read-before-write blocks before execution and permits repeated writes", () => {
     const machine = PRESETS[0].machine;
     expect(machine.scope).toBe("thread");
-    expect(machine.key).toBe("{path}");
+    expect(machine.key).toBe("{file_path}");
     expect(machine.key_normalizer).toBe("path");
     const write = machine.transitions.find((transition) => triggerText(transition.on).startsWith("write"))!;
+    expect(triggerText(write.on)).toContain('file_path ~ "*"');
     expect(fromList(write.from)).toEqual(["read", "written"]);
     expect(write.when).toEqual({ status: "success" });
     expect(write.on_violation?.action).toBe("deny");

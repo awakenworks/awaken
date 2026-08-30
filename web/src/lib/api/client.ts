@@ -6,12 +6,14 @@
 import type { CreateSessionRequest, Session } from "./types";
 
 const CLOUD_SESSION_TOKEN_KEY = "awaken.product.session-bearer";
+export const AUTHENTICATION_REQUIRED_EVENT = "awaken:authentication-required";
 
 export const API_BETAS = {
   managed: "managed-agents-2026-04-01",
   memory: "agent-memory-2026-07-22",
   skills: "skills-2025-10-02",
   dreaming: "dreaming-2026-04-21",
+  files: "files-api-2025-04-14",
 } as const;
 
 /**
@@ -24,6 +26,7 @@ export function betaForPath(path: string): string | undefined {
   const family = pathname.match(/^\/v1\/(?:workspaces\/[^/]+\/)?([^/]+)/)?.[1];
   if (family === "memory_stores") return API_BETAS.memory;
   if (family === "skills") return API_BETAS.skills;
+  if (family === "files") return API_BETAS.files;
   if (family === "dreams") {
     return `${API_BETAS.managed},${API_BETAS.dreaming}`;
   }
@@ -59,6 +62,15 @@ export function clearProductSessionBearer(): void {
   }
 }
 
+/** One browser-wide authentication boundary for every transport. A stale IAM
+ * bearer must not leave individual pages rendering unrelated query errors. */
+function signalAuthenticationRequired(): void {
+  clearProductSessionBearer();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
+  }
+}
+
 // ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
 // Tenancy resolves to one opaque scope. With no route or server-resolved
 // workspace, scoped calls use the flat `/v1/…` surface (standalone default
@@ -85,7 +97,8 @@ export function workspaceFromPath(pathname: string): string {
 }
 
 function routeWorkspace(): string {
-  return workspaceFromPath(globalThis.location?.pathname ?? "");
+  const workspace = workspaceFromPath(globalThis.location?.pathname ?? "");
+  return workspace === "default" ? "" : workspace;
 }
 
 /** Pure decision seam: the route-selected workspace wins; the authenticated
@@ -158,8 +171,10 @@ async function toError(res: Response): Promise<ApiClientError> {
         code = b.code;
         message = [b.title, b.detail].filter((x) => typeof x === "string").join(": ") || message;
         if (typeof b.request_id === "string") requestId = b.request_id;
-      } else if (b.type === "error" && typeof b.error === "object" && b.error !== null) {
-        // Managed error envelope.
+      } else if (typeof b.error === "object" && b.error !== null) {
+        // Managed error envelope and config-extension error bodies both carry
+        // the same typed `error` member; some config routes intentionally omit
+        // the redundant top-level `type: "error"` wrapper.
         const e = b.error as Record<string, unknown>;
         if (typeof e.type === "string") code = e.type;
         if (typeof e.message === "string") message = e.message;
@@ -168,7 +183,9 @@ async function toError(res: Response): Promise<ApiClientError> {
   } catch {
     /* non-JSON error body — keep the HTTP defaults */
   }
-  return new ApiClientError(res.status, code, message, requestId);
+  const error = new ApiClientError(res.status, code, message, requestId);
+  if (error.status === 401) signalAuthenticationRequired();
+  return error;
 }
 
 async function request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
@@ -306,9 +323,17 @@ export function createManagedSession(
   );
 }
 
-export async function resolveWorkspaceContext(): Promise<string> {
+export interface WorkspacePresentationContext {
+  workspace_id: string;
+  workspace_display_name?: string;
+  organization_id?: string;
+  organization_display_name?: string;
+  user_display_name?: string;
+}
+
+export async function resolveWorkspaceContext(): Promise<WorkspacePresentationContext> {
   const selected = routeWorkspace();
-  const context = await api.get<{ workspace_id: string }>(ws("/v1/config/workspace-context"));
+  const context = await api.get<WorkspacePresentationContext>(ws("/v1/config/workspace-context"));
   if (selected && context.workspace_id !== selected) {
     throw new ApiClientError(
       403,
@@ -317,13 +342,10 @@ export async function resolveWorkspaceContext(): Promise<string> {
     );
   }
   setResolvedWorkspace(context.workspace_id);
-  return context.workspace_id;
+  return context;
 }
 
 export interface ApplicationAccessTokenRequest {
-  authority_id: string;
-  application_scope: string;
-  actor_key?: string;
   protocols: Array<"ai-sdk" | "ag-ui">;
   operations: Array<"thread.run" | "thread.messages.read">;
   thread_bindings: Array<{
@@ -339,9 +361,21 @@ export interface IssuedApplicationAccessToken {
   token_type: "Bearer";
   access_token: string;
   expires_at: string;
-  application_scope: string;
   protocols: Array<"ai-sdk" | "ag-ui">;
   operations: Array<"thread.run" | "thread.messages.read">;
+}
+
+/** Browser protocol traffic has narrower authority than the Console. Keep its
+ * bearer and cookie policy at the single fetch boundary so a management cookie
+ * cannot hide a broken or expired Application Access Token. */
+export function applicationProtocolFetch(
+  accessToken: string,
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${accessToken}`);
+  return fetch(input, { ...init, headers, credentials: "omit" });
 }
 
 /** Exchange the console's management credential for a short-lived application

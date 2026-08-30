@@ -6,13 +6,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { DataGrid, type Column } from "../components/ui/DataGrid";
-import { Button, Pill, Segmented } from "../components/ui";
+import { Button, Pill, Segmented, TechnicalId } from "../components/ui";
 import AgentCollaborationsOverview from "../components/agent/AgentCollaborationsOverview";
 import { api, ws } from "../lib/api/client";
 import type { AgentConfig, AgentConfigItem, AgentConfigList } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useListState } from "../lib/useListState";
 import { authoredAgents, visibleAgents } from "../lib/visible-agents";
+import { entityDisplayName, identifierLabel } from "../lib/presentation";
 
 function modelId(m: AgentConfig["model"]): string {
   if (typeof m === "string") return m;
@@ -44,9 +45,9 @@ export default function AgentsSurface() {
       key: "id",
       header: "Agent",
       sortValue: (a) => a.name || a.id,
-      cell: (a) => <span className="mono">{a.name || a.id}</span>,
+      cell: (a) => <span><strong>{entityDisplayName(a.name, identifierLabel(a.id))}</strong><TechnicalId value={a.id} /></span>,
     },
-    { key: "model", header: app.t("Model", "模型"), sortValue: (a) => modelId(a.model), cell: (a) => <span className="mono mut">{modelId(a.model) || "—"}</span> },
+    { key: "model", header: app.t("Model", "模型"), sortValue: (a) => modelId(a.model), cell: (a) => <span className="mut">{identifierLabel(modelId(a.model)) || "—"}</span> },
     { key: "tools", header: app.t("Tools", "工具"), sortValue: (a) => a.tools?.length ?? 0, cell: (a) => <span className="mut">{a.tools?.length ?? 0}</span> },
     { key: "plugins", header: app.t("Plugins", "插件"), sortValue: (a) => a.plugins?.length ?? 0, cell: (a) => <span className="mut">{a.plugins?.length ?? 0}</span> },
     {

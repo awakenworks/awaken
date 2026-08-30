@@ -63,6 +63,11 @@ function credentialLabel(credential: CredentialSource) {
   return storedLabel?.replaceAll("-", " ") || credential.env_key || credential.provider_id || credential.id;
 }
 
+export function providerModelCountLabel(count: number, locale: "en" | "zh"): string {
+  if (locale === "zh") return `${count} 个模型`;
+  return `${count} ${count === 1 ? "model" : "models"}`;
+}
+
 export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
   const endpoint = descriptor.default_endpoints[0];
   return {
@@ -236,7 +241,7 @@ export default function ProviderConnectionPanel({
                 <span className="mut" style={{ marginLeft: 6 }}>
                   {connectionStatusLabel(connection?.status, app.t)}
                   {connection?.active_models
-                    ? ` · ${connection.active_models} ${app.t("models", "个模型")}`
+                    ? ` · ${providerModelCountLabel(connection.active_models, app.locale)}`
                     : ""}
                 </span>
               </Button>
@@ -308,6 +313,19 @@ export default function ProviderConnectionPanel({
                 hasStored={false}
                 onChange={(intent) => setApiKey(intent.value ?? "")}
               />
+              {selectedDescriptor?.documentation_url && (
+                <a
+                  className="protocol-help-link"
+                  href={selectedDescriptor.documentation_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {app.t(
+                    `Get an API key from ${selectedDescriptor.display_name} ↗`,
+                    `前往 ${selectedDescriptor.display_name} 获取 API Key ↗`,
+                  )}
+                </a>
+              )}
             </>
           )}
           {authMode === "oauth" && (
@@ -340,6 +358,17 @@ export default function ProviderConnectionPanel({
               : app.t("Verify & import models", "验证并导入模型")}
           </Button>
         </div>
+        <p className="hint" style={{ marginTop: 10 }}>
+          {selectedDescriptor?.supports_model_discovery
+            ? app.t(
+                "Awaken reads the provider's model directory automatically. The connection, write-only credential, and discovered models are saved only after verification succeeds.",
+                "Awaken 会自动读取供应商的模型目录；只有验证成功后，才会保存连接、仅写凭证和发现的模型。",
+              )
+            : app.t(
+                "This provider does not expose automatic model discovery. Verify the connection, then add its supported models manually.",
+                "此供应商不提供自动模型发现。请先验证连接，再手动添加其支持的模型。",
+              )}
+        </p>
         <details style={{ marginTop: 12 }}>
           <summary className="mut">
             {app.t("Advanced connection settings", "高级连接设置")}

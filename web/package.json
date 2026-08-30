@@ -9,10 +9,15 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "record": "node record/harness.mjs",
+    "proof:install": "node record/install-all-in-one.mjs",
+    "record:all": "node record/record-all.mjs",
+    "record:manifest": "node record/release-manifest.mjs",
     "record:test": "node --test record/contract.test.mjs",
-    "record:review": "node record/review.mjs"
+    "record:review": "node record/review.mjs",
+    "proof:test": "node record/run-proofs.mjs"
   },
   "dependencies": {
+    "@ag-ui/client": "^0.0.57",
     "@awaken/managed-session-projection": "workspace:*",
     "@awaken/managed-sdk-oracle": "workspace:*",
     "@awaken/ui": "file:vendor/awaken-ui",

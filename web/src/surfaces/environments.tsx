@@ -1,6 +1,6 @@
 // Workspace · Environments: the reusable execution templates sessions run in
 // (Managed Agents `/v1/environments`). A session references one by
-// `environment_id`. cloud = Anthropic-hosted; self_hosted = your own worker.
+// `environment_id`. cloud = platform-managed; self_hosted = your own worker.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -16,7 +16,7 @@ import type {
   WorkQueueStats,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, Segmented, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 
 const PACKAGE_MANAGERS = ["apt", "cargo", "gem", "go", "npm", "pip"] as const;
 type PackageManager = typeof PACKAGE_MANAGERS[number];
@@ -145,7 +145,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
           />
           <span className="mut">
             {placement === "cloud"
-              ? app.t("Anthropic-hosted container.", "Anthropic 托管容器。")
+              ? app.t("Managed by your configured Awaken Agents deployment.", "由当前配置的 Awaken Agents 部署托管。")
               : app.t("Your own worker polls the work queue.", "你自己的 worker 拉取工作队列。")}
           </span>
         </div>
@@ -234,7 +234,7 @@ function EditModal({ environment, onClose }: { environment: Environment; onClose
   });
   return (
     <Modal
-      title={<>{app.t("Edit environment", "编辑运行环境")} · <span className="mono">{environment.id}</span></>}
+      title={<>{app.t("Edit environment", "编辑运行环境")} · {environment.name}</>}
       onClose={onClose}
       width="min(820px, 94vw)"
       footer={<><Button onClick={onClose}>{app.t("Cancel", "取消")}</Button><Button variant="primary" disabled={update.isPending} onClick={() => update.mutate()}>{app.t("Save new revision", "保存新修订")}</Button></>}
@@ -294,12 +294,11 @@ export default function EnvironmentsSurface() {
         </Button>
       </div>
       {envs.error instanceof Error && <div className="err">{envs.error.message}</div>}
-      <Card style={{ padding: 0 }}>
+      <Card className="responsive-table-card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
               <th>{app.t("Environment", "运行环境")}</th>
-              <th>{app.t("Name", "名称")}</th>
               <th>{app.t("Placement", "运行位置")}</th>
               <th>{app.t("Networking", "网络")}</th>
               <th>{app.t("Sandbox creation", "Sandbox 创建")}</th>
@@ -310,24 +309,25 @@ export default function EnvironmentsSurface() {
           <tbody>
             {rows.map((e) => (
               <tr key={e.id}>
-                <td className="mono">{e.id}</td>
-                <td>{e.name}</td>
-                <td>
+                <td data-label={app.t("Environment", "运行环境")}>
+                  <strong>{e.name}</strong>
+                  <TechnicalId value={e.id} />
+                </td>
+                <td data-label={app.t("Placement", "运行位置")}>
                   <Pill tone={e.config.type === "self_hosted" ? "agent" : "neutral"}>
                     {e.config.type === "self_hosted" ? app.t("self-hosted", "自管") : app.t("cloud", "云托管")}
                   </Pill>
                 </td>
-                <td className="mut">{networkingLabel(e.config, app.locale === "zh")}</td>
-                <td><SandboxTiming id={e.id} /></td>
-                <td>{e.archived_at ? <span className="mut">—</span> : <EnvQueue id={e.id} />}</td>
-                <td style={{ textAlign: "right" }}>
-                  {e.id !== "env_local" && <Button variant="ghost" style={{ height: 22 }} onClick={() => setEditing(e)}>{app.t("Edit", "编辑")}</Button>}
+                <td className="mut" data-label={app.t("Networking", "网络")}>{networkingLabel(e.config, app.locale === "zh")}</td>
+                <td data-label={app.t("Sandbox creation", "Sandbox 创建")}><SandboxTiming id={e.id} /></td>
+                <td data-label={app.t("Queue", "队列")}>{e.archived_at ? <span className="mut">—</span> : <EnvQueue id={e.id} />}</td>
+                <td className="responsive-table-actions" style={{ textAlign: "right" }}>
+                  {e.id !== "env_local" && <Button variant="ghost" onClick={() => setEditing(e)}>{app.t("Edit", "编辑")}</Button>}
                   {e.archived_at ? (
                     <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>
                   ) : (
                     <Button
                       variant="ghost"
-                      style={{ height: 22 }}
                       disabled={archive.isPending && archive.variables === e.id}
                       onClick={() => void archiveEnvironment(e.id)}
                     >
@@ -339,8 +339,8 @@ export default function EnvironmentsSurface() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="mut">
-                  {envs.isLoading ? "…" : app.t("No environments yet.", "还没有运行环境。")}
+                <td colSpan={6} className="mut">
+                  {envs.isLoading ? "…" : app.t("No Environments yet. Create one when placement, packages, network, or Sandbox policy differs from the local default.", "还没有 Environment。运行位置、软件包、网络或 Sandbox 策略不同于本地默认值时，请创建一个。")}
                 </td>
               </tr>
             )}

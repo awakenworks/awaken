@@ -3,10 +3,12 @@ import type {
   ContextPolicy,
   CredentialSource,
   InputBinding,
+  ManagedToolsetCap,
   PermissionConfig,
   PluginCap,
   RuntimeCap,
 } from "../../lib/api/types";
+import { useEffect, useState } from "react";
 import type { JsonSchema } from "../ui";
 import {
   Button,
@@ -19,7 +21,10 @@ import {
 import { useApp } from "../../lib/app-state";
 import type { BuilderSection } from "./agent-editor-navigation";
 import AgentIntegrationsEditor from "./AgentIntegrationsEditor";
+import AgentAdvancedToolsEditor from "./AgentAdvancedToolsEditor";
 import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
+import AgentModelRuntimeControls from "./AgentModelRuntimeControls";
+import { isAcpModelSelection } from "../../lib/agent-model-selection";
 import BehaviorCard from "./BehaviorCard";
 import PermissionEditor from "./PermissionEditor";
 import ResourcesTab from "./ResourcesTab";
@@ -33,6 +38,7 @@ export default function AgentBuilder({
   allModels,
   runtimes,
   tools,
+  toolsets,
   plugins,
   policies,
   credentials,
@@ -53,6 +59,7 @@ export default function AgentBuilder({
   allModels: string[];
   runtimes: RuntimeCap[];
   tools: Array<{ id: string; description: string }>;
+  toolsets: ManagedToolsetCap[];
   plugins: PluginCap[];
   policies: Array<{ id: string }>;
   credentials: CredentialSource[];
@@ -67,6 +74,23 @@ export default function AgentBuilder({
   onValidityChange: (valid: boolean) => void;
 }) {
   const app = useApp();
+  const [toolsValid, setToolsValid] = useState(true);
+  const [integrationsValid, setIntegrationsValid] = useState(true);
+  useEffect(() => {
+    onValidityChange(toolsValid && integrationsValid);
+  }, [integrationsValid, onValidityChange, toolsValid]);
+  const selectedToolIds = config.tools.filter((tool): tool is string => typeof tool === "string");
+  const advancedTools = config.tools.filter((tool) => typeof tool !== "string");
+  const hasTypedToolsets = advancedTools.some((tool) => tool.type === "agent_toolset_20260401" || tool.type === "mcp_toolset");
+  const acp = isAcpModelSelection(config.model);
+  const backgroundConfig = (config.plugin_config.background_task as { tools?: string[] } | undefined) ?? {};
+  const backgroundTools = backgroundConfig.tools ?? [];
+  const toolPolicyOverrides = [
+    ...(config.tool_overrides ?? []),
+    ...backgroundTools
+      .filter((tool) => !(config.tool_overrides ?? []).some((entry) => entry.target === tool))
+      .map((target) => ({ target })),
+  ];
   const sections: Array<{ key: BuilderSection; label: string; zh: string }> = [
     { key: "instructions", label: "Instructions", zh: "提示词" },
     { key: "tools", label: "Tools & permissions", zh: "工具与权限" },
@@ -152,6 +176,11 @@ export default function AgentBuilder({
               onManage={onManageModels}
             />
           </div>
+          <AgentModelRuntimeControls
+            config={config}
+            acp={isAcpModelSelection(config.model)}
+            onPatch={onPatch}
+          />
           <TextField
             label={app.t("Description", "描述")}
             hint={app.t(
@@ -238,22 +267,50 @@ export default function AgentBuilder({
             <CheckPicker
               options={[
                 ...tools,
-                ...config.tools
+                ...selectedToolIds
                   .filter((id) => !tools.some((tool) => tool.id === id))
                   .map((id) => ({ id })),
               ]}
-              selected={config.tools}
-              onChange={(value) => onPatch({ tools: value })}
+              selected={selectedToolIds}
+              onChange={(value) => onPatch({ tools: [...advancedTools, ...value] })}
               empty={app.t("No tools advertised.", "没有可用工具。")}
             />
           </div>
           <div className="field">
-            <label>{app.t("Tool presentation", "工具呈现")}</label>
+            <label>{app.t("Tool behavior policies", "工具行为策略")}</label>
+            <span className="mut">{app.t(
+              "Use one canonical tool id to configure presentation and background eligibility. State-machine rules use the same ids and patterns under Advanced → Orchestration.",
+              "使用同一规范工具 ID 配置呈现方式与后台执行资格；状态机规则在“高级 → 编排”中使用相同 ID 和模式。",
+            )}</span>
             <ToolOverridesEditor
-              tools={config.tools}
-              value={config.tool_overrides ?? []}
+              tools={selectedToolIds}
+              value={toolPolicyOverrides}
               onChange={(value) => onPatch({ tool_overrides: value })}
+              backgroundTools={backgroundTools}
+              backgroundUnavailable={acp}
+              onBackgroundToolsChange={(next) => {
+                const { background_task: _removed, ...otherPluginConfig } = config.plugin_config;
+                onPatch(next.length > 0 ? {
+                  plugins: Array.from(new Set([...config.plugins, "background_task"])),
+                  plugin_config: {
+                    ...config.plugin_config,
+                    background_task: { ...backgroundConfig, tools: next },
+                  },
+                } : {
+                  plugins: config.plugins.filter((plugin) => plugin !== "background_task"),
+                  plugin_config: otherPluginConfig,
+                });
+              }}
             />
+            {acp && (
+              <div className="banner info" style={{ marginTop: 8 }}>
+                <span>ⓘ</span>
+                <span>{app.t(
+                  "The selected ACP Harness cannot start new background tool executions. Existing selections remain visible so you can remove them before publishing.",
+                  "所选 ACP Harness 不能启动新的后台工具执行；已有选择仍保持可见，以便在发布前移除。",
+                )}</span>
+              </div>
+            )}
           </div>
           {behavior("web_search") && (
             <div className="field">
@@ -261,7 +318,7 @@ export default function AgentBuilder({
               {renderBehavior("web_search")}
             </div>
           )}
-          {policies.some((policy) => policy.id === "permission") && (
+          {policies.some((policy) => policy.id === "permission") && !hasTypedToolsets && (
             <div className="field">
               <label>{app.t("Permissions", "权限")}</label>
               <span className="mut">{app.t(
@@ -276,6 +333,16 @@ export default function AgentBuilder({
               />
             </div>
           )}
+          {hasTypedToolsets && (
+            <div className="banner info">
+              <span>ⓘ</span>
+              <span>{app.t(
+                "Permissions are configured per ToolSet. Built-in defaults are below; each MCP default stays with its integration under Skills & MCP.",
+                "权限按 ToolSet 配置。内置工具默认值位于下方；每个 MCP 默认值与其集成一起位于“Skills 与 MCP”。",
+              )}</span>
+            </div>
+          )}
+          <AgentAdvancedToolsEditor config={config} onPatch={onPatch} onValidityChange={setToolsValid} />
         </Card>
       )}
 
@@ -284,8 +351,9 @@ export default function AgentBuilder({
           section="bindings"
           config={config}
           credentials={credentials}
+          toolsetCapabilities={toolsets}
           onChange={onPatch}
-          onValidityChange={onValidityChange}
+          onValidityChange={setIntegrationsValid}
         />
       )}
 
