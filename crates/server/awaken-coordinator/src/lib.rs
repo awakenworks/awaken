@@ -1265,6 +1265,11 @@ fn mount_with_managed_over_and_models(
         move |thread| workspace_host.thread_workspace(thread),
         move |thread| agent_host.thread_agent_projection(thread),
     ));
+    let background_runs: Arc<dyn awaken_session_contract::SessionRunBackgroundApplication> =
+        session_runs.clone();
+    ManagedHost::new(host.clone())
+        .install_session_background_run_application(Arc::downgrade(&background_runs))
+        .expect("Session background Run application binds once");
     let admitted_runs: Arc<dyn RunApplication> = session_runs.clone();
     let ai_sdk = awaken_protocol_ai_sdk::router(admitted_runs.clone());
     let ag_ui = awaken_protocol_ag_ui::router(admitted_runs.clone());

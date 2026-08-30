@@ -106,6 +106,7 @@ fn run_descriptor(id: &str, description: &str, allowed: &BTreeSet<String>) -> To
             .collect(),
     );
     ToolDescriptor::pinned("background-task", id, description, parameters)
+        .with_detached_targets(allowed.iter().cloned())
 }
 
 fn dynamic(descriptor: ToolDescriptor, tool: Arc<dyn RawTool>) -> DynamicTool {
@@ -141,8 +142,28 @@ struct SubmittedTask<'a> {
 struct TaskView<'a> {
     id: &'a BackgroundTaskId,
     tool_id: &'a str,
-    lifecycle: &'a BackgroundTaskLifecycle,
+    lifecycle: TaskLifecycleView<'a>,
     revision: u64,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum TaskLifecycleView<'a> {
+    Requested,
+    Running,
+    Waiting,
+    Cancelling,
+    Completed {
+        content: &'a [awaken_runtime_contract::ContentBlock],
+        is_error: bool,
+    },
+    Failed {
+        message: &'a str,
+    },
+    Cancelled,
+    Indeterminate {
+        message: &'a str,
+    },
 }
 
 impl<'a> From<&'a BackgroundTask> for TaskView<'a> {
@@ -150,7 +171,27 @@ impl<'a> From<&'a BackgroundTask> for TaskView<'a> {
         Self {
             id: &task.id,
             tool_id: &task.invocation.call.tool_id,
-            lifecycle: &task.lifecycle,
+            lifecycle: match &task.lifecycle {
+                BackgroundTaskLifecycle::Requested => TaskLifecycleView::Requested,
+                BackgroundTaskLifecycle::Running { .. } => TaskLifecycleView::Running,
+                BackgroundTaskLifecycle::Waiting { .. } => TaskLifecycleView::Waiting,
+                BackgroundTaskLifecycle::Cancelling { .. } => TaskLifecycleView::Cancelling,
+                BackgroundTaskLifecycle::Ended { end } => match end {
+                    crate::BackgroundTaskEnd::Completed { content, is_error } => {
+                        TaskLifecycleView::Completed {
+                            content,
+                            is_error: *is_error,
+                        }
+                    }
+                    crate::BackgroundTaskEnd::Failed { message } => {
+                        TaskLifecycleView::Failed { message }
+                    }
+                    crate::BackgroundTaskEnd::Cancelled => TaskLifecycleView::Cancelled,
+                    crate::BackgroundTaskEnd::Indeterminate { message } => {
+                        TaskLifecycleView::Indeterminate { message }
+                    }
+                },
+            },
             revision: task.revision,
         }
     }
@@ -350,5 +391,86 @@ impl RawTool for CancelBackgroundTask {
             );
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BackgroundTaskOrigin, BackgroundWait, RemoteContinuation, RemoteProtocol,
+        TaskExecutionPolicy,
+    };
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_runtime_contract::tool::{ToolConcurrency, ToolRecoveryPolicy};
+
+    fn remote_task() -> BackgroundTask {
+        let mut task = BackgroundTask::requested(
+            BackgroundTaskId::new("public-task").expect("task id"),
+            BackgroundTaskOrigin {
+                thread_id: ThreadId("thread-secret".into()),
+                run_id: RunId("run-secret".into()),
+                operation_id: "operation-secret".into(),
+            },
+            BackgroundInvocation {
+                call: ToolCall {
+                    call_id: "call-secret".into(),
+                    tool_id: "mcp__srv__work".into(),
+                    arguments: serde_json::json!({"credential": "argument-secret"}),
+                },
+            },
+        );
+        let fence = task
+            .start(
+                "worker-secret",
+                10,
+                100,
+                TaskExecutionPolicy {
+                    recovery: ToolRecoveryPolicy::default(),
+                    concurrency: ToolConcurrency::Parallel,
+                },
+            )
+            .expect("start");
+        task.wait(
+            &fence,
+            BackgroundWait::Remote(RemoteContinuation {
+                protocol: RemoteProtocol::Mcp,
+                server_binding: "binding-secret".into(),
+                task_id: "remote-secret".into(),
+                poll_interval_ms: Some(25),
+            }),
+        )
+        .expect("wait");
+        task
+    }
+
+    #[test]
+    fn model_views_never_expose_execution_or_remote_coordinates() {
+        // Cause/effect decision table: R1 Waiting remote -> abstract waiting;
+        // R2 the same task after cancel intent -> abstract cancelling; R3 an
+        // explicit terminal result -> only model-visible content/outcome.
+        // Every rule excludes invocation arguments, origin, worker/epoch/lease,
+        // recovery policy, server binding, remote task id and poll interval.
+        let mut task = remote_task();
+        for expected_state in ["waiting", "cancelling"] {
+            let rendered = serde_json::to_string(&TaskView::from(&task)).expect("view");
+            assert!(rendered.contains(expected_state));
+            for secret in [
+                "argument-secret",
+                "thread-secret",
+                "run-secret",
+                "operation-secret",
+                "worker-secret",
+                "binding-secret",
+                "remote-secret",
+                "lease_expires_at_ms",
+                "poll_interval_ms",
+                "recovery",
+            ] {
+                assert!(!rendered.contains(secret), "must hide {secret}");
+            }
+            task.request_cancel().expect("cancel intent");
+        }
     }
 }

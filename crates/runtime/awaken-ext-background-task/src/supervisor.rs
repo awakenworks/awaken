@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{BackgroundTaskEnd, BackgroundTaskId, TaskFence};
+use crate::{BackgroundTaskEnd, BackgroundTaskId, BackgroundWait, TaskFence};
 
 pub const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
 
@@ -14,8 +14,18 @@ pub struct BackgroundTaskCompletion {
     pub end: BackgroundTaskEnd,
 }
 
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskWaitCandidate {
+    pub fence: TaskFence,
+    pub wait: BackgroundWait,
+    /// True only for a poll watchdog checkpoint that must extend the same
+    /// durable attempt lease before resuming observation.
+    pub renew_lease: bool,
+}
+
 enum SupervisorEntry {
     Active(CancellationToken),
+    Waiting(BackgroundTaskWaitCandidate),
     Completed(BackgroundTaskCompletion),
 }
 
@@ -112,6 +122,57 @@ impl BackgroundTaskSupervisor {
         }
     }
 
+    /// Atomically replace one active invocation/poll with its durable wait
+    /// candidate. The candidate stays in the same one-slot deduplication guard
+    /// until a post-commit observer confirms that Thread State owns it.
+    pub fn wait(&self, id: BackgroundTaskId, candidate: BackgroundTaskWaitCandidate) {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("background supervisor mutex poisoned");
+        if matches!(entries.get(&id), Some(SupervisorEntry::Active(_))) {
+            entries.insert(id, SupervisorEntry::Waiting(candidate));
+        }
+    }
+
+    #[must_use]
+    pub fn wait_candidate(&self, id: &BackgroundTaskId) -> Option<BackgroundTaskWaitCandidate> {
+        match self
+            .entries
+            .lock()
+            .expect("background supervisor mutex poisoned")
+            .get(id)
+        {
+            Some(SupervisorEntry::Waiting(candidate)) => Some(candidate.clone()),
+            Some(SupervisorEntry::Active(_) | SupervisorEntry::Completed(_)) | None => None,
+        }
+    }
+
+    /// A committed Waiting/Cancelling continuation atomically consumes the
+    /// process candidate and becomes the next active poll/cancel owner. If the
+    /// fence differs, the candidate is stale and remains observable for the
+    /// StepStart reconciler to retire without launching another effect.
+    pub fn resume_wait(
+        &self,
+        id: &BackgroundTaskId,
+        fence: &TaskFence,
+    ) -> Option<CancellationToken> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("background supervisor mutex poisoned");
+        let matches = matches!(
+            entries.get(id),
+            Some(SupervisorEntry::Waiting(candidate)) if candidate.fence == *fence
+        );
+        if !matches {
+            return None;
+        }
+        let token = CancellationToken::new();
+        entries.insert(id.clone(), SupervisorEntry::Active(token.clone()));
+        Some(token)
+    }
+
     /// Atomically replace one registered launch with its first completion.
     /// An unregistered or already-completed delivery is stale and ignored.
     pub fn complete(&self, id: BackgroundTaskId, completion: BackgroundTaskCompletion) {
@@ -119,7 +180,12 @@ impl BackgroundTaskSupervisor {
             .entries
             .lock()
             .expect("background supervisor mutex poisoned");
-        if matches!(entries.get(&id), Some(SupervisorEntry::Active(_))) {
+        let may_complete = match entries.get(&id) {
+            Some(SupervisorEntry::Active(_)) => true,
+            Some(SupervisorEntry::Waiting(candidate)) => candidate.fence == completion.fence,
+            Some(SupervisorEntry::Completed(_)) | None => false,
+        };
+        if may_complete {
             entries.insert(id, SupervisorEntry::Completed(completion));
         }
     }
@@ -136,7 +202,7 @@ impl BackgroundTaskSupervisor {
             .get(id)
         {
             Some(SupervisorEntry::Completed(completion)) => Some(completion.clone()),
-            Some(SupervisorEntry::Active(_)) | None => None,
+            Some(SupervisorEntry::Active(_) | SupervisorEntry::Waiting(_)) | None => None,
         }
     }
 
@@ -164,6 +230,22 @@ mod tests {
                 epoch,
             },
             end: BackgroundTaskEnd::Cancelled,
+        }
+    }
+
+    fn wait_candidate(epoch: u64) -> BackgroundTaskWaitCandidate {
+        BackgroundTaskWaitCandidate {
+            fence: TaskFence {
+                worker_id: "worker".into(),
+                epoch,
+            },
+            wait: BackgroundWait::Remote(crate::RemoteContinuation {
+                protocol: crate::RemoteProtocol::Mcp,
+                server_binding: "mcp-generation".into(),
+                task_id: "remote-task".into(),
+                poll_interval_ms: Some(50),
+            }),
+            renew_lease: false,
         }
     }
 
@@ -197,5 +279,56 @@ mod tests {
         supervisor.complete(id.clone(), completion(1));
         assert!(supervisor.completion(&id).is_none());
         assert!(supervisor.register(&id).is_some());
+    }
+
+    #[test]
+    fn active_wait_commit_ack_and_poll_reuse_one_atomic_slot() {
+        // Cause/effect decision table: R1 vacant wait delivery -> inert; R2
+        // Active+wait -> one Waiting candidate and no completion; R3 wrong-fence
+        // commit ack -> inert; R4 matching committed fence -> the same slot
+        // becomes Active and returns one cancellation token; R5 duplicate ack or
+        // register -> no second poll. Constraint: Active/Waiting/Completed never
+        // coexist in parallel maps for one durable task id.
+        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let id = id();
+        supervisor.wait(id.clone(), wait_candidate(1));
+        assert!(supervisor.wait_candidate(&id).is_none(), "R1");
+        assert!(supervisor.register(&id).is_some(), "R2 setup");
+        supervisor.wait(id.clone(), wait_candidate(1));
+        assert!(supervisor.wait_candidate(&id).is_some(), "R2");
+        assert!(supervisor.completion(&id).is_none(), "R2");
+        assert!(
+            supervisor.resume_wait(&id, &completion(2).fence).is_none(),
+            "R3"
+        );
+        assert!(
+            supervisor.resume_wait(&id, &completion(1).fence).is_some(),
+            "R4"
+        );
+        assert!(supervisor.is_active(&id), "R4");
+        assert!(
+            supervisor.resume_wait(&id, &completion(1).fence).is_none(),
+            "R5"
+        );
+        assert!(supervisor.register(&id).is_none(), "R5");
+    }
+
+    #[test]
+    fn matching_terminal_candidate_dominates_wait_in_the_same_slot() {
+        // Cause/effect table: R1 Active->Waiting stores one continuation
+        // candidate; R2 matching-fence Terminal races before wait commit and
+        // atomically replaces it; R3 delayed Wait/duplicate Terminal stutter.
+        // The StepStart observer can therefore never fold Waiting after a known
+        // terminal outcome for the same attempt.
+        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let id = id();
+        assert!(supervisor.register(&id).is_some());
+        supervisor.wait(id.clone(), wait_candidate(1));
+        supervisor.complete(id.clone(), completion(1));
+        assert!(supervisor.wait_candidate(&id).is_none(), "R2");
+        assert!(supervisor.completion(&id).is_some(), "R2");
+        supervisor.wait(id.clone(), wait_candidate(1));
+        supervisor.complete(id.clone(), completion(2));
+        assert_eq!(supervisor.completion(&id).unwrap().fence.epoch, 1, "R3");
     }
 }

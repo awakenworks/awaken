@@ -240,6 +240,13 @@ pub enum AgentCoordinationInstallError {
     AlreadyInstalled,
 }
 
+/// Composition failure for the one process-local background Session Run port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SessionRunBackgroundInstallError {
+    #[error("Session background Run application is already installed")]
+    AlreadyInstalled,
+}
+
 /// One compiled projection from the frozen Session manifest. Standard mounts
 /// and optional automatic-memory candidates travel together so installation
 /// cannot publish one generation with bindings from another.
@@ -276,6 +283,27 @@ impl ManagedHost {
             .expect("Agent coordination application lock poisoned");
         if installed.is_some() {
             return Err(AgentCoordinationInstallError::AlreadyInstalled);
+        }
+        *installed = Some(application);
+        Ok(())
+    }
+
+    /// Connect BackgroundTask completion to the canonical Session Run
+    /// application after composition has wrapped it in an `Arc`.
+    ///
+    /// This is an executable weak edge only. It owns no notification record,
+    /// BackgroundTask state, Run identity mapping, or retry ledger.
+    pub fn install_session_background_run_application(
+        &self,
+        application: std::sync::Weak<dyn awaken_session_contract::SessionRunBackgroundApplication>,
+    ) -> Result<(), SessionRunBackgroundInstallError> {
+        let mut installed = self
+            .host
+            .session_background_runs
+            .write()
+            .expect("Session background Run application lock poisoned");
+        if installed.is_some() {
+            return Err(SessionRunBackgroundInstallError::AlreadyInstalled);
         }
         *installed = Some(application);
         Ok(())

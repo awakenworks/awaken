@@ -636,6 +636,49 @@ impl SharedHost {
             .as_deref()
             .map(awaken_runtime_contract::resolved::Backend::from_ref)
             .unwrap_or(awaken_runtime_contract::resolved::Backend::Native);
+        // BackgroundTask completion is a process-local fenced projection. Reject
+        // unsupported execution placement immediately after resolving the frozen
+        // publication and before Environment, MCP, tool, or commit realization.
+        // A late rejection would be semantically correct but would still leak a
+        // physical Session side effect for work that can never be admitted.
+        let background_tasks_enabled = installed.as_ref().map_or_else(
+            || {
+                self.plugin_ids
+                    .iter()
+                    .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
+            },
+            |snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_ids
+                    .iter()
+                    .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
+            },
+        );
+        if background_tasks_enabled && execution_backend.is_acp() {
+            return Err(HostError::bad_request(
+                "background_task requires the Native backend so the canonical tool executor remains process-addressable",
+            ));
+        }
+        if background_tasks_enabled && self.upstream.is_some() {
+            return Err(HostError::bad_request(
+                "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
+            ));
+        }
+        let background_attention = if background_tasks_enabled {
+            self.session_background_runs
+                .read()
+                .expect("Session background Run application lock poisoned")
+                .clone()
+                .filter(|application| application.strong_count() > 0)
+        } else {
+            None
+        };
+        if background_tasks_enabled && session_dispatch && background_attention.is_none() {
+            return Err(HostError::internal(
+                "Managed BackgroundTask Session has no background Run application authority",
+            ));
+        }
         let a2a_only = installed.as_ref().is_some_and(|snapshot| {
             !crate::host::completion::requires_local_environment(&snapshot.resolved_spec)
         });
@@ -1387,16 +1430,15 @@ impl SharedHost {
                 HostError::internal(format!("fingerprint Session tool projection: {error}"))
             })?;
         }
-        let background_tasks_enabled = config
-            .resolved_spec
-            .plugin_ids
-            .iter()
-            .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID);
-        if background_tasks_enabled && is_acp {
-            return Err(HostError::bad_request(
-                "background_task requires the Native backend so the canonical tool executor remains process-addressable",
-            ));
-        }
+        debug_assert_eq!(
+            background_tasks_enabled,
+            config
+                .resolved_spec
+                .plugin_ids
+                .iter()
+                .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID),
+            "Session projections must not rewrite BackgroundTask activation",
+        );
         // WebSearch has one configuration/dispatch owner for both execution
         // backends. Native lets Runtime resolve the plugin once; ACP resolves
         // the same plugin once and exports that RawTool through MCP. A Session
@@ -1675,9 +1717,19 @@ impl SharedHost {
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
         let workspace_id = self.thread_workspace(thread).to_owned();
-        let run_context = awaken_runtime_contract::RuntimeRunContext::new().with_execution_scope(
-            awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from(workspace_id.as_str())),
+        let environment_generation = env.as_ref().map_or_else(
+            || "brain".to_string(),
+            |environment| environment.handle().sandbox_id,
         );
+        let run_context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from(workspace_id.as_str()),
+            ))
+            .with_tool_execution_admission(
+                self.memory
+                    .background()
+                    .tool_execution_admission(thread, &environment_generation),
+            );
         let dispatch_claim = self
             .session_slots
             .read(thread, |slot| slot.dispatch_claim.clone())
@@ -1720,10 +1772,6 @@ impl SharedHost {
             None => run_context,
         };
         if background_tasks_enabled {
-            let generation = env.as_ref().map_or_else(
-                || "brain".to_string(),
-                |environment| environment.handle().sandbox_id,
-            );
             terminal_observers.push(Arc::new(
                 crate::background_task::BackgroundTaskTerminalObserver::new(
                     runtime.clone(),
@@ -1733,7 +1781,8 @@ impl SharedHost {
                     self.memory.background(),
                     awaken_ext_background_task::process_supervisor(),
                     thread.to_string(),
-                    generation,
+                    environment_generation,
+                    background_attention.clone(),
                 ),
             ));
         }

@@ -1069,6 +1069,7 @@ pub enum awaken_runtime_contract::resolved::ToolKind
 pub awaken_runtime_contract::resolved::ToolKind::Advisor
 pub awaken_runtime_contract::resolved::ToolKind::AgentDelegation
 pub awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+pub awaken_runtime_contract::resolved::ToolKind::DetachedOnly
 pub awaken_runtime_contract::resolved::ToolKind::Regular
 pub enum awaken_runtime_contract::resolved::ToolPromptInjection
 pub awaken_runtime_contract::resolved::ToolPromptInjection::Automatic
@@ -1213,6 +1214,7 @@ pub fn awaken_runtime_contract::resolved::ResolvedSpec::pinned_model_candidate_a
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::select_execution_model(&mut self, &str) -> bool
 pub struct awaken_runtime_contract::resolved::ToolDescriptor
 pub awaken_runtime_contract::resolved::ToolDescriptor::description: alloc::string::String
+pub awaken_runtime_contract::resolved::ToolDescriptor::detached_targets: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_runtime_contract::resolved::ToolDescriptor::id: alloc::string::String
 pub awaken_runtime_contract::resolved::ToolDescriptor::kind: awaken_runtime_contract::resolved::ToolKind
 pub awaken_runtime_contract::resolved::ToolDescriptor::parameters: awaken_runtime_contract::resolved::ToolSchema
@@ -1226,6 +1228,7 @@ pub fn awaken_runtime_contract::resolved::ToolDescriptor::for_tool<T: awaken_run
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::model_parameters(&self) -> serde_json::value::Value
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::try_pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> core::result::Result<Self, awaken_runtime_contract::resolved::ToolSchemaError>
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_detached_targets(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_kind(self, awaken_runtime_contract::resolved::ToolKind) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_provider_server_tool(self, awaken_runtime_contract::resolved::ProviderServerTool) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_recovery(self, awaken_runtime_contract::tool::ToolRecoveryPolicy) -> Self
@@ -1391,6 +1394,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: co
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::terminal_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_capability_narrowing: awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_concurrency_limit: core::option::Option<core::num::nonzero::NonZeroUsize>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_execution_admission: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutionAdmission>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_output_spiller: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
@@ -1421,6 +1425,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_capability_narrowing(self, awaken_runtime_contract::permission::ToolCapabilityNarrowing) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_concurrency_limit(self, core::num::nonzero::NonZeroUsize) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_execution_admission(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutionAdmission>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_output_spiller(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
@@ -1512,15 +1517,31 @@ pub const fn awaken_runtime_contract::tool::ToolRecoveryMode::is_supported_by(se
 pub enum awaken_runtime_contract::tool::ToolResourceAccess
 pub awaken_runtime_contract::tool::ToolResourceAccess::Read(awaken_runtime_contract::tool::ToolResource)
 pub awaken_runtime_contract::tool::ToolResourceAccess::Write(awaken_runtime_contract::tool::ToolResource)
+pub enum awaken_runtime_contract::tool::ToolTaskPoll
+pub awaken_runtime_contract::tool::ToolTaskPoll::Cancelled
+pub awaken_runtime_contract::tool::ToolTaskPoll::Completed(awaken_runtime_contract::tool::ToolOutput)
+pub awaken_runtime_contract::tool::ToolTaskPoll::Failed
+pub awaken_runtime_contract::tool::ToolTaskPoll::Failed::message: alloc::string::String
+pub awaken_runtime_contract::tool::ToolTaskPoll::InputRequired
+pub awaken_runtime_contract::tool::ToolTaskPoll::InputRequired::message: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::tool::ToolTaskPoll::InputRequired::poll_interval_ms: core::option::Option<u64>
+pub awaken_runtime_contract::tool::ToolTaskPoll::Pending
+pub awaken_runtime_contract::tool::ToolTaskPoll::Pending::poll_interval_ms: core::option::Option<u64>
+pub enum awaken_runtime_contract::tool::ToolTaskStart
+pub awaken_runtime_contract::tool::ToolTaskStart::Completed(awaken_runtime_contract::tool::ToolOutput)
+pub awaken_runtime_contract::tool::ToolTaskStart::Pending(awaken_runtime_contract::tool::ToolTaskHandle)
 pub struct awaken_runtime_contract::tool::RawToolRegistry
 impl awaken_runtime_contract::tool::RawToolRegistry
 pub fn awaken_runtime_contract::tool::RawToolRegistry::get(&self, &str) -> core::option::Option<&alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_runtime_contract::tool::RawToolRegistry::insert(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> bool
 pub fn awaken_runtime_contract::tool::RawToolRegistry::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::tool::RawToolRegistry::start_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_contract::tool::ToolCall
 pub awaken_runtime_contract::tool::ToolCall::arguments: serde_json::value::Value
 pub awaken_runtime_contract::tool::ToolCall::call_id: alloc::string::String
@@ -1571,12 +1592,22 @@ pub awaken_runtime_contract::tool::ToolResource::key: alloc::string::String
 pub awaken_runtime_contract::tool::ToolResource::namespace: alloc::string::String
 impl awaken_runtime_contract::tool::ToolResource
 pub fn awaken_runtime_contract::tool::ToolResource::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_runtime_contract::tool::ToolTaskHandle
+pub awaken_runtime_contract::tool::ToolTaskHandle::binding: alloc::string::String
+pub awaken_runtime_contract::tool::ToolTaskHandle::owner: alloc::string::String
+pub awaken_runtime_contract::tool::ToolTaskHandle::poll_interval_ms: core::option::Option<u64>
+pub awaken_runtime_contract::tool::ToolTaskHandle::task_id: alloc::string::String
+impl awaken_runtime_contract::tool::ToolTaskHandle
+pub fn awaken_runtime_contract::tool::ToolTaskHandle::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
 pub trait awaken_runtime_contract::tool::RawTool: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::tool::RawTool::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawTool::concurrency(&self, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::RawTool::execution_target(&self) -> awaken_runtime_contract::tool::ToolExecutionTarget
 pub fn awaken_runtime_contract::tool::RawTool::id(&self) -> &str
 pub fn awaken_runtime_contract::tool::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::tool::RawTool::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawTool::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::tool::RawTool::start_task<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::tool::Tool: core::marker::Send + core::marker::Sync
 pub type awaken_runtime_contract::tool::Tool::Args: serde_core::de::DeserializeOwned + schemars::JsonSchema + core::marker::Send
 pub type awaken_runtime_contract::tool::Tool::Output: serde_core::ser::Serialize + core::marker::Send
@@ -1585,16 +1616,25 @@ pub const awaken_runtime_contract::tool::Tool::ID: &'static str
 pub fn awaken_runtime_contract::tool::Tool::call<'life0, 'async_trait>(&'life0 self, Self::Args) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<Self::Output, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::tool::Tool::concurrency(&self, &Self::Args) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::Tool::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub trait awaken_runtime_contract::tool::ToolExecutionAdmission: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::tool::ToolExecutionAdmission::acquire<'async_trait>(alloc::sync::Arc<Self>, awaken_runtime_contract::tool::ToolConcurrency) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_runtime_contract::tool::ToolExecutionPermit>, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait
 pub trait awaken_runtime_contract::tool::ToolExecutionFactsResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::ToolExecutionFactsResolver::resolve(&self, &awaken_runtime_contract::llm::ToolCall) -> core::result::Result<awaken_runtime_contract::tool::ToolExecutionFacts, awaken_runtime_contract::tool::ToolError>
+pub trait awaken_runtime_contract::tool::ToolExecutionPermit: core::marker::Send
 pub trait awaken_runtime_contract::tool::ToolExecutor: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::tool::ToolExecutor::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::ToolExecutor::concurrency(&self, &str, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::ToolExecutor::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::ToolExecutor::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::tool::ToolExecutor::start_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::tool::RawToolRegistry::start_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::tool::ToolOutputSpiller: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::ToolOutputSpiller::spill<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::current_tool_execution_facts(&awaken_runtime_contract::llm::ToolCall) -> core::result::Result<awaken_runtime_contract::tool::ToolExecutionFacts, awaken_runtime_contract::tool::ToolError>
@@ -1876,6 +1916,19 @@ pub const fn awaken_runtime_contract::tool::ToolRecoveryMode::is_supported_by(se
 pub enum awaken_runtime_contract::ToolResourceAccess
 pub awaken_runtime_contract::ToolResourceAccess::Read(awaken_runtime_contract::tool::ToolResource)
 pub awaken_runtime_contract::ToolResourceAccess::Write(awaken_runtime_contract::tool::ToolResource)
+pub enum awaken_runtime_contract::ToolTaskPoll
+pub awaken_runtime_contract::ToolTaskPoll::Cancelled
+pub awaken_runtime_contract::ToolTaskPoll::Completed(awaken_runtime_contract::tool::ToolOutput)
+pub awaken_runtime_contract::ToolTaskPoll::Failed
+pub awaken_runtime_contract::ToolTaskPoll::Failed::message: alloc::string::String
+pub awaken_runtime_contract::ToolTaskPoll::InputRequired
+pub awaken_runtime_contract::ToolTaskPoll::InputRequired::message: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::ToolTaskPoll::InputRequired::poll_interval_ms: core::option::Option<u64>
+pub awaken_runtime_contract::ToolTaskPoll::Pending
+pub awaken_runtime_contract::ToolTaskPoll::Pending::poll_interval_ms: core::option::Option<u64>
+pub enum awaken_runtime_contract::ToolTaskStart
+pub awaken_runtime_contract::ToolTaskStart::Completed(awaken_runtime_contract::tool::ToolOutput)
+pub awaken_runtime_contract::ToolTaskStart::Pending(awaken_runtime_contract::tool::ToolTaskHandle)
 pub enum awaken_runtime_contract::ToolWaitKind
 pub awaken_runtime_contract::ToolWaitKind::Delegation
 pub awaken_runtime_contract::ToolWaitKind::ExternalResult
@@ -2173,9 +2226,12 @@ pub fn awaken_runtime_contract::tool::RawToolRegistry::get(&self, &str) -> core:
 pub fn awaken_runtime_contract::tool::RawToolRegistry::insert(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> bool
 pub fn awaken_runtime_contract::tool::RawToolRegistry::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::tool::RawToolRegistry::start_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_contract::ResolutionManifest
 pub awaken_runtime_contract::ResolutionManifest::inputs: alloc::vec::Vec<awaken_runtime_contract::resolution::ResolvedInputRef>
 impl awaken_runtime_contract::resolution::ResolutionManifest
@@ -2278,6 +2334,7 @@ pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Optio
 pub awaken_runtime_contract::RuntimeRunContext::terminal_observers: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_capability_narrowing: awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub awaken_runtime_contract::RuntimeRunContext::tool_concurrency_limit: core::option::Option<core::num::nonzero::NonZeroUsize>
+pub awaken_runtime_contract::RuntimeRunContext::tool_execution_admission: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutionAdmission>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_output_spiller: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>>
 pub awaken_runtime_contract::RuntimeRunContext::tool_permission_policy: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>>
@@ -2308,6 +2365,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_capability_narrowing(self, awaken_runtime_contract::permission::ToolCapabilityNarrowing) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_concurrency_limit(self, core::num::nonzero::NonZeroUsize) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_execution_admission(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutionAdmission>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_output_spiller(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolOutputSpiller>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_tool_permission_policy(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
@@ -2391,6 +2449,13 @@ pub fn awaken_runtime_contract::tool_discovery::ToolSearchLimit::new(u8) -> core
 impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::tool_discovery::ToolSearchLimit
 pub fn awaken_runtime_contract::tool_discovery::ToolSearchLimit::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_runtime_contract::ToolSearchLimitError(_)
+pub struct awaken_runtime_contract::ToolTaskHandle
+pub awaken_runtime_contract::ToolTaskHandle::binding: alloc::string::String
+pub awaken_runtime_contract::ToolTaskHandle::owner: alloc::string::String
+pub awaken_runtime_contract::ToolTaskHandle::poll_interval_ms: core::option::Option<u64>
+pub awaken_runtime_contract::ToolTaskHandle::task_id: alloc::string::String
+impl awaken_runtime_contract::tool::ToolTaskHandle
+pub fn awaken_runtime_contract::tool::ToolTaskHandle::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
 pub struct awaken_runtime_contract::ToolWait
 pub awaken_runtime_contract::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
@@ -2454,11 +2519,14 @@ pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revi
 pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub trait awaken_runtime_contract::RawTool: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::RawTool::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::RawTool::concurrency(&self, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::RawTool::execution_target(&self) -> awaken_runtime_contract::tool::ToolExecutionTarget
 pub fn awaken_runtime_contract::RawTool::id(&self) -> &str
 pub fn awaken_runtime_contract::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_runtime_contract::RawTool::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::RawTool::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::RawTool::start_task<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
 pub fn awaken_runtime_contract::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::RunAttemptExecutor::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -2495,14 +2563,23 @@ pub const awaken_runtime_contract::Tool::ID: &'static str
 pub fn awaken_runtime_contract::Tool::call<'life0, 'async_trait>(&'life0 self, Self::Args) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<Self::Output, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::Tool::concurrency(&self, &Self::Args) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::Tool::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub trait awaken_runtime_contract::ToolExecutionAdmission: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::ToolExecutionAdmission::acquire<'async_trait>(alloc::sync::Arc<Self>, awaken_runtime_contract::tool::ToolConcurrency) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::boxed::Box<dyn awaken_runtime_contract::tool::ToolExecutionPermit>, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait
+pub trait awaken_runtime_contract::ToolExecutionPermit: core::marker::Send
 pub trait awaken_runtime_contract::ToolExecutor: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::ToolExecutor::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::ToolExecutor::concurrency(&self, &str, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::ToolExecutor::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::ToolExecutor::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::ToolExecutor::start_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub fn awaken_runtime_contract::tool::RawToolRegistry::start_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::ToolGateHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::ToolGateHook::id(&self) -> &str

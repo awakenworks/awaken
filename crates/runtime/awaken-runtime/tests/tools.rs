@@ -253,6 +253,50 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
 }
 
 #[tokio::test]
+async fn forged_direct_call_to_configured_detached_target_fails_before_gate() {
+    // Cause/effect decision table: R1 configured detached target in the canonical
+    // catalog -> absent from the model request (covered by resolved projection);
+    // R2 provider nevertheless emits its canonical id -> one model-visible error
+    // result and zero executor effects; R3 the same descriptor is resolved by
+    // PreparedToolExecutor in detached tests. Constraint: dispatch and detached
+    // execution consume the same catalog and never copy the tool registration.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::RequireConfirmation {
+            correlation_id: "must-not-await".into(),
+        })));
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.tool_descriptors.push(
+        ToolDescriptor::pinned(
+            "test",
+            "run_in_background",
+            "Run detached work.",
+            serde_json::json!({"type":"object"}),
+        )
+        .with_detached_targets(["echo".into()]),
+    );
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(
+            activation,
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("forged call is contained as a tool result");
+
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "R2 no direct effect");
+    assert!(
+        commit.committed().messages.iter().any(|message| {
+            message.role == Role::Tool && message.text_content().contains("not directly callable")
+        }),
+        "R2 fail-closed result"
+    );
+}
+
+#[tokio::test]
 async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
     // Cause-effect graph:
     // C1=Native executor produced a result; C2=text-only; C3=spiller succeeds;

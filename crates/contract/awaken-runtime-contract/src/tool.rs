@@ -393,6 +393,70 @@ pub struct ToolOutput {
     pub state: Vec<StateCommand>,
 }
 
+/// Opaque coordinates of one durable request owned by an ordinary tool
+/// adapter. Runtime carries these values without interpreting the adapter or
+/// protocol; the same resolved tool that created the request must consume them
+/// on poll and cancellation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolTaskHandle {
+    /// Stable adapter owner (for example an extension id), not a model-authored
+    /// execution selector.
+    pub owner: String,
+    /// Frozen server or connection-generation binding.
+    pub binding: String,
+    /// Adapter-issued durable request identity.
+    pub task_id: String,
+    /// Adapter-recommended delay before the next status read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_ms: Option<u64>,
+}
+
+impl ToolTaskHandle {
+    /// Reject incomplete recovery coordinates before they can cross a durable
+    /// wait boundary.
+    pub fn validate(&self) -> Result<(), ToolError> {
+        if self.owner.trim().is_empty()
+            || self.binding.trim().is_empty()
+            || self.task_id.trim().is_empty()
+            || self.poll_interval_ms == Some(0)
+        {
+            Err(ToolError::Execution(
+                "durable tool task requires owner, binding, task id, and a positive poll interval"
+                    .into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Immediate result of asking an ordinary tool to start detached execution.
+/// A task handle is adapter evidence only; its durable lifecycle remains owned
+/// by the caller's aggregate and commit boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolTaskStart {
+    Completed(ToolOutput),
+    Pending(ToolTaskHandle),
+}
+
+/// One observation of an already-created durable tool request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolTaskPoll {
+    Pending {
+        poll_interval_ms: Option<u64>,
+    },
+    InputRequired {
+        poll_interval_ms: Option<u64>,
+        message: Option<String>,
+    },
+    Completed(ToolOutput),
+    Failed {
+        message: String,
+    },
+    Cancelled,
+}
+
 impl ToolOutput {
     pub fn ok(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self::ok_blocks(call_id, vec![ContentBlock::text(content)])
@@ -612,6 +676,22 @@ impl ToolConcurrency {
     }
 }
 
+/// Opaque lifetime guard returned by the host's one cross-Run tool admission
+/// authority. Dropping it releases the exact concurrency claim.
+pub trait ToolExecutionPermit: Send {}
+
+/// Optional host-owned admission shared by foreground and detached executions
+/// of one realized environment. The Runtime computes the canonical claim and
+/// acquires it at the sole executor confluence; implementations own no durable
+/// task truth and must not alter the claim.
+#[async_trait]
+pub trait ToolExecutionAdmission: Send + Sync {
+    async fn acquire(
+        self: std::sync::Arc<Self>,
+        claim: ToolConcurrency,
+    ) -> Result<Box<dyn ToolExecutionPermit>, ToolError>;
+}
+
 /// Schema-erased tool: the dynamic call boundary used by the runtime and by
 /// MCP/server/client adapters. Concrete implementations live in
 /// extension/adapter crates, never in neutral crates.
@@ -630,6 +710,35 @@ pub trait RawTool: Send + Sync {
         ToolConcurrency::Parallel
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError>;
+
+    /// Start detached execution. Ordinary tools complete through `invoke`;
+    /// adapters with a negotiated durable-task protocol override this method
+    /// and return the remote handle immediately.
+    async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
+        self.invoke(call).await.map(ToolTaskStart::Completed)
+    }
+
+    /// Observe a handle previously returned by this exact resolved tool.
+    async fn poll_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        Err(ToolError::Execution(
+            "tool does not support durable task polling".into(),
+        ))
+    }
+
+    /// Request cancellation of a handle previously returned by this tool.
+    async fn cancel_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        Err(ToolError::Execution(
+            "tool does not support durable task cancellation".into(),
+        ))
+    }
 }
 
 /// Invoke an ordinary tool while honoring the Run's cooperative cancellation.
@@ -741,6 +850,30 @@ pub trait ToolExecutor: Send + Sync {
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
+
+    async fn start_task(&self, call: &ToolCall) -> Result<ToolTaskStart, ToolError> {
+        self.invoke(call).await.map(ToolTaskStart::Completed)
+    }
+
+    async fn poll_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        Err(ToolError::Execution(
+            "tool executor does not support durable task polling".into(),
+        ))
+    }
+
+    async fn cancel_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        Err(ToolError::Execution(
+            "tool executor does not support durable task cancellation".into(),
+        ))
+    }
 }
 
 /// One authoritative registry for schema-erased tool implementations.
@@ -828,6 +961,35 @@ impl ToolExecutor for RawToolRegistry {
             .get(&call.tool_id)
             .ok_or_else(|| self.resolution_error(&call.tool_id))?;
         tool.invoke(call.clone()).await
+    }
+
+    async fn start_task(&self, call: &ToolCall) -> Result<ToolTaskStart, ToolError> {
+        let tool = self
+            .get(&call.tool_id)
+            .ok_or_else(|| self.resolution_error(&call.tool_id))?;
+        tool.start_task(call.clone()).await
+    }
+
+    async fn poll_task(
+        &self,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        let tool = self
+            .get(&call.tool_id)
+            .ok_or_else(|| self.resolution_error(&call.tool_id))?;
+        tool.poll_task(call, task).await
+    }
+
+    async fn cancel_task(
+        &self,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        let tool = self
+            .get(&call.tool_id)
+            .ok_or_else(|| self.resolution_error(&call.tool_id))?;
+        tool.cancel_task(call, task).await
     }
 }
 

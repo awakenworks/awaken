@@ -17,7 +17,10 @@ pub use model::{
 pub use plugin::{
     BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin, config_schema,
 };
-pub use supervisor::{BackgroundTaskCompletion, BackgroundTaskSupervisor, process_supervisor};
+pub use supervisor::{
+    BackgroundTaskCompletion, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate,
+    process_supervisor,
+};
 
 pub const BACKGROUND_TASK_STATE_PREFIX: &str = "background_task/";
 

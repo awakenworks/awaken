@@ -87,6 +87,25 @@ fn requires_sequential_dispatch(resolved: &ResolvedRun, call: &ToolCall) -> bool
         })
 }
 
+fn is_detached_only_call(descriptors: &[ToolDescriptor], call: &ToolCall) -> bool {
+    descriptors.iter().any(|descriptor| {
+        (descriptor.id == call.tool_id && descriptor.kind == ToolKind::DetachedOnly)
+            || descriptor.detached_targets.contains(&call.tool_id)
+    })
+}
+
+fn reject_direct_detached_call(
+    descriptors: &[ToolDescriptor],
+    call: &ToolCall,
+) -> Option<ToolOutput> {
+    is_detached_only_call(descriptors, call).then(|| {
+        ToolOutput::error(
+            &call.call_id,
+            format!("tool `{}` is not directly callable", call.tool_id),
+        )
+    })
+}
+
 /// Run each requested tool call for one step, feeding each result back into the
 /// transcript and folding tool-outcome reactions into state and reminders. Returns
 /// `Some(RunDisposition)` when a call awaits input (delegation/permission/scheduled) or fails
@@ -122,9 +141,7 @@ pub(super) async fn run_tool_calls(
         {
             ToolRecoveryPolicy::replay_safe()
         } else {
-            resolved
-                .spec
-                .tool_descriptors
+            executable_descriptors
                 .iter()
                 .find(|descriptor| descriptor.id == call.tool_id)
                 .map(|descriptor| descriptor.recovery_policy.clone())
@@ -146,9 +163,10 @@ pub(super) async fn run_tool_calls(
         .collect::<Vec<_>>();
     let waves = execution_waves(&claims, context.max_parallel_tools());
     let has_parallel_wave = waves.iter().any(|wave| wave.len() > 1);
-    let supports_concurrent_path = calls
-        .iter()
-        .all(|call| !requires_sequential_dispatch(resolved, call));
+    let supports_concurrent_path = calls.iter().all(|call| {
+        !requires_sequential_dispatch(resolved, call)
+            && !is_detached_only_call(&executable_descriptors, call)
+    });
     if has_parallel_wave && supports_concurrent_path {
         return run_concurrent_tool_calls(
             runtime,
@@ -206,7 +224,11 @@ pub(super) async fn run_tool_calls(
             return Ok(Some(RunDisposition::awaiting(ticket)));
         }
         let reaction_call = call.clone();
-        let output = if RuntimeToolOperation::classify(&call.tool_id)
+        let output = if let Some(output) =
+            reject_direct_detached_call(&executable_descriptors, &call)
+        {
+            output
+        } else if RuntimeToolOperation::classify(&call.tool_id)
             == Some(RuntimeToolOperation::ToolSearch)
         {
             execute_tool_search(
@@ -1050,7 +1072,11 @@ pub(super) async fn recover_tool_batch(
         persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
 
         let reaction_call = call.clone();
-        let output = if RuntimeToolOperation::classify(&call.tool_id)
+        let output = if let Some(output) =
+            reject_direct_detached_call(&executable_descriptors, &call)
+        {
+            output
+        } else if RuntimeToolOperation::classify(&call.tool_id)
             == Some(RuntimeToolOperation::ToolSearch)
         {
             execute_tool_search(
