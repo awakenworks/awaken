@@ -736,8 +736,10 @@ impl pc::MemoryMount for HarvestingMemoryMount {
         pc::Realization::Copy
     }
 
-    async fn teardown(self: Box<Self>) {
+    async fn teardown(&self) -> Result<(), pc::SandboxError> {
         *self.harvested.lock().unwrap() = std::fs::read(self.root.join("changed.txt")).ok();
+    
+        Ok(())
     }
 }
 
@@ -827,8 +829,10 @@ impl pc::MemoryMount for FakeMemoryMount {
         pc::Realization::Copy
     }
 
-    async fn teardown(self: Box<Self>) {
+    async fn teardown(&self) -> Result<(), pc::SandboxError> {
         self.0.store(true, Ordering::SeqCst);
+    
+        Ok(())
     }
 }
 

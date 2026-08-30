@@ -284,16 +284,19 @@ pub trait MemoryMount: Send + Sync {
     /// How the store was exposed (`Fuse` where the kernel supports it, else `Copy`).
     fn realization(&self) -> Realization;
 
-    /// Original durable heads observed when the immutable copy was materialized.
+    /// Original durable heads captured by a copy materialization. FUSE mounts
+    /// return `None`: they write through and have no terminal copy to reconcile.
+    /// Providers combine this secret-free evidence with the logical store and
+    /// mount path already present in the Sandbox specification.
     fn materialization_heads(&self) -> Option<Vec<MemoryMaterializationHead>> {
         None
     }
 
-
     /// Tear down: unmount the FUSE, or (for a writable copy) harvest edits back to
-    /// the durable store. Idempotent and best-effort — a teardown fault is logged,
-    /// not surfaced, since the sandbox is already being disposed.
-    async fn teardown(self: Box<Self>);
+    /// the durable store. The handle remains owned by its Sandbox until this
+    /// returns `Ok`, so a transport, CAS, or unmount failure is retryable and can
+    /// never be converted into successful Sandbox disposal.
+    async fn teardown(&self) -> Result<(), SandboxError>;
 }
 
 /// Secret-free, per-Sandbox projection of one already-resolved Repository config.

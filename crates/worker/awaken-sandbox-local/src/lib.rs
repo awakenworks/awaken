@@ -1014,3 +1014,154 @@ mod tests {
         assert!(error.to_string().contains("escapes workdir"));
     }
 }
+
+
+
+pub(crate) async fn teardown_memory_mounts(
+    mounts: &[Box<dyn awaken_provisioning_contract::MemoryMount>],
+) -> Result<(), awaken_provisioning_contract::SandboxError> {
+    let mut failure = None;
+    for mount in mounts {
+        if let Err(error) = mount.teardown().await
+            && failure.is_none()
+        {
+            failure = Some(error);
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+
+/// Tear down an all-or-retry set. No guard is cleared until every teardown
+/// succeeds, so a partial transport/unmount failure remains retryable and can
+/// never be converted into successful root deletion.
+pub(crate) async fn release_memory_mounts(
+    mounts: &tokio::sync::Mutex<Vec<Box<dyn awaken_provisioning_contract::MemoryMount>>>,
+) -> Result<(), awaken_provisioning_contract::SandboxError> {
+    let mut retained = mounts.lock().await;
+    teardown_memory_mounts(&retained).await?;
+    retained.clear();
+    Ok(())
+}
+
+#[path = "namespace/memory_mount.rs"]
+mod memory_mount;
+pub(crate) use memory_mount::compensate_memory_mounts;
+
+
+
+#[cfg(test)]
+mod memory_mount_release_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use awaken_provisioning_contract as pc;
+
+    struct CountedMount {
+        calls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+        fail_first: bool,
+        realization: pc::Realization,
+    }
+
+    impl Drop for CountedMount {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl pc::MemoryMount for CountedMount {
+        fn realization(&self) -> pc::Realization {
+            self.realization
+        }
+
+        async fn teardown(&self) -> Result<(), pc::SandboxError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_first && call == 0 {
+                Err(pc::SandboxError::new("retry teardown"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn teardown_failure_retains_the_complete_guard_set_until_retry() {
+        // Cause/effect table: C1 every teardown succeeds/fails, C2 retry occurs.
+        // R1 any failure returns Err and retains *all* guards (including those
+        // already reporting Ok); R2 retry re-invokes the same complete set; R3
+        // only an all-Ok pass clears it, which is the prerequisite for root and
+        // marker removal in both Local and Namespace providers.
+        let successful_calls = Arc::new(AtomicUsize::new(0));
+        let retry_calls = Arc::new(AtomicUsize::new(0));
+        let mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>> =
+            tokio::sync::Mutex::new(vec![
+                Box::new(CountedMount {
+                    calls: successful_calls.clone(),
+                    drops: Arc::new(AtomicUsize::new(0)),
+                    fail_first: false,
+                    realization: pc::Realization::Copy,
+                }),
+                Box::new(CountedMount {
+                    calls: retry_calls.clone(),
+                    drops: Arc::new(AtomicUsize::new(0)),
+                    fail_first: true,
+                    realization: pc::Realization::Copy,
+                }),
+            ]);
+
+        assert!(super::release_memory_mounts(&mounts).await.is_err(), "R1");
+        assert_eq!(mounts.lock().await.len(), 2, "R1");
+        super::release_memory_mounts(&mounts).await.expect("R2/R3");
+        assert!(mounts.lock().await.is_empty(), "R3");
+        assert_eq!(successful_calls.load(Ordering::SeqCst), 2, "R2");
+        assert_eq!(retry_calls.load(Ordering::SeqCst), 2, "R2");
+    }
+
+    #[tokio::test]
+    async fn temporary_compensation_failure_never_drops_the_only_guard_set() {
+        // Temporary-compensation decision table: C1 every teardown is Ok / at
+        // least one is Err; E1 all-Ok permits normal guard drop; E2 any Err
+        // returns failure and retains the complete ownerless set for process
+        // lifetime. This test owns E2; the retryable Mutex test above owns the
+        // distinct case where a Sandbox still exists to retain and retry E2.
+        let successful_calls = Arc::new(AtomicUsize::new(0));
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let successful_drops = Arc::new(AtomicUsize::new(0));
+        let failed_drops = Arc::new(AtomicUsize::new(0));
+        let mounts: Vec<Box<dyn pc::MemoryMount>> = vec![
+            Box::new(CountedMount {
+                calls: successful_calls.clone(),
+                drops: successful_drops.clone(),
+                fail_first: false,
+                realization: pc::Realization::Fuse,
+            }),
+            Box::new(CountedMount {
+                calls: failed_calls.clone(),
+                drops: failed_drops.clone(),
+                fail_first: true,
+                realization: pc::Realization::Fuse,
+            }),
+        ];
+
+        assert!(super::compensate_memory_mounts(mounts).await.is_err(), "E2");
+        assert_eq!(successful_calls.load(Ordering::SeqCst), 1, "E2 all tried");
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            1,
+            "E2 failure observed"
+        );
+        assert_eq!(
+            successful_drops.load(Ordering::SeqCst),
+            0,
+            "E2 full set retained"
+        );
+        assert_eq!(
+            failed_drops.load(Ordering::SeqCst),
+            0,
+            "E2 full set retained"
+        );
+    }
+}

@@ -1,4 +1,3 @@
-
 use super::*;
 use awaken_memory_store::{VolatileMemoryRepository, sha256_hex};
 
@@ -689,7 +688,7 @@ fn unmount_drain_timeout_elapses_with_lingering_open_fds() {
     // drains) and a tiny timeout; no kernel session (`None`), so `join` is skipped.
     let state = Arc::new(MountState::default());
     state.open_fds.store(1, Ordering::SeqCst);
-    let handle = MemoryMountHandle {
+    let mut handle = MemoryMountHandle {
         session: None,
         state: state.clone(),
         drain_timeout: Duration::from_millis(30),

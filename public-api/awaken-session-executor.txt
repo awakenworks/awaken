@@ -210,6 +210,7 @@ pub fn awaken_session_executor::ManagedHost::install_agent_coordination_applicat
 pub fn awaken_session_executor::ManagedHost::install_dispatch_session_runtime(self) -> Self
 pub fn awaken_session_executor::ManagedHost::install_session_background_run_application(&self, alloc::sync::Weak<dyn awaken_session_contract::run_application::SessionRunBackgroundApplication>) -> core::result::Result<(), awaken_session_executor::SessionRunBackgroundInstallError>
 pub fn awaken_session_executor::ManagedHost::new(alloc::sync::Arc<awaken_session_executor::SharedHost>) -> Self
+impl awaken_session_executor::ManagedHost
 pub fn awaken_session_executor::ManagedHost::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
 pub fn awaken_session_executor::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_credential_materializer::refresh::CredentialRefreshFactory>) -> Self
 pub fn awaken_session_executor::ManagedHost::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self

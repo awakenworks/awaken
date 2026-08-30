@@ -39,7 +39,7 @@ pub fn awaken_sandbox_memoryd::fuse::MemoryFuse::write(&mut self, &fuser::reques
 pub struct awaken_sandbox_memoryd::fuse::MemoryMountHandle
 impl awaken_sandbox_memoryd::fuse::MemoryMountHandle
 pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::open_fd_count(&self) -> usize
-pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(self)
+pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::unmount(&mut self)
 pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::with_drain_timeout(self, core::time::Duration) -> Self
 impl core::ops::drop::Drop for awaken_sandbox_memoryd::fuse::MemoryMountHandle
 pub fn awaken_sandbox_memoryd::fuse::MemoryMountHandle::drop(&mut self)

@@ -116,7 +116,7 @@ impl MemoryMountHandle {
     /// Unmount and wait for the background session to exit. Drains open fds up to
     /// the drain timeout so a close-flush in flight is not cut off; warns (never
     /// hangs) if fds remain.
-    pub fn unmount(mut self) {
+    pub fn unmount(&mut self) {
         if let Some(listener) = self.listener.take() {
             listener.stop();
         }
@@ -1167,4 +1167,5 @@ impl Filesystem for MemoryFuse {
 }
 
 #[cfg(test)]
+#[path = "fuse/tests.rs"]
 mod tests;

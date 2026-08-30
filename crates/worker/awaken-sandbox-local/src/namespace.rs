@@ -202,7 +202,7 @@ async fn realize_memory_mount(
     if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
         && guard.realization() != pc::Realization::Fuse
     {
-        guard.teardown().await;
+        guard.teardown().await?;
         return Err(err(format!(
             "mount {:?}: memory_store requires write-through FUSE realization",
             req.mount_id
@@ -670,9 +670,7 @@ impl NamespaceProvider {
                     Some(directory)
                 }
                 Err(error) => {
-                    for mount in memory_mounts {
-                        mount.teardown().await;
-                    }
+                    crate::compensate_memory_mounts(memory_mounts).await?;
                     let _ = std::fs::remove_dir_all(root.root());
                     return Err(error);
                 }
@@ -697,7 +695,7 @@ impl NamespaceProvider {
             layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
-            memory_mounts: std::sync::Mutex::new(memory_mounts),
+            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
             memory_mounter: self.memory_mounter.clone(),
             adopted_handle: None,
         })
@@ -725,7 +723,7 @@ pub struct NamespaceSandbox {
     secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts, harvested / unmounted at dispose before the tree is
     /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
-    memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
     memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
     /// Exact reader-owned wire handle retained only across adoption. Phase A
     /// never constructs restoration evidence or a host-bind runtime locator.
@@ -748,12 +746,8 @@ impl NamespaceSandbox {
 
     /// Tear down every live memory mount (harvest a copy / unmount a FUSE), draining
     /// the guard list so a later dispose is a no-op.
-    pub async fn release_memory_mounts(&self) {
-        let mounts: Vec<Box<dyn pc::MemoryMount>> =
-            std::mem::take(&mut self.memory_mounts.lock().unwrap());
-        for mount in mounts {
-            mount.teardown().await;
-        }
+    pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
+        crate::release_memory_mounts(&self.memory_mounts).await
     }
 
     /// Remove only the runtime-owned resource projection while retaining the
@@ -1102,10 +1096,11 @@ impl pc::Sandbox for NamespaceSandbox {
         if let Some((rendered, realized, guard)) =
             realize_memory_mount(&self.memory_mounter, &req, &host).await?
         {
+            let mut retained = self.memory_mounts.lock().await;
             let mut layout = self.layout.write().expect("namespace layout lock poisoned");
             layout.retain(|mount| mount.dest != req.mount_path);
             layout.push(rendered);
-            self.memory_mounts.lock().unwrap().push(guard);
+            retained.push(guard);
             return Ok(realized);
         }
         let (contents, content_hash) = match &req.source {
@@ -1193,7 +1188,7 @@ impl pc::Sandbox for NamespaceSandbox {
         // Order: harvest memory (reads edits back) → shred secrets → reap the tree, so
         // a promised memory write-back is never lost and no credential lingers on disk.
         self.control_publication.close_for_dispose().await;
-        self.release_memory_mounts().await;
+        self.release_memory_mounts().await?;
         for path in &self.secret_paths {
             if let Ok(meta) = std::fs::metadata(path) {
                 let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);

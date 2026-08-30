@@ -485,27 +485,27 @@ async fn stage_memory_binds(
         if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
             && handle.realization() != pc::Realization::Fuse
         {
-            handle.teardown().await;
+            handle.teardown().await?;
             return Err(pc::SandboxError::new(
                 "MemoryStore mount requires write-through FUSE realization",
             ));
         }
         if native_runtime_volume && handle.realization() != pc::Realization::Copy {
-            handle.teardown().await;
+            handle.teardown().await?;
             return Err(pc::SandboxError::new(
                 "remote container Memory volume requires a copy-capable MemoryMounter",
             ));
         }
         #[cfg(unix)]
         if let Err(error) = make_memory_tree_accessible(&host_path, mount.access) {
-            handle.teardown().await;
+            handle.teardown().await?;
             return Err(error);
         }
         if native_runtime_volume {
             let snapshot_tar = match memory_snapshot_tar(&host_path) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    handle.teardown().await;
+                    handle.teardown().await?;
                     return Err(error);
                 }
             };
@@ -517,7 +517,7 @@ async fn stage_memory_binds(
             let planned = match planned {
                 Ok(planned) => planned,
                 Err(error) => {
-                    handle.teardown().await;
+                    handle.teardown().await?;
                     return Err(error);
                 }
             };
@@ -1762,15 +1762,19 @@ impl ContainerCleanupState {
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
         if !*done {
+            {
+                let mut retained = self.memory.lock().await;
+                if let Some(memory) = retained.as_ref() {
+                    for mount in memory {
+                        mount.handle.teardown().await?;
+                    }
+                }
+                retained.take();
+            }
             runtime
                 .remove_with_handle(container_id, runtime_handle)
                 .await
                 .map_err(err)?;
-            if let Some(memory) = self.memory.lock().await.take() {
-                for mount in memory {
-                    mount.handle.teardown().await;
-                }
-            }
             if let Some(staging) = self.staging.lock().expect("staging mutex poisoned").take() {
                 staging.remove();
             }

@@ -267,12 +267,12 @@ impl LocalProvider {
                     }
                     sandbox.realized.push(m);
                     if let Some(guard) = guard {
-                        sandbox.memory_mounts.lock().unwrap().push(guard);
+                        sandbox.memory_mounts.lock().await.push(guard);
                     }
                 }
                 Err(e) => {
                     // Tear down any memory mounts already realized before reaping.
-                    sandbox.release_memory_mounts().await;
+                    crate::compensate_memory_mounts(std::mem::take(&mut *sandbox.memory_mounts.lock().await)).await?;
                     let _ = std::fs::remove_dir_all(sandbox.root.root());
                     return Err(e);
                 }
@@ -417,7 +417,7 @@ impl LocalProvider {
             if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
                 && guard.realization() != pc::Realization::Fuse
             {
-                guard.teardown().await;
+                guard.teardown().await?;
                 return Err(err(format!(
                     "mount {:?}: memory_store requires write-through FUSE realization",
                     req.mount_id
@@ -517,7 +517,7 @@ impl LocalProvider {
             secret_broker: self.secret_broker.clone(),
             realized: Vec::new(),
             secret_paths: Vec::new(),
-            memory_mounts: std::sync::Mutex::new(Vec::new()),
+            memory_mounts: tokio::sync::Mutex::new(Vec::new()),
             continuation_excluded_paths: Vec::new(),
             adopted_handle,
         }
@@ -590,7 +590,7 @@ pub struct LocalSandbox {
     secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
     /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
-    memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
     /// Host paths whose contents have an independent durable authority or carry
     /// credentials. They are rematerialized from that authority after restore.
     continuation_excluded_paths: Vec<PathBuf>,
@@ -626,12 +626,8 @@ impl LocalSandbox {
 
     /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
-    pub async fn release_memory_mounts(&self) {
-        let mounts: Vec<Box<dyn pc::MemoryMount>> =
-            std::mem::take(&mut self.memory_mounts.lock().unwrap());
-        for mount in mounts {
-            mount.teardown().await;
-        }
+    pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
+        crate::release_memory_mounts(&self.memory_mounts).await
     }
 
     /// Remove only the runtime-owned resource projection, preserving the rest of
@@ -929,7 +925,7 @@ impl pc::Sandbox for LocalSandbox {
         // Order: harvest memory (reads edits back, unmounts FUSE) → shred secrets
         // (overwrite credential bytes) → reap the directory. Memory harvest must run
         // before shred so a promised write-back is never lost; both run before reap.
-        self.release_memory_mounts().await;
+        self.release_memory_mounts().await?;
         self.shred_secrets();
         let root = self.root.root();
         if let Some(evidence) = self
