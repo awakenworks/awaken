@@ -136,14 +136,60 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
 /// so every execution path has the same lease behavior.
 pub(crate) struct ClaimLeaseRenewal {
     shutdown: CancellationToken,
+    attempt_cancellation: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for ClaimLeaseRenewal {
     fn drop(&mut self) {
+        self.attempt_cancellation.cancel();
         self.shutdown.cancel();
         self.task.abort();
     }
+}
+
+impl ClaimLeaseRenewal {
+    fn attempt_cancellation(&self) -> CancellationToken {
+        self.attempt_cancellation.clone()
+    }
+}
+
+/// Owns the one signal-only bridge needed when a claimed drive also has a host
+/// cancellation token. Runtime still consumes one canonical cooperative token;
+/// this relay merely makes either existing authority observable through it.
+struct AttemptCancellationRelay {
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for AttemptCancellationRelay {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+fn combine_attempt_cancellation(
+    claim_cancellation: CancellationToken,
+    host_cancellation: Option<&CancellationToken>,
+) -> (CancellationToken, AttemptCancellationRelay) {
+    let Some(host_cancellation) = host_cancellation.cloned() else {
+        return (claim_cancellation, AttemptCancellationRelay { task: None });
+    };
+    let combined = CancellationToken::new();
+    if claim_cancellation.is_cancelled() || host_cancellation.is_cancelled() {
+        combined.cancel();
+        return (combined, AttemptCancellationRelay { task: None });
+    }
+    let relay_target = combined.clone();
+    let task = tokio::spawn(async move {
+        tokio::select! {
+            _ = claim_cancellation.cancelled() => {}
+            _ = host_cancellation.cancelled() => {}
+        }
+        relay_target.cancel();
+    });
+    (combined, AttemptCancellationRelay { task: Some(task) })
 }
 
 enum CommittedTerminalSettlement {
@@ -172,7 +218,9 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
     let owner = claim.owner.clone();
     let interval = Duration::from_millis((lease_ms / 3).max(1));
     let shutdown = CancellationToken::new();
+    let attempt_cancellation = CancellationToken::new();
     let task_shutdown = shutdown.clone();
+    let task_attempt_cancellation = attempt_cancellation.clone();
     let task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -186,6 +234,11 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                                 %owner,
                                 "dispatch lease renewal lost exact claim ownership"
                             );
+                            // Exact ownership is already authoritatively lost.
+                            // Wake Runtime's existing cooperative cancellation
+                            // seam now; waiting for the provider call to return
+                            // only creates stale checkpoints and wasted usage.
+                            task_attempt_cancellation.cancel();
                             break;
                         }
                         Err(error) => tracing::warn!(
@@ -199,7 +252,11 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
             }
         }
     });
-    ClaimLeaseRenewal { shutdown, task }
+    ClaimLeaseRenewal {
+        shutdown,
+        attempt_cancellation,
+        task,
+    }
 }
 
 impl<S: Dispatch + 'static> DispatchWorker<S> {
@@ -292,6 +349,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             &None,
             &[],
             clock,
+            None,
         );
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
@@ -548,6 +606,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
         clock: Arc<dyn Clock>,
+        attempt_cancellation: Option<&CancellationToken>,
     ) -> RuntimeRunContext {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
@@ -562,7 +621,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let ownership = claim_bound_ownership_verifier(dispatch.clone(), claim.clone(), clock);
         let mut ctx = self
             .exec
-            .runtime_context(self.cancellation.clone().unwrap_or_default(), Some(claim))
+            .runtime_context(
+                attempt_cancellation
+                    .cloned()
+                    .or_else(|| self.cancellation.clone())
+                    .unwrap_or_default(),
+                Some(claim),
+            )
             .with_commit(fenced)
             .with_ownership(ownership);
         // Durable ingress owns terminal delivery after committed truth is visible
@@ -776,8 +841,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: Claimed,
         clock: Arc<dyn Clock>,
-        _lease_renewal: ClaimLeaseRenewal,
+        lease_renewal: ClaimLeaseRenewal,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let (attempt_cancellation, _cancellation_relay) = combine_attempt_cancellation(
+            lease_renewal.attempt_cancellation(),
+            self.cancellation.as_ref(),
+        );
         // One drive receives one edge-owned clock. Claim eligibility, lease
         // renewal, pre-effect ownership checks, and settlement fencing must all
         // read this same source; the Worker never substitutes a private clock.
@@ -917,6 +986,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 &None,
                 &[],
                 clock.clone(),
+                Some(&attempt_cancellation),
             );
             if let Err(error) = attempt_executor
                 .cancel(activation.clone(), context.clone())
@@ -1057,6 +1127,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             &None,
             &claimed.credential_bindings,
             clock.clone(),
+            Some(&attempt_cancellation),
         );
         let model_executor = self
             .exec
@@ -1578,6 +1649,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             &None,
             &[],
             clock.clone(),
+            None,
         );
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(

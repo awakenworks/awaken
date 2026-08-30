@@ -226,6 +226,32 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transport_heartbeats_do_not_count_as_model_progress() {
+    // Test design — Causes: an open unfinished stream emits provider ping/no-op
+    // events inside the transport interval but no text, reasoning, tool call,
+    // or terminal event. Effects: the useful-progress idle deadline wins before
+    // the larger total response budget and remains retryable. Constraint: raw
+    // SSE activity cannot become a second definition of assistant progress.
+    // Decision rule S1 variant: C1+C2+C3(raw activity only)=>E1+E3.
+    let base_url = spawn_sse_server(StreamFixture::AnthropicHeartbeat).await;
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .with_timeout(Duration::from_secs(5))
+            .with_idle_timeout(Duration::from_millis(300));
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        executor.infer_streaming(request(), &NullSink),
+    )
+    .await
+    .expect("raw heartbeats cannot keep inference pending");
+    let error = result.expect_err("an unfinished heartbeat-only response fails");
+    assert_eq!(error.code(), "timeout");
+    assert!(error.is_retryable());
+    assert!(error.to_string().contains("no useful event"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn protocol_end_completes_without_waiting_for_transport_eof() {
     // OpenAI empty-choice cause/effect table. Causes: C1 one or more role/no-op
     // choice chunks precede output; C2 useful content later arrives; C3 a

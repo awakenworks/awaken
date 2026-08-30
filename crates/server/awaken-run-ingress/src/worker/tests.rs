@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use super::{
-    DispatchWorker, cancellation_uses_tool_interruption, recovered_attempt_disposition,
-    settle_outcome,
+    DispatchWorker, cancellation_uses_tool_interruption, combine_attempt_cancellation,
+    recovered_attempt_disposition, settle_outcome,
 };
 use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, PendingTool, RemoteInputReason, ResumeTicket, ToolAwaitReason,
@@ -26,6 +26,53 @@ use crate::{DispatchQueue, FencedStreamCheckpointStore, MemoryDispatchStore, Run
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
+use tokio_util::sync::CancellationToken;
+
+#[tokio::test]
+async fn attempt_cancellation_combines_claim_and_host_without_a_second_authority() {
+    // Cause/effect graph: C1=claim cancellation is already/currently signalled;
+    // C2=an optional host cancellation is already/currently signalled. Effect
+    // E1=Runtime's one combined token is cancelled; E2=an absent host preserves
+    // the exact claim token instead of spawning a redundant relay.
+    //
+    // | Rule | Claim | Host | Effect |
+    // | AC1 | live | absent | E2; later claim cancellation -> E1 |
+    // | AC2 | live | live | either later cancellation -> E1 |
+    // | AC3 | cancelled | any | immediate E1 |
+    // | AC4 | live | cancelled | immediate E1 |
+    // Constraint: this signal relay owns no lifecycle or persistence state.
+    let claim_only = CancellationToken::new();
+    let (combined, _relay) = combine_attempt_cancellation(claim_only.clone(), None);
+    assert_eq!(combined, claim_only, "AC1/E2");
+    claim_only.cancel();
+    combined.cancelled().await;
+    assert!(combined.is_cancelled(), "AC1/E1");
+
+    for cancel_claim in [true, false] {
+        let claim = CancellationToken::new();
+        let host = CancellationToken::new();
+        let (combined, _relay) = combine_attempt_cancellation(claim.clone(), Some(&host));
+        if cancel_claim {
+            claim.cancel();
+        } else {
+            host.cancel();
+        }
+        combined.cancelled().await;
+        assert!(combined.is_cancelled(), "AC2/E1");
+    }
+
+    let cancelled_claim = CancellationToken::new();
+    cancelled_claim.cancel();
+    let (combined, _relay) =
+        combine_attempt_cancellation(cancelled_claim, Some(&CancellationToken::new()));
+    assert!(combined.is_cancelled(), "AC3/E1");
+
+    let cancelled_host = CancellationToken::new();
+    cancelled_host.cancel();
+    let (combined, _relay) =
+        combine_attempt_cancellation(CancellationToken::new(), Some(&cancelled_host));
+    assert!(combined.is_cancelled(), "AC4/E1");
+}
 
 // Behavior 1: an illegal `Running` executor result fails loudly — the worker
 // must NOT settle a live run to Done/Awaiting. `settle_outcome` is the decision
@@ -471,6 +518,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         &None,
         &[],
         Arc::new(crate::ManualClock::new(0)),
+        None,
     );
 
     assert!(

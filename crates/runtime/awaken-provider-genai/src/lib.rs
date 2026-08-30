@@ -241,18 +241,29 @@ impl LlmExecutor for GenaiExecutor {
         let mut tool_sent: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         let deadline = started + self.timeout;
+        let mut progress_deadline = Instant::now() + self.idle_timeout;
 
         loop {
-            // Two independent bounds share the one configured call timeout:
-            // the fixed deadline catches providers that emit no-op/heartbeat
-            // events forever, while the idle window catches a silent connection.
+            // Two independent bounds share the one configured call timeout.
+            // The fixed deadline caps the complete reasoning response; the
+            // progress deadline ignores transport/no-op activity and requires
+            // actual text, reasoning, tool progress, or a terminal event. This
+            // prevents provider heartbeats and empty choices from occupying the
+            // full reasoning budget while retaining one stream parser/authority.
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(Error::Timeout(
                     "model stream exceeded total timeout".to_string(),
                 ));
             }
-            let wait = self.idle_timeout.min(remaining);
+            let progress_remaining = progress_deadline.saturating_duration_since(Instant::now());
+            if progress_remaining.is_zero() {
+                return Err(Error::Timeout(format!(
+                    "model stream stalled: no useful event within {:?}",
+                    self.idle_timeout
+                )));
+            }
+            let wait = progress_remaining.min(remaining);
             let event = match tokio::time::timeout(wait, stream.next()).await {
                 Ok(Some(event)) => event,
                 Ok(None) => break,
@@ -263,22 +274,25 @@ impl LlmExecutor for GenaiExecutor {
                 }
                 Err(_) => {
                     return Err(Error::Timeout(format!(
-                        "model stream stalled: no event within {:?}",
+                        "model stream stalled: no useful event within {:?}",
                         self.idle_timeout
                     )));
                 }
             };
+            let mut made_progress = false;
             match event.map_err(|err| classify_error(&err.to_string()))? {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
                 ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
                     sink.on_text(&chunk.content).await;
                     text.push_str(&chunk.content);
+                    made_progress = true;
                 }
                 // Live tool-call progress: genai hands incremental, string-encoded
                 // arguments here. Best-effort only; the committed response is the End
                 // event, where genai has parsed the arguments into an object.
                 ChatStreamEvent::ToolCallChunk(tool) => {
                     let call = from_genai_tool_call(&tool.tool_call);
+                    let is_new_call = !tool_calls.iter().any(|c| c.call_id == call.call_id);
                     // genai's `arguments` is the cumulative JSON string so far; emit
                     // only the newly-appended suffix. A non-string or non-continuation
                     // snapshot is skipped (best-effort — the End event carries the
@@ -289,8 +303,10 @@ impl LlmExecutor for GenaiExecutor {
                             sink.on_tool_call_delta(&call.call_id, &call.tool_id, &cum[*sent..])
                                 .await;
                             *sent = cum.len();
+                            made_progress = true;
                         }
                     }
+                    made_progress |= is_new_call;
                     match tool_calls.iter_mut().find(|c| c.call_id == call.call_id) {
                         Some(existing) => *existing = call,
                         None => tool_calls.push(call),
@@ -300,8 +316,11 @@ impl LlmExecutor for GenaiExecutor {
                 // channel; Managed exposes only a start marker and never the text.
                 // The completed form still becomes the committed `Thinking` block.
                 ChatStreamEvent::ReasoningChunk(chunk) => {
-                    sink.on_reasoning(&chunk.content).await;
-                    reasoning.push_str(&chunk.content);
+                    if !chunk.content.is_empty() {
+                        sink.on_reasoning(&chunk.content).await;
+                        reasoning.push_str(&chunk.content);
+                        made_progress = true;
+                    }
                 }
                 // Committed response: genai's parsed, ordered content and usage.
                 ChatStreamEvent::End(end) => {
@@ -324,6 +343,9 @@ impl LlmExecutor for GenaiExecutor {
                     break;
                 }
                 _ => {}
+            }
+            if made_progress {
+                progress_deadline = Instant::now() + self.idle_timeout;
             }
         }
 
