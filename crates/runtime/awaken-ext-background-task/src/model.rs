@@ -116,15 +116,26 @@ pub struct RemoteContinuation {
     pub protocol: RemoteProtocol,
     pub server_binding: String,
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_ms: Option<u64>,
 }
 
 impl RemoteContinuation {
     pub fn validate(&self) -> Result<(), BackgroundTaskError> {
-        if self.server_binding.trim().is_empty() || self.task_id.trim().is_empty() {
+        if self.server_binding.trim().is_empty()
+            || self.task_id.trim().is_empty()
+            || self.poll_interval_ms == Some(0)
+        {
             Err(BackgroundTaskError::InvalidContinuation)
         } else {
             Ok(())
         }
+    }
+
+    fn same_remote_task_as(&self, other: &Self) -> bool {
+        self.protocol == other.protocol
+            && self.server_binding == other.server_binding
+            && self.task_id == other.task_id
     }
 }
 
@@ -166,6 +177,8 @@ pub enum BackgroundTaskLifecycle {
     },
     Cancelling {
         attempt: TaskAttempt,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait: Option<BackgroundWait>,
     },
     Ended {
         end: BackgroundTaskEnd,
@@ -181,7 +194,7 @@ impl BackgroundTaskLifecycle {
         match self {
             Self::Running { attempt }
             | Self::Waiting { attempt, .. }
-            | Self::Cancelling { attempt } => Some(attempt),
+            | Self::Cancelling { attempt, .. } => Some(attempt),
             Self::Requested | Self::Ended { .. } => None,
         }
     }
@@ -194,6 +207,19 @@ impl BackgroundTaskLifecycle {
             Self::Cancelling { .. } => TaskPhase::Cancelling,
             Self::Ended { .. } => TaskPhase::Ended,
         }
+    }
+
+    fn has_remote_continuation(&self) -> bool {
+        matches!(
+            self,
+            Self::Waiting {
+                wait: BackgroundWait::Remote(_),
+                ..
+            } | Self::Cancelling {
+                wait: Some(BackgroundWait::Remote(_)),
+                ..
+            }
+        )
     }
 }
 
@@ -223,6 +249,13 @@ const fn cancel_decision(phase: TaskPhase) -> CancelDecision {
 
 const fn cancellation_wins_completion(phase: TaskPhase) -> bool {
     matches!(phase, TaskPhase::Cancelling)
+}
+
+const fn expired_attempt_is_reconnectable(
+    mode: ToolRecoveryMode,
+    has_remote_continuation: bool,
+) -> bool {
+    !matches!(mode, ToolRecoveryMode::NeverReplay) || has_remote_continuation
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -332,19 +365,29 @@ impl BackgroundTask {
         let expires = now_ms
             .checked_add(lease_ms)
             .ok_or(BackgroundTaskError::ClockOverflow)?;
+        let remote_reconnectable = self.lifecycle.has_remote_continuation();
         let (epoch, policy) = match &self.lifecycle {
             BackgroundTaskLifecycle::Running { attempt }
             | BackgroundTaskLifecycle::Waiting { attempt, .. }
-            | BackgroundTaskLifecycle::Cancelling { attempt }
+            | BackgroundTaskLifecycle::Cancelling { attempt, .. }
                 if attempt.lease_expires_at_ms <= now_ms =>
             {
-                if attempt.policy.recovery.mode() == ToolRecoveryMode::NeverReplay {
+                if !expired_attempt_is_reconnectable(
+                    attempt.policy.recovery.mode(),
+                    remote_reconnectable,
+                ) {
                     self.end(BackgroundTaskEnd::Indeterminate {
                         message: "worker lease expired after a non-replayable effect".into(),
                     })?;
                     return Ok(TaskClaim::EndedIndeterminate);
                 }
                 if attempt.epoch >= u64::from(attempt.policy.recovery.max_attempts().get()) {
+                    if remote_reconnectable {
+                        self.end(BackgroundTaskEnd::Indeterminate {
+                            message: "remote background task observation budget exhausted; remote outcome is unknown".into(),
+                        })?;
+                        return Ok(TaskClaim::EndedIndeterminate);
+                    }
                     self.end(BackgroundTaskEnd::Failed {
                         message: "background task recovery attempt budget exhausted".into(),
                     })?;
@@ -371,7 +414,23 @@ impl BackgroundTask {
             policy,
         };
         let fence = attempt.fence();
-        self.replace_lifecycle(BackgroundTaskLifecycle::Running { attempt })?;
+        let lifecycle = match &self.lifecycle {
+            BackgroundTaskLifecycle::Running { .. } => BackgroundTaskLifecycle::Running { attempt },
+            BackgroundTaskLifecycle::Waiting { wait, .. } => BackgroundTaskLifecycle::Waiting {
+                attempt,
+                wait: wait.clone(),
+            },
+            BackgroundTaskLifecycle::Cancelling { wait, .. } => {
+                BackgroundTaskLifecycle::Cancelling {
+                    attempt,
+                    wait: wait.clone(),
+                }
+            }
+            BackgroundTaskLifecycle::Requested | BackgroundTaskLifecycle::Ended { .. } => {
+                return Err(BackgroundTaskError::InvalidTransition);
+            }
+        };
+        self.replace_lifecycle(lifecycle)?;
         Ok(TaskClaim::Acquired(fence))
     }
 
@@ -399,9 +458,10 @@ impl BackgroundTask {
                     wait: wait.clone(),
                 }
             }
-            BackgroundTaskLifecycle::Cancelling { attempt } if attempt.owns(fence) => {
+            BackgroundTaskLifecycle::Cancelling { attempt, wait } if attempt.owns(fence) => {
                 BackgroundTaskLifecycle::Cancelling {
                     attempt: extended_attempt(attempt, expires)?,
+                    wait: wait.clone(),
                 }
             }
             _ => return Err(BackgroundTaskError::StaleFence),
@@ -417,16 +477,43 @@ impl BackgroundTask {
         if let BackgroundWait::Remote(continuation) = &wait {
             continuation.validate()?;
         }
-        let attempt = self
-            .lifecycle
-            .attempt()
-            .filter(|attempt| attempt.owns(fence))
-            .cloned()
-            .ok_or(BackgroundTaskError::StaleFence)?;
-        if !matches!(self.lifecycle, BackgroundTaskLifecycle::Running { .. }) {
-            return Err(BackgroundTaskError::InvalidTransition);
-        }
-        self.replace_lifecycle(BackgroundTaskLifecycle::Waiting { attempt, wait })
+        let lifecycle = match &self.lifecycle {
+            BackgroundTaskLifecycle::Running { attempt } if attempt.owns(fence) => {
+                BackgroundTaskLifecycle::Waiting {
+                    attempt: attempt.clone(),
+                    wait,
+                }
+            }
+            BackgroundTaskLifecycle::Waiting {
+                attempt,
+                wait: current,
+            } if attempt.owns(fence) && same_wait_target(current, &wait) => {
+                BackgroundTaskLifecycle::Waiting {
+                    attempt: attempt.clone(),
+                    wait,
+                }
+            }
+            BackgroundTaskLifecycle::Cancelling {
+                attempt,
+                wait: current,
+            } if attempt.owns(fence) && cancelling_accepts_wait(current.as_ref(), &wait) => {
+                BackgroundTaskLifecycle::Cancelling {
+                    attempt: attempt.clone(),
+                    wait: Some(wait),
+                }
+            }
+            lifecycle if lifecycle.attempt().is_some() => {
+                if lifecycle
+                    .attempt()
+                    .is_some_and(|attempt| !attempt.owns(fence))
+                {
+                    return Err(BackgroundTaskError::StaleFence);
+                }
+                return Err(BackgroundTaskError::InvalidTransition);
+            }
+            _ => return Err(BackgroundTaskError::StaleFence),
+        };
+        self.replace_lifecycle(lifecycle)
     }
 
     pub fn request_cancel(&mut self) -> Result<(), BackgroundTaskError> {
@@ -435,12 +522,16 @@ impl BackgroundTask {
                 end: BackgroundTaskEnd::Cancelled,
             }),
             CancelDecision::MarkCancelling => {
-                let attempt = self
-                    .lifecycle
-                    .attempt()
-                    .ok_or(BackgroundTaskError::InvalidPersistedState)?;
+                let (attempt, wait) = match &self.lifecycle {
+                    BackgroundTaskLifecycle::Running { attempt } => (attempt, None),
+                    BackgroundTaskLifecycle::Waiting { attempt, wait } => {
+                        (attempt, Some(wait.clone()))
+                    }
+                    _ => return Err(BackgroundTaskError::InvalidPersistedState),
+                };
                 Some(BackgroundTaskLifecycle::Cancelling {
                     attempt: attempt.clone(),
+                    wait,
                 })
             }
             CancelDecision::Stutter => None,
@@ -497,22 +588,47 @@ impl BackgroundTask {
         match &self.lifecycle {
             BackgroundTaskLifecycle::Requested if self.revision == 0 => Ok(()),
             BackgroundTaskLifecycle::Ended { .. } if self.revision > 0 => Ok(()),
-            BackgroundTaskLifecycle::Running { attempt }
-            | BackgroundTaskLifecycle::Cancelling { attempt }
-                if self.revision > 0 =>
-            {
+            BackgroundTaskLifecycle::Running { attempt } if self.revision > 0 => {
                 validate_attempt(attempt)
             }
             BackgroundTaskLifecycle::Waiting { attempt, wait } if self.revision > 0 => {
                 validate_attempt(attempt)?;
-                if let BackgroundWait::Remote(continuation) = wait {
-                    continuation.validate()?;
+                validate_wait(wait)?;
+                Ok(())
+            }
+            BackgroundTaskLifecycle::Cancelling { attempt, wait } if self.revision > 0 => {
+                validate_attempt(attempt)?;
+                if let Some(wait) = wait {
+                    validate_wait(wait)?;
                 }
                 Ok(())
             }
             _ => Err(BackgroundTaskError::InvalidPersistedState),
         }
     }
+}
+
+fn validate_wait(wait: &BackgroundWait) -> Result<(), BackgroundTaskError> {
+    if let BackgroundWait::Remote(continuation) = wait {
+        continuation.validate()?;
+    }
+    Ok(())
+}
+
+fn same_wait_target(current: &BackgroundWait, next: &BackgroundWait) -> bool {
+    match (current, next) {
+        (BackgroundWait::Remote(current), BackgroundWait::Remote(next)) => {
+            current.same_remote_task_as(next)
+        }
+        (BackgroundWait::ExternalInput, BackgroundWait::ExternalInput)
+        | (BackgroundWait::Resource, BackgroundWait::Resource) => true,
+        _ => false,
+    }
+}
+
+fn cancelling_accepts_wait(current: Option<&BackgroundWait>, next: &BackgroundWait) -> bool {
+    matches!(next, BackgroundWait::Remote(_))
+        && current.is_none_or(|current| same_wait_target(current, next))
 }
 
 fn extended_attempt(
@@ -552,7 +668,9 @@ pub enum BackgroundTaskError {
     StaleFence,
     #[error("background task lease must advance monotonically")]
     NonMonotonicLease,
-    #[error("remote continuation requires a server binding and task id")]
+    #[error(
+        "remote continuation requires a server binding, task id, and a positive poll interval when present"
+    )]
     InvalidContinuation,
     #[error("background task clock overflow")]
     ClockOverflow,
@@ -593,4 +711,28 @@ fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
         cancellation_wins_completion(phase),
         phase == TaskPhase::Cancelling
     );
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn never_replay_recovery_requires_a_durable_remote_continuation() {
+    let raw: u8 = kani::any();
+    kani::assume(raw < 4);
+    let mode = match raw {
+        0 => ToolRecoveryMode::NeverReplay,
+        1 => ToolRecoveryMode::ReplaySafe,
+        2 => ToolRecoveryMode::Idempotent,
+        _ => ToolRecoveryMode::DurableRequest,
+    };
+    let has_remote_continuation: bool = kani::any();
+    assert_eq!(
+        expired_attempt_is_reconnectable(mode, has_remote_continuation),
+        mode != ToolRecoveryMode::NeverReplay || has_remote_continuation
+    );
+    if mode == ToolRecoveryMode::NeverReplay {
+        assert_eq!(
+            expired_attempt_is_reconnectable(mode, has_remote_continuation),
+            has_remote_continuation
+        );
+    }
 }

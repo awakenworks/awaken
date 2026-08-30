@@ -48,6 +48,27 @@ impl LlmExecutor for DeterministicBackgroundAttentionModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let visible = request
+            .tools
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            visible.iter().all(|id| {
+                matches!(
+                    *id,
+                    "run_in_background"
+                        | "get_background_task"
+                        | "list_background_tasks"
+                        | "cancel_background_task"
+                )
+            }),
+            "the Agent sees only BackgroundTask tools, got {visible:?}"
+        );
+        assert!(
+            !visible.contains(&"bash"),
+            "configured target stays internal"
+        );
         let last_role = request.messages.last().map(|message| message.role);
         let attention_task = task_id_from_attention(&request);
         let output = match (attention_task, last_role) {
@@ -193,7 +214,7 @@ async fn wait_for_completion(app: &Router, session_id: &str, timeout: Duration) 
         }) {
             panic!(
                 "model-backed Session failed before completion attention: {}",
-                error["error"]["type"]
+                error["error"]
             );
         }
         assert!(
@@ -266,20 +287,20 @@ fn assert_completion_chain(events: &Value) {
         .map(event_text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(results.contains("\"state\":\"ended\""), "{results}");
-    assert!(results.contains("\"outcome\":\"completed\""), "{results}");
+    assert!(results.contains("\"state\":\"completed\""), "{results}");
+    assert!(results.contains("BACKGROUND_E2E_RESULT"), "{results}");
 }
 
 #[tokio::test]
-async fn background_completion_wakes_the_same_session_and_commits_before_inference() {
+async fn background_completion_folds_before_inference_and_commits_before_next_effect() {
     // Cause/effect decision table:
     // R1 foreground committed Running task -> post-commit target executes once;
     // R2 fenced process completion -> deterministic System attention Run enters
-    // the same Session; R3 StepStart sees the matching completion -> commits
-    // Ended before the model calls get_background_task; R4 attention settles ->
-    // Session returns to Idle. Effects are observed through the public Managed
-    // event projection, while Thread State and Session admission remain the sole
-    // authorities; no notification table or test-only execution driver exists.
+    // the same Session; R3 StepStart sees the matching completion -> folds Ended
+    // into the inference view, then the Requested get_background_task batch
+    // commits that state before its tool effect; R4 attention settles -> Session
+    // returns to Idle. A text-only attention response would commit at its normal
+    // terminal boundary; no notification table or test-only commit path exists.
     let events = exercise_background_attention(
         Arc::new(DeterministicBackgroundAttentionModel),
         "background-scripted",
@@ -294,7 +315,8 @@ async fn background_completion_wakes_the_same_session_and_commits_before_inferen
 async fn live_model_observes_background_completion_through_the_system_attention_run() {
     // Live rule L1: the same R1-R4 chain above is driven by an external model
     // that must select both typed tools from their schemas. Constraint L0: the
-    // frozen publication exposes only bash plus the two exact lifecycle tools;
+    // frozen publication exposes only the BackgroundTask lifecycle tools; bash
+    // remains executable solely behind their typed launcher schema, while
     // read-all/cancel and unrelated hand tools are disabled so the canary tests
     // this causal path rather than model exploration. This supplements, but
     // never replaces, deterministic lifecycle evidence. Provider/network failure

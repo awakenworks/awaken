@@ -161,6 +161,30 @@ impl PhaseHook for ReconcileBackgroundTasks {
                     Err(_) => continue,
                 }
             }
+            if let Some(candidate) = self.supervisor.wait_candidate(&task.id) {
+                let folded = (|| {
+                    if candidate.renew_lease {
+                        task.heartbeat(
+                            &candidate.fence,
+                            BackgroundTaskSupervisor::now_ms(),
+                            BackgroundTaskSupervisor::lease_ms(),
+                        )?;
+                    }
+                    task.wait(&candidate.fence, candidate.wait)
+                })();
+                match folded {
+                    Ok(()) => {
+                        if let Ok(command) = task_state_cell(&task.id).write(&task) {
+                            commands.push(command);
+                        }
+                        continue;
+                    }
+                    Err(BackgroundTaskError::StaleFence) => {
+                        self.supervisor.retire(&task.id);
+                    }
+                    Err(_) => continue,
+                }
+            }
             if matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. }) {
                 self.supervisor.cancel(&task.id);
             }

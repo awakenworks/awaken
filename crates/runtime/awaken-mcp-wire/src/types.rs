@@ -58,7 +58,7 @@ pub struct ToolAnnotations {
     pub open_world_hint: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskSupport {
     #[default]
@@ -147,6 +147,57 @@ pub struct ListToolsResult {
 pub struct TaskMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u64>,
+}
+
+/// Status of one durable MCP request (2025-11-25 Tasks utility).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Working,
+    InputRequired,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Server-owned durable request coordinates and current status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpTask {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub status: TaskStatus,
+    #[serde(rename = "statusMessage", skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "lastUpdatedAt")]
+    pub last_updated_at: String,
+    /// Actual retention in milliseconds; `None` is the protocol's explicit
+    /// `null` meaning unlimited retention.
+    #[serde(deserialize_with = "deserialize_required_nullable_u64")]
+    pub ttl: Option<u64>,
+    #[serde(rename = "pollInterval", skip_serializing_if = "Option::is_none")]
+    pub poll_interval: Option<u64>,
+}
+
+fn deserialize_required_nullable_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer)
+}
+
+/// Immediate response to a task-augmented request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateTaskResult {
+    pub task: McpTask,
+}
+
+/// Parameters shared by `tasks/get`, `tasks/result`, and `tasks/cancel`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskIdParams {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +372,48 @@ pub struct ServerToolCapabilities {
     pub list_changed: Option<bool>,
 }
 
+/// Request kinds a server permits to be augmented with MCP Tasks.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTaskToolRequests {
+    /// Presence means `tools/call` accepts `params.task` and returns
+    /// [`CreateTaskResult`]. The object is intentionally extension-preserving.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTaskRequests {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ServerTaskToolRequests>,
+}
+
+/// Server-side MCP Tasks capabilities negotiated during `initialize`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ServerTaskCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<serde_json::Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<serde_json::Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests: Option<ServerTaskRequests>,
+}
+
+impl ServerTaskCapabilities {
+    #[must_use]
+    pub fn supports_tool_call(&self) -> bool {
+        self.requests
+            .as_ref()
+            .and_then(|requests| requests.tools.as_ref())
+            .and_then(|tools| tools.call.as_ref())
+            .is_some()
+    }
+
+    #[must_use]
+    pub fn supports_cancel(&self) -> bool {
+        self.cancel.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -336,7 +429,7 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ServerToolCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tasks: Option<Value>,
+    pub tasks: Option<ServerTaskCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,4 +467,82 @@ pub struct InitializeResult {
     pub capabilities: ServerCapabilities,
     #[serde(rename = "serverInfo")]
     pub server_info: ServerInfo,
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+
+    #[test]
+    fn task_wire_shapes_and_capability_presence_follow_2025_11_25() {
+        // Cause/effect graph: C1=initialize contains tasks.requests.tools.call;
+        // C2=cancel is present; C3=task status is input_required with null TTL
+        // and a poll interval. Effects: E1=tool-call augmentation is negotiated;
+        // E2=cancel is negotiated independently; E3=task identity/status/timing
+        // round-trip without turning protocol null into a fabricated duration.
+        // Decision rule T1=C1+C2+C3=>E1+E2+E3.
+        let capabilities: ServerCapabilities = serde_json::from_value(serde_json::json!({
+            "tasks": {
+                "cancel": {},
+                "requests": { "tools": { "call": {} } }
+            }
+        }))
+        .expect("valid server capabilities");
+        let tasks = capabilities.tasks.expect("tasks present");
+        assert!(tasks.supports_tool_call(), "T1/E1");
+        assert!(tasks.supports_cancel(), "T1/E2");
+
+        let task: McpTask = serde_json::from_value(serde_json::json!({
+            "taskId": "remote-1",
+            "status": "input_required",
+            "statusMessage": "waiting for approval",
+            "createdAt": "2026-08-30T00:00:00Z",
+            "lastUpdatedAt": "2026-08-30T00:00:01Z",
+            "ttl": null,
+            "pollInterval": 250
+        }))
+        .expect("valid task");
+        assert_eq!(task.task_id, "remote-1", "T1/E3");
+        assert_eq!(task.status, TaskStatus::InputRequired, "T1/E3");
+        assert_eq!(task.ttl, None, "T1/E3");
+        assert_eq!(task.poll_interval, Some(250), "T1/E3");
+        assert_eq!(serde_json::to_value(&task).unwrap()["ttl"], Value::Null);
+    }
+
+    #[test]
+    fn absent_task_capabilities_fail_closed_and_task_params_use_camel_case() {
+        // Cause/effect graph: C1=no tasks capability; C2=only unrelated tasks
+        // members are present; C3=one task-id request; C4=a Task omits its
+        // required nullable TTL. Effects: E1=no tool-call or cancel support is
+        // inferred; E2=the request uses the exact taskId wire key; E3=the
+        // malformed Task is rejected. Decision rules T2=C1|C2=>E1;
+        // T3=C3=>E2; T4=C4=>E3.
+        let absent = ServerTaskCapabilities::default();
+        assert!(!absent.supports_tool_call(), "T2/E1");
+        assert!(!absent.supports_cancel(), "T2/E1");
+        let list_only: ServerTaskCapabilities =
+            serde_json::from_value(serde_json::json!({"list": {}})).unwrap();
+        assert!(!list_only.supports_tool_call(), "T2/E1");
+        assert!(!list_only.supports_cancel(), "T2/E1");
+
+        assert_eq!(
+            serde_json::to_value(TaskIdParams {
+                task_id: "remote-2".into()
+            })
+            .unwrap(),
+            serde_json::json!({"taskId": "remote-2"}),
+            "T3/E2"
+        );
+
+        let missing_ttl = serde_json::json!({
+            "taskId": "remote-3",
+            "status": "working",
+            "createdAt": "2026-08-30T00:00:00Z",
+            "lastUpdatedAt": "2026-08-30T00:00:01Z"
+        });
+        assert!(
+            serde_json::from_value::<McpTask>(missing_ttl).is_err(),
+            "T4/E3 required nullable fields are not optional fields"
+        );
+    }
 }

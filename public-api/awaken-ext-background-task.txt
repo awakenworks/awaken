@@ -24,6 +24,7 @@ pub awaken_ext_background_task::BackgroundTaskError::Terminal
 pub enum awaken_ext_background_task::BackgroundTaskLifecycle
 pub awaken_ext_background_task::BackgroundTaskLifecycle::Cancelling
 pub awaken_ext_background_task::BackgroundTaskLifecycle::Cancelling::attempt: awaken_ext_background_task::TaskAttempt
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Cancelling::wait: core::option::Option<awaken_ext_background_task::BackgroundWait>
 pub awaken_ext_background_task::BackgroundTaskLifecycle::Ended
 pub awaken_ext_background_task::BackgroundTaskLifecycle::Ended::end: awaken_ext_background_task::BackgroundTaskEnd
 pub awaken_ext_background_task::BackgroundTaskLifecycle::Requested
@@ -100,9 +101,17 @@ pub fn awaken_ext_background_task::BackgroundTaskSupervisor::lease_ms() -> u64
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::now_ms() -> u64
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::register(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::resume_wait(&self, &awaken_ext_background_task::BackgroundTaskId, &awaken_ext_background_task::TaskFence) -> core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::retire(&self, &awaken_ext_background_task::BackgroundTaskId)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::wait(&self, awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskWaitCandidate)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::wait_candidate(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<awaken_ext_background_task::BackgroundTaskWaitCandidate>
 pub fn awaken_ext_background_task::BackgroundTaskSupervisor::worker_id(&self) -> &str
+pub struct awaken_ext_background_task::BackgroundTaskWaitCandidate
+pub awaken_ext_background_task::BackgroundTaskWaitCandidate::fence: awaken_ext_background_task::TaskFence
+pub awaken_ext_background_task::BackgroundTaskWaitCandidate::renew_lease: bool
+pub awaken_ext_background_task::BackgroundTaskWaitCandidate::wait: awaken_ext_background_task::BackgroundWait
 pub struct awaken_ext_background_task::RemoteContinuation
+pub awaken_ext_background_task::RemoteContinuation::poll_interval_ms: core::option::Option<u64>
 pub awaken_ext_background_task::RemoteContinuation::protocol: awaken_ext_background_task::RemoteProtocol
 pub awaken_ext_background_task::RemoteContinuation::server_binding: alloc::string::String
 pub awaken_ext_background_task::RemoteContinuation::task_id: alloc::string::String

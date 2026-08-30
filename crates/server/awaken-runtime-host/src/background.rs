@@ -8,7 +8,7 @@
 //! to a timeout so a well-behaved shutdown flushes them without a hang blocking
 //! exit forever.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,12 +22,78 @@ use tracing::Instrument;
 pub struct BackgroundRuns {
     tasks: Mutex<JoinSet<()>>,
     activity: Arc<BackgroundActivity>,
+    admissions:
+        std::sync::Mutex<HashMap<(String, String), std::sync::Weak<SharedToolExecutionAdmission>>>,
 }
 
 #[derive(Default)]
 struct BackgroundActivity {
     shared: std::sync::Mutex<HashMap<(String, String), usize>>,
     changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct SharedToolExecutionAdmission {
+    state: std::sync::Mutex<(u64, BTreeMap<u64, awaken_runtime_contract::ToolConcurrency>)>,
+    changed: tokio::sync::Notify,
+}
+
+struct SharedToolExecutionPermit {
+    admission: Arc<SharedToolExecutionAdmission>,
+    id: u64,
+}
+
+impl awaken_runtime_contract::ToolExecutionPermit for SharedToolExecutionPermit {}
+
+impl Drop for SharedToolExecutionPermit {
+    fn drop(&mut self) {
+        self.admission
+            .state
+            .lock()
+            .expect("shared tool admission mutex poisoned")
+            .1
+            .remove(&self.id);
+        self.admission.changed.notify_waiters();
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::ToolExecutionAdmission for SharedToolExecutionAdmission {
+    async fn acquire(
+        self: Arc<Self>,
+        claim: awaken_runtime_contract::ToolConcurrency,
+    ) -> Result<
+        Box<dyn awaken_runtime_contract::ToolExecutionPermit>,
+        awaken_runtime_contract::tool::ToolError,
+    > {
+        loop {
+            let notified = self.changed.notified();
+            {
+                let mut state = self
+                    .state
+                    .lock()
+                    .expect("shared tool admission mutex poisoned");
+                if state
+                    .1
+                    .values()
+                    .all(|active| active.compatible_with(&claim))
+                {
+                    state.0 = state.0.checked_add(1).ok_or_else(|| {
+                        awaken_runtime_contract::tool::ToolError::Execution(
+                            "shared tool admission sequence exhausted".into(),
+                        )
+                    })?;
+                    let id = state.0;
+                    state.1.insert(id, claim);
+                    return Ok(Box::new(SharedToolExecutionPermit {
+                        admission: self.clone(),
+                        id,
+                    }));
+                }
+            }
+            notified.await;
+        }
+    }
 }
 
 /// Every detached task must state whether it can mutate one Session
@@ -51,6 +117,27 @@ pub enum BackgroundWorkClass {
 impl BackgroundRuns {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Return the one process admission shared by every foreground and detached
+    /// call bound to this exact Session Environment generation. Weak indexing
+    /// prevents completed Session generations from becoming a second registry.
+    pub(crate) fn tool_execution_admission(
+        &self,
+        session_id: &str,
+        generation_id: &str,
+    ) -> Arc<dyn awaken_runtime_contract::ToolExecutionAdmission> {
+        let key = (session_id.to_string(), generation_id.to_string());
+        let mut admissions = self
+            .admissions
+            .lock()
+            .expect("shared tool admission registry mutex poisoned");
+        if let Some(existing) = admissions.get(&key).and_then(std::sync::Weak::upgrade) {
+            return existing;
+        }
+        let admission = Arc::new(SharedToolExecutionAdmission::default());
+        admissions.insert(key, Arc::downgrade(&admission));
+        admission
     }
 
     /// Detach `fut` to run in the background. It is tracked so [`drain`] can await
@@ -239,5 +326,38 @@ mod tests {
             bg.quiesce_shared_environment("s1", "g1", Duration::from_secs(1))
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn tool_admission_is_shared_by_exact_environment_generation() {
+        // Cause/effect decision table: R1 two callers resolve the same
+        // Session+generation -> conflicting writes share one active map and the
+        // second blocks; R2 first permit drops -> second enters; R3 another
+        // generation -> independent admission. This is the foreground/background
+        // confluence: callers receive one port, not observer-local locks.
+        let background = BackgroundRuns::new();
+        let first = background.tool_execution_admission("session", "generation");
+        let same = background.tool_execution_admission("session", "generation");
+        let other = background.tool_execution_admission("session", "other-generation");
+        let claim = awaken_runtime_contract::ToolConcurrency::Serial;
+        let guard = first.clone().acquire(claim.clone()).await.unwrap();
+        let mut blocked = tokio::spawn(async move { same.acquire(claim).await.unwrap() });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut blocked)
+                .await
+                .is_err(),
+            "R1"
+        );
+        let independent = other
+            .acquire(awaken_runtime_contract::ToolConcurrency::Serial)
+            .await
+            .expect("R3");
+        drop(independent);
+        drop(guard);
+        let resumed = tokio::time::timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("R2 wake")
+            .expect("R2 join");
+        drop(resumed);
     }
 }

@@ -262,9 +262,12 @@ production logic.
   proves the shutdown admission and return barriers directly.
 - `BackgroundTask.tla` covers the Thread-state-owned background aggregate:
   one fenced owner/epoch/lease, waiting and cancellation, exact heartbeat and
-  finish fences, expiry reclaim, NeverReplay indeterminacy, bounded attempts,
-  terminal owner clearing, and the retry/loss/stale-fence behavior of the one
-  process-local completion projection before its next ordinary Thread commit.
+  finish fences, expiry reclaim that preserves Waiting/Cancelling phase and
+  remote continuation identity, optional refreshable poll intervals that are
+  positive when present,
+  NeverReplay indeterminacy, bounded attempts, terminal owner clearing, and the
+  retry/loss/stale-fence behavior of the one process-local completion projection
+  before its next ordinary Thread commit.
   The supervisor remains a driver, not a second durable task or result store.
 - `SandboxControlPublication.tla` covers the provider-neutral control-channel
   publication slot shared by local Namespace and container sandboxes: one live

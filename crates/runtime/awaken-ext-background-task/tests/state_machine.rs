@@ -133,11 +133,12 @@ fn cancellation_absorbs_a_racing_success_and_is_idempotent() {
 }
 
 #[test]
-fn non_replayable_expiry_and_remote_wait_fail_closed() {
-    // Boundary partitions: expired non-replayable ownership becomes
-    // Indeterminate; an incomplete remote continuation cannot enter durable
-    // Waiting; an exact MCP continuation can. No empty string is interpreted as
-    // an external identity during recovery.
+fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
+    // Crash-window decision table: C1 NeverReplay Running expires before a
+    // remote id is committed -> Indeterminate; C2 incomplete remote coordinates
+    // cannot close that window; C3 exact coordinates enter durable Waiting;
+    // C4 the same NeverReplay policy may now reclaim Waiting at epoch+1 because
+    // recovery addresses the committed id rather than replaying the start.
     let mut uncertain = task();
     uncertain
         .start(
@@ -163,7 +164,15 @@ fn non_replayable_expiry_and_remote_wait_fail_closed() {
 
     let mut remote = task();
     let fence = remote
-        .start("worker", 0, 10, replay_policy())
+        .start(
+            "worker",
+            0,
+            10,
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::default(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
         .expect("fresh remote task is claimable");
     assert_eq!(
         remote.wait(
@@ -171,7 +180,8 @@ fn non_replayable_expiry_and_remote_wait_fail_closed() {
             BackgroundWait::Remote(RemoteContinuation {
                 protocol: RemoteProtocol::Mcp,
                 server_binding: String::new(),
-                task_id: "remote-1".into()
+                task_id: "remote-1".into(),
+                poll_interval_ms: Some(100),
             })
         ),
         Err(BackgroundTaskError::InvalidContinuation)
@@ -183,9 +193,21 @@ fn non_replayable_expiry_and_remote_wait_fail_closed() {
                 protocol: RemoteProtocol::Mcp,
                 server_binding: "mcp-server".into(),
                 task_id: "remote-1".into(),
+                poll_interval_ms: Some(100),
             }),
         )
         .expect("complete remote identity may wait");
+    assert!(matches!(
+        remote.lifecycle,
+        BackgroundTaskLifecycle::Waiting { .. }
+    ));
+    let TaskClaim::Acquired(recovered) = remote
+        .reclaim("replacement", 10, 10)
+        .expect("C4 committed remote id is reconnectable")
+    else {
+        panic!("C4 must acquire a replacement fence")
+    };
+    assert_eq!(recovered.epoch, 2, "C4");
     assert!(matches!(
         remote.lifecycle,
         BackgroundTaskLifecycle::Waiting { .. }
@@ -224,6 +246,51 @@ fn persisted_recovery_policy_is_the_only_reclaim_authority() {
         task.lifecycle,
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Failed { .. }
+        }
+    ));
+}
+
+#[test]
+fn exhausted_remote_observation_budget_never_claims_remote_failure() {
+    // Cause/effect decision table: R1 an expired replayable local effect at its
+    // frozen attempt limit -> Failed; R2 an expired Waiting remote continuation
+    // at the same limit -> Indeterminate because transport exhaustion cannot
+    // prove the server task failed or stopped. Explicit remote Failed/Cancelled
+    // observations still enter through finish and remain distinct.
+    let mut remote = task();
+    let fence = remote
+        .start(
+            "worker",
+            0,
+            10,
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::try_new(ToolRecoveryMode::NeverReplay, 1)
+                    .expect("one observation attempt"),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .expect("remote start");
+    remote
+        .wait(
+            &fence,
+            BackgroundWait::Remote(RemoteContinuation {
+                protocol: RemoteProtocol::Mcp,
+                server_binding: "mcp-server".into(),
+                task_id: "remote-at-limit".into(),
+                poll_interval_ms: Some(100),
+            }),
+        )
+        .expect("remote identity committed");
+
+    assert_eq!(
+        remote.reclaim("replacement", 10, 10),
+        Ok(TaskClaim::EndedIndeterminate),
+        "R2"
+    );
+    assert!(matches!(
+        remote.lifecycle,
+        BackgroundTaskLifecycle::Ended {
+            end: BackgroundTaskEnd::Indeterminate { .. }
         }
     ));
 }
@@ -278,6 +345,7 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
                 protocol: RemoteProtocol::A2a,
                 server_binding: String::new(),
                 task_id: "remote".into(),
+                poll_interval_ms: Some(100),
             }),
         ),
         Err(BackgroundTaskError::InvalidContinuation),
@@ -322,4 +390,350 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
         serde_json::from_value::<BackgroundTask>(impossible_revision).is_err(),
         "C7/E2"
     );
+}
+
+#[test]
+fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
+    // Cause/effect decision table:
+    // R1 Running + complete remote coordinates -> Waiting with the same fence.
+    // R2 Waiting + same remote identity + a new positive poll interval -> only
+    //    the interval and aggregate revision advance.
+    // R3 Waiting + changed binding/task identity or zero interval -> reject and
+    //    leave the aggregate byte-for-byte unchanged.
+    // R4 expired NeverReplay Waiting with a committed remote id -> Waiting at
+    //    epoch+1 with identical continuation coordinates; recovery polls that
+    //    id and must not replay the original effect.
+    // R5 any epoch-1 heartbeat/wait/finish after R4 -> StaleFence and no state
+    //    mutation; epoch 2 remains the sole settlement authority.
+    let mut remote = task();
+    let first = remote
+        .start(
+            "worker-1",
+            0,
+            10,
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::default(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .expect("fresh durable request starts");
+    let initial = RemoteContinuation {
+        protocol: RemoteProtocol::Mcp,
+        server_binding: "mcp/server@generation-7".into(),
+        task_id: "remote-1".into(),
+        poll_interval_ms: Some(100),
+    };
+    remote
+        .wait(&first, BackgroundWait::Remote(initial.clone()))
+        .expect("R1 complete continuation is durable");
+
+    let refreshed = RemoteContinuation {
+        poll_interval_ms: Some(250),
+        ..initial.clone()
+    };
+    let revision = remote.revision;
+    remote
+        .wait(&first, BackgroundWait::Remote(refreshed.clone()))
+        .expect("R2 the same remote request may refresh its poll delay");
+    assert_eq!(remote.revision, revision + 1, "R2");
+
+    for invalid in [
+        RemoteContinuation {
+            server_binding: "mcp/server@generation-8".into(),
+            ..refreshed.clone()
+        },
+        RemoteContinuation {
+            task_id: "remote-2".into(),
+            ..refreshed.clone()
+        },
+        RemoteContinuation {
+            poll_interval_ms: Some(0),
+            ..refreshed.clone()
+        },
+    ] {
+        let before = remote.clone();
+        assert!(
+            remote
+                .wait(&first, BackgroundWait::Remote(invalid))
+                .is_err(),
+            "R3 invalid replacement is rejected"
+        );
+        assert_eq!(remote, before, "R3 rejection is atomic");
+    }
+
+    let TaskClaim::Acquired(second) = remote
+        .reclaim("worker-2", 10, 10)
+        .expect("R4 committed remote id makes the wait reconnectable")
+    else {
+        panic!("R4 must acquire a replacement fence")
+    };
+    assert_eq!(second.epoch, 2, "R4");
+    assert!(matches!(
+        &remote.lifecycle,
+        BackgroundTaskLifecycle::Waiting {
+            attempt,
+            wait: BackgroundWait::Remote(continuation),
+        } if attempt.owns(&second) && continuation == &refreshed
+    ));
+
+    let before = remote.clone();
+    assert_eq!(
+        remote.heartbeat(&first, 10, 10),
+        Err(BackgroundTaskError::StaleFence),
+        "R5 heartbeat"
+    );
+    assert_eq!(remote, before, "R5 heartbeat is inert");
+    assert_eq!(
+        remote.wait(&first, BackgroundWait::Remote(refreshed.clone())),
+        Err(BackgroundTaskError::StaleFence),
+        "R5 wait"
+    );
+    assert_eq!(remote, before, "R5 wait is inert");
+    assert_eq!(
+        remote.finish(
+            &first,
+            BackgroundTaskEnd::Completed {
+                content: Vec::new(),
+                is_error: false,
+            },
+        ),
+        Err(BackgroundTaskError::StaleFence),
+        "R5 finish"
+    );
+    assert_eq!(remote, before, "R5 finish is inert");
+}
+
+#[test]
+fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
+    // Cause/effect decision table:
+    // R1 Waiting(remote) + cancel -> Cancelling(Some(remote)); R2 live-lease
+    // reclaim -> Busy and no mutation; R3 expired NeverReplay Cancelling with
+    // a committed id -> the same Cancelling wait at epoch+1; R4 stale
+    // completion -> StaleFence and no mutation; R5 current completion racing
+    // cancel -> terminal Cancelled.
+    // This proves cancellation never degrades into a blind local cancellation
+    // or a second remote task creation.
+    let mut remote = task();
+    let first = remote
+        .start(
+            "worker-1",
+            0,
+            10,
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::default(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .expect("fresh durable request starts");
+    let continuation = RemoteContinuation {
+        protocol: RemoteProtocol::Mcp,
+        server_binding: "mcp/server@generation-7".into(),
+        task_id: "remote-1".into(),
+        poll_interval_ms: Some(200),
+    };
+    remote
+        .wait(&first, BackgroundWait::Remote(continuation.clone()))
+        .expect("remote request is durably waiting");
+    remote.request_cancel().expect("R1 cancel intent commits");
+    assert!(matches!(
+        &remote.lifecycle,
+        BackgroundTaskLifecycle::Cancelling {
+            attempt,
+            wait: Some(BackgroundWait::Remote(actual)),
+        } if attempt.owns(&first) && actual == &continuation
+    ));
+
+    let before = remote.clone();
+    assert_eq!(
+        remote.reclaim("worker-2", 9, 10),
+        Err(BackgroundTaskError::Busy),
+        "R2"
+    );
+    assert_eq!(remote, before, "R2");
+
+    let TaskClaim::Acquired(second) = remote
+        .reclaim("worker-2", 10, 10)
+        .expect("R3 expired cancellation is reclaimable")
+    else {
+        panic!("R3 must acquire a replacement fence")
+    };
+    assert!(matches!(
+        &remote.lifecycle,
+        BackgroundTaskLifecycle::Cancelling {
+            attempt,
+            wait: Some(BackgroundWait::Remote(actual)),
+        } if attempt.owns(&second) && actual == &continuation
+    ));
+
+    let before = remote.clone();
+    assert_eq!(
+        remote.finish(
+            &first,
+            BackgroundTaskEnd::Completed {
+                content: Vec::new(),
+                is_error: false,
+            },
+        ),
+        Err(BackgroundTaskError::StaleFence),
+        "R4"
+    );
+    assert_eq!(remote, before, "R4");
+
+    remote
+        .finish(
+            &second,
+            BackgroundTaskEnd::Completed {
+                content: Vec::new(),
+                is_error: false,
+            },
+        )
+        .expect("R5 current worker settles cancellation");
+    assert!(matches!(
+        remote.lifecycle,
+        BackgroundTaskLifecycle::Ended {
+            end: BackgroundTaskEnd::Cancelled
+        }
+    ));
+}
+
+#[test]
+fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
+    // Interleaving decision table for the start-response/StepStart boundary:
+    // R1 start is durably Running, user cancel commits first ->
+    // Cancelling(None); R2 the matching process candidate later carries the
+    // newly-created remote id -> Cancelling(Some(remote)); R3 a stale candidate
+    // cannot attach; R4 a second/different remote id cannot replace the first.
+    // Thus cancellation wins the lifecycle race while the exact remote task
+    // remains available to the cancellation driver.
+    let mut remote = task();
+    let fence = remote
+        .start(
+            "worker-1",
+            0,
+            10,
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::default(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .expect("fresh task starts");
+    remote
+        .request_cancel()
+        .expect("R1 cancel commits before the start candidate");
+    assert!(matches!(
+        remote.lifecycle,
+        BackgroundTaskLifecycle::Cancelling { wait: None, .. }
+    ));
+
+    let continuation = RemoteContinuation {
+        protocol: RemoteProtocol::Mcp,
+        server_binding: "mcp/server@generation-7".into(),
+        task_id: "remote-1".into(),
+        poll_interval_ms: Some(100),
+    };
+    remote
+        .wait(&fence, BackgroundWait::Remote(continuation.clone()))
+        .expect("R2 matching start candidate attaches without reopening Waiting");
+    assert!(matches!(
+        &remote.lifecycle,
+        BackgroundTaskLifecycle::Cancelling {
+            wait: Some(BackgroundWait::Remote(actual)),
+            ..
+        } if actual == &continuation
+    ));
+
+    let before = remote.clone();
+    assert_eq!(
+        remote.wait(
+            &TaskFence {
+                worker_id: "worker-2".into(),
+                epoch: fence.epoch,
+            },
+            BackgroundWait::Remote(continuation.clone()),
+        ),
+        Err(BackgroundTaskError::StaleFence),
+        "R3"
+    );
+    assert_eq!(remote, before, "R3");
+
+    assert_eq!(
+        remote.wait(
+            &fence,
+            BackgroundWait::Remote(RemoteContinuation {
+                task_id: "remote-2".into(),
+                ..continuation
+            }),
+        ),
+        Err(BackgroundTaskError::InvalidTransition),
+        "R4"
+    );
+    assert_eq!(remote, before, "R4");
+}
+
+#[test]
+fn legacy_cancelling_wire_without_wait_remains_compatible() {
+    // Compatibility partition: historical Cancelling values did not carry a
+    // wait field and historical Remote values did not carry a poll interval.
+    // Both absences decode as None; a present incomplete remote wait is
+    // rejected. This preserves the old wire without weakening new recovery
+    // coordinates.
+    let mut running = task();
+    running
+        .start("worker", 0, 10, replay_policy())
+        .expect("fixture starts");
+    running.request_cancel().expect("fixture cancels");
+    let mut legacy = serde_json::to_value(&running).expect("task serializes");
+    legacy["lifecycle"]
+        .as_object_mut()
+        .expect("lifecycle is an object")
+        .remove("wait");
+    let decoded = serde_json::from_value::<BackgroundTask>(legacy)
+        .expect("historical cancelling state remains readable");
+    assert!(matches!(
+        decoded.lifecycle,
+        BackgroundTaskLifecycle::Cancelling { wait: None, .. }
+    ));
+
+    let mut waiting = task();
+    let waiting_fence = waiting
+        .start("worker", 0, 10, replay_policy())
+        .expect("fixture starts");
+    waiting
+        .wait(
+            &waiting_fence,
+            BackgroundWait::Remote(RemoteContinuation {
+                protocol: RemoteProtocol::Mcp,
+                server_binding: "mcp-server".into(),
+                task_id: "remote-1".into(),
+                poll_interval_ms: Some(100),
+            }),
+        )
+        .expect("fixture waits");
+    let mut legacy_wait = serde_json::to_value(&waiting).expect("task serializes");
+    legacy_wait["lifecycle"]["wait"]
+        .as_object_mut()
+        .expect("remote wait is an object")
+        .remove("poll_interval_ms");
+    let decoded_wait = serde_json::from_value::<BackgroundTask>(legacy_wait)
+        .expect("historical remote wait remains readable");
+    assert!(matches!(
+        decoded_wait.lifecycle,
+        BackgroundTaskLifecycle::Waiting {
+            wait: BackgroundWait::Remote(RemoteContinuation {
+                poll_interval_ms: None,
+                ..
+            }),
+            ..
+        }
+    ));
+
+    let mut malformed = serde_json::to_value(&decoded).expect("task serializes");
+    malformed["lifecycle"]["wait"] = serde_json::json!({
+        "reason": "remote",
+        "protocol": "mcp",
+        "server_binding": "",
+        "task_id": "remote-1",
+        "poll_interval_ms": 100
+    });
+    assert!(serde_json::from_value::<BackgroundTask>(malformed).is_err());
 }

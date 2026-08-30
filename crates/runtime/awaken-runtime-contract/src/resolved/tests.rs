@@ -189,6 +189,92 @@ fn one_projection_keeps_tool_visibility_and_discovery_prompt_consistent() {
 }
 
 #[test]
+fn detached_only_tools_remain_executable_but_have_no_model_projection() {
+    // Cause/effect decision table: R1 Regular+Eager -> visible; R2 Regular+
+    // OnDemand -> discoverable/searchable; R3 DetachedOnly under either
+    // exposure -> absent from visible and discoverable sets. Constraint: the
+    // input descriptor remains unchanged in the canonical executable catalog,
+    // so hiding cannot create a second registry or erase Runtime authority.
+    let presentation = ToolPresentation::from_overrides([(
+        "background_target".to_string(),
+        ToolPresentationOverride {
+            exposure: Some(ToolExposure::OnDemand),
+            ..Default::default()
+        },
+    )]);
+    let target = td("background_target").with_kind(ToolKind::DetachedOnly);
+    let regular = td("regular");
+    let descriptors = [target.clone(), regular];
+
+    let projected = presentation.model_projection(&descriptors, |_, _| false);
+    assert!(
+        projected.tools.iter().any(|tool| tool.id == "regular"),
+        "R1"
+    );
+    assert!(
+        projected
+            .tools
+            .iter()
+            .all(|tool| tool.id != "background_target"),
+        "R3"
+    );
+    assert_eq!(
+        descriptors[0], target,
+        "canonical executable descriptor remains"
+    );
+}
+
+#[test]
+fn detached_launcher_hides_every_configured_target_and_derives_exact_schemas() {
+    // Cause/effect decision table: R1 configured Regular target -> absent from
+    // eager model tools; R2 configured OnDemand/MCP target -> absent from both
+    // tool_search and its guidance; R3 launcher -> remains visible with one
+    // target-specific oneOf branch per descriptor. Constraint: ids, descriptions
+    // and argument schemas are read from the same canonical descriptor slice;
+    // the launcher relation contains no copied schema registry.
+    let presentation = ToolPresentation::from_overrides([(
+        "mcp__srv__lookup".into(),
+        ToolPresentationOverride {
+            exposure: Some(ToolExposure::OnDemand),
+            ..Default::default()
+        },
+    )]);
+    let local = ToolDescriptor::pinned(
+        "test",
+        "bash",
+        "Run a command.",
+        serde_json::json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
+    );
+    let remote = ToolDescriptor::pinned(
+        "test",
+        "mcp__srv__lookup",
+        "Look up a record.",
+        serde_json::json!({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}),
+    );
+    let launcher = ToolDescriptor::pinned(
+        "test",
+        "run_in_background",
+        "Run configured work in the background.",
+        serde_json::json!({"type":"object"}),
+    )
+    .with_detached_targets(["bash".into(), "mcp__srv__lookup".into()]);
+
+    let projection = presentation.model_projection(&[local, remote, launcher], |_, _| false);
+    assert_eq!(projection.tools.len(), 1, "R1+R2 only launcher remains");
+    assert_eq!(projection.tools[0].id, "run_in_background", "R3");
+    assert!(projection.prompt.is_none(), "R2 no discovery guidance leak");
+    let schema = projection.tools[0].model_parameters().to_string();
+    assert!(
+        schema.contains("bash") && schema.contains("command"),
+        "R3 local schema"
+    );
+    assert!(
+        schema.contains("mcp__srv__lookup") && schema.contains("key"),
+        "R3 MCP schema"
+    );
+}
+
+#[test]
 fn resolve_reverses_an_alias_to_its_canonical_id() {
     let p = ToolPresentation::from_overrides([(
         "mcp__x__y".to_string(),
@@ -484,8 +570,10 @@ fn descriptor_state_owns_one_derived_content_identity() {
     let recovery_changed = base
         .clone()
         .with_recovery(crate::tool::ToolRecoveryPolicy::durable_request());
+    let targets_changed = base.clone().with_detached_targets(["target".into()]);
     assert_ne!(base.content_hash(), kind_changed.content_hash());
     assert_ne!(base.content_hash(), recovery_changed.content_hash());
+    assert_ne!(base.content_hash(), targets_changed.content_hash());
 
     let encoded = serde_json::to_value(&base).expect("serialize descriptor facts");
     assert!(encoded.get("content_hash").is_none());
@@ -645,6 +733,7 @@ fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
         "ab",
         &serde_json::json!("c"),
         ToolKind::Regular,
+        &Default::default(),
         &recovery,
         None,
     );
@@ -654,6 +743,7 @@ fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
         "a",
         &serde_json::json!("bc"),
         ToolKind::Regular,
+        &Default::default(),
         &recovery,
         None,
     );

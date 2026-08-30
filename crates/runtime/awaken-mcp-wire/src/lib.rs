@@ -24,9 +24,10 @@ pub use jsonrpc::{
 pub use progress::{McpProgressUpdate, normalize_progress};
 pub use sse::SseParser;
 pub use types::{
-    Annotations, CallToolParams, CallToolResult, ClientInfo, Icon, IconTheme,
+    Annotations, CallToolParams, CallToolResult, ClientInfo, CreateTaskResult, Icon, IconTheme,
     InitializeCapabilities, InitializeParams, InitializeResult, ListToolsParams, ListToolsResult,
-    MCP_PROTOCOL_VERSION, McpToolDefinition, McpTransportError, Role, ServerCapabilities,
-    ServerInfo, ServerToolCapabilities, TaskMetadata, TaskSupport, ToolAnnotations, ToolContent,
-    ToolExecution,
+    MCP_PROTOCOL_VERSION, McpTask, McpToolDefinition, McpTransportError, Role, ServerCapabilities,
+    ServerInfo, ServerTaskCapabilities, ServerTaskRequests, ServerTaskToolRequests,
+    ServerToolCapabilities, TaskIdParams, TaskMetadata, TaskStatus, TaskSupport, ToolAnnotations,
+    ToolContent, ToolExecution,
 };

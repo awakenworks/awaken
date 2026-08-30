@@ -45,6 +45,8 @@ pub fn auth_retry_safety(request: &Value) -> AuthRetrySafety {
             | "resources/read"
             | "prompts/list"
             | "prompts/get"
+            | "tasks/get"
+            | "tasks/result"
             | "completion/complete",
         ) => AuthRetrySafety::ReadOnly,
         _ => AuthRetrySafety::Never,
@@ -72,6 +74,8 @@ mod tests {
             "resources/read",
             "prompts/list",
             "prompts/get",
+            "tasks/get",
+            "tasks/result",
             "completion/complete",
         ] {
             assert_eq!(
@@ -82,6 +86,7 @@ mod tests {
         }
         for request in [
             json!({"jsonrpc":"2.0", "id":1, "method":"tools/call"}),
+            json!({"jsonrpc":"2.0", "id":1, "method":"tasks/cancel"}),
             json!({"jsonrpc":"2.0", "id":1, "method":"vendor/mutate"}),
             json!({"jsonrpc":"2.0", "id":1}),
         ] {

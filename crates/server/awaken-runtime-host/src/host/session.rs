@@ -1717,9 +1717,19 @@ impl SharedHost {
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
         let workspace_id = self.thread_workspace(thread).to_owned();
-        let run_context = awaken_runtime_contract::RuntimeRunContext::new().with_execution_scope(
-            awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from(workspace_id.as_str())),
+        let environment_generation = env.as_ref().map_or_else(
+            || "brain".to_string(),
+            |environment| environment.handle().sandbox_id,
         );
+        let run_context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from(workspace_id.as_str()),
+            ))
+            .with_tool_execution_admission(
+                self.memory
+                    .background()
+                    .tool_execution_admission(thread, &environment_generation),
+            );
         let dispatch_claim = self
             .session_slots
             .read(thread, |slot| slot.dispatch_claim.clone())
@@ -1762,10 +1772,6 @@ impl SharedHost {
             None => run_context,
         };
         if background_tasks_enabled {
-            let generation = env.as_ref().map_or_else(
-                || "brain".to_string(),
-                |environment| environment.handle().sandbox_id,
-            );
             terminal_observers.push(Arc::new(
                 crate::background_task::BackgroundTaskTerminalObserver::new(
                     runtime.clone(),
@@ -1775,7 +1781,7 @@ impl SharedHost {
                     self.memory.background(),
                     awaken_ext_background_task::process_supervisor(),
                     thread.to_string(),
-                    generation,
+                    environment_generation,
                     background_attention.clone(),
                 ),
             ));

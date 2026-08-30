@@ -58,6 +58,12 @@ pub awaken_mcp_wire::McpTransportError::UnknownTool(alloc::string::String)
 pub enum awaken_mcp_wire::Role
 pub awaken_mcp_wire::Role::Assistant
 pub awaken_mcp_wire::Role::User
+pub enum awaken_mcp_wire::TaskStatus
+pub awaken_mcp_wire::TaskStatus::Cancelled
+pub awaken_mcp_wire::TaskStatus::Completed
+pub awaken_mcp_wire::TaskStatus::Failed
+pub awaken_mcp_wire::TaskStatus::InputRequired
+pub awaken_mcp_wire::TaskStatus::Working
 pub enum awaken_mcp_wire::TaskSupport
 pub awaken_mcp_wire::TaskSupport::Forbidden
 pub awaken_mcp_wire::TaskSupport::Optional
@@ -109,6 +115,8 @@ pub awaken_mcp_wire::ClientInfo::version: alloc::string::String
 pub awaken_mcp_wire::ClientInfo::website_url: core::option::Option<alloc::string::String>
 impl awaken_mcp_wire::ClientInfo
 pub fn awaken_mcp_wire::ClientInfo::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_mcp_wire::CreateTaskResult
+pub awaken_mcp_wire::CreateTaskResult::task: awaken_mcp_wire::McpTask
 pub struct awaken_mcp_wire::Icon
 pub awaken_mcp_wire::Icon::mime_type: core::option::Option<alloc::string::String>
 pub awaken_mcp_wire::Icon::sizes: core::option::Option<alloc::vec::Vec<alloc::string::String>>
@@ -152,6 +160,14 @@ pub struct awaken_mcp_wire::McpProgressUpdate
 pub awaken_mcp_wire::McpProgressUpdate::message: core::option::Option<alloc::string::String>
 pub awaken_mcp_wire::McpProgressUpdate::progress: f64
 pub awaken_mcp_wire::McpProgressUpdate::total: core::option::Option<f64>
+pub struct awaken_mcp_wire::McpTask
+pub awaken_mcp_wire::McpTask::created_at: alloc::string::String
+pub awaken_mcp_wire::McpTask::last_updated_at: alloc::string::String
+pub awaken_mcp_wire::McpTask::poll_interval: core::option::Option<u64>
+pub awaken_mcp_wire::McpTask::status: awaken_mcp_wire::TaskStatus
+pub awaken_mcp_wire::McpTask::status_message: core::option::Option<alloc::string::String>
+pub awaken_mcp_wire::McpTask::task_id: alloc::string::String
+pub awaken_mcp_wire::McpTask::ttl: core::option::Option<u64>
 pub struct awaken_mcp_wire::McpToolDefinition
 pub awaken_mcp_wire::McpToolDefinition::annotations: core::option::Option<awaken_mcp_wire::ToolAnnotations>
 pub awaken_mcp_wire::McpToolDefinition::description: core::option::Option<alloc::string::String>
@@ -173,7 +189,7 @@ pub awaken_mcp_wire::ServerCapabilities::experimental: core::option::Option<serd
 pub awaken_mcp_wire::ServerCapabilities::logging: core::option::Option<serde_json::value::Value>
 pub awaken_mcp_wire::ServerCapabilities::prompts: core::option::Option<serde_json::value::Value>
 pub awaken_mcp_wire::ServerCapabilities::resources: core::option::Option<serde_json::value::Value>
-pub awaken_mcp_wire::ServerCapabilities::tasks: core::option::Option<serde_json::value::Value>
+pub awaken_mcp_wire::ServerCapabilities::tasks: core::option::Option<awaken_mcp_wire::ServerTaskCapabilities>
 pub awaken_mcp_wire::ServerCapabilities::tools: core::option::Option<awaken_mcp_wire::ServerToolCapabilities>
 pub struct awaken_mcp_wire::ServerInfo
 pub awaken_mcp_wire::ServerInfo::description: core::option::Option<alloc::string::String>
@@ -194,6 +210,17 @@ impl awaken_mcp_wire::jsonrpc::ServerRequestError
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::internal(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::invalid_params(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_mcp_wire::jsonrpc::ServerRequestError::method_not_found(&str) -> Self
+pub struct awaken_mcp_wire::ServerTaskCapabilities
+pub awaken_mcp_wire::ServerTaskCapabilities::cancel: core::option::Option<serde_json::map::Map<alloc::string::String, serde_json::value::Value>>
+pub awaken_mcp_wire::ServerTaskCapabilities::list: core::option::Option<serde_json::map::Map<alloc::string::String, serde_json::value::Value>>
+pub awaken_mcp_wire::ServerTaskCapabilities::requests: core::option::Option<awaken_mcp_wire::ServerTaskRequests>
+impl awaken_mcp_wire::ServerTaskCapabilities
+pub fn awaken_mcp_wire::ServerTaskCapabilities::supports_cancel(&self) -> bool
+pub fn awaken_mcp_wire::ServerTaskCapabilities::supports_tool_call(&self) -> bool
+pub struct awaken_mcp_wire::ServerTaskRequests
+pub awaken_mcp_wire::ServerTaskRequests::tools: core::option::Option<awaken_mcp_wire::ServerTaskToolRequests>
+pub struct awaken_mcp_wire::ServerTaskToolRequests
+pub awaken_mcp_wire::ServerTaskToolRequests::call: core::option::Option<serde_json::map::Map<alloc::string::String, serde_json::value::Value>>
 pub struct awaken_mcp_wire::ServerToolCapabilities
 pub awaken_mcp_wire::ServerToolCapabilities::list_changed: core::option::Option<bool>
 pub struct awaken_mcp_wire::SseParser
@@ -201,6 +228,8 @@ impl awaken_mcp_wire::sse::SseParser
 pub fn awaken_mcp_wire::sse::SseParser::finish(&mut self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
+pub struct awaken_mcp_wire::TaskIdParams
+pub awaken_mcp_wire::TaskIdParams::task_id: alloc::string::String
 pub struct awaken_mcp_wire::TaskMetadata
 pub awaken_mcp_wire::TaskMetadata::ttl: core::option::Option<u64>
 pub struct awaken_mcp_wire::ToolAnnotations

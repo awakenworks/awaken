@@ -32,7 +32,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
 use awaken_mcp_wire::{
-    CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition,
+    CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult,
+    ListToolsResult, McpTask, McpToolDefinition, TaskIdParams, TaskMetadata,
 };
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -83,6 +84,10 @@ struct HttpShared {
     /// it `true`. Read by [`HttpTransport::is_alive`] so a dead server can be
     /// reaped, unlike the previous always-alive default.
     alive: AtomicBool,
+    /// Frozen task protocol capabilities from the exact initialized MCP
+    /// connection. A tool declaration never grants these operations by itself.
+    task_tools_call: AtomicBool,
+    task_cancel: AtomicBool,
 }
 
 impl HttpShared {
@@ -424,6 +429,8 @@ impl HttpTransportBuilder {
                 request_handler: handler,
                 pending_responses: tokio::sync::Mutex::new(HashMap::new()),
                 alive: AtomicBool::new(true),
+                task_tools_call: AtomicBool::new(false),
+                task_cancel: AtomicBool::new(false),
             }),
             next_id: AtomicI64::new(1),
             next_progress_token: AtomicI64::new(1),
@@ -532,8 +539,17 @@ impl HttpTransport {
 
     async fn initialize(&self) -> Result<(), McpTransportError> {
         let params = InitializeParams::new(None);
-        self.request("initialize", serde_json::to_value(&params)?)
+        let value = self
+            .request("initialize", serde_json::to_value(&params)?)
             .await?;
+        let result: InitializeResult = serde_json::from_value(value)?;
+        let tasks = result.capabilities.tasks.unwrap_or_default();
+        self.shared
+            .task_tools_call
+            .store(tasks.supports_tool_call(), Ordering::SeqCst);
+        self.shared
+            .task_cancel
+            .store(tasks.supports_cancel(), Ordering::SeqCst);
         // `notifications/initialized` is a fire-and-forget notification.
         let _ = self
             .shared
@@ -697,6 +713,70 @@ impl McpToolTransport for HttpTransport {
         Ok(serde_json::from_value(result?)?)
     }
 
+    fn supports_task_tools_call(&self) -> bool {
+        self.shared.task_tools_call.load(Ordering::SeqCst)
+    }
+
+    fn supports_task_cancel(&self) -> bool {
+        self.shared.task_cancel.load(Ordering::SeqCst)
+    }
+
+    async fn call_tool_as_task(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ttl_ms: Option<u64>,
+    ) -> Result<CreateTaskResult, McpTransportError> {
+        if !self.supports_task_tools_call() {
+            return Err(McpTransportError::NotSupported(
+                "task-augmented tools/call".into(),
+            ));
+        }
+        let params = CallToolParams {
+            name: tool_name.to_string(),
+            arguments: Some(arguments),
+            task: Some(TaskMetadata { ttl: ttl_ms }),
+            meta: None,
+        };
+        let result = self
+            .request("tools/call", serde_json::to_value(params)?)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
+        let params = TaskIdParams {
+            task_id: task_id.to_string(),
+        };
+        let result = self
+            .request("tasks/get", serde_json::to_value(params)?)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn get_task_result(&self, task_id: &str) -> Result<CallToolResult, McpTransportError> {
+        let params = TaskIdParams {
+            task_id: task_id.to_string(),
+        };
+        let result = self
+            .request("tasks/result", serde_json::to_value(params)?)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn cancel_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
+        if !self.supports_task_cancel() {
+            return Err(McpTransportError::NotSupported("tasks/cancel".into()));
+        }
+        let params = TaskIdParams {
+            task_id: task_id.to_string(),
+        };
+        let result = self
+            .request("tasks/cancel", serde_json::to_value(params)?)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         let result = self.request("prompts/list", json!({})).await?;
         let parsed: ListPromptsResult = serde_json::from_value(result)?;
@@ -811,6 +891,21 @@ mod tests {
             .to_string()
     }
 
+    fn accepted_response() -> String {
+        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+    }
+
+    fn task_value(status: &str) -> Value {
+        json!({
+            "taskId": "remote-http",
+            "status": status,
+            "createdAt": "2026-08-30T00:00:00Z",
+            "lastUpdatedAt": "2026-08-30T00:00:01Z",
+            "ttl": 10_000,
+            "pollInterval": 50
+        })
+    }
+
     /// Serve one canned response per accepted connection; returns the base URL
     /// and a handle resolving to the raw request bytes each connection sent.
     async fn serve(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
@@ -861,6 +956,93 @@ mod tests {
             captured
         });
         (url, handle)
+    }
+
+    #[tokio::test]
+    async fn negotiated_task_methods_follow_one_typed_http_path() {
+        // Cause/effect graph: C1=initialize advertises task tools/call and
+        // cancel; C2=the same HTTP connection issues create/get/result/cancel;
+        // C3=each response has its protocol-specific shape. Effects E1=the two
+        // gates are cached; E2=create/get/cancel decode as Task; E3=result
+        // decodes as the original CallToolResult. Decision rule H1=C1+C2+C3 =>
+        // E1+E2+E3. No tasks/* method enters the runtime descriptor catalog.
+        let initialize = json!({
+            "jsonrpc": "2.0", "id": 1, "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tasks": {
+                    "cancel": {},
+                    "requests": {"tools": {"call": {}}}
+                }},
+                "serverInfo": {"name": "tasks", "version": "1"}
+            }
+        });
+        let created = json!({
+            "jsonrpc": "2.0", "id": 2,
+            "result": {"task": task_value("working")}
+        });
+        let status = json!({
+            "jsonrpc": "2.0", "id": 3,
+            "result": task_value("completed")
+        });
+        let result = json!({
+            "jsonrpc": "2.0", "id": 4,
+            "result": {"content": [{"type": "text", "text": "done"}], "isError": false}
+        });
+        let cancelled = json!({
+            "jsonrpc": "2.0", "id": 5,
+            "result": task_value("cancelled")
+        });
+        let (url, server) = serve(vec![
+            ok_response(&initialize.to_string()),
+            accepted_response(),
+            ok_response(&created.to_string()),
+            ok_response(&status.to_string()),
+            ok_response(&result.to_string()),
+            ok_response(&cancelled.to_string()),
+        ])
+        .await;
+
+        let transport = HttpTransportBuilder::new(url)
+            .connect()
+            .await
+            .expect("H1 initializes");
+        assert!(transport.supports_task_tools_call(), "H1/E1");
+        assert!(transport.supports_task_cancel(), "H1/E1");
+        assert_eq!(
+            transport
+                .call_tool_as_task("slow", json!({}), Some(10_000))
+                .await
+                .unwrap()
+                .task
+                .task_id,
+            "remote-http",
+            "H1/E2"
+        );
+        assert_eq!(
+            transport.get_task("remote-http").await.unwrap().status,
+            awaken_mcp_wire::TaskStatus::Completed,
+            "H1/E2"
+        );
+        assert_eq!(
+            transport
+                .get_task_result("remote-http")
+                .await
+                .unwrap()
+                .content
+                .len(),
+            1,
+            "H1/E3"
+        );
+        assert_eq!(
+            transport.cancel_task("remote-http").await.unwrap().status,
+            awaken_mcp_wire::TaskStatus::Cancelled,
+            "H1/E2"
+        );
+        assert_eq!(
+            server.await.unwrap().len(),
+            6,
+            "H1 one request per operation"
+        );
     }
 
     struct StaticRefresher {

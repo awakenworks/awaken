@@ -24,7 +24,7 @@ use crate::error::McpError;
 use crate::id_mapping::tool_namespace;
 use crate::sensitive::mark_sensitive;
 use crate::stdio::StdioTransport;
-use crate::tool::{McpRawTool, mcp_tool_descriptor};
+use crate::tool::{McpRawTool, mcp_tool_descriptor_for_transport, validate_tools_task_negotiation};
 use crate::transport::{ListChangedKind, McpToolTransport};
 
 /// Host-declared sensitive fields, keyed by the tool's wire name: dotted
@@ -86,15 +86,23 @@ impl McpServer {
         let server_name = server_name.into();
         let namespace = tool_namespace(&server_name)?;
         let mut tools = transport.list_tools().await?;
+        validate_tools_task_negotiation(&server_name, &tools, transport.as_ref())?;
         apply_sensitive(&mut tools, &sensitive);
         let registry = Arc::new(Mutex::new(McpRegistry { version: 1, tools }));
 
         let refresh_registry = Arc::clone(&registry);
         let refresh_transport = Arc::clone(&transport);
+        let refresh_server_name = server_name.clone();
         tokio::spawn(async move {
             while let Ok(kind) = list_changed.recv().await {
                 if kind == ListChangedKind::Tools
                     && let Ok(mut tools) = refresh_transport.list_tools().await
+                    && validate_tools_task_negotiation(
+                        &refresh_server_name,
+                        &tools,
+                        refresh_transport.as_ref(),
+                    )
+                    .is_ok()
                 {
                     apply_sensitive(&mut tools, &sensitive);
                     let mut registry = refresh_registry.lock().unwrap();
@@ -195,8 +203,8 @@ impl Plugin for McpPlugin {
             // A tool whose name sanitizes empty is skipped rather than failing
             // the whole resolution.
             if let (Ok(descriptor), Ok(tool)) = (
-                mcp_tool_descriptor(&self.server_name, def),
-                McpRawTool::new(&self.server_name, &def.name, Arc::clone(&self.transport)),
+                mcp_tool_descriptor_for_transport(&self.server_name, def, self.transport.as_ref()),
+                McpRawTool::from_definition(&self.server_name, def, Arc::clone(&self.transport)),
             ) && let Ok(dynamic) = DynamicTool::try_new(descriptor, Arc::new(tool))
             {
                 contributions.register_dynamic_tool(dynamic);
@@ -313,6 +321,61 @@ mod tests {
             server.plugin().resolve().dynamic_tools[0].descriptor().id,
             "mcp__srv__beta",
             "the refreshed tool set is projected"
+        );
+    }
+
+    struct RequiredTaskOnRefreshTransport {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl McpToolTransport for RequiredTaskOnRefreshTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            let definition = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                serde_json::json!({"name": "stable"})
+            } else {
+                serde_json::json!({
+                    "name": "requires_tasks",
+                    "execution": {"taskSupport": "required"}
+                })
+            };
+            Ok(vec![serde_json::from_value(definition).unwrap()])
+        }
+
+        async fn call_tool(
+            &self,
+            _tool_name: &str,
+            _arguments: Value,
+        ) -> Result<CallToolResult, McpTransportError> {
+            unreachable!("projection test never invokes tools")
+        }
+    }
+
+    #[tokio::test]
+    async fn incompatible_required_task_refresh_preserves_the_committed_registry() {
+        // Cause/effect graph: C1=current registry is valid; C2=list_changed
+        // advertises a tool requiring tasks; C3=the initialized transport did
+        // not negotiate task tools/call. Effects E1=the incompatible snapshot
+        // is not published; E2=version and prior descriptors remain together.
+        // Decision rule R1=C1+C2+C3=>E1+E2. Publishing either new tools or a
+        // new version alone would split the dynamic catalog authority.
+        let transport = Arc::new(RequiredTaskOnRefreshTransport {
+            calls: AtomicUsize::new(0),
+        });
+        let (tx, rx) = broadcast::channel(4);
+        let server = McpServer::start("srv", transport, rx)
+            .await
+            .expect("initial registry valid");
+        tx.send(ListChangedKind::Tools).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(server.version(), 1, "R1/E2");
+        let contributions = server.plugin().resolve();
+        assert_eq!(contributions.dynamic_tools.len(), 1, "R1/E1");
+        assert_eq!(
+            contributions.dynamic_tools[0].descriptor().id,
+            "mcp__srv__stable",
+            "R1/E2"
         );
     }
 

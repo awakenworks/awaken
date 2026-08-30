@@ -6,8 +6,7 @@
 //! Thread; the extension's StepStart hook folds the fenced candidate before
 //! inference and the normal Thread commit remains the only persistence path.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,15 +15,17 @@ use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_background_task::{
     BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle,
-    BackgroundTaskSupervisor, TaskFence, tasks_from_state,
+    BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait, RemoteContinuation,
+    RemoteProtocol, TaskFence, tasks_from_state,
 };
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
+use awaken_runtime_contract::resolved::ToolKind;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
-use awaken_runtime_contract::tool::{ToolConcurrency, ToolOutput};
+use awaken_runtime_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 use awaken_session_contract::{RunErrorKind, SessionRunBackgroundApplication, stable_fingerprint};
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
@@ -36,11 +37,14 @@ const ATTENTION_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_millis(100),
     Duration::from_millis(200),
 ];
+const REMOTE_OBSERVATION_RETRIES: usize = 3;
+const DEFAULT_REMOTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 fn attention_identity(
     thread_id: &awaken_runtime_contract::ThreadId,
     task_id: &BackgroundTaskId,
     fence: &TaskFence,
+    kind: &BackgroundAttention,
 ) -> String {
     stable_fingerprint(&(
         "background-task-attention-v1",
@@ -48,26 +52,56 @@ fn attention_identity(
         task_id.as_str(),
         fence.worker_id.as_str(),
         fence.epoch,
+        kind.identity(),
     ))
+}
+
+#[derive(Clone)]
+enum BackgroundAttention {
+    Waiting,
+    InputRequired { change: String },
+    Watchdog { change: String },
+    Terminal,
+}
+
+impl BackgroundAttention {
+    fn identity(&self) -> &str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::InputRequired { change } | Self::Watchdog { change } => change,
+            Self::Terminal => "terminal",
+        }
+    }
+
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Waiting => "entered durable remote execution",
+            Self::InputRequired { .. } => "requires input or a decision",
+            Self::Watchdog { .. } => "requires an observation-lease checkpoint",
+            Self::Terminal => "produced a terminal completion candidate",
+        }
+    }
 }
 
 fn attention_message(
     thread_id: &awaken_runtime_contract::ThreadId,
     task_id: &BackgroundTaskId,
     fence: &TaskFence,
+    kind: &BackgroundAttention,
 ) -> (String, Message) {
-    let identity = attention_identity(thread_id, task_id, fence);
+    let identity = attention_identity(thread_id, task_id, fence, kind);
     let operation_id = format!("background-task-attention-{identity}");
     let message = Message::text(
         MessageId(format!("background-task-attention-message-{identity}")),
         Role::System,
         format!(
-            "Background task {} has produced a terminal completion candidate.\n\n\
+            "Background task {} has {}.\n\n\
              The runtime reconciles the latest fenced task state before this inference. \
              Use get_background_task with this task_id to inspect the authoritative status \
              and result. Decide whether to incorporate it, cancel related work, or continue \
              without it. Do not repeat work already completed by the task.",
-            task_id.as_str()
+            task_id.as_str(),
+            kind.reason(),
         ),
     );
     (operation_id, message)
@@ -78,11 +112,12 @@ async fn publish_attention(
     thread_id: &awaken_runtime_contract::ThreadId,
     task_id: &BackgroundTaskId,
     fence: &TaskFence,
+    kind: BackgroundAttention,
 ) {
     let Some(application) = application.and_then(|application| application.upgrade()) else {
         return;
     };
-    let (operation_id, message) = attention_message(thread_id, task_id, fence);
+    let (operation_id, message) = attention_message(thread_id, task_id, fence, &kind);
     let attempts = ATTENTION_RETRY_DELAYS
         .iter()
         .copied()
@@ -132,64 +167,6 @@ async fn publish_attention(
     }
 }
 
-#[derive(Default)]
-struct BackgroundAdmission {
-    /// Sequence allocation and active-claim admission share one critical
-    /// section. Checking compatibility and publishing the admitted claim must
-    /// be atomic; separate locks allow two incompatible arrivals to both
-    /// observe an empty active set before either inserts.
-    state: Mutex<(u64, BTreeMap<u64, ToolConcurrency>)>,
-    changed: tokio::sync::Notify,
-}
-
-impl BackgroundAdmission {
-    async fn acquire(self: &Arc<Self>, claim: ToolConcurrency) -> AdmissionGuard {
-        loop {
-            let notified = self.changed.notified();
-            {
-                let mut state = self
-                    .state
-                    .lock()
-                    .expect("background admission mutex poisoned");
-                if state
-                    .1
-                    .values()
-                    .all(|active| active.compatible_with(&claim))
-                {
-                    state.0 = state
-                        .0
-                        .checked_add(1)
-                        .expect("background admission exhausted");
-                    let id = state.0;
-                    state.1.insert(id, claim);
-                    return AdmissionGuard {
-                        admission: self.clone(),
-                        id,
-                    };
-                }
-            }
-            notified.await;
-        }
-    }
-}
-
-struct AdmissionGuard {
-    admission: Arc<BackgroundAdmission>,
-    id: u64,
-}
-
-impl Drop for AdmissionGuard {
-    fn drop(&mut self) {
-        self.admission
-            .state
-            .lock()
-            .expect("background admission mutex poisoned")
-            .1
-            .remove(&self.id);
-        self.admission.changed.notify_waiters();
-    }
-}
-
 pub(crate) struct BackgroundTaskTerminalObserver {
     runtime: Arc<Runtime>,
     snapshot: ExecutableAgentSnapshot,
@@ -199,7 +176,6 @@ pub(crate) struct BackgroundTaskTerminalObserver {
     supervisor: Arc<BackgroundTaskSupervisor>,
     session_id: String,
     environment_generation: String,
-    admission: Arc<BackgroundAdmission>,
     attention: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
 }
 
@@ -225,7 +201,6 @@ impl BackgroundTaskTerminalObserver {
             supervisor,
             session_id,
             environment_generation,
-            admission: Arc::new(BackgroundAdmission::default()),
             attention,
         }
     }
@@ -245,6 +220,46 @@ impl BackgroundTaskTerminalObserver {
             Err(message) => BackgroundTaskEnd::Failed { message },
         };
         BackgroundTaskCompletion { fence, end }
+    }
+
+    fn indeterminate(fence: TaskFence, message: impl Into<String>) -> BackgroundTaskCompletion {
+        BackgroundTaskCompletion {
+            fence,
+            end: BackgroundTaskEnd::Indeterminate {
+                message: message.into(),
+            },
+        }
+    }
+
+    fn start_failure(
+        fence: TaskFence,
+        kind: ToolKind,
+        message: impl Into<String>,
+    ) -> BackgroundTaskCompletion {
+        let message = message.into();
+        if kind == ToolKind::DetachedOnly {
+            Self::indeterminate(
+                fence,
+                format!("detached task start outcome is unknown: {message}"),
+            )
+        } else {
+            Self::completion(fence, Err(message))
+        }
+    }
+
+    fn remote_wait(handle: &ToolTaskHandle) -> Result<BackgroundWait, String> {
+        handle.validate().map_err(|error| error.to_string())?;
+        let protocol = match handle.owner.as_str() {
+            "mcp" => RemoteProtocol::Mcp,
+            "a2a" => RemoteProtocol::A2a,
+            owner => return Err(format!("unsupported durable tool task owner {owner:?}")),
+        };
+        Ok(BackgroundWait::Remote(RemoteContinuation {
+            protocol,
+            server_binding: handle.binding.clone(),
+            task_id: handle.task_id.clone(),
+            poll_interval_ms: handle.poll_interval_ms,
+        }))
     }
 
     async fn launch(
@@ -267,7 +282,14 @@ impl BackgroundTaskTerminalObserver {
                 Err(error) => {
                     let completion = Self::completion(fence.clone(), Err(error.to_string()));
                     self.supervisor.complete(task_id.clone(), completion);
-                    publish_attention(self.attention.clone(), &thread_id, &task_id, &fence).await;
+                    publish_attention(
+                        self.attention.clone(),
+                        &thread_id,
+                        &task_id,
+                        &fence,
+                        BackgroundAttention::Terminal,
+                    )
+                    .await;
                     return;
                 }
             };
@@ -276,7 +298,14 @@ impl BackgroundTaskTerminalObserver {
             Err(error) => {
                 let completion = Self::completion(fence.clone(), Err(error.to_string()));
                 self.supervisor.complete(task_id.clone(), completion);
-                publish_attention(self.attention.clone(), &thread_id, &task_id, &fence).await;
+                publish_attention(
+                    self.attention.clone(),
+                    &thread_id,
+                    &task_id,
+                    &fence,
+                    BackgroundAttention::Terminal,
+                )
+                .await;
                 return;
             }
         };
@@ -288,46 +317,415 @@ impl BackgroundTaskTerminalObserver {
                     Err("canonical tool execution facts changed after the committed claim".into()),
                 ),
             );
-            publish_attention(self.attention.clone(), &thread_id, &task_id, &fence).await;
+            publish_attention(
+                self.attention.clone(),
+                &thread_id,
+                &task_id,
+                &fence,
+                BackgroundAttention::Terminal,
+            )
+            .await;
             return;
         }
+        let tool_kind = resolved.kind;
         let state = Store::rebuild(&self.commit.committed_state(&thread_id));
         let supervisor = self.supervisor.clone();
         let attention = self.attention.clone();
-        let admission = self.admission.clone();
         let class = BackgroundWorkClass::SharedEnvironment {
             session_id: self.session_id.clone(),
             generation_id: self.environment_generation.clone(),
         };
         self.background
             .spawn(class, async move {
-                let _admission = admission.acquire(expected.concurrency).await;
                 let run_id =
                     awaken_runtime_contract::RunId(format!("background-{}", task_id.as_str()));
-                let invocation = prepared.invoke(
-                    &run_id,
-                    &thread_id,
-                    format!("background:{}", task_id.as_str()),
-                    &call,
-                    &state,
-                );
-                let result = tokio::select! {
-                    result = invocation => result.map_err(|error| error.to_string()),
-                    _ = cancellation.cancelled() => Ok(ToolOutput::error(
-                        &call.call_id,
-                        "background task cancelled",
-                    )),
-                };
-                let completion = if cancellation.is_cancelled() {
-                    BackgroundTaskCompletion {
-                        fence: fence.clone(),
-                        end: BackgroundTaskEnd::Cancelled,
+                let result = prepared
+                    .start_task(
+                        &run_id,
+                        &thread_id,
+                        format!("background:{}", task_id.as_str()),
+                        &call,
+                        &state,
+                    )
+                    .await;
+                match result {
+                    Ok(ToolTaskStart::Pending(handle)) => match Self::remote_wait(&handle) {
+                        Ok(wait) => {
+                            supervisor.wait(
+                                task_id.clone(),
+                                BackgroundTaskWaitCandidate {
+                                    fence: fence.clone(),
+                                    wait,
+                                    renew_lease: false,
+                                },
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Waiting,
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            supervisor.complete(
+                                task_id.clone(),
+                                Self::indeterminate(
+                                    fence.clone(),
+                                    format!("detached task returned an unusable continuation: {error}"),
+                                ),
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Terminal,
+                            )
+                            .await;
+                        }
+                    },
+                    Ok(ToolTaskStart::Completed(output)) => {
+                        supervisor
+                            .complete(task_id.clone(), Self::completion(fence.clone(), Ok(output)));
+                        publish_attention(
+                            attention,
+                            &thread_id,
+                            &task_id,
+                            &fence,
+                            BackgroundAttention::Terminal,
+                        )
+                        .await;
                     }
-                } else {
-                    Self::completion(fence.clone(), result)
-                };
-                supervisor.complete(task_id.clone(), completion);
-                publish_attention(attention, &thread_id, &task_id, &fence).await;
+                    Err(error) => {
+                        supervisor.complete(
+                            task_id.clone(),
+                            Self::start_failure(fence.clone(), tool_kind, error.to_string()),
+                        );
+                        publish_attention(
+                            attention,
+                            &thread_id,
+                            &task_id,
+                            &fence,
+                            BackgroundAttention::Terminal,
+                        )
+                        .await;
+                    }
+                }
+            })
+            .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn launch_remote(
+        &self,
+        task_id: BackgroundTaskId,
+        fence: TaskFence,
+        call: awaken_runtime_contract::tool::ToolCall,
+        thread_id: awaken_runtime_contract::ThreadId,
+        expected: awaken_ext_background_task::TaskExecutionPolicy,
+        continuation: RemoteContinuation,
+        lease_expires_at_ms: u64,
+        cancelling: bool,
+    ) {
+        let cancellation = self
+            .supervisor
+            .resume_wait(&task_id, &fence)
+            .or_else(|| self.supervisor.register(&task_id));
+        let Some(cancellation) = cancellation else {
+            if cancelling {
+                self.supervisor.cancel(&task_id);
+            }
+            return;
+        };
+        let mut context = self.context.clone();
+        context.cancellation = Some(cancellation.clone());
+        context.terminal_observers.clear();
+        let prepared =
+            match PreparedToolExecutor::new(self.runtime.clone(), &self.snapshot, context) {
+                Ok(prepared) => Arc::new(prepared),
+                Err(error) => {
+                    self.supervisor.complete(
+                        task_id.clone(),
+                        Self::indeterminate(
+                            fence.clone(),
+                            format!("remote background task cannot be resumed: {error}"),
+                        ),
+                    );
+                    publish_attention(
+                        self.attention.clone(),
+                        &thread_id,
+                        &task_id,
+                        &fence,
+                        BackgroundAttention::Terminal,
+                    )
+                    .await;
+                    return;
+                }
+            };
+        let resolved = match prepared.execution(&call) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.supervisor.complete(
+                    task_id.clone(),
+                    Self::indeterminate(
+                        fence.clone(),
+                        format!("remote background task binding cannot be resolved: {error}"),
+                    ),
+                );
+                publish_attention(
+                    self.attention.clone(),
+                    &thread_id,
+                    &task_id,
+                    &fence,
+                    BackgroundAttention::Terminal,
+                )
+                .await;
+                return;
+            }
+        };
+        if resolved.recovery != expected.recovery || resolved.concurrency != expected.concurrency {
+            self.supervisor.complete(
+                task_id.clone(),
+                Self::indeterminate(
+                    fence.clone(),
+                    "canonical tool execution facts changed after the remote continuation was committed",
+                ),
+            );
+            publish_attention(
+                self.attention.clone(),
+                &thread_id,
+                &task_id,
+                &fence,
+                BackgroundAttention::Terminal,
+            )
+            .await;
+            return;
+        }
+        let mut handle = ToolTaskHandle {
+            owner: match continuation.protocol {
+                RemoteProtocol::Mcp => "mcp",
+                RemoteProtocol::A2a => "a2a",
+            }
+            .into(),
+            binding: continuation.server_binding,
+            task_id: continuation.task_id,
+            poll_interval_ms: continuation.poll_interval_ms,
+        };
+        if let Err(error) = handle.validate() {
+            self.supervisor.complete(
+                task_id.clone(),
+                Self::indeterminate(
+                    fence.clone(),
+                    format!("committed remote background task handle is invalid: {error}"),
+                ),
+            );
+            publish_attention(
+                self.attention.clone(),
+                &thread_id,
+                &task_id,
+                &fence,
+                BackgroundAttention::Terminal,
+            )
+            .await;
+            return;
+        }
+        let state = Store::rebuild(&self.commit.committed_state(&thread_id));
+        let supervisor = self.supervisor.clone();
+        let attention = self.attention.clone();
+        let class = BackgroundWorkClass::SharedEnvironment {
+            session_id: self.session_id.clone(),
+            generation_id: self.environment_generation.clone(),
+        };
+        self.background
+            .spawn(class, async move {
+                let run_id =
+                    awaken_runtime_contract::RunId(format!("background-{}", task_id.as_str()));
+                let renew_at = lease_expires_at_ms
+                    .saturating_sub(BackgroundTaskSupervisor::lease_ms() / 2);
+                let mut cancelling = cancelling;
+                let mut cancel_sent = false;
+                let mut failures = 0usize;
+                loop {
+                    let now = BackgroundTaskSupervisor::now_ms();
+                    if now >= renew_at {
+                        let wait = Self::remote_wait(&handle).expect("validated task handle");
+                        supervisor.wait(
+                            task_id.clone(),
+                            BackgroundTaskWaitCandidate {
+                                fence: fence.clone(),
+                                wait,
+                                renew_lease: true,
+                            },
+                        );
+                        let change = stable_fingerprint(&(
+                            "background-task-watchdog-v1",
+                            task_id.as_str(),
+                            fence.epoch,
+                            lease_expires_at_ms,
+                        ));
+                        publish_attention(
+                            attention,
+                            &thread_id,
+                            &task_id,
+                            &fence,
+                            BackgroundAttention::Watchdog { change },
+                        )
+                        .await;
+                        return;
+                    }
+                    let poll_delay = handle
+                        .poll_interval_ms
+                        .map(Duration::from_millis)
+                        .unwrap_or(DEFAULT_REMOTE_POLL_INTERVAL);
+                    let renew_delay = Duration::from_millis(renew_at.saturating_sub(now));
+                    tokio::select! {
+                        _ = tokio::time::sleep(poll_delay.min(renew_delay)) => {}
+                        _ = cancellation.cancelled(), if !cancelling => cancelling = true,
+                    }
+                    if BackgroundTaskSupervisor::now_ms() >= renew_at {
+                        continue;
+                    }
+                    let operation = format!(
+                        "background:{}:{}:{}",
+                        task_id.as_str(),
+                        fence.epoch,
+                        if cancelling && !cancel_sent { "cancel" } else { "poll" }
+                    );
+                    let observed = if cancelling && !cancel_sent {
+                        cancel_sent = true;
+                        prepared
+                            .cancel_task(
+                                &run_id,
+                                &thread_id,
+                                operation,
+                                &call,
+                                &handle,
+                                &state,
+                            )
+                            .await
+                    } else {
+                        prepared
+                            .poll_task(
+                                &run_id,
+                                &thread_id,
+                                operation,
+                                &call,
+                                &handle,
+                                &state,
+                            )
+                            .await
+                    };
+                    let observed = match observed {
+                        Ok(observed) => {
+                            failures = 0;
+                            observed
+                        }
+                        Err(error) => {
+                            failures += 1;
+                            if failures < REMOTE_OBSERVATION_RETRIES {
+                                continue;
+                            }
+                            supervisor.complete(
+                                task_id.clone(),
+                                BackgroundTaskCompletion {
+                                    fence: fence.clone(),
+                                    end: BackgroundTaskEnd::Indeterminate {
+                                        message: format!(
+                                            "remote background task outcome is unknown after observation failure: {error}"
+                                        ),
+                                    },
+                                },
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Terminal,
+                            )
+                            .await;
+                            return;
+                        }
+                    };
+                    match observed {
+                        ToolTaskPoll::Pending { poll_interval_ms } => {
+                            handle.poll_interval_ms = poll_interval_ms.or(handle.poll_interval_ms);
+                        }
+                        ToolTaskPoll::InputRequired {
+                            poll_interval_ms,
+                            message,
+                        } => {
+                            handle.poll_interval_ms = poll_interval_ms.or(handle.poll_interval_ms);
+                            let change = stable_fingerprint(&(
+                                "background-task-input-required-v1",
+                                task_id.as_str(),
+                                fence.epoch,
+                                message.as_deref().unwrap_or_default(),
+                            ));
+                            publish_attention(
+                                attention.clone(),
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::InputRequired { change },
+                            )
+                            .await;
+                        }
+                        ToolTaskPoll::Completed(output) => {
+                            supervisor.complete(
+                                task_id.clone(),
+                                Self::completion(fence.clone(), Ok(output)),
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Terminal,
+                            )
+                            .await;
+                            return;
+                        }
+                        ToolTaskPoll::Failed { message } => {
+                            supervisor.complete(
+                                task_id.clone(),
+                                BackgroundTaskCompletion {
+                                    fence: fence.clone(),
+                                    end: BackgroundTaskEnd::Failed { message },
+                                },
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Terminal,
+                            )
+                            .await;
+                            return;
+                        }
+                        ToolTaskPoll::Cancelled => {
+                            supervisor.complete(
+                                task_id.clone(),
+                                BackgroundTaskCompletion {
+                                    fence: fence.clone(),
+                                    end: BackgroundTaskEnd::Cancelled,
+                                },
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Terminal,
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                }
             })
             .await;
     }
@@ -348,7 +746,39 @@ impl BackgroundTaskTerminalObserver {
                     )
                     .await;
                 }
-                BackgroundTaskLifecycle::Cancelling { attempt }
+                BackgroundTaskLifecycle::Waiting {
+                    attempt,
+                    wait: BackgroundWait::Remote(continuation),
+                } if attempt.worker_id == self.supervisor.worker_id() => {
+                    self.launch_remote(
+                        task.id,
+                        attempt.fence(),
+                        task.invocation.call,
+                        task.origin.thread_id,
+                        attempt.policy.clone(),
+                        continuation.clone(),
+                        attempt.lease_expires_at_ms,
+                        false,
+                    )
+                    .await;
+                }
+                BackgroundTaskLifecycle::Cancelling {
+                    attempt,
+                    wait: Some(BackgroundWait::Remote(continuation)),
+                } if attempt.worker_id == self.supervisor.worker_id() => {
+                    self.launch_remote(
+                        task.id,
+                        attempt.fence(),
+                        task.invocation.call,
+                        task.origin.thread_id,
+                        attempt.policy.clone(),
+                        continuation.clone(),
+                        attempt.lease_expires_at_ms,
+                        true,
+                    )
+                    .await;
+                }
+                BackgroundTaskLifecycle::Cancelling { attempt, .. }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
                     self.supervisor.cancel(&task.id);
@@ -381,6 +811,7 @@ impl RunTerminalObserver for BackgroundTaskTerminalObserver {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_agent_contract::agent::run::Id as RunId;
@@ -394,8 +825,8 @@ mod tests {
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ToolDescriptor};
     use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
     use awaken_runtime_contract::tool::{
-        RawTool, ToolCall, ToolError, ToolOutputSpiller, ToolRecoveryPolicy, ToolResource,
-        ToolResourceAccess,
+        RawTool, ToolCall, ToolConcurrency, ToolError, ToolOutputSpiller, ToolRecoveryPolicy,
+        ToolResource, ToolResourceAccess,
     };
 
     #[derive(Clone, Debug, PartialEq)]
@@ -492,19 +923,59 @@ mod tests {
             worker_id: "worker-secret".into(),
             epoch: 2,
         };
-        let (operation_a, message_a) = attention_message(&thread, &task, &first);
-        let (operation_retry, message_retry) = attention_message(&thread, &task, &first);
-        let (operation_b, message_b) = attention_message(&thread, &task, &second);
+        let (operation_a, message_a) =
+            attention_message(&thread, &task, &first, &BackgroundAttention::Terminal);
+        let (operation_retry, message_retry) =
+            attention_message(&thread, &task, &first, &BackgroundAttention::Terminal);
+        let (operation_b, message_b) =
+            attention_message(&thread, &task, &second, &BackgroundAttention::Terminal);
+        let (waiting_operation, _) =
+            attention_message(&thread, &task, &first, &BackgroundAttention::Waiting);
 
         assert_eq!(operation_a, operation_retry, "R1 operation identity");
         assert_eq!(message_a, message_retry, "R1 message identity");
         assert_ne!(operation_a, operation_b, "R2 operation fence");
+        assert_ne!(operation_a, waiting_operation, "R2 candidate kind");
         assert_ne!(message_a.id, message_b.id, "R2 message fence");
         assert_eq!(message_a.role, Role::System, "R3 system input");
         let text = message_a.text_content();
         assert!(text.contains(task.as_str()), "R3 task reference");
         assert!(text.contains("get_background_task"), "R3 state lookup");
         assert!(!text.contains("worker-secret"), "R3 no worker identity");
+    }
+
+    #[test]
+    fn detached_task_start_failure_never_claims_a_remote_failure() {
+        // Cause/effect decision table: R1 a Regular target returns a terminal
+        // error from its default start adapter -> Failed; R2 a DetachedOnly
+        // protocol target loses or rejects the start response -> Indeterminate,
+        // because no durable remote task id crossed ThreadCommit and replay may
+        // duplicate an external effect. Both rows preserve the original fence.
+        let fence = TaskFence {
+            worker_id: "worker".into(),
+            epoch: 7,
+        };
+        let regular = BackgroundTaskTerminalObserver::start_failure(
+            fence.clone(),
+            ToolKind::Regular,
+            "known local failure",
+        );
+        let detached = BackgroundTaskTerminalObserver::start_failure(
+            fence.clone(),
+            ToolKind::DetachedOnly,
+            "response lost",
+        );
+
+        assert_eq!(regular.fence, fence, "R1 fence");
+        assert!(
+            matches!(regular.end, BackgroundTaskEnd::Failed { .. }),
+            "R1"
+        );
+        assert_eq!(detached.fence, fence, "R2 fence");
+        assert!(
+            matches!(detached.end, BackgroundTaskEnd::Indeterminate { .. }),
+            "R2"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -522,7 +993,7 @@ mod tests {
             epoch: 1,
         };
 
-        publish_attention(None, &thread, &task, &fence).await;
+        publish_attention(None, &thread, &task, &fence, BackgroundAttention::Terminal).await;
 
         let accepting = Arc::new(RecordingAttentionApplication::accepting(2));
         let accepting_port: Arc<dyn SessionRunBackgroundApplication> = accepting.clone();
@@ -531,6 +1002,7 @@ mod tests {
             &thread,
             &task,
             &fence,
+            BackgroundAttention::Terminal,
         )
         .await;
         {
@@ -556,6 +1028,7 @@ mod tests {
             &thread,
             &task,
             &fence,
+            BackgroundAttention::Terminal,
         )
         .await;
         assert_eq!(
@@ -575,6 +1048,7 @@ mod tests {
             &thread,
             &task,
             &fence,
+            BackgroundAttention::Terminal,
         )
         .await;
         assert_eq!(
@@ -639,12 +1113,13 @@ mod tests {
         // Constraint: compatibility check and active-map insertion are one
         // linearization point; otherwise two R1 arrivals can both observe an
         // empty set and violate R2.
-        let admission = Arc::new(BackgroundAdmission::default());
-        let first = admission.acquire(write_claim("a")).await;
+        let background = BackgroundRuns::new();
+        let admission = background.tool_execution_admission("session", "generation");
+        let first = admission.clone().acquire(write_claim("a")).await.unwrap();
 
         let mut conflicting = {
             let admission = admission.clone();
-            tokio::spawn(async move { admission.acquire(write_claim("a")).await })
+            tokio::spawn(async move { admission.acquire(write_claim("a")).await.unwrap() })
         };
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(20), &mut conflicting)
@@ -653,7 +1128,7 @@ mod tests {
             "R2: a conflicting claim must not pass the active owner"
         );
 
-        let compatible = admission.acquire(write_claim("b")).await;
+        let compatible = admission.clone().acquire(write_claim("b")).await.unwrap();
         drop(compatible);
         assert!(!conflicting.is_finished(), "R3 preserves the R2 conflict");
 
@@ -672,7 +1147,8 @@ mod tests {
         // observed maximum active critical sections is exactly one. This is the
         // regression case for the former check-unlock-insert TOCTOU; the
         // sequential-owner test above covers blocking and wake behavior.
-        let admission = Arc::new(BackgroundAdmission::default());
+        let background = BackgroundRuns::new();
+        let admission = background.tool_execution_admission("session", "generation");
         let barrier = Arc::new(tokio::sync::Barrier::new(17));
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
@@ -684,7 +1160,7 @@ mod tests {
             let maximum = maximum.clone();
             arrivals.push(tokio::spawn(async move {
                 barrier.wait().await;
-                let guard = admission.acquire(write_claim("same")).await;
+                let guard = admission.acquire(write_claim("same")).await.unwrap();
                 let current = active.fetch_add(1, Ordering::SeqCst) + 1;
                 maximum.fetch_max(current, Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -950,5 +1426,187 @@ mod tests {
             supervisor.register(&task.id).is_none(),
             "completion remains a deduplication guard until durable Ended truth"
         );
+    }
+
+    struct RemoteTaskTool {
+        starts: AtomicUsize,
+        polls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl RawTool for RemoteTaskTool {
+        fn id(&self) -> &str {
+            "remote"
+        }
+
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            panic!("detached MCP-like target must use start_task")
+        }
+
+        async fn start_task(&self, _call: ToolCall) -> Result<ToolTaskStart, ToolError> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolTaskStart::Pending(ToolTaskHandle {
+                owner: "mcp".into(),
+                binding: "remote".into(),
+                task_id: "remote-secret-id".into(),
+                poll_interval_ms: Some(1),
+            }))
+        }
+
+        async fn poll_task(
+            &self,
+            call: &ToolCall,
+            task: &ToolTaskHandle,
+        ) -> Result<ToolTaskPoll, ToolError> {
+            assert_eq!(task.task_id, "remote-secret-id");
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolTaskPoll::Completed(ToolOutput::ok(
+                &call.call_id,
+                "remote complete",
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_remote_handle_is_polled_without_replaying_start() {
+        // Cause/effect decision table: R1 committed Running -> exactly one
+        // start_task and a process Wait candidate; R2 candidate is committed as
+        // Waiting -> the same supervisor slot resumes one poll by the saved
+        // handle; R3 explicit Completed -> terminal candidate and a distinct
+        // attention identity. Constraints: no second tools/call, no remote id
+        // in System messages, and Thread State remains the only durable truth.
+        let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-remote"));
+        let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
+            BackgroundTaskConfig {
+                tools: BTreeSet::from(["remote".into()]),
+            },
+            supervisor.clone(),
+        ));
+        let remote = Arc::new(RemoteTaskTool {
+            starts: AtomicUsize::new(0),
+            polls: AtomicUsize::new(0),
+        });
+        let runtime = Arc::new(Runtime::new().with_plugin(plugin).with_tool(remote.clone()));
+        let memory = awaken_store_inmem::MemoryCommitCoordinator::new();
+        let commit = Arc::new(HostCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected(memory),
+        )));
+        let background = Arc::new(BackgroundRuns::new());
+        let attention = Arc::new(RecordingAttentionApplication::accepting(0));
+        let attention_port: Arc<dyn SessionRunBackgroundApplication> = attention.clone();
+        let mut remote_snapshot = snapshot();
+        remote_snapshot.resolved_spec.tool_descriptors = vec![
+            ToolDescriptor::pinned(
+                "test",
+                "remote",
+                "Remote work.",
+                serde_json::json!({"type":"object"}),
+            )
+            .with_kind(awaken_runtime_contract::resolved::ToolKind::DetachedOnly),
+        ];
+        let observer = BackgroundTaskTerminalObserver::new(
+            runtime,
+            remote_snapshot,
+            RuntimeRunContext::new(),
+            commit.clone(),
+            background.clone(),
+            supervisor.clone(),
+            "session".into(),
+            "generation".into(),
+            Some(Arc::downgrade(&attention_port)),
+        );
+        let thread_id = ThreadId("remote-thread".into());
+        let mut task = BackgroundTask::requested(
+            BackgroundTaskId::new("remote-task").expect("task id"),
+            BackgroundTaskOrigin {
+                thread_id: thread_id.clone(),
+                run_id: RunId("origin".into()),
+                operation_id: "operation".into(),
+            },
+            BackgroundInvocation {
+                call: ToolCall {
+                    call_id: "remote-call".into(),
+                    tool_id: "remote".into(),
+                    arguments: serde_json::json!({}),
+                },
+            },
+        );
+        let fence = task
+            .start(
+                supervisor.worker_id(),
+                BackgroundTaskSupervisor::now_ms(),
+                BackgroundTaskSupervisor::lease_ms(),
+                TaskExecutionPolicy {
+                    recovery: ToolRecoveryPolicy::default(),
+                    concurrency: ToolConcurrency::Parallel,
+                },
+            )
+            .expect("claim");
+        let commit_task = |run: &str, task: &BackgroundTask| {
+            ThreadCommit::assemble(
+                thread_id.clone(),
+                RunDisposition::ended(
+                    RunId(run.into()),
+                    awaken_runtime_contract::EndCause::NaturalEnd,
+                ),
+                true,
+                Vec::new(),
+                vec![task_state_cell(&task.id).write(task).expect("task state")],
+                Vec::new(),
+            )
+        };
+        commit
+            .commit(commit_task("origin", &task))
+            .await
+            .expect("R1 commit");
+        observer
+            .observe(&CommittedTerminalRun {
+                run_id: RunId("origin".into()),
+                thread_id: thread_id.clone(),
+                cause: awaken_runtime_contract::EndCause::NaturalEnd,
+            })
+            .await
+            .expect("R1 observe");
+        assert!(background.drain(Duration::from_secs(2)).await);
+        assert_eq!(remote.starts.load(Ordering::SeqCst), 1, "R1");
+        let waiting = supervisor
+            .wait_candidate(&task.id)
+            .expect("R1 wait candidate");
+        task.wait(&waiting.fence, waiting.wait)
+            .expect("R2 fold wait");
+        commit
+            .commit(commit_task("wait-attention", &task))
+            .await
+            .expect("R2 commit");
+        observer
+            .observe(&CommittedTerminalRun {
+                run_id: RunId("wait-attention".into()),
+                thread_id: thread_id.clone(),
+                cause: awaken_runtime_contract::EndCause::NaturalEnd,
+            })
+            .await
+            .expect("R2 observe");
+        assert!(background.drain(Duration::from_secs(2)).await);
+        assert_eq!(remote.starts.load(Ordering::SeqCst), 1, "R2 no replay");
+        assert_eq!(remote.polls.load(Ordering::SeqCst), 1, "R2 one poll");
+        assert!(
+            matches!(
+                supervisor
+                    .completion(&task.id)
+                    .map(|completion| completion.end),
+                Some(BackgroundTaskEnd::Completed { .. })
+            ),
+            "R3"
+        );
+        let attention = attention.calls.lock().expect("attention calls");
+        assert_eq!(attention.len(), 2, "R1 waiting + R3 terminal");
+        assert_ne!(attention[0].operation_id, attention[1].operation_id, "R3");
+        assert!(
+            attention
+                .iter()
+                .all(|call| { !call.messages[0].text_content().contains("remote-secret-id") }),
+            "remote handle never reaches Agent"
+        );
+        assert_eq!(fence.epoch, 1);
     }
 }

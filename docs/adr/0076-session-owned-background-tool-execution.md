@@ -31,7 +31,11 @@ External configuration is deliberately binary: an ordinary canonical tool id
 is either absent (foreground only) or listed as eligible for
 `run_in_background`. An empty configuration contributes no tools or state
 namespace. There is no second direct-call syntax and no implicit interception
-of ordinary tool calls.
+of ordinary tool calls. A listed target remains in the one executable catalog
+but is removed from eager, deferred-search, and forged direct-call surfaces;
+the generated `run_in_background` schema is its only model-visible invocation
+path. Listing every target in a publication therefore gives the Agent exactly
+the four BackgroundTask tools without creating a filtered executor registry.
 
 The model-facing management surface is closed and uniform:
 run_in_background, list_background_tasks, get_background_task, and
@@ -48,10 +52,10 @@ values on `ToolOutput`. Runtime applies and commits those commands with the same
 ToolBatch and ThreadCommit path used by every stateful tool.
 
 Runtime has no BackgroundTask enum, operation classifier, service, repository,
-lease, worker, polling, or database concept. The only generic seam added to the
-contract is read-only tool access to the current materialized State; it cannot
-write or reach persistence. This dependency direction is checked by crate
-fitness rules.
+lease, worker, polling policy, or database concept. Runtime exposes only
+protocol-neutral tool continuation and execution-admission seams alongside
+read-only access to the current materialized State; none can write or reach
+persistence. This dependency direction is checked by crate fitness rules.
 
 The deterministic task id is derived from trusted Thread, Run, and Runtime
 operation identity, never from model arguments. Replaying the same committed
@@ -81,9 +85,19 @@ error that a caller might discard. Cancellation wins over a racing completion,
 and terminal states are absorbing.
 
 MCP and A2A native task support is an optional executor enhancement, not another
-lifecycle. A remote wait carries the closed protocol kind, stable server
-binding, and non-empty remote task id together. Reclaim transfers authority by
-a strictly increasing epoch, so a stale executor cannot publish.
+lifecycle. Generic Runtime task ports start, poll, and cancel one opaque handle;
+the adapter owns capability negotiation and protocol mapping. A remote wait
+carries the closed protocol kind, stable server binding, non-empty remote task
+id, and an optional positive poll interval together. These coordinates never
+enter the Agent projection.
+
+Standard MCP task creation does not guarantee client-stable idempotency. The
+initial `tools/call` therefore stays `NeverReplay`: loss before the returned
+task id enters ThreadCommit becomes `Indeterminate`, never a second start. Once
+the exact handle is committed as `Waiting` or `Cancelling`, reclaim reconnects
+to that task id without replaying creation, retains the lifecycle phase, and
+transfers authority by a strictly increasing epoch. A stale executor cannot
+poll, cancel, heartbeat, or publish completion.
 
 ### D4: existing Thread persistence is the sole durable authority
 
@@ -109,13 +123,15 @@ or resource-lock rules.
 
 The stable runtime contract contains no BackgroundTask types, management ids,
 repository ports, or extension configuration. The extension depends inward on
-`awaken-runtime-contract`; the reverse dependency is forbidden. The only new
-contract operation is the generic read-only State context available to a
-stateful dynamic `RawTool`. Runtime projects that view through the owning
-manifest state-key bound and rejects any returned command outside the same
-bound. An MCP or other plugin with deny-all State authority therefore receives
-an empty view and cannot smuggle a write. The view is held behind an `Arc`, so
-repeated reads clone only the shared handle rather than the complete map.
+`awaken-runtime-contract`; the reverse dependency is forbidden. Its generic
+seams are read-only State context for a dynamic `RawTool`, protocol-neutral
+task start/poll/cancel values, descriptor relations that hide configured
+targets, and a host-owned tool-execution admission port. None knows task ids,
+Session attention, MCP methods, or persistence. Runtime projects State through
+the owning manifest bound and rejects returned commands outside it. An MCP or
+other plugin with deny-all State authority therefore receives an empty view and
+cannot smuggle a write. The view is held behind an `Arc`, so repeated reads
+clone only the shared handle rather than the complete map.
 
 `RuntimeToolOperation` contains only operations intrinsically implemented by
 Runtime. Background management ids are extension-owned `RawTool` identities and
@@ -136,10 +152,20 @@ returning.
 - cancellation and terminal states never reopen;
 - a committed cancellation absorbs a racing success;
 - malformed persisted JSON never resets or disappears as an empty task set;
-- management results never expose invocation arguments;
+- management results never expose invocation arguments, remote handles, lease
+  coordinates, worker identity, recovery policy, or poll intervals;
 - completion attention uses one fence-derived idempotent Session command and
-  carries no result, progress, invocation, or credential payload;
+  carries no result, progress, invocation, credential, or remote-id payload;
+- repeated `Working` observations are silent; a changed `InputRequired`, lease
+  checkpoint, durable-wait transition, and terminal candidate use distinct
+  deterministic attention identities;
+- only an explicit remote `Failed` or `Cancelled` status creates that terminal
+  result; observation or attempt exhaustion becomes `Indeterminate`;
 - `StepStart` reconciliation precedes the attention Run's inference;
+- configured targets are absent from model presentation and direct dispatch but
+  remain executable through the canonical prepared executor;
+- foreground and detached calls in one Session Environment generation share the
+  canonical `ToolConcurrency` admission;
 - Runtime and runtime-contract contain no BackgroundTask service or repository.
 
 Cause-graph and decision-table tests cover typed schema generation, configuration
@@ -147,9 +173,12 @@ partitions, deterministic replay, Runtime ThreadCommit integration, list/get/
 cancel behavior, shape drift, claim competition, lease boundaries, stale fences,
 remote waits, cancellation races, indeterminate recovery, overflow atomicity,
 completion publication retry, same-Session attention, pre-inference folding,
-fail-closed remote placement, and the absence of persistence dependencies. Kani proves cancellation
-monotonicity and terminal absorption. Architecture and feature-ledger checkers
-make the dependency and evidence claims executable.
+fail-closed remote placement, committed-handle reconnect, start-response loss,
+poll/cancel exhaustion, status-change attention, shared foreground/background
+admission, hidden target projection, and the absence of persistence
+dependencies. Kani proves cancellation monotonicity, terminal absorption, and
+the durable-continuation exception to NeverReplay reclaim. Architecture and
+feature-ledger checkers make the dependency and evidence claims executable.
 
 ## Product composition
 
@@ -161,11 +190,12 @@ tools, suppresses duplicate terminal delivery through the process supervisor,
 honors the exact persisted concurrency/resource claim, and retains the exact
 Session Environment generation through `BackgroundRuns`.
 
-The supervisor holds one mutually exclusive process slot per task: `Active`
-atomically becomes `Completed` under one lock. It does not synchronize parallel
-active/completed maps. A completion whose fence no longer matches durable Thread
-State is retired before the current attempt is reconciled, so stale local
-evidence cannot suppress a newer post-commit launch.
+The supervisor holds one mutually exclusive process slot per task: `Active`,
+`Waiting(candidate)`, or `Completed`. Transitions occur under one lock; there
+are no parallel active/waiting/completed maps. A terminal candidate dominates a
+wait candidate for the same fence. A candidate whose fence no longer matches
+durable Thread State is retired before the current attempt is reconciled, so
+stale local evidence cannot suppress a newer post-commit launch.
 
 Completion is intentionally not a post-terminal database write. It remains a
 fenced process-local projection until the extension's `StepStart` hook folds it
@@ -173,27 +203,42 @@ into the next ordinary Run commit. A process loss therefore leaves the durable
 Running lease authoritative: the next Run either reclaims a replayable attempt
 with a higher epoch or ends a non-replayable attempt as indeterminate.
 
-Completion also publishes one deterministic **attention Run** through the
-existing `SessionRunBackgroundApplication`. This changes no task truth: it is
-an ordinary same-Thread Session Run admitted through the canonical reservation,
+Durable-wait, changed input-required, watchdog, and terminal candidates publish
+deterministic **attention Runs** through the existing
+`SessionRunBackgroundApplication`. They change no task truth: each is an
+ordinary same-Thread Session Run admitted through the canonical reservation,
 Session activity receipt, and dispatch path. `SharedHost` retains only a weak
 composition edge to that application, so the wiring neither creates an
-ownership cycle nor becomes a second admission owner. Its operation and Message
-identities are derived from `(Thread, task id, worker, epoch)`. An ambiguous
-application failure retries the exact command with short bounded backoff;
-`BadRequest` is definitive. Session admission idempotency therefore covers the
-response-loss window without a notification table or retry ledger.
+ownership cycle nor becomes a second admission owner. Operation and Message
+identities are derived from `(Thread, task id, worker, epoch, candidate kind or
+monotone change)`. An ambiguous application failure retries the exact command
+with short bounded backoff; `BadRequest` is definitive. Session admission
+idempotency therefore covers the response-loss window without a notification
+table or retry ledger.
 
-The attention input is `Role::System` and contains only the task id plus an
-instruction to call `get_background_task`. It never embeds invocation arguments,
-credentials, progress, or result content. `StepStart` remains the lifecycle
-owner and runs before inference, so a matching completion is first staged as
-`Ended` and then the Agent reads that authoritative state. `BeforeInference`
-is not used: it would turn task reconciliation into request-only context
-decoration and require an unrelated ContextMessages capability. A stale
-completion may still cause a harmless “candidate” reminder, but its fence can
-never finish a newer attempt. The Agent decides whether to incorporate the
-result, cancel related work, or continue; it does not delete lifecycle truth.
+The attention input is `Role::System` and contains only the task id, the abstract
+reason for waking, and an instruction to call `get_background_task`. It never
+embeds invocation arguments, credentials, progress, remote ids, or result
+content. `StepStart` remains the lifecycle owner and runs before inference, so a
+matching wait, heartbeat, or completion is first folded into the current Run
+view and the Agent then reads that authoritative projection. The fold becomes
+durable at the next ordinary ThreadCommit: before any ensuing tool effect, or at
+the terminal boundary for a text-only response. `BeforeInference` is not used:
+it would turn task reconciliation into request-only context decoration and
+require an unrelated ContextMessages capability. A stale candidate may still
+cause a harmless reminder, but its fence can never alter a newer attempt. The
+Agent decides whether to incorporate a result, cancel related work, or continue;
+it does not delete lifecycle truth.
+
+`Working` is polled silently at the negotiated interval. A changed
+`InputRequired` wakes the Agent once per stable message fingerprint. A watchdog
+wakes at half the current execution lease so `StepStart` can commit a fenced
+heartbeat and launch the next observation interval; it is recovery liveness,
+not a user timeout and not an Agent-visible `watch(task_id)` tool. Explicit
+remote completion fetches the result before producing a terminal candidate.
+Explicit remote failure/cancellation maps to the matching aggregate terminal;
+transport ambiguity, invalid committed coordinates, or exhausted observation
+budget maps to `Indeterminate`.
 
 The attention Run is the only direct Session effect. The detached tool itself
 does not mutate the Session aggregate. While attention executes, the existing
@@ -202,6 +247,13 @@ Session activity makes the Session `Running`; normal settlement returns it to
 `SessionAgentCoordination` and Outbox/Inbox path because they cross Thread
 ownership and carry relationship provenance; BackgroundTask completion is a
 same-Thread state wake and does not reuse `send_message`.
+
+Foreground and detached tool effects for the same `(Session, Environment
+generation)` acquire one host-owned execution admission at Runtime's canonical
+executor boundary. It consumes the existing `ToolConcurrency` resource algebra
+and rechecks the Run/attempt fence after waiting. Different generations remain
+isolated. The admission is a process guard only: it owns no task status, queue,
+lease, or durable lock record.
 
 A database-less Worker currently fails closed before Environment, MCP, tool, or
 commit realization when BackgroundTask is selected. Its completion projection

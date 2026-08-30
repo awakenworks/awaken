@@ -60,6 +60,8 @@ pub fn awaken_runtime_host::SandboxTier::is_container(self) -> bool
 impl core::str::traits::FromStr for awaken_runtime_host::SandboxTier
 pub type awaken_runtime_host::SandboxTier::Err = alloc::string::String
 pub fn awaken_runtime_host::SandboxTier::from_str(&str) -> core::result::Result<Self, Self::Err>
+pub enum awaken_runtime_host::SessionRunBackgroundInstallError
+pub awaken_runtime_host::SessionRunBackgroundInstallError::AlreadyInstalled
 pub enum awaken_runtime_host::SkillForkPlacement
 pub awaken_runtime_host::SkillForkPlacement::FreshIsolation
 pub awaken_runtime_host::SkillForkPlacement::SharedSession
@@ -205,6 +207,7 @@ pub struct awaken_runtime_host::ManagedHost
 impl awaken_runtime_host::ManagedHost
 pub fn awaken_runtime_host::ManagedHost::install_agent_coordination_application(&self, alloc::sync::Weak<dyn awaken_session_contract::coordination::SessionAgentCoordination>) -> core::result::Result<(), awaken_runtime_host::AgentCoordinationInstallError>
 pub fn awaken_runtime_host::ManagedHost::install_dispatch_session_runtime(self) -> Self
+pub fn awaken_runtime_host::ManagedHost::install_session_background_run_application(&self, alloc::sync::Weak<dyn awaken_session_contract::run_application::SessionRunBackgroundApplication>) -> core::result::Result<(), awaken_runtime_host::SessionRunBackgroundInstallError>
 pub fn awaken_runtime_host::ManagedHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_credential_materializer::refresh::CredentialRefreshFactory>) -> Self
