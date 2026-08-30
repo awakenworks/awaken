@@ -23,10 +23,21 @@ ROOT = Path(__file__).resolve().parents[2]
 def prepare_case(case_root: Path) -> None:
     (case_root / "scripts" / "ci").mkdir(parents=True)
     (case_root / "formal").mkdir()
-    for name in ("check_formal_coverage.py", "check_proof_boundaries.py"):
+    for name in (
+        "check_feature_coverage.py",
+        "check_formal_coverage.py",
+        "check_proof_boundaries.py",
+    ):
         shutil.copy2(ROOT / "scripts" / "ci" / name, case_root / "scripts" / "ci" / name)
     shutil.copy2(ROOT / "scripts" / "ci" / "check_formal.sh", case_root / "scripts" / "ci" / "check_formal.sh")
-    for name in ("coverage.json", "proof-boundaries.json", "surface-classifications.json", "README.md"):
+    for name in (
+        "assumptions.json",
+        "coverage.json",
+        "features.json",
+        "proof-boundaries.json",
+        "surface-classifications.json",
+        "README.md",
+    ):
         shutil.copy2(ROOT / "formal" / name, case_root / "formal" / name)
     os.symlink(ROOT / "crates", case_root / "crates", target_is_directory=True)
 
@@ -38,9 +49,9 @@ def prepare_case(case_root: Path) -> None:
             os.symlink(source, case_root / name, target_is_directory=True)
 
 
-def must_fail(case_root: Path, checker: str, label: str) -> None:
+def must_fail(case_root: Path, checker: str, label: str, *arguments: str) -> None:
     result = subprocess.run(
-        ["python3", str(case_root / "scripts" / "ci" / checker)],
+        ["python3", str(case_root / "scripts" / "ci" / checker), *arguments],
         cwd=case_root,
         text=True,
         stdout=subprocess.DEVNULL,
@@ -109,13 +120,53 @@ def mutate_invented_boundary(case_root: Path) -> None:
     must_fail(case_root, "check_proof_boundaries.py", "invented residual boundary")
 
 
+def mutate_unlinked_product_obligation(case_root: Path) -> None:
+    path = case_root / "formal" / "features.json"
+    ledger = json.loads(path.read_text())
+    target = "sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing"
+    owner = next(
+        requirement
+        for feature in ledger["features"]
+        for requirement in feature["requirements"]
+        if target in requirement.get("obligations", [])
+    )
+    owner["obligations"].remove(target)
+    write_json(path, ledger)
+    must_fail(
+        case_root,
+        "check_feature_coverage.py",
+        "formal obligation detached from its product requirement",
+        "--require-complete",
+    )
+
+
+def mutate_reopened_external_assumption(case_root: Path) -> None:
+    path = case_root / "formal" / "assumptions.json"
+    ledger = json.loads(path.read_text())
+    ledger["assumptions"][0]["status"] = "open"
+    write_json(path, ledger)
+    must_fail(
+        case_root,
+        "check_feature_coverage.py",
+        "evidenced external assumption reopened",
+        "--require-complete",
+    )
+
+
 def main() -> None:
+    # Cause/effect decision table: removing a strict-CI proof, downgrading a
+    # claim, detaching a model, omitting/inventing a residual boundary,
+    # orphaning a formal obligation, or reopening an external assumption must
+    # each make its existing authoritative gate fail. No mutant may introduce a
+    # second ledger or a test-only acceptance path.
     mutations = (
         mutate_removed_harness,
         mutate_downgraded_claim,
         mutate_unchecked_model,
         mutate_missing_boundary,
         mutate_invented_boundary,
+        mutate_unlinked_product_obligation,
+        mutate_reopened_external_assumption,
     )
     with tempfile.TemporaryDirectory(prefix="awaken-formal-mutations-") as temp:
         temp_root = Path(temp)
