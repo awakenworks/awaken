@@ -5,7 +5,7 @@ use awaken_provisioning_contract as pc;
 use crate::{CgroupCaps, ContainerPlan, MANAGED_SANDBOX_LABEL, NetworkMode, writable_dirs};
 
 /// The concrete rootfs a container/rootless-podman runtime realizes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum RootfsPlan {
     /// Borrow the default image's userland (no custom root).
     HostUserland,

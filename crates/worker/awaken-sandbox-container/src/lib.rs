@@ -47,16 +47,18 @@ mod secret;
 mod writable;
 pub use cgroup::CgroupCaps;
 pub use egress::{
-    AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, ForwardProxy, NetworkMode,
-    egress_plan, egress_plan_with_allowlist, normalize_hostname,
+    AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
+    ForwardProxy, NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
 };
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
-    AgentContainerProvider, AgentContainerSession, ContainerEnvironment,
-    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, EnvironmentFile,
+    ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
+    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
+    ContainerRealizationContext, ContainerRealizationIntent, ContainerRealizationNamespace,
+    EnvironmentFile,
 };
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
@@ -112,6 +114,7 @@ pub struct ContainerPlan {
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
     pub outputs_volume: String,
     pub network: NetworkMode,
+    pub egress_identity: EgressRealizationIdentity,
     pub requests: pc::ResourceRequests,
     pub limits: pc::ResourceLimits,
     /// Exact writable-filesystem lifecycle requested by the neutral spec.
@@ -201,6 +204,13 @@ mod planner_tests {
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: NetworkMode::None,
+            egress_identity: EgressRealizationIdentity {
+                network: NetworkMode::None,
+                proxy_endpoint: None,
+                capability_ttl_secs: None,
+                issuer_revision: None,
+                ephemeral_capability: false,
+            },
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits {
                 cpu_millis: Some(1500),
@@ -1081,6 +1091,7 @@ fn container_plan_with_allowlist(
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
         network: egress.network,
+        egress_identity: egress.identity,
         requests: spec.requests.clone(),
         limits: spec.limits.clone(),
         filesystem_continuity: spec.filesystem_continuity,

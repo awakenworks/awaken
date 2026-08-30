@@ -2471,60 +2471,6 @@ async fn unrestricted_egress_may_use_a_forward_proxy_for_connectivity() {
 }
 
 #[tokio::test]
-async fn open_agent_creates_the_container_and_returns_its_channel_and_process() {
-    // The host-facing seam: realize the container running the ACP agent and hand back
-    // its channel + process handle (runtime chosen behind the `dyn` by worker config).
-    let rt = Arc::new(FakeRuntime::default());
-    let agent_provider: Box<dyn AgentContainerProvider> = Box::new(provider(rt.clone()));
-    let session = agent_provider.open_agent(&spec("run-oa")).await.unwrap();
-
-    // The one-shot compatibility seam also launches the agent through exec; it does
-    // not return PID 1 as though the environment were the attempt process.
-    assert_eq!(session.process.id(), "exec-0");
-    assert_eq!(
-        session.process.poll().await.unwrap(),
-        Some(pc::ExitStatus {
-            code: Some(0),
-            signaled: false,
-        })
-    );
-    // The durable handle carries the container id for reattach.
-    assert_eq!(session.handle.provider_kind(), "container");
-    let payload = session.handle.container_payload().unwrap();
-    assert_eq!(payload.container_id, "cid-run-oa");
-    // Durable-handle decision rule H1: C1=a realized container has mounted
-    // inputs; C2=the provider is later adopted from only its typed handle.
-    // C1 => E1 every checkpoint exclusion is frozen without an opaque `extra`
-    // map; C1+C2 => E2 the durable wire round-trip preserves the exact paths.
-    // This prevents a replacement Worker from archiving independently owned
-    // mounts after the old untyped extension was removed.
-    assert_eq!(
-        payload.continuation_excluded_paths,
-        ["/data/in.txt", "/work"]
-    );
-    let durable = serde_json::to_vec(&session.handle).unwrap();
-    let adopted: pc::SandboxHandle = serde_json::from_slice(&durable).unwrap();
-    assert_eq!(
-        adopted
-            .container_payload()
-            .unwrap()
-            .continuation_excluded_paths,
-        ["/data/in.txt", "/work"]
-    );
-    // A live duplex channel was opened (the ACP bridge would drive it).
-    let _channel = session.channel;
-    // The physical container is an environment keepalive, not the attempt agent.
-    assert_eq!(
-        rt.st.lock().unwrap().created_command.get("cid-run-oa"),
-        Some(&environment_keepalive_command())
-    );
-    assert_eq!(
-        rt.st.lock().unwrap().spawned[0].1,
-        ["claude", "--acp"].map(str::to_string)
-    );
-}
-
-#[tokio::test]
 async fn one_container_environment_executes_native_and_agent_processes_without_recreation() {
     // Cause/effect decision table — RP1:
     // C1: native exec or C2: opaque Agent/Hand exec enters a ContainerSandbox;
@@ -2648,104 +2594,6 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
         "native and agent processes share the runtime-owned paths"
     );
     assert_eq!(state.alive.get("cid-shared-session"), Some(&true));
-}
-
-#[tokio::test]
-async fn durable_writable_secret_is_materialized_and_written_back_after_process_exit() {
-    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
-    let rt = Arc::new(FakeRuntime::default().refreshing_credential(refreshed));
-    let broker = Arc::new(RecordingSecretBroker::default());
-    *broker.current.lock().unwrap() = br#"{"tokens":{"access_token":"old"}}"#.to_vec();
-    let provider =
-        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
-    let spec = pc::SandboxSpec {
-        scope: "credential-refresh".into(),
-        isolation: pc::IsolationClass::Container,
-        environment: None,
-        command: vec!["agent".into()],
-        deny_tool_egress: false,
-        mounts: vec![pc::MountRequirement {
-            mount_id: "native-auth".into(),
-            source: pc::MountSource::Secret {
-                reference: "credential://acp/native/codex".into(),
-                content_hash: None,
-            },
-            mount_path: "/acp-config/auth.json".into(),
-            access: pc::MountAccess::ReadWrite,
-            lifetime: pc::MountLifetime::Durable,
-            required: true,
-        }],
-        env: Vec::new(),
-        packages: Default::default(),
-        network: pc::NetworkPolicy::Unrestricted,
-        outputs_path: "/mnt/session/outputs".into(),
-        requests: Default::default(),
-        limits: Default::default(),
-        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-        lease_ttl_secs: None,
-        control_services: Default::default(),
-    };
-
-    let session = provider.open_agent(&spec).await.unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let source = rt
-            .st
-            .lock()
-            .unwrap()
-            .credential_source
-            .clone()
-            .expect("credential staging source");
-        assert_eq!(
-            std::fs::metadata(source.parent().unwrap())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o777
-        );
-        assert_eq!(
-            std::fs::metadata(source.parent().unwrap().parent().unwrap())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(source).unwrap().permissions().mode() & 0o777,
-            0o666
-        );
-    }
-    session.process.wait().await.unwrap();
-    assert_eq!(
-        broker.writes.lock().unwrap().as_slice(),
-        &[refreshed.to_vec()]
-    );
-    // Idempotent poll/wait cannot reseal the same refresh twice.
-    session.process.poll().await.unwrap();
-    assert_eq!(broker.writes.lock().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn remote_runtime_harvests_live_credential_when_signalled_attempt_finishes_session() {
-    let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
-    let rt = Arc::new(FakeRuntime::default().with_live_credential(refreshed));
-    let broker = Arc::new(RecordingSecretBroker::default());
-    *broker.current.lock().unwrap() = br#"{"claudeAiOauth":{"accessToken":"old"}}"#.to_vec();
-    let provider =
-        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
-    let session = provider
-        .open_agent(&writable_credential_spec("remote-credential-refresh"))
-        .await
-        .unwrap();
-    session.process.signal(pc::Signal::Term).await.unwrap();
-    session.process.wait().await.unwrap();
-    assert_eq!(
-        broker.writes.lock().unwrap().as_slice(),
-        &[refreshed.to_vec()]
-    );
 }
 
 #[tokio::test]
@@ -3047,4 +2895,169 @@ async fn inline_bytes_hash_mismatch_fails_before_container_start() {
         .expect_err("corrupt binary content must fail closed");
 
     assert!(error.to_string().contains("hash mismatch"), "{error}");
+}
+
+
+
+#[tokio::test]
+async fn canonical_environment_spawns_agent_without_process_owning_terminal_cleanup() {
+    // The host-facing seam: realize the container running the ACP agent and hand back
+    // its channel + process handle (runtime chosen behind the `dyn` by worker config).
+    let rt = Arc::new(FakeRuntime::default());
+    let agent_provider: Box<dyn ContainerEnvironmentProvider> = Box::new(provider(rt.clone()));
+    let environment = agent_provider.create_environment(&spec("run-oa")).await.unwrap();
+    let session = environment.spawn_agent_process(pc::Command { argv: command_of(&spec("run-oa")), cwd: String::new(), env: Vec::new(), stdio: pc::Stdio::Piped }).await.unwrap();
+    let handle = environment.handle();
+
+    // The canonical Environment also launches the agent through exec; it does
+    // not return PID 1 as though the environment were the attempt process.
+    assert_eq!(session.process.id(), "exec-0");
+    assert_eq!(
+        session.process.poll().await.unwrap(),
+        Some(pc::ExitStatus {
+            code: Some(0),
+            signaled: false,
+        })
+    );
+    // The durable handle carries the container id for reattach.
+    assert_eq!(handle.provider_kind(), "container");
+    let payload = handle.container_payload().unwrap();
+    assert_eq!(payload.container_id, "cid-run-oa");
+    // Durable-handle decision rule H1: C1=a realized container has mounted
+    // inputs; C2=the provider is later adopted from only its typed handle.
+    // C1 => E1 every checkpoint exclusion is frozen without an opaque `extra`
+    // map; C1+C2 => E2 the durable wire round-trip preserves the exact paths.
+    // This prevents a replacement Worker from archiving independently owned
+    // mounts after the old untyped extension was removed.
+    assert_eq!(
+        payload.continuation_excluded_paths,
+        ["/data/in.txt", "/work"]
+    );
+    let durable = serde_json::to_vec(&handle).unwrap();
+    let adopted: pc::SandboxHandle = serde_json::from_slice(&durable).unwrap();
+    assert_eq!(
+        adopted
+            .container_payload()
+            .unwrap()
+            .continuation_excluded_paths,
+        ["/data/in.txt", "/work"]
+    );
+    // A live duplex channel was opened (the ACP bridge would drive it).
+    let _channel = session.channel;
+    environment.dispose().await.unwrap();
+    // The physical container is an environment keepalive, not the attempt agent.
+    assert_eq!(
+        rt.st.lock().unwrap().created_command.get("cid-run-oa"),
+        Some(&environment_keepalive_command())
+    );
+    assert_eq!(
+        rt.st.lock().unwrap().spawned[0].1,
+        ["claude", "--acp"].map(str::to_string)
+    );
+}
+
+
+#[tokio::test]
+async fn durable_writable_secret_is_materialized_and_written_back_after_process_exit() {
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
+    let rt = Arc::new(FakeRuntime::default().refreshing_credential(refreshed));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = br#"{"tokens":{"access_token":"old"}}"#.to_vec();
+    let provider =
+        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let spec = pc::SandboxSpec {
+        scope: "credential-refresh".into(),
+        isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: vec!["agent".into()],
+        deny_tool_egress: false,
+        mounts: vec![pc::MountRequirement {
+            mount_id: "native-auth".into(),
+            source: pc::MountSource::Secret {
+                reference: "credential://acp/native/codex".into(),
+                content_hash: None,
+            },
+            mount_path: "/acp-config/auth.json".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+    };
+
+    let environment = provider.create_environment(&spec).await.unwrap();
+    let session = environment.spawn_agent_process(pc::Command { argv: command_of(&spec), cwd: String::new(), env: Vec::new(), stdio: pc::Stdio::Piped }).await.unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let source = rt
+            .st
+            .lock()
+            .unwrap()
+            .credential_source
+            .clone()
+            .expect("credential staging source");
+        assert_eq!(
+            std::fs::metadata(source.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777
+        );
+        assert_eq!(
+            std::fs::metadata(source.parent().unwrap().parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(source).unwrap().permissions().mode() & 0o777,
+            0o666
+        );
+    }
+    session.process.wait().await.unwrap();
+    assert!(broker.writes.lock().unwrap().is_empty(), "process exit never owns Environment cleanup");
+    environment.dispose().await.unwrap();
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[refreshed.to_vec()]
+    );
+    // Idempotent poll/wait cannot reseal the same refresh twice.
+    session.process.poll().await.unwrap();
+    assert_eq!(broker.writes.lock().unwrap().len(), 1);
+}
+
+
+#[tokio::test]
+async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() {
+    let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
+    let rt = Arc::new(FakeRuntime::default().with_live_credential(refreshed));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = br#"{"claudeAiOauth":{"accessToken":"old"}}"#.to_vec();
+    let provider =
+        ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let environment = provider
+        .create_environment(&writable_credential_spec("remote-credential-refresh"))
+        .await
+        .unwrap();
+    let session = environment.spawn_agent_process(pc::Command { argv: command_of(&writable_credential_spec("remote-credential-refresh")), cwd: String::new(), env: Vec::new(), stdio: pc::Stdio::Piped }).await.unwrap();
+    session.process.signal(pc::Signal::Term).await.unwrap();
+    session.process.wait().await.unwrap();
+    assert!(broker.writes.lock().unwrap().is_empty(), "process exit never owns Environment cleanup");
+    environment.dispose().await.unwrap();
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[refreshed.to_vec()]
+    );
 }
