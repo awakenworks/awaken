@@ -1203,7 +1203,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
                     ReplaceSessionResourceManifest {
                         request_fingerprint: awaken_session_contract::stable_fingerprint(&manifest),
                         resources: manifest.clone(),
-                        expected_session_revision: None,
+                        expected_resource_revision: None,
                         idempotency_key: None,
                     },
                 )
@@ -1281,7 +1281,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
             ReplaceSessionResourceManifest {
                 request_fingerprint: awaken_session_contract::stable_fingerprint(&manifest),
                 resources: manifest.clone(),
-                expected_session_revision: None,
+                expected_resource_revision: None,
                 idempotency_key: None,
             },
         )

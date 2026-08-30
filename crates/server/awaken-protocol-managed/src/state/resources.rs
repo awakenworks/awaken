@@ -317,15 +317,9 @@ impl ManagedState {
         id: &str,
         body: crate::types::resource::ResourceManifestReplaceParams,
         idempotency_key: Option<String>,
-        expected_session_revision: Option<awaken_session_contract::SessionRevision>,
+        expected_resource_revision: Option<u64>,
         request_fingerprint: String,
-    ) -> Result<
-        (
-            crate::types::resource::SessionResourceManifest,
-            awaken_session_contract::SessionRevision,
-        ),
-        StateError,
-    > {
+    ) -> Result<crate::types::resource::SessionResourceManifest, StateError> {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         if let Some(key) = idempotency_key.as_deref()
             && let Some(outcome) = self
@@ -335,17 +329,16 @@ impl ManagedState {
                 .map_err(Self::map_resource_manifest_error)?
         {
             self.refresh_cached_projection(&outcome.session)?;
-            return Ok((
-                Self::resource_manifest_view(&outcome.session),
-                outcome.command_revision,
-            ));
+            return Ok(Self::resource_manifest_view(&outcome.session));
         }
         let persisted = self
             .application
             .session(id)
             .await
             .map_err(StateError::from)?;
-        if expected_session_revision.is_some_and(|expected| expected != persisted.revision) {
+        if expected_resource_revision
+            .is_some_and(|expected| expected != persisted.resources.revision)
+        {
             return Err(StateError::Conflict);
         }
         if persisted
@@ -372,17 +365,14 @@ impl ManagedState {
                 id,
                 awaken_session_application::ReplaceSessionResourceManifest {
                     resources: desired,
-                    expected_session_revision,
+                    expected_resource_revision,
                     idempotency_key,
                     request_fingerprint,
                 },
                 &repository_configurations,
             )
             .await?;
-        Ok((
-            Self::resource_manifest_view(&outcome.session),
-            outcome.command_revision,
-        ))
+        Ok(Self::resource_manifest_view(&outcome.session))
     }
 
     fn resource_manifest_view(
@@ -470,16 +460,19 @@ impl ManagedState {
     pub fn list_resources(
         &self,
         id: &str,
-    ) -> Result<Vec<crate::types::resource::SessionResource>, StateError> {
+    ) -> Result<(u64, Vec<crate::types::resource::SessionResource>), StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(id).ok_or(StateError::NotFound)?;
-        Ok(record
-            .resource_state
-            .desired()
-            .inputs()
-            .iter()
-            .map(|input| resolved_resource_dto(id, input))
-            .collect())
+        Ok((
+            record.resource_state.revision,
+            record
+                .resource_state
+                .desired()
+                .inputs()
+                .iter()
+                .map(|input| resolved_resource_dto(id, input))
+                .collect(),
+        ))
     }
 
     pub async fn create_resource(
@@ -494,7 +487,7 @@ impl ManagedState {
             .session(id)
             .await
             .map_err(StateError::from)?;
-        let read_revision = persisted.revision;
+        let read_revision = persisted.resources.revision;
         let current = persisted.resources.desired().clone();
         let normalized_mount = parsed.mount_path.trim_start_matches('/');
         if let ParsedInputTarget::File(requested_file) = &parsed.target
@@ -518,7 +511,7 @@ impl ManagedState {
                     awaken_session_application::ReplaceSessionResourceManifest {
                         request_fingerprint: awaken_session_contract::stable_fingerprint(&current),
                         resources: current,
-                        expected_session_revision: Some(read_revision),
+                        expected_resource_revision: Some(read_revision),
                         idempotency_key: None,
                     },
                     &[],
@@ -583,7 +576,7 @@ impl ManagedState {
             awaken_session_application::ReplaceSessionResourceManifest {
                 request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
                 resources: desired,
-                expected_session_revision: Some(read_revision),
+                expected_resource_revision: Some(read_revision),
                 idempotency_key: None,
             },
             &[],
@@ -647,7 +640,7 @@ impl ManagedState {
             .session(id)
             .await
             .map_err(StateError::from)?;
-        let read_revision = persisted.revision;
+        let read_revision = persisted.resources.revision;
         let input = persisted
             .resources
             .desired()
@@ -672,7 +665,7 @@ impl ManagedState {
             awaken_session_application::ReplaceSessionResourceManifest {
                 request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
                 resources: desired,
-                expected_session_revision: Some(read_revision),
+                expected_resource_revision: Some(read_revision),
                 idempotency_key: None,
             },
             &[],
