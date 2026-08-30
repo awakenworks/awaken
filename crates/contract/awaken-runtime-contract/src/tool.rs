@@ -402,8 +402,10 @@ pub struct ToolOutput {
 pub struct ToolTaskHandle {
     /// Stable adapter owner (for example an extension id), not a model-authored
     /// execution selector.
+    #[serde(alias = "protocol")]
     pub owner: String,
     /// Frozen server or connection-generation binding.
+    #[serde(alias = "server_binding")]
     pub binding: String,
     /// Adapter-issued durable request identity.
     pub task_id: String,

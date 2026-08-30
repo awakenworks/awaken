@@ -2,7 +2,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::tool::{
-    ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy,
+    ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -103,46 +103,10 @@ impl TaskAttempt {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RemoteProtocol {
-    Mcp,
-    A2a,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RemoteContinuation {
-    pub protocol: RemoteProtocol,
-    pub server_binding: String,
-    pub task_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub poll_interval_ms: Option<u64>,
-}
-
-impl RemoteContinuation {
-    pub fn validate(&self) -> Result<(), BackgroundTaskError> {
-        if self.server_binding.trim().is_empty()
-            || self.task_id.trim().is_empty()
-            || self.poll_interval_ms == Some(0)
-        {
-            Err(BackgroundTaskError::InvalidContinuation)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn same_remote_task_as(&self, other: &Self) -> bool {
-        self.protocol == other.protocol
-            && self.server_binding == other.server_binding
-            && self.task_id == other.task_id
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum BackgroundWait {
-    Remote(RemoteContinuation),
+    Remote(ToolTaskHandle),
     ExternalInput,
     Resource,
 }
@@ -474,8 +438,8 @@ impl BackgroundTask {
         fence: &TaskFence,
         wait: BackgroundWait,
     ) -> Result<(), BackgroundTaskError> {
-        if let BackgroundWait::Remote(continuation) = &wait {
-            continuation.validate()?;
+        if let BackgroundWait::Remote(handle) = &wait {
+            validate_task_handle(handle)?;
         }
         let lifecycle = match &self.lifecycle {
             BackgroundTaskLifecycle::Running { attempt } if attempt.owns(fence) => {
@@ -609,16 +573,24 @@ impl BackgroundTask {
 }
 
 fn validate_wait(wait: &BackgroundWait) -> Result<(), BackgroundTaskError> {
-    if let BackgroundWait::Remote(continuation) = wait {
-        continuation.validate()?;
+    if let BackgroundWait::Remote(handle) = wait {
+        validate_task_handle(handle)?;
     }
     Ok(())
+}
+
+fn validate_task_handle(handle: &ToolTaskHandle) -> Result<(), BackgroundTaskError> {
+    handle
+        .validate()
+        .map_err(|_| BackgroundTaskError::InvalidContinuation)
 }
 
 fn same_wait_target(current: &BackgroundWait, next: &BackgroundWait) -> bool {
     match (current, next) {
         (BackgroundWait::Remote(current), BackgroundWait::Remote(next)) => {
-            current.same_remote_task_as(next)
+            current.owner == next.owner
+                && current.binding == next.binding
+                && current.task_id == next.task_id
         }
         (BackgroundWait::ExternalInput, BackgroundWait::ExternalInput)
         | (BackgroundWait::Resource, BackgroundWait::Resource) => true,
@@ -669,7 +641,7 @@ pub enum BackgroundTaskError {
     #[error("background task lease must advance monotonically")]
     NonMonotonicLease,
     #[error(
-        "remote continuation requires a server binding, task id, and a positive poll interval when present"
+        "remote continuation requires an owner, binding, task id, and a positive poll interval when present"
     )]
     InvalidContinuation,
     #[error("background task clock overflow")]

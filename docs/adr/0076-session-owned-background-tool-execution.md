@@ -41,7 +41,10 @@ The model-facing management surface is closed and uniform:
 run_in_background, list_background_tasks, get_background_task, and
 cancel_background_task. The wrapper schema is generated from its typed Rust
 argument shape and then narrowed with the configured canonical tool-id enum.
-MCP and A2A require no special wrapper or task store.
+MCP Tasks require no special wrapper or task store. A remote A2A Agent remains
+an ordinary Run/attempt backend with its own relationship and Run lifecycle; it
+is not converted into a BackgroundTask merely because the wire calls it a
+task.
 
 ### D2: the extension owns the aggregate; Runtime owns only generic State
 
@@ -84,12 +87,15 @@ error leaves the value unchanged. Expired non-replayable ownership returns the e
 error that a caller might discard. Cancellation wins over a racing completion,
 and terminal states are absorbing.
 
-MCP and A2A native task support is an optional executor enhancement, not another
-lifecycle. Generic Runtime task ports start, poll, and cancel one opaque handle;
-the adapter owns capability negotiation and protocol mapping. A remote wait
-carries the closed protocol kind, stable server binding, non-empty remote task
-id, and an optional positive poll interval together. These coordinates never
-enter the Agent projection.
+MCP Tasks and any future durable ordinary-tool protocol are optional executor
+enhancements, not another lifecycle. Generic Runtime task ports start, poll,
+and cancel one opaque `ToolTaskHandle`; the adapter owns capability negotiation
+and protocol mapping. BackgroundTask persists that exact protocol-neutral
+handle rather than copying its fields into an extension-owned continuation.
+The handle carries an opaque non-empty adapter owner, stable binding, non-empty
+task id, and an optional positive poll interval together. These coordinates
+never enter the Agent projection. Adding another durable-tool adapter therefore
+does not change the BackgroundTask aggregate or Runtime Host.
 
 Standard MCP task creation does not guarantee client-stable idempotency. The
 initial `tools/call` therefore stays `NeverReplay`: loss before the returned
@@ -148,6 +154,8 @@ returning.
 - only the current owner plus epoch may heartbeat, wait, or finish;
 - every failed transition leaves the aggregate unchanged;
 - a remote wait always carries complete reattachment coordinates;
+- the aggregate persists Runtime's one opaque `ToolTaskHandle` and contains no
+  MCP/A2A protocol enum or copied continuation DTO;
 - lease epochs and revisions strictly increase or fail before mutation;
 - cancellation and terminal states never reopen;
 - a committed cancellation absorbs a racing success;
@@ -269,6 +277,12 @@ execution authority lives in the external ACP process and cannot yet provide the
 identity-bound prepared executor required by this decision; failing before tool
 advertisement prevents a recorded-but-never-executed feature. Native MCP tools
 are ordinary dynamic Runtime tools and need no special background adapter.
+
+A2A Tasks remain owned by `A2aRunExecutor` and the committed Run/attempt
+lifecycle. Multi-Agent delivery remains owned by `SessionAgentCoordination` and
+its relationship-aware Outbox/Inbox path. Neither is routed through
+BackgroundTask; the three bounded contexts meet only at the existing RunIngress,
+ThreadCommit, Session activity, and execution-admission boundaries.
 
 Tools with a Runtime State capability currently fail the pre-claim target
 resolution for detached execution. Their commands may only be applied by their
