@@ -42,7 +42,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         plan: &pc::RepositoryRealizationPlan,
         expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+    ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
         match self {
             Self::Workdir(sandbox) => {
                 pc::RepositoryRealizer::publish_repository(

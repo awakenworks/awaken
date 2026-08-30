@@ -23,6 +23,7 @@ struct OwnedAggregateEnvelope {
 }
 
 pub(super) fn encode(session: &PersistedSession) -> Result<String, serde_json::Error> {
+    verify_aggregate(session)?;
     serde_json::to_string(&AggregateEnvelope {
         format: CURRENT_AGGREGATE_FORMAT,
         aggregate: session,
@@ -34,6 +35,17 @@ fn invalid(message: impl Into<String>) -> serde_json::Error {
         std::io::ErrorKind::InvalidData,
         message.into(),
     ))
+}
+
+fn verify_aggregate(session: &PersistedSession) -> Result<(), serde_json::Error> {
+    session
+        .verified_terminal_cleanup()
+        .map(|_| ())
+        .map_err(|error| {
+            invalid(format!(
+                "invalid managed Session aggregate terminal cleanup binding: {error}"
+            ))
+        })
 }
 
 fn migrate_legacy_baseline(
@@ -264,6 +276,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         )));
     }
     aggregate.revision = revision;
+    verify_aggregate(&aggregate)?;
     Ok(aggregate)
 }
 
@@ -273,6 +286,74 @@ mod tests {
     use rusqlite::params;
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
+
+    fn completed_publication(
+        session_id: &str,
+        rejected: bool,
+    ) -> awaken_session_contract::SessionCleanupOperation {
+        let intent: awaken_session_contract::SessionRepositoryPublicationIntent =
+            serde_json::from_value(serde_json::json!({
+                "input": {
+                    "binding_id": "source",
+                    "source": {
+                        "kind": "repository",
+                        "repository_id": "repo-1",
+                        "config": {
+                            "repository_id": "repo-1",
+                            "version": 7,
+                            "remote_url": "https://example.test/repo.git"
+                        }
+                    },
+                    "mount_path": "/workspace/source",
+                    "access": "read_write"
+                },
+                "expectation": {
+                    "branch": "awf/work",
+                    "commit": "0123456789abcdef0123456789abcdef01234567",
+                    "expected_prior_commit": "1111111111111111111111111111111111111111"
+                }
+            }))
+            .unwrap();
+        let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
+        cleanup
+            .request_with_publication(session_id, intent)
+            .unwrap();
+        cleanup.freeze_targets(session_id, [], 3, 5).unwrap();
+        let command = cleanup.publication_command(session_id).unwrap().unwrap();
+        if rejected {
+            let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
+                &command,
+                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+            )
+            .unwrap();
+            cleanup
+                .record_repository_publication_rejection(session_id, rejection)
+                .unwrap();
+        } else {
+            let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+                &command,
+                awaken_provisioning_contract::RepositoryPublicationReceipt {
+                    repository_id: "repo-1".into(),
+                    source_remote_url: "https://example.test/repo.git".into(),
+                    branch: command.intent.expectation.branch.clone(),
+                    commit: command.intent.expectation.commit.clone(),
+                },
+            );
+            cleanup
+                .record_repository_publication_receipt(session_id, receipt)
+                .unwrap();
+        }
+        let root = cleanup.command_for(session_id, session_id).unwrap();
+        cleanup
+            .record_completion(
+                session_id,
+                awaken_session_contract::SessionCleanupCompletion::new(&root, Vec::new()),
+            )
+            .unwrap();
+        let receipts = cleanup.recorded_receipts(session_id).unwrap();
+        cleanup.complete(session_id, &receipts).unwrap();
+        cleanup
+    }
 
     #[tokio::test]
     async fn canonical_aggregate_and_index_revision_are_cross_validated() {
@@ -293,6 +374,39 @@ mod tests {
             )
             .unwrap();
         assert!(repo.get("drifted-row").await.is_err(), "C2");
+    }
+
+    #[test]
+    fn aggregate_codec_rejects_foreign_completed_publication_outcomes() {
+        // Cause/effect matrix: receipt/rejection × encode/decode. Exact outer
+        // Session binding passes; rewriting only the outer id leaves a
+        // self-consistent intent-local outcome but must fail before storage or
+        // normalization can absorb it.
+        for (label, rejected) in [("receipt", false), ("rejection", true)] {
+            let session_id = format!("codec-{label}");
+            let mut session = sample(&session_id);
+            session.terminal_cleanup = completed_publication(&session_id, rejected);
+            let encoded = super::encode(&session).expect("exact aggregate encodes");
+
+            let foreign_id = format!("foreign-{label}");
+            let mut foreign = session.clone();
+            foreign.session_id = foreign_id.clone();
+            assert!(
+                super::encode(&foreign).is_err(),
+                "{label}: encode rejects foreign command binding"
+            );
+
+            let mut wire: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            wire["aggregate"]["session_id"] = serde_json::json!(foreign_id);
+            assert!(
+                super::decode(super::EncodedSessionRow {
+                    aggregate_json: wire.to_string(),
+                    revision: i64::try_from(session.revision.0).unwrap(),
+                })
+                .is_err(),
+                "{label}: decode rejects before canonical normalization"
+            );
+        }
     }
 
     #[test]

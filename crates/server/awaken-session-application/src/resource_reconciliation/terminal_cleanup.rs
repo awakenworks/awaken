@@ -122,7 +122,11 @@ impl SessionApplication {
                 Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
                 Err(error) => return Err(repository_preparation(error)),
             };
-            if !session.terminal_cleanup.is_completed() {
+            let cleanup_completed = session
+                .verified_terminal_cleanup()
+                .map_err(internal)?
+                .is_completed();
+            if !cleanup_completed {
                 // Persist the admission fence before *any* external cleanup effect.
                 // This also upgrades legacy terminal rows that predate the explicit
                 // cleanup operation.
@@ -231,20 +235,37 @@ impl SessionApplication {
                             .publication_command(session_id)
                             .map_err(internal)?
                         {
-                            let receipt = self
+                            let effect = self
                                 .runtime()
                                 .execute_terminal_repository_publication(command)
                                 .await
                                 .map_err(SessionPreparationError::Rejected)?;
-                            session
-                                .terminal_cleanup
-                                .record_repository_publication_receipt(session_id, receipt)
-                                .map_err(internal)?;
+                            match effect {
+                                awaken_session_contract::SessionRepositoryPublicationEffect::Published(
+                                    receipt,
+                                ) => {
+                                    session
+                                        .terminal_cleanup
+                                        .record_repository_publication_receipt(session_id, receipt)
+                                        .map_err(internal)?;
+                                }
+                                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
+                                    rejection,
+                                ) => {
+                                    session
+                                        .terminal_cleanup
+                                        .record_repository_publication_rejection(
+                                            session_id,
+                                            rejection,
+                                        )
+                                        .map_err(internal)?;
+                                }
+                            }
                             session = self
                                 .commit_resource_snapshot(
                                     owner_scope,
                                     session,
-                                    "terminal-repository-publication-local-receipt",
+                                    "terminal-repository-publication-local-outcome",
                                     Vec::new(),
                                 )
                                 .await

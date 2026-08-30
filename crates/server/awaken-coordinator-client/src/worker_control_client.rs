@@ -318,6 +318,26 @@ impl WorkerControlClient {
         .map(|_| ())
     }
 
+    pub async fn record_terminal_repository_publication_rejection(
+        &self,
+        identity: &WorkerIdentity,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.realization_response(
+            "/v1/worker/session/cleanup/repository-publication/reject",
+            json!({
+                "identity": identity,
+                "session_id": session_id,
+                "lease": lease,
+                "rejection": rejection,
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub async fn record_terminal_cleanup_completion(
         &self,
         identity: &WorkerIdentity,

@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use awaken_provisioning_contract as pc;
+
 use crate::{IsolatedRoot, SandboxError, jailed_at};
 
 /// Clone a git repository into `<root>/<logical>` **host-side** (ADR-0038). The
@@ -247,7 +249,9 @@ fn observed_remote_commit(
         ));
     };
     if commit.len() != 40
-        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !commit
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
         || remote_ref != expected_ref
     {
         return Err(SandboxError(
@@ -270,6 +274,65 @@ fn observe_remote_commit(
     observed_remote_commit(&output, remote_ref)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryPublicationAdmission {
+    Published,
+    Push,
+    Rejected(pc::RepositoryPublicationRejection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryPublicationReobservation {
+    Published,
+    Unchanged,
+    Rejected(pc::RepositoryPublicationRejection),
+}
+
+fn stale_publication_observation(
+    expectation: &pc::RepositoryPublicationExpectation,
+    observed_commit: Option<&str>,
+) -> pc::RepositoryPublicationRejection {
+    let rejection = match observed_commit {
+        Some(observed_commit) => pc::RepositoryPublicationRejection::RemoteRefChanged {
+            observed_commit: observed_commit.to_owned(),
+        },
+        None => pc::RepositoryPublicationRejection::RemoteRefAbsent,
+    };
+    debug_assert!(rejection.verify(expectation).is_ok());
+    rejection
+}
+
+fn admit_repository_publication(
+    expectation: &pc::RepositoryPublicationExpectation,
+    observed_commit: Option<&str>,
+) -> RepositoryPublicationAdmission {
+    match observed_commit {
+        Some(commit) if commit == expectation.commit => RepositoryPublicationAdmission::Published,
+        None if expectation.expected_prior_commit.is_none() => RepositoryPublicationAdmission::Push,
+        Some(commit) if expectation.expected_prior_commit.as_deref() == Some(commit) => {
+            RepositoryPublicationAdmission::Push
+        }
+        observed => RepositoryPublicationAdmission::Rejected(stale_publication_observation(
+            expectation,
+            observed,
+        )),
+    }
+}
+
+fn classify_repository_publication_reobservation(
+    expectation: &pc::RepositoryPublicationExpectation,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> RepositoryPublicationReobservation {
+    if after == Some(expectation.commit.as_str()) {
+        return RepositoryPublicationReobservation::Published;
+    }
+    if after == before {
+        return RepositoryPublicationReobservation::Unchanged;
+    }
+    RepositoryPublicationReobservation::Rejected(stale_publication_observation(expectation, after))
+}
+
 /// Publish the Agent-authored current branch to the exact host-frozen remote.
 /// Agent-writable origin, URL rewrite, header, credential, and hook configuration
 /// is never consulted by a network Git process. The push runs from a temporary,
@@ -283,61 +346,78 @@ pub(crate) fn push_repo_to_at(
     plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
     expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-) -> Result<awaken_provisioning_contract::RepositoryPublicationReceipt, SandboxError> {
+) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
+    let unavailable = |error: SandboxError| {
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.0))
+    };
     expectation
         .validate()
-        .map_err(|error| SandboxError(error.0))?;
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if plan.access == awaken_provisioning_contract::MountAccess::ReadOnly {
-        return Err(SandboxError(
-            "read-only repository cannot be published".into(),
+        return Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new("read-only repository cannot be published"),
         ));
     }
-    let dest = jailed_at(root, logical)?;
-    let source = repository_publish_source(root, &dest, expectation)?;
+    let dest = jailed_at(root, logical).map_err(unavailable)?;
+    let source = repository_publish_source(root, &dest, expectation).map_err(unavailable)?;
     let remote_ref = format!("refs/heads/{}", expectation.branch);
-    match observe_remote_commit(&plan.transport_url, &remote_ref, credential)? {
-        Some(commit) if commit == expectation.commit => {
+    let observed =
+        observe_remote_commit(&plan.transport_url, &remote_ref, credential).map_err(unavailable)?;
+    match admit_repository_publication(expectation, observed.as_deref()) {
+        RepositoryPublicationAdmission::Published => {
             return Ok(
                 awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation),
             );
         }
-        Some(commit) => {
-            return Err(SandboxError(format!(
-                "repository remote branch `{}` is already bound to different commit `{commit}`",
-                expectation.branch
-            )));
+        RepositoryPublicationAdmission::Push => {}
+        RepositoryPublicationAdmission::Rejected(rejection) => {
+            return Err(pc::RepositoryPublicationError::Rejected(rejection));
         }
-        None => {}
     }
 
-    let clean_git = ephemeral_publish_git_dir(&expectation.commit)?;
+    let clean_git = ephemeral_publish_git_dir(&expectation.commit).map_err(unavailable)?;
     let git_dir = clean_git.path().join("git");
     let git_dir_arg = format!("--git-dir={}", git_dir.display());
-    let absent_ref_lease = format!("--force-with-lease={remote_ref}:");
+    let expected_remote = observed.as_deref().unwrap_or_default();
+    let exact_ref_lease = format!("--force-with-lease={remote_ref}:{expected_remote}");
     let refspec = format!(
         "refs/heads/awaken-publish:refs/heads/{}",
         expectation.branch
     );
-    credentialed_git_run_with_alternate(
+    let push = credentialed_git_run_with_alternate(
         &plan.transport_url,
         &[
             git_dir_arg,
             "push".into(),
-            absent_ref_lease,
+            exact_ref_lease,
             "--".into(),
             plan.transport_url.clone(),
             refspec,
         ],
         credential,
         &source.objects,
-    )?;
-    match observe_remote_commit(&plan.transport_url, &remote_ref, credential)? {
-        Some(commit) if commit == expectation.commit => {
+    );
+    let after =
+        observe_remote_commit(&plan.transport_url, &remote_ref, credential).map_err(unavailable)?;
+    match classify_repository_publication_reobservation(
+        expectation,
+        observed.as_deref(),
+        after.as_deref(),
+    ) {
+        RepositoryPublicationReobservation::Published => {
             Ok(awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation))
         }
-        _ => Err(SandboxError(
-            "repository remote did not confirm the expected commit after push".into(),
-        )),
+        RepositoryPublicationReobservation::Unchanged => Err(
+            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(match push {
+                Ok(()) => {
+                    "repository remote did not confirm the expected commit after push".to_owned()
+                }
+                Err(error) => error.0,
+            })),
+        ),
+        RepositoryPublicationReobservation::Rejected(rejection) => {
+            Err(pc::RepositoryPublicationError::Rejected(rejection))
+        }
     }
 }
 
@@ -1401,22 +1481,136 @@ mod tests {
         let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "master".into(),
             commit,
+            expected_prior_commit: None,
         };
         let error = push_repo_to_at(&root, "repo", &plan, &expectation, None)
             .expect_err("detached HEAD rejects before network");
-        assert!(error.0.contains("detached HEAD"));
+        assert!(matches!(
+            error,
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
+                if error.0.contains("detached HEAD")
+        ));
+    }
+
+    /// CAS observation cause/effect table, including an ambiguous failed push.
+    /// The push process result never authorizes success or permanent rejection:
+    /// only the exact post-attempt remote observation does. Thus a lost response
+    /// with desired `after` is absorbed, an unchanged lease stays retryable, and
+    /// a third value is the only durable stale outcome.
+    #[test]
+    fn repository_publication_reobservation_classifies_response_loss_exactly() {
+        let desired = "1111111111111111111111111111111111111111";
+        let prior = "2222222222222222222222222222222222222222";
+        let third = "3333333333333333333333333333333333333333";
+        let create = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: desired.into(),
+            expected_prior_commit: None,
+        };
+        let update = pc::RepositoryPublicationExpectation {
+            expected_prior_commit: Some(prior.into()),
+            ..create.clone()
+        };
+
+        assert_eq!(
+            admit_repository_publication(&create, None),
+            RepositoryPublicationAdmission::Push,
+            "C1 create-only plus absent ref admits only an absent lease"
+        );
+        assert_eq!(
+            admit_repository_publication(&update, Some(prior)),
+            RepositoryPublicationAdmission::Push,
+            "C2 update admits only the frozen prior commit lease"
+        );
+        assert_eq!(
+            admit_repository_publication(&update, None),
+            RepositoryPublicationAdmission::Rejected(
+                pc::RepositoryPublicationRejection::RemoteRefAbsent
+            ),
+            "C3 missing update lease is permanently stale"
+        );
+        assert!(matches!(
+            admit_repository_publication(&update, Some(third)),
+            RepositoryPublicationAdmission::Rejected(
+                pc::RepositoryPublicationRejection::RemoteRefChanged { observed_commit }
+            ) if observed_commit == third
+        ));
+
+        for (expectation, before) in [(&create, None), (&update, Some(prior))] {
+            assert_eq!(
+                classify_repository_publication_reobservation(expectation, before, Some(desired)),
+                RepositoryPublicationReobservation::Published,
+                "E1 failed-push response loss is absorbed only after exact desired reobservation"
+            );
+            assert_eq!(
+                classify_repository_publication_reobservation(expectation, before, before),
+                RepositoryPublicationReobservation::Unchanged,
+                "E2 unchanged precondition remains retryable after any push result"
+            );
+            assert!(matches!(
+                classify_repository_publication_reobservation(expectation, before, Some(third)),
+                RepositoryPublicationReobservation::Rejected(
+                    pc::RepositoryPublicationRejection::RemoteRefChanged { observed_commit }
+                ) if observed_commit == third
+            ));
+        }
+        assert_eq!(
+            classify_repository_publication_reobservation(&update, Some(prior), None),
+            RepositoryPublicationReobservation::Rejected(
+                pc::RepositoryPublicationRejection::RemoteRefAbsent
+            ),
+            "E3 a vanished update lease is permanently stale"
+        );
+    }
+
+    #[test]
+    fn uppercase_publication_oids_fail_before_any_git_effect() {
+        // The missing local Repository and unreachable remote are deliberate:
+        // both uppercase command variants must fail at the canonical wire
+        // admission before filesystem discovery, remote observation, or push.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = IsolatedRoot::new(tmp.path());
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo".into(),
+            mount_path: "missing".into(),
+            source_remote_url: "https://invalid.example/repo".into(),
+            transport_url: "https://invalid.example/repo".into(),
+            initial_branch: None,
+            initial_commit: None,
+            access: pc::MountAccess::ReadWrite,
+        };
+        let canonical = "0123456789abcdef0123456789abcdef01234567";
+        for expectation in [
+            pc::RepositoryPublicationExpectation {
+                branch: "awf/work".into(),
+                commit: "ABCDEF0123456789abcdef0123456789abcdef01".into(),
+                expected_prior_commit: None,
+            },
+            pc::RepositoryPublicationExpectation {
+                branch: "awf/work".into(),
+                commit: canonical.into(),
+                expected_prior_commit: Some("ABCDEF0123456789abcdef0123456789abcdef01".into()),
+            },
+        ] {
+            assert!(matches!(
+                push_repo_to_at(&root, "missing", &plan, &expectation, None),
+                Err(pc::RepositoryPublicationError::Unavailable(error))
+                    if error.0.contains("canonical lowercase 40-hex")
+            ));
+        }
     }
 
     /// Explicit Repository publication cause/effect graph and decision table.
     /// Causes: C1 plan is writable; C2 local symbolic branch matches; C3 local
     /// full commit matches; C4 transport is admitted; C5 exact remote observation
-    /// is absent/current/different; C6 credential contains secret material.
-    /// Effects: E1 reject before network/effect; E2 push only the absent exact
-    /// ref; E3 confirm remote then return the canonical receipt; E4 replay returns
-    /// the identical receipt; E5 never overwrite a different remote ref; E6 no
-    /// credential value appears in errors. Rules: P1 !C1=>E1; P2 C1+!C2=>E1;
-    /// P3 C1+C2+!C3=>E1; P4 C1+C2+C3+!C4=>E1+E6; P5 absent=>E2+E3;
-    /// P6 current=>E4; P7 different=>E5; malformed observation=>E1.
+    /// is absent/current/expected-prior/stale; C6 credential contains secret material.
+    /// Effects: E1 fail before network/effect; E2 create only under an absent-ref
+    /// lease; E3 update only under the caller's exact prior-commit lease; E4 replay
+    /// returns the identical receipt; E5 stale observations are typed permanent
+    /// rejection and never overwritten; E6 no credential value appears in errors.
+    /// Rules: P1 !C1=>E1; P2 C1+!C2=>E1; P3 C1+C2+!C3=>E1;
+    /// P4 C1+C2+C3+!C4=>E1+E6; P5 None+absent=>E2; P6 current=>E4;
+    /// P7 Some(P)+remote=P=>E3; P8 absent/third-value mismatch=>E5.
     #[test]
     fn explicit_publication_is_exact_idempotent_and_non_overwriting() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1473,6 +1667,7 @@ mod tests {
         let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: expected_commit.clone(),
+            expected_prior_commit: None,
         };
 
         let readonly = awaken_provisioning_contract::RepositoryRealizationPlan {
@@ -1482,29 +1677,37 @@ mod tests {
         };
         let error = push_repo_to_at(&root, "repo", &readonly, &expectation, None)
             .expect_err("P1 read-only fails before transport");
-        assert!(error.0.contains("read-only"), "P1: {error}");
+        assert!(matches!(
+            error,
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
+                if error.0.contains("read-only")
+        ));
 
         let wrong_branch = awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/other".into(),
             commit: expected_commit.clone(),
+            expected_prior_commit: None,
         };
         let error = push_repo_to_at(&root, "repo", &plan, &wrong_branch, None)
             .expect_err("P2 wrong local branch fails before transport");
-        assert!(
-            error.0.contains("does not match expected branch"),
-            "P2: {error}"
-        );
+        assert!(matches!(
+            error,
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
+                if error.0.contains("does not match expected branch")
+        ));
 
         let wrong_commit = awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: "0000000000000000000000000000000000000000".into(),
+            expected_prior_commit: None,
         };
         let error = push_repo_to_at(&root, "repo", &plan, &wrong_commit, None)
             .expect_err("P3 wrong local commit fails before transport");
-        assert!(
-            error.0.contains("does not match expected commit"),
-            "P3: {error}"
-        );
+        assert!(matches!(
+            error,
+            awaken_provisioning_contract::RepositoryPublicationError::Unavailable(error)
+                if error.0.contains("does not match expected commit")
+        ));
 
         let rejected_transport = awaken_provisioning_contract::RepositoryRealizationPlan {
             transport_url: "ssh://attacker.invalid/repo".into(),
@@ -1570,9 +1773,49 @@ mod tests {
             .unwrap()
             .trim()
             .to_owned();
-        let error = push_repo_to_at(&root, "repo", &plan, &expectation, None)
-            .expect_err("P7 different remote ref is never overwritten");
-        assert!(error.0.contains("different commit"), "P7: {error}");
+        let mut cas_expectation = expectation.clone();
+        cas_expectation.expected_prior_commit = Some(divergent_commit.clone());
+        let cas = push_repo_to_at(&root, "repo", &plan, &cas_expectation, None)
+            .expect("P7 exact prior commit authorizes one CAS update");
+        assert_eq!(cas, first, "P7 receipt is independent of create/update");
+        let replay = push_repo_to_at(&root, "repo", &plan, &cas_expectation, None)
+            .expect("P7 exact desired commit is absorbing replay");
+        assert_eq!(cas, replay, "P7 replay receipt");
+
+        std::fs::write(divergent.join("README.md"), "third").unwrap();
+        run_git(
+            Some(&divergent),
+            &[
+                "-c",
+                "user.name=Remote Writer",
+                "-c",
+                "user.email=remote@awaken.local",
+                "commit",
+                "-q",
+                "-am",
+                "third",
+            ],
+        )
+        .unwrap();
+        run_git(
+            Some(&divergent),
+            &["push", "-q", "--force", "origin", "awf/work"],
+        )
+        .unwrap();
+        let third_commit = git_stdout(Some(&divergent), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let error = push_repo_to_at(&root, "repo", &plan, &cas_expectation, None)
+            .expect_err("P8 third remote ref is a permanent stale rejection");
+        assert!(matches!(
+            error,
+            awaken_provisioning_contract::RepositoryPublicationError::Rejected(
+                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefChanged {
+                    observed_commit
+                }
+            ) if observed_commit == third_commit
+        ));
         let remote_commit = git_stdout(
             None,
             &[
@@ -1583,7 +1826,27 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(remote_commit.trim(), divergent_commit, "P7/E5");
+        assert_eq!(remote_commit.trim(), third_commit, "P8/E5");
+
+        run_git(
+            None,
+            &[
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "update-ref",
+                "-d",
+                "refs/heads/awf/work",
+            ],
+        )
+        .unwrap();
+        let error = push_repo_to_at(&root, "repo", &plan, &cas_expectation, None)
+            .expect_err("P8 expected prior cannot recreate an absent remote ref");
+        assert!(matches!(
+            error,
+            awaken_provisioning_contract::RepositoryPublicationError::Rejected(
+                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent
+            )
+        ));
     }
 
     #[test]
@@ -1601,6 +1864,7 @@ mod tests {
         for malformed in [
             format!("{commit} {expected_ref}\n"),
             format!("short\t{expected_ref}\n"),
+            format!("ABCDEF0123456789abcdef0123456789abcdef01\t{expected_ref}\n"),
             format!("{commit}\trefs/heads/other\n"),
             format!("{commit}\t{expected_ref}\n{commit}\t{expected_ref}\n"),
         ] {

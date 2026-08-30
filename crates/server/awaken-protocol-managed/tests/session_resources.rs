@@ -1738,7 +1738,7 @@ impl SessionRuntime for AcceptingFake {
     async fn execute_terminal_repository_publication(
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         let awaken_session_contract::ResolvedInputSource::Repository {
             repository_id,
             config,
@@ -1757,9 +1757,11 @@ impl SessionRuntime for AcceptingFake {
         };
         self.published.lock().unwrap().push(command.clone());
         Ok(
-            awaken_session_contract::SessionRepositoryPublicationReceipt::new(
-                &command,
-                effect_receipt,
+            awaken_session_contract::SessionRepositoryPublicationEffect::Published(
+                awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+                    &command,
+                    effect_receipt,
+                ),
             ),
         )
     }
@@ -4898,7 +4900,8 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt()
+            .repository_publication_receipt("profiled-publication")
+            .unwrap()
             .is_some(),
         "P2/E2 receipt is durable before response"
     );

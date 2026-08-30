@@ -1471,11 +1471,17 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
 /// exact or foreign; C2 binding_id resolves to exactly one active writable
 /// Repository or is unknown; C3 the archive root CAS is fresh or an exact
 /// response-loss replay; C4 the expectation is exact or conflicts with the
-/// frozen intent; C5 the Runtime has a child. Effects: E1 foreign/unknown
-/// selectors mutate nothing; E2 one atomic archive fence owns the intent; E3
-/// local effects order child -> publication receipt CAS -> root finalizer; E4
-/// exact replay returns the same durable receipt without another effect; E5 a
-/// different expectation conflicts without rewriting the receipt.
+/// frozen intent; C5 the Runtime has a child; C6 a Completed publication outcome
+/// is bound to this Session or foreign; C7 publication is accepted, permanently
+/// rejected, or unavailable. Effects: E1 foreign/unknown selectors mutate
+/// nothing; E2 one atomic archive fence owns the intent; E3 local effects order
+/// child -> publication receipt CAS -> root finalizer; E4 exact replay returns
+/// the same durable receipt without another effect; E5 a different expectation
+/// conflicts without rewriting the receipt; E6 a foreign Completed outcome
+/// fails before any Runtime effect or root mutation; E7 a permanent rejection is
+/// durable before ordinary cleanup; E8 its exact replay has no second effect; E9
+/// an unavailable dependency retains the command without root cleanup; E10
+/// retry publishes and completes ordinary cleanup.
 ///
 /// | Rule | scope | binding | replay | expectation | Effect |
 /// |---|---|---|---|---|---|
@@ -1484,6 +1490,11 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
 /// | R3 | exact | exact | no | exact | E2 + E3 |
 /// | R4 | exact | exact | yes | exact | E4 |
 /// | R5 | exact | exact | yes | different | E5 |
+/// | R5-foreign | exact | exact | foreign Completed | exact | E6 |
+/// | R6 | exact | exact | no | stale prior | E7 |
+/// | R7 | exact | exact | rejected replay | stale prior | E8 |
+/// | R8 | exact | exact | no | unavailable | E9 |
+/// | R9 | exact | exact | retry | exact | E10 |
 #[tokio::test]
 async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup() {
     // Constraint: the Session root and its SessionCleanupOperation are the only
@@ -1532,6 +1543,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
             expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
                 branch: "awf/issue-coding".into(),
                 commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                expected_prior_commit: None,
             },
         },
     };
@@ -1593,7 +1605,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
         "R4/E4 no duplicate effect"
     );
 
-    let mut conflicting = command;
+    let mut conflicting = command.clone();
     conflicting.repository.expectation.commit = "fedcba9876543210fedcba9876543210fedcba98".into();
     assert!(
         matches!(
@@ -1609,10 +1621,139 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt(),
+            .repository_publication_receipt("profiled-publication")
+            .unwrap(),
         Some(&first.publication_receipt),
         "R5/E5"
     );
+
+    // A custom repository adapter cannot use a self-consistent receipt from a
+    // foreign Session to trigger the Completed fast path. The aggregate-bound
+    // verifier runs before any Runtime effect or root mutation.
+    let mut foreign_completed = repo.get("profiled-publication").await.unwrap();
+    foreign_completed.session_id = "profiled-foreign-outcome".into();
+    let faulting_repo = Arc::new(FaultingSessionRepository::new(repo.clone()));
+    faulting_repo.return_get_once(foreign_completed);
+    let guarded = SessionApplication::new_with_configuration(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        faulting_repo,
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration::default(),
+    );
+    let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
+    assert!(
+        matches!(
+            guarded
+                .release_terminal_resources("workspace", "profiled-foreign-outcome")
+                .await,
+            Err(SessionPreparationError::Rejected(_))
+        ),
+        "R5 foreign Completed outcome fails closed"
+    );
+    assert_eq!(
+        runtime.terminal_effect_order.lock().unwrap().len(),
+        effects_before_foreign,
+        "R5 foreign Completed outcome cannot suppress into cleanup/tombstone"
+    );
+
+    // Permanent publication rejection is durable before ordinary root cleanup;
+    // exact profiled replay returns the same rejection without a second Git call.
+    let mut rejected_session = persisted("profiled-rejected", false, "idle");
+    rejected_session.resources = awaken_session_contract::SessionResourceState::from_active(
+        repository_resources("source", "repo-1"),
+    );
+    create(repo.as_ref(), rejected_session).await;
+    runtime.reject_publication.store(true, Ordering::SeqCst);
+    let mut rejected = command.clone();
+    rejected.session_id = "profiled-rejected".into();
+    rejected.lifecycle_fact.id = "profiled-rejected:terminated".into();
+    rejected.lifecycle_fact.object_id = "profiled-rejected".into();
+    rejected.repository.expectation.expected_prior_commit =
+        Some("1111111111111111111111111111111111111111".into());
+    let before_rejection = runtime.terminal_effect_order.lock().unwrap().len();
+    let first_rejection = application
+        .archive_with_repository_publication(rejected.clone())
+        .await;
+    assert!(
+        matches!(
+            first_rejection,
+            Err(SessionArchiveWithRepositoryPublicationError::Rejected(ref error))
+                if error.code == "repository_publication_rejected"
+        ),
+        "R6 durable permanent rejection"
+    );
+    let rejected_durable = repo.get("profiled-rejected").await.unwrap();
+    assert!(
+        rejected_durable.terminal_cleanup.is_completed(),
+        "R6 root cleanup"
+    );
+    assert!(
+        rejected_durable
+            .terminal_cleanup
+            .repository_publication_rejection("profiled-rejected")
+            .unwrap()
+            .is_some(),
+        "R6 rejection durable before completion"
+    );
+    let after_rejection = runtime.terminal_effect_order.lock().unwrap().len();
+    let replay_rejection = application
+        .archive_with_repository_publication(rejected)
+        .await;
+    assert!(
+        matches!(
+            replay_rejection,
+            Err(SessionArchiveWithRepositoryPublicationError::Rejected(ref error))
+                if error.code == "repository_publication_rejected"
+        ),
+        "R7 exact rejection replay"
+    );
+    assert_eq!(
+        runtime.terminal_effect_order.lock().unwrap().len(),
+        after_rejection,
+        "R7 no second publication or cleanup effect"
+    );
+    assert!(after_rejection > before_rejection, "R6 effects executed");
+
+    // Dependency loss records no outcome and therefore cannot expose ordinary
+    // root cleanup. The same frozen command is retried and then completes.
+    runtime.reject_publication.store(false, Ordering::SeqCst);
+    runtime.fail_publication_once.store(true, Ordering::SeqCst);
+    let mut unavailable_session = persisted("profiled-unavailable", false, "idle");
+    unavailable_session.resources = awaken_session_contract::SessionResourceState::from_active(
+        repository_resources("source", "repo-1"),
+    );
+    create(repo.as_ref(), unavailable_session).await;
+    let mut unavailable = command;
+    unavailable.session_id = "profiled-unavailable".into();
+    unavailable.lifecycle_fact.id = "profiled-unavailable:terminated".into();
+    unavailable.lifecycle_fact.object_id = "profiled-unavailable".into();
+    assert!(
+        matches!(
+            application
+                .archive_with_repository_publication(unavailable.clone())
+                .await,
+            Err(SessionArchiveWithRepositoryPublicationError::Pending(_))
+        ),
+        "R8 unavailable remains pending"
+    );
+    let pending = repo.get("profiled-unavailable").await.unwrap();
+    assert!(
+        !pending.terminal_cleanup.is_completed(),
+        "R8 no root cleanup"
+    );
+    assert!(
+        pending
+            .terminal_cleanup
+            .publication_command("profiled-unavailable")
+            .unwrap()
+            .is_some(),
+        "R8 exact command retained"
+    );
+    application
+        .archive_with_repository_publication(unavailable)
+        .await
+        .expect("R9 retry publishes and completes ordinary cleanup");
 }
 
 /// Terminal-transition cause/effect graph. C1 execution is Idle or Running; C2

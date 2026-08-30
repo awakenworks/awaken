@@ -50,6 +50,8 @@ struct RecordingSessionControl {
         Mutex<Option<awaken_session_contract::SessionRepositoryPublicationProjection>>,
     repository_publication_receipts:
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
+    repository_publication_rejections:
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
 }
 
 #[derive(Default)]
@@ -356,6 +358,19 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             .lock()
             .unwrap()
             .push(receipt);
+        Ok(())
+    }
+
+    async fn record_terminal_repository_publication_rejection(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.repository_publication_rejections
+            .lock()
+            .unwrap()
+            .push(rejection);
         Ok(())
     }
 }
@@ -1153,16 +1168,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
 
     // Publication transport cause/effect table. P1 current identity + exact
     // lease projects the one canonical command; P2 the same authority records
-    // its canonical receipt; P3 a foreign lease is rejected before Control;
-    // P4 no projected command stays pending without inventing work. Exact
-    // retries use the same route and receipt; aggregate idempotency remains in
+    // its canonical receipt; P3 it forwards the command-bound typed rejection;
+    // P4 a foreign lease is rejected before Control; P5 no projected command
+    // stays pending without inventing work. Exact retries use the same signed
+    // routes and outcomes; aggregate idempotency remains in
     // SessionCleanupOperation rather than this stateless transport.
     //
     // | Rule | Worker/lease | Control command | Effect |
     // | P1 | current/exact | canonical | return exact command |
     // | P2 | current/exact | canonical | forward exact receipt |
-    // | P3 | current/foreign | any | reject before Control |
-    // | P4 | current/exact | none | return pending None |
+    // | P3 | current/exact | canonical rejection | forward exact rejection |
+    // | P4 | current/foreign | any | reject before Control |
+    // | P5 | current/exact | none | return pending None |
     let publication_intent: awaken_session_contract::SessionRepositoryPublicationIntent =
         serde_json::from_value(serde_json::json!({
             "input": {
@@ -1243,6 +1260,32 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         &[publication_receipt],
         "P2"
     );
+    let publication_rejection =
+        awaken_session_contract::SessionRepositoryPublicationRejection::new(
+            &publication_command,
+            awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefChanged {
+                observed_commit: "fedcba9876543210fedcba9876543210fedcba98".into(),
+            },
+        )
+        .expect("P3 rejection");
+    client
+        .record_terminal_repository_publication_rejection(
+            &registered.snapshot.identity,
+            "signed-thread",
+            &realization_lease,
+            publication_rejection.clone(),
+        )
+        .await
+        .expect("P3 rejection record");
+    assert_eq!(
+        session_control
+            .repository_publication_rejections
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[publication_rejection],
+        "P3"
+    );
     assert!(
         client
             .terminal_repository_publication_command(
@@ -1252,7 +1295,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             )
             .await
             .is_err(),
-        "P3"
+        "P4"
     );
     *session_control
         .repository_publication_projection
@@ -1266,9 +1309,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 &realization_lease,
             )
             .await
-            .expect("P4 pending poll")
+            .expect("P5 pending poll")
             .is_none(),
-        "P4"
+        "P5"
     );
 
     let renewal = awaken_session_contract::BeginSessionRealization {

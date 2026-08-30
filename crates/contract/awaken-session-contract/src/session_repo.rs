@@ -395,7 +395,7 @@ impl PersistedSession {
         session_tombstone_is_admitted(
             self.disposition.is_hidden(),
             self.execution.is_terminal(),
-            self.terminal_cleanup.is_completed(),
+            self.has_verified_completed_cleanup(),
             !self.has_incomplete_event_batches(),
             self.session_id == asserted_session_id,
             self.revision
@@ -568,7 +568,7 @@ impl PersistedSession {
                 self.environment,
                 crate::SessionEnvironmentState::Unmaterialized
             )
-            || self.terminal_cleanup.needs_reconciliation()
+            || self.verified_cleanup_needs_reconciliation()
             || self.needs_work_dispatch()
     }
 

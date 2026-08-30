@@ -824,8 +824,8 @@ impl pc::RepositoryRealizer for LocalSandbox {
         plan: &pc::RepositoryRealizationPlan,
         expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
-        push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential).map_err(err)
+    ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
+        push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential)
     }
 }
 
@@ -1581,6 +1581,7 @@ mod workdir_helper_tests {
         let seed_expectation = pc::RepositoryPublicationExpectation {
             branch: initial_branch,
             commit: seed_head.clone(),
+            expected_prior_commit: None,
         };
         let seed_receipt =
             pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &seed_expectation, None)
@@ -1604,6 +1605,7 @@ mod workdir_helper_tests {
         let expectation = pc::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: agent_commit,
+            expected_prior_commit: None,
         };
 
         // The Agent owns this config and may point both the named remote and an

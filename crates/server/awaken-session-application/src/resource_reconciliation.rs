@@ -280,11 +280,14 @@ impl SessionApplication {
         if !Self::terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
-        if session.terminal_cleanup.is_completed() {
+        let terminal_cleanup = session
+            .verified_terminal_cleanup()
+            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
+        if terminal_cleanup.is_completed() {
             return Ok(None);
         }
-        if session.is_terminal() || session.terminal_cleanup.needs_reconciliation() {
-            return match session.terminal_cleanup.pending_commands(session_id) {
+        if session.is_terminal() || terminal_cleanup.needs_reconciliation() {
+            return match terminal_cleanup.pending_commands(session_id) {
                 Ok(commands) => {
                     let workspace_id = self.owner(session_id).await.map_err(|error| {
                         SessionRealizationControlFailure::Unavailable(error.to_string())
@@ -343,11 +346,13 @@ impl SessionApplication {
         if !Self::terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }
-        if session.terminal_cleanup.is_completed() || !session.terminal_cleanup.is_requested() {
+        let terminal_cleanup = session
+            .verified_terminal_cleanup()
+            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
+        if terminal_cleanup.is_completed() || !terminal_cleanup.is_requested() {
             return Ok(None);
         }
-        let command = session
-            .terminal_cleanup
+        let command = terminal_cleanup
             .publication_command(session_id)
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
         let Some(command) = command else {
@@ -375,6 +380,34 @@ impl SessionApplication {
         lease: &SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_external_terminal_repository_publication_effect(
+            session_id,
+            lease,
+            awaken_session_contract::SessionRepositoryPublicationEffect::Published(receipt),
+        )
+        .await
+    }
+
+    pub(crate) async fn record_external_terminal_repository_publication_rejection(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_external_terminal_repository_publication_effect(
+            session_id,
+            lease,
+            awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(rejection),
+        )
+        .await
+    }
+
+    async fn record_external_terminal_repository_publication_effect(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        effect: awaken_session_contract::SessionRepositoryPublicationEffect,
+    ) -> Result<(), SessionRealizationControlFailure> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(|error| {
                 SessionRealizationControlFailure::Unavailable(error.to_string())
@@ -397,16 +430,25 @@ impl SessionApplication {
             if !Self::terminal_cleanup_lease_matches(&session, lease) {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
-            let changed = session
-                .terminal_cleanup
-                .record_repository_publication_receipt(session_id, receipt.clone())
-                .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
+            let changed = match effect.clone() {
+                awaken_session_contract::SessionRepositoryPublicationEffect::Published(receipt) => {
+                    session
+                        .terminal_cleanup
+                        .record_repository_publication_receipt(session_id, receipt)
+                }
+                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
+                    rejection,
+                ) => session
+                    .terminal_cleanup
+                    .record_repository_publication_rejection(session_id, rejection),
+            }
+            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             if changed {
                 match self
                     .commit_resource_snapshot(
                         &owner_scope,
                         session,
-                        "terminal-repository-publication-worker-receipt",
+                        "terminal-repository-publication-worker-outcome",
                         Vec::new(),
                     )
                     .await

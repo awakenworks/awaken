@@ -188,7 +188,8 @@ pub use skill_execution::{
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupCompletion, SessionCleanupError, SessionCleanupOperation,
     SessionRepositoryPublicationCleanup, SessionRepositoryPublicationCommand,
-    SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
+    SessionRepositoryPublicationEffect, SessionRepositoryPublicationIntent,
+    SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
     VerifiedSessionCleanupReceipt,
 };
 pub use tool_configuration::SessionToolConfiguration;

@@ -767,7 +767,7 @@ pub trait SessionRealizationControl: Send + Sync {
     /// Project the one root Repository publication command already frozen in
     /// the terminal cleanup operation together with the Session row's canonical
     /// Workspace. `None` means there is no publication intent, a child cleanup
-    /// is still pending, or the exact receipt is already durable.
+    /// is still pending, or the exact receipt/rejection is already durable.
     /// Implementations must validate the same realization lease used by ordinary
     /// terminal cleanup commands.
     async fn terminal_repository_publication_command(
@@ -788,6 +788,20 @@ pub trait SessionRealizationControl: Send + Sync {
         _session_id: &str,
         _lease: &SessionRealizationLease,
         _receipt: crate::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "remote Session Repository publication is unsupported".into(),
+        ))
+    }
+
+    /// Admit one exact permanent Repository publication rejection into the same
+    /// cleanup sidecar and lease-fenced root CAS as a successful receipt. This is
+    /// a terminal effect observation, not a Worker-local retry queue.
+    async fn record_terminal_repository_publication_rejection(
+        &self,
+        _session_id: &str,
+        _lease: &SessionRealizationLease,
+        _rejection: crate::SessionRepositoryPublicationRejection,
     ) -> Result<(), SessionRealizationControlFailure> {
         Err(SessionRealizationControlFailure::Invalid(
             "remote Session Repository publication is unsupported".into(),
