@@ -142,7 +142,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .host
             .session_slots
             .read(session_id, |slot| {
-                slot.runtime.is_some() || slot.environment.is_some()
+                slot.runtime.is_some() || slot.environment_owner.is_resident()
             })
             .unwrap_or(false);
         if self.requires_runtime_before_effects
@@ -183,9 +183,12 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             // decision above. Clear the process-local expectation only after the
             // provider has proved the exact durable binding unavailable; the new
             // Environment receipt must still pass the ordinary durable sink.
-            self.host
-                .install_expected_environment_binding(session_id, None)
-                .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
+            debug_assert!(
+                self.host
+                    .durable_session_environment_binding(session_id)
+                    .is_none(),
+                "terminated recovery owner clears its durable binding"
+            );
         }
         // Synchronization is the single ordering boundary between Control's
         // frozen projection and MCP effects. A first-use Environment has no
@@ -390,8 +393,9 @@ impl HostWorkerResolver {
 mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{
-        AdoptionModel, claim, deferred_environment, test_activation,
+        AdoptionModel, claim, committed_environment, deferred_environment, test_activation,
     };
+    use awaken_session_contract::SessionRuntime as _;
     use std::sync::{Arc, Mutex};
 
     /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
@@ -593,7 +597,7 @@ mod tests {
                 .is_none_or(|(host, thread)| {
                     host.upgrade().is_some_and(|host| {
                         host.session_slots
-                            .read(thread, |slot| slot.environment.is_some())
+                            .read(thread, |slot| slot.environment_owner.is_resident())
                             .unwrap_or(false)
                     })
                 });
@@ -630,7 +634,53 @@ mod tests {
     }
 
     struct RecoveryControl {
-        projection: awaken_session_contract::FrozenSessionProjection,
+        projection: Arc<Mutex<awaken_session_contract::FrozenSessionProjection>>,
+    }
+
+    impl RecoveryControl {
+        fn fixed(projection: awaken_session_contract::FrozenSessionProjection) -> Self {
+            Self {
+                projection: Arc::new(Mutex::new(projection)),
+            }
+        }
+
+        fn current_projection(&self) -> awaken_session_contract::FrozenSessionProjection {
+            self.projection.lock().unwrap().clone()
+        }
+    }
+
+    struct RecoveryEnvironmentBindingSink {
+        projection: Arc<Mutex<awaken_session_contract::FrozenSessionProjection>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RecoveryEnvironmentBindingSink {
+        fn new(control: &RecoveryControl) -> Self {
+            Self {
+                projection: control.projection.clone(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::SessionEnvironmentBindingSink for RecoveryEnvironmentBindingSink {
+        async fn persist(
+            &self,
+            receipt: awaken_session_contract::SessionEnvironmentReceipt,
+        ) -> Result<
+            awaken_session_contract::SessionEnvironmentState,
+            awaken_session_contract::RunError,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let committed = committed_environment(receipt);
+            self.projection.lock().unwrap().environment = committed.clone();
+            Ok(committed)
+        }
     }
 
     struct RenewalDuringStageControl {
@@ -789,7 +839,7 @@ mod tests {
             awaken_session_contract::SessionRealizationControlFailure,
         > {
             Ok(awaken_session_contract::SessionRealizationDirective {
-                projection: self.projection.clone(),
+                projection: self.current_projection(),
                 lease: command.lease,
                 action: awaken_session_contract::SessionRealizationAction::Publish {
                     publish: command
@@ -810,7 +860,7 @@ mod tests {
             awaken_session_contract::SessionRealizationControlFailure,
         > {
             Ok(awaken_session_contract::SessionRealizationDirective {
-                projection: self.projection.clone(),
+                projection: self.current_projection(),
                 lease: command.lease,
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             })
@@ -1337,12 +1387,16 @@ mod tests {
          * Worker process has no resident Runtime/Environment; C3 the claimed Run
          * carries the exact immutable Agent snapshot; C4 Control requires the
          * active sandbox-stdio MCP generation to be restaged; C5 a rebuild-mode
-         * Run names a durable Environment that is no longer available. Effects: E1 adopt
-         * the exact bound Environment before MCP stage; E2 never consult current
-         * Agent publication; E3 preserve the Sandbox handle and generation; E4 a
-         * cold lease-only replay without the exact snapshot fails closed; E5
+         * Run names a provider-valid typed durable Environment whose physical root
+         * is no longer available; C6 the first-use Managed binding sink commits and
+         * reads back Resident. Effects:
+         * E1 adopt the exact bound Environment before MCP stage; E2 never consult
+         * current Agent publication; E3 preserve the Sandbox handle and generation;
+         * E4 a cold lease-only replay without the exact snapshot fails closed; E5
          * rebuild only when the claimed Run's explicit recovery policy permits it;
-         * E6 no MCP effect runs when a first-use stdio stage lacks that snapshot.
+         * E6 no MCP effect runs when a first-use stdio stage lacks that snapshot;
+         * E7 C6 persists exactly once and MCP stage observes the Store-read Resident
+         * owner rather than the earlier Unmaterialized projection.
          *
          * | Rule | binding | resident | snapshot | stdio | recovery | Effect |
          * |---|---|---|---|---|---|---|
@@ -1352,7 +1406,7 @@ mod tests {
          * | R4 | no | no | yes | no | either | ordinary resume (covered by O1) |
          * | R5 | missing | no | yes | no | rebuild | E5 |
          * | R6 | missing | no | yes | no | continuity | fail closed |
-         * | R7 | none yet | no | yes | yes | either | install publication, then stage |
+         * | R7 | none yet | no | yes | yes | either | E7; install publication, then stage |
          * | R8 | none yet | no | no | yes | either | E4 + E6 |
          */
         let storage = tempfile::tempdir().expect("storage");
@@ -1416,9 +1470,7 @@ mod tests {
                 mcp_stages: vec![stage.clone()],
             },
         };
-        let control = RecoveryControl {
-            projection: frozen.clone(),
-        };
+        let control = RecoveryControl::fixed(frozen.clone());
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
@@ -1458,7 +1510,7 @@ mod tests {
         assert!(
             host.session_slots
                 .read(thread, |slot| slot.runtime.is_none()
-                    && slot.environment.is_some())
+                    && slot.environment_owner.is_resident())
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"
         );
@@ -1511,14 +1563,15 @@ mod tests {
             required_environment: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
             ..Default::default()
         });
-        let _managed = crate::ManagedHost::new(first_use_host.clone())
-            .with_mcp_attachment_realizer(first_use_realizer.clone())
-            .install_dispatch_session_runtime();
+        let first_use_control = RecoveryControl::fixed(first_use_projection);
+        let first_use_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&first_use_control));
+        let first_use_managed = crate::ManagedHost::new(first_use_host.clone())
+            .with_mcp_attachment_realizer(first_use_realizer.clone());
+        first_use_managed.install_environment_binding_sink(first_use_sink.clone());
+        let _managed = first_use_managed.install_dispatch_session_runtime();
         HostWorkerResolver::realize_session(
             &first_use_host,
-            &RecoveryControl {
-                projection: first_use_projection,
-            },
+            &first_use_control,
             first_use_thread,
             first_use_directive.clone(),
             None,
@@ -1527,10 +1580,20 @@ mod tests {
         )
         .await
         .expect("R7 first-use Environment installs publication before MCP staging");
+        assert_eq!(first_use_sink.calls(), 1, "R7 one aggregate binding CAS");
         assert_eq!(
             first_use_realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish"],
-            "R7"
+            "R7 MCP stage observed the Store-read Resident owner"
+        );
+        assert!(
+            first_use_host
+                .session_slots
+                .read(first_use_thread, |slot| slot
+                    .environment_owner
+                    .is_resident())
+                .unwrap_or(false),
+            "R7 Store-read identity remains Resident"
         );
 
         let unpinned_host = Arc::new(
@@ -1542,9 +1605,7 @@ mod tests {
             .install_dispatch_session_runtime();
         let error = HostWorkerResolver::realize_session(
             &unpinned_host,
-            &RecoveryControl {
-                projection: frozen_projection(),
-            },
+            &RecoveryControl::fixed(frozen_projection()),
             first_use_thread,
             first_use_directive,
             None,
@@ -1582,10 +1643,16 @@ mod tests {
 
         let rebuild_thread = "cold-missing-environment";
         let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
-        let missing = awaken_provisioning_contract::SandboxHandle::new(
-            handle.provider_kind(),
-            rebuild_thread,
-        );
+        let unavailable_local_handle = |thread: &str| {
+            awaken_provisioning_contract::SandboxHandle::local(
+                thread,
+                handle
+                    .local_payload()
+                    .expect("R5/R6 original typed local payload")
+                    .clone(),
+            )
+        };
+        let missing = unavailable_local_handle(rebuild_thread);
         let mut rebuild_frozen = frozen_projection();
         rebuild_frozen
             .environment
@@ -1607,9 +1674,7 @@ mod tests {
             crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
         HostWorkerResolver::realize_session(
             &rebuild_host,
-            &RecoveryControl {
-                projection: rebuild_frozen,
-            },
+            &RecoveryControl::fixed(rebuild_frozen),
             rebuild_thread,
             rebuild_directive,
             None,
@@ -1631,11 +1696,8 @@ mod tests {
             test_activation(continuity_thread, "run-cold-continuity-missing");
         let mut continuity_frozen = frozen_projection();
         continuity_frozen.environment.set_resident(
-            serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
-                missing.provider_kind(),
-                continuity_thread,
-            ))
-            .expect("R6 missing durable binding"),
+            serde_json::to_string(&unavailable_local_handle(continuity_thread))
+                .expect("R6 missing durable binding"),
         );
         let continuity_directive = awaken_session_contract::SessionRealizationDirective {
             projection: continuity_frozen.clone(),
@@ -1654,9 +1716,7 @@ mod tests {
             crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();
         HostWorkerResolver::realize_session(
             &continuity_host,
-            &RecoveryControl {
-                projection: continuity_frozen,
-            },
+            &RecoveryControl::fixed(continuity_frozen),
             continuity_thread,
             continuity_directive,
             None,

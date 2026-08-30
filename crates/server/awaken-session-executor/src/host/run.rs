@@ -118,11 +118,32 @@ impl SharedHost {
             .map(|snapshot| snapshot.delegated_runs)
     }
 
+    /// Continuation-only read that reuses the lifecycle guard already held by
+    /// the caller instead of recursively acquiring it through `commit_for_read`.
+    pub(crate) async fn delegated_runs_under_lifecycle(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<DelegatedRun>, HostError> {
+        let commit = self.commit_for_read_under_lifecycle(thread).await?;
+        self.delegated_run_snapshot_from_commit(thread, commit)
+            .await
+            .map(|snapshot| snapshot.delegated_runs)
+    }
+
     async fn delegated_run_snapshot(
         &self,
         thread: &str,
     ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
         let commit = self.commit_for_read(thread).await?;
+        self.delegated_run_snapshot_from_commit(thread, commit)
+            .await
+    }
+
+    async fn delegated_run_snapshot_from_commit(
+        &self,
+        thread: &str,
+        commit: Arc<crate::store::HostCommit>,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
         let root_thread = ThreadId(thread.to_string());
         let recovery = match commit
             .authoritative_latest_run(&root_thread)

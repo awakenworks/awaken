@@ -185,7 +185,7 @@ mod tests {
             host.session_slots
                 .read(thread, |slot| {
                     slot.runtime.is_none()
-                        && slot.environment.is_none()
+                        && !slot.environment_owner.has_local_environment()
                         && slot.workspace.is_none()
                         && slot.manifest.is_none()
                         && slot.memory_bindings.is_empty()

@@ -176,6 +176,10 @@ pub struct SandboxCheckpointRequest {
     pub workspace_id: String,
     pub session_id: String,
     pub operation: SessionEnvironmentOperation,
+    /// Create/adopt/restore effect that owns the physical source. The suspend
+    /// operation is a cleanup cause and must never replace this identity.
+    pub source_effect_id: String,
+    pub source_binding: String,
     pub generation: SandboxGeneration,
     pub format: String,
     pub created_at_unix_ms: u64,
@@ -217,6 +221,10 @@ pub enum SessionEnvironmentState {
     },
     Suspending {
         operation: SessionEnvironmentOperation,
+        /// Exact physical owner selected before the suspend operation began.
+        /// This is intentionally distinct from `operation.effect_id`.
+        #[serde(default)]
+        source_effect_id: Box<String>,
         source_binding: String,
         generation: SandboxGeneration,
         suspend_phase: SuspendPhase,
@@ -311,19 +319,59 @@ impl SessionEnvironmentState {
         };
     }
 
-    pub fn apply_receipt(&mut self, receipt: &SessionEnvironmentReceipt) {
-        let idle_since_unix_ms = match self {
-            Self::Resident {
-                idle_since_unix_ms, ..
-            } => *idle_since_unix_ms,
-            _ => None,
-        };
-        *self = Self::Resident {
-            binding: receipt.binding.clone(),
-            effect_id: Some(receipt.effect_id.clone()),
-            generation: self.generation().cloned(),
-            idle_since_unix_ms,
-        };
+    /// Apply the only typed create/adopt transition for a physical binding.
+    /// Exact Resident replay is a no-write result. Continuation phases, a
+    /// second create, and an adoption of a different source all fail closed.
+    pub fn apply_binding_receipt(
+        &mut self,
+        receipt: &SessionEnvironmentReceipt,
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        if let Self::Resident {
+            binding,
+            effect_id: Some(effect_id),
+            generation: Some(_),
+            ..
+        } = self
+            && binding == &receipt.binding
+            && effect_id == &receipt.effect_id
+        {
+            return Ok(false);
+        }
+        match (&mut *self, receipt.kind) {
+            (
+                Self::Unmaterialized,
+                SessionEnvironmentEffectKind::Create | SessionEnvironmentEffectKind::Adopt,
+            ) => {
+                *self = Self::Resident {
+                    binding: receipt.binding.clone(),
+                    effect_id: Some(receipt.effect_id.clone()),
+                    generation: None,
+                    idle_since_unix_ms: None,
+                };
+                Ok(true)
+            }
+            (
+                Self::Resident {
+                    binding,
+                    effect_id,
+                    idle_since_unix_ms: _,
+                    ..
+                },
+                SessionEnvironmentEffectKind::Adopt,
+            ) if binding == &receipt.binding => {
+                *effect_id = Some(receipt.effect_id.clone());
+                Ok(true)
+            }
+            (Self::Resident { .. }, SessionEnvironmentEffectKind::Create) => {
+                Err(SessionEnvironmentTransitionError::CreateAfterBinding)
+            }
+            (Self::Resident { .. }, SessionEnvironmentEffectKind::Adopt) => {
+                Err(SessionEnvironmentTransitionError::AdoptSourceMismatch)
+            }
+            (Self::Suspending { .. } | Self::Hibernated { .. } | Self::Restoring { .. }, _) => {
+                Err(SessionEnvironmentTransitionError::BindingDuringContinuation)
+            }
+        }
     }
 
     pub fn mark_active(&mut self) {
@@ -379,6 +427,7 @@ impl SessionEnvironmentState {
         }
         let Self::Resident {
             binding,
+            effect_id: Some(source_effect_id),
             generation: Some(generation),
             ..
         } = self
@@ -396,6 +445,7 @@ impl SessionEnvironmentState {
         );
         *self = Self::Suspending {
             operation,
+            source_effect_id: Box::new(source_effect_id.clone()),
             source_binding: binding.clone(),
             generation: generation.clone(),
             suspend_phase: SuspendPhase::Quiescing,
@@ -480,6 +530,7 @@ impl SessionEnvironmentState {
             generation,
             suspend_phase: SuspendPhase::ReadyToDispose,
             checkpoint: Some(checkpoint),
+            ..
         } = self
         else {
             unreachable!("source-disposal gate proved exact suspend shape")
@@ -751,6 +802,14 @@ pub enum SessionEnvironmentTransitionError {
     ReceiptMismatch,
     #[error("Session environment checkpoint is expired")]
     CheckpointExpired,
+    #[error("Session environment cannot create a second physical binding")]
+    CreateAfterBinding,
+    #[error("Session environment adoption does not match its resident source binding")]
+    AdoptSourceMismatch,
+    #[error("Session environment binding cannot change during continuation")]
+    BindingDuringContinuation,
+    #[error("terminal Session cannot accept a physical environment binding")]
+    BindingAfterTerminal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -1034,6 +1093,7 @@ mod tests {
 
         let mut suspending = SessionEnvironmentState::Suspending {
             operation: legacy.clone(),
+            source_effect_id: Box::new("create".into()),
             source_binding: "source".into(),
             generation: generation.clone(),
             suspend_phase: SuspendPhase::Quiescing,
@@ -1059,6 +1119,180 @@ mod tests {
             restore_effect("a", "bc", &generation, 7, Some(realization()), &checkpoint,),
             "R11 length framing"
         );
+    }
+
+    #[test]
+    fn binding_receipts_follow_the_closed_create_adopt_decision_table() {
+        // Cause/effect table: C1 Unmaterialized; C2 generated Resident; C3
+        // continuation phase; C4 Create; C5 Adopt same/different binding;
+        // C6 exact effect+binding+generation replay. Effects: E1 install an
+        // ungenerated candidate for the aggregate-owned generation assignment;
+        // E2 update only same-source Adopt effect while preserving generation;
+        // E3 exact no-write replay; E4 typed denial with byte-identical state.
+        // Rules: C1+(C4|C5)=>E1, C2+C5(same)=>E2, C2+C6=>E3,
+        // C2+C4 or C2+C5(different) or C3=>E4.
+        let create = SessionEnvironmentReceipt::new(
+            "s1",
+            SessionEnvironmentEffectKind::Create,
+            "source",
+            None,
+        );
+        let adopt = SessionEnvironmentReceipt::new(
+            "s1",
+            SessionEnvironmentEffectKind::Adopt,
+            "source",
+            None,
+        );
+        for receipt in [&create, &adopt] {
+            let mut state = SessionEnvironmentState::Unmaterialized;
+            assert_eq!(state.apply_binding_receipt(receipt), Ok(true), "E1");
+            assert!(matches!(
+                state,
+                SessionEnvironmentState::Resident {
+                    ref binding,
+                    effect_id: Some(ref effect_id),
+                    generation: None,
+                    ..
+                } if binding == "source" && effect_id == &receipt.effect_id
+            ));
+        }
+
+        let mut exact = SessionEnvironmentState::Resident {
+            binding: create.binding.clone(),
+            effect_id: Some(create.effect_id.clone()),
+            generation: Some(generation()),
+            idle_since_unix_ms: Some(9),
+        };
+        let before = exact.clone();
+        assert_eq!(exact.apply_binding_receipt(&create), Ok(false), "E3");
+        assert_eq!(exact, before, "E3 byte-identical");
+        assert_eq!(exact.apply_binding_receipt(&adopt), Ok(true), "E2");
+        assert_eq!(exact.effect_id(), Some(adopt.effect_id.as_str()), "E2");
+        assert_eq!(exact.generation(), Some(&generation()), "E2");
+        assert_eq!(exact.idle_since_unix_ms(), Some(9), "E2");
+
+        let mut second_create = exact.clone();
+        let before = second_create.clone();
+        assert_eq!(
+            second_create.apply_binding_receipt(&create),
+            Err(SessionEnvironmentTransitionError::CreateAfterBinding),
+            "E4"
+        );
+        assert_eq!(second_create, before, "E4 byte-identical");
+        let wrong_adopt = SessionEnvironmentReceipt::new(
+            "s1",
+            SessionEnvironmentEffectKind::Adopt,
+            "different",
+            None,
+        );
+        let mut wrong_source = exact;
+        let before = wrong_source.clone();
+        assert_eq!(
+            wrong_source.apply_binding_receipt(&wrong_adopt),
+            Err(SessionEnvironmentTransitionError::AdoptSourceMismatch),
+            "E4"
+        );
+        assert_eq!(wrong_source, before, "E4 byte-identical");
+
+        let operation = SessionEnvironmentOperation::new(
+            "workspace-a",
+            "s1",
+            "suspend",
+            &generation(),
+            7,
+            None,
+            None,
+        );
+        let checkpoint = checkpoint(&operation);
+        let continuation_states = [
+            SessionEnvironmentState::Suspending {
+                operation: operation.clone(),
+                source_effect_id: Box::new(create.effect_id.clone()),
+                source_binding: create.binding.clone(),
+                generation: generation(),
+                suspend_phase: SuspendPhase::Quiescing,
+                checkpoint: None,
+            },
+            SessionEnvironmentState::Hibernated {
+                checkpoint: checkpoint.clone(),
+                generation: generation(),
+            },
+            SessionEnvironmentState::Restoring {
+                operation,
+                checkpoint,
+                generation: generation(),
+            },
+        ];
+        for mut state in continuation_states {
+            let before = state.clone();
+            assert_eq!(
+                state.apply_binding_receipt(&adopt),
+                Err(SessionEnvironmentTransitionError::BindingDuringContinuation),
+                "E4"
+            );
+            assert_eq!(state, before, "E4 byte-identical");
+        }
+    }
+
+    #[test]
+    fn legacy_suspending_rows_decode_without_fabricating_a_source_effect() {
+        // Cause/effect rules: C1 a source-aware durable row is Suspending; C2
+        // its Rust source identity is heap-indirected; C3 its JSON contains the
+        // field. Effect E1 serde keeps the wire value a plain JSON string. C4 a
+        // pre-source-identity row has no `source_effect_id`; E2 decode it with
+        // an explicit empty legacy marker while preserving operation,
+        // generation, binding, and phase byte-for-byte. Runtime projection owns
+        // the corresponding `LegacyDirect` interpretation; no generation or
+        // physical effect is reconstructed here.
+        let mut state = resident();
+        state.begin_suspend("workspace-a", "s1", 7, None).unwrap();
+        let (
+            expected_operation,
+            expected_source_binding,
+            expected_generation,
+            expected_suspend_phase,
+        ) = match &state {
+            SessionEnvironmentState::Suspending {
+                operation,
+                source_binding,
+                generation,
+                suspend_phase,
+                ..
+            } => (
+                operation.clone(),
+                source_binding.clone(),
+                generation.clone(),
+                *suspend_phase,
+            ),
+            _ => unreachable!("C1 state"),
+        };
+        let mut encoded = serde_json::to_value(state).unwrap();
+        assert!(
+            encoded
+                .get("source_effect_id")
+                .is_some_and(serde_json::Value::is_string),
+            "C1-C3/E1 boxed Rust provenance must remain a JSON string"
+        );
+        encoded
+            .as_object_mut()
+            .expect("tagged Session Environment state")
+            .remove("source_effect_id");
+        let decoded: SessionEnvironmentState = serde_json::from_value(encoded).unwrap();
+        assert!(matches!(
+            &decoded,
+            SessionEnvironmentState::Suspending {
+                source_effect_id,
+                operation,
+                source_binding,
+                generation,
+                suspend_phase,
+                checkpoint: None,
+            } if source_effect_id.is_empty()
+                && operation == &expected_operation
+                && source_binding == &expected_source_binding
+                && generation == &expected_generation
+                && suspend_phase == &expected_suspend_phase
+        ));
     }
 
     // Cause/effect design: C1=Resident, C2=no live effect, C4=current epoch,

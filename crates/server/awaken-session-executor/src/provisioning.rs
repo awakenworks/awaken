@@ -780,7 +780,7 @@ impl ArtifactHarvester {
     ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         let env = self
             .session_slots
-            .read(thread, |slot| slot.environment.clone())
+            .read(thread, |slot| slot.environment_owner.resident())
             .flatten();
         let Some(env) = env else {
             return Ok(HarvestedArtifacts {
@@ -1363,9 +1363,7 @@ mod provisioning_registry_tests {
                 .await
                 .unwrap(),
         ));
-        host.session_slots.update("session-artifacts", |slot| {
-            slot.environment = Some(environment.clone())
-        });
+        host.install_test_resident_session_environment("session-artifacts", environment.clone());
         let output = storage
             .path()
             .join("session-artifacts")
@@ -1434,8 +1432,7 @@ mod provisioning_registry_tests {
                 .await
                 .unwrap(),
         ));
-        host.session_slots
-            .update("plain-files", |slot| slot.environment = Some(environment));
+        host.install_test_resident_session_environment("plain-files", environment);
         let output = storage
             .path()
             .join("plain-files")
@@ -1539,10 +1536,7 @@ mod provisioning_registry_tests {
                 .await
                 .unwrap(),
         ));
-        host.session_slots
-            .update("session-harvest-failure", |slot| {
-                slot.environment = Some(environment)
-            });
+        host.install_test_resident_session_environment("session-harvest-failure", environment);
         let output = storage
             .path()
             .join("session-harvest-failure")

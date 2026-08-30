@@ -974,16 +974,18 @@ impl SessionRuntime for ManagedHost {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        // Every Environment-owner projection, including lease-only recovery,
+        // crosses the same lifecycle guard as physical publication/retirement.
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
             // any frozen coordinate is published. The same lifecycle mutex also
             // prevents a peer from observing installed facts before the Managed
             // execution marker and deferred executor are complete.
-            let lifecycle = self
-                .host
-                .session_slots
-                .update(thread, |slot| slot.lifecycle.clone());
-            let _lifecycle = lifecycle.lock().await;
             let preparation_needed = self.session_preparation_needed(thread)?;
             self.install_projection_facts(thread, &projection, &mode)
                 .await?;
@@ -994,6 +996,7 @@ impl SessionRuntime for ManagedHost {
             self.install_projection_facts(thread, &projection, &mode)
                 .await?;
         }
+        drop(_lifecycle);
         if mode.adopts_resident_environment()
             && let Some(binding) = projection.environment.binding()
         {
@@ -1370,6 +1373,19 @@ impl SessionRuntime for ManagedHost {
             .harvest_thread_skills(&command.thread_id)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
+        // A Restoring target is not a generic live Environment owner. Dispose
+        // its exact R1 physical target first; only success clears the request-
+        // bound Awaiting fence so ordinary terminal owner removal cannot double
+        // dispose it or report completion early.
+        if let Some(request) = command.restore_target.as_ref() {
+            if request.session_id != command.thread_id {
+                return Err(RunError::internal(
+                    "terminal restore target does not belong to its cleanup root",
+                ));
+            }
+            self.dispose_restoring_environment_continuation(request)
+                .await?;
+        }
         // Failure is terminal-release blocking: keep the Sandbox available for
         // the durable cleanup retry instead of disposing unharvested outputs.
         let artifacts = self
@@ -1380,13 +1396,9 @@ impl SessionRuntime for ManagedHost {
         // Memory is owned by its MemoryMount guard: FUSE writes through live and
         // copy realization performs one CAS harvest during teardown.
         self.host
-            .end_session(&command.thread_id)
+            .end_session(&command.thread_id, &command.effect_id)
             .await
             .map_err(to_run_error)?;
-        if let Some(request) = command.restore_target.as_ref() {
-            self.dispose_restoring_environment_continuation(request)
-                .await?;
-        }
         let completion =
             awaken_session_contract::SessionCleanupCompletion::new(&command, artifacts.receipts);
         completion
@@ -1714,22 +1726,19 @@ impl SessionRuntime for ManagedHost {
         // ready physical environment. Run-dispatch recovery has its own explicit
         // RebuildFromCommittedTruth policy; applying that fallback here would
         // turn corrupt or deleted Session authority into a replacement sandbox.
-        let (_, _, publication) = self
+        let provisioning = self
             .host
-            .resolve_session_publication(thread, Some(agent), None)
+            .frozen_session_environment_provisioning(thread)
             .map_err(to_run_error)?;
-        let provisioning = publication
-            .as_ref()
-            .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
-            .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let (adopted, rebuild) = self
             .host
-            .adopt_bound_session_environment(thread, Some(binding), provisioning, false)
+            .adopt_bound_session_environment(thread, Some(binding), &provisioning, false)
             .await
             .map_err(to_run_error)?;
         debug_assert!(!rebuild);
+        debug_assert!(adopted.is_none());
         self.host
-            .ctx_for_with_sandbox(thread, Some(agent), adopted)
+            .ctx_for_with_sandbox(thread, Some(agent), None)
             .await
             .map_err(to_run_error)?;
         Ok(())
@@ -1739,10 +1748,18 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
+        source_effect_id: &str,
+        source_binding: &str,
         generation: &awaken_session_contract::SandboxGeneration,
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
-        self.quiesce_environment_continuation(thread, operation, generation)
-            .await
+        self.quiesce_environment_continuation(
+            thread,
+            operation,
+            source_effect_id,
+            source_binding,
+            generation,
+        )
+        .await
     }
 
     async fn checkpoint_session_environment(
@@ -1758,11 +1775,18 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
+        source_effect_id: &str,
         generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
-        self.dispose_environment_continuation_source(thread, operation, generation, source_binding)
-            .await
+        self.dispose_environment_continuation_source(
+            thread,
+            operation,
+            source_effect_id,
+            generation,
+            source_binding,
+        )
+        .await
     }
 
     async fn restore_checkpointed_session_environment(
