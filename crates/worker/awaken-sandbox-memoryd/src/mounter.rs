@@ -301,6 +301,10 @@ impl MemoryMount for CopyMount {
         Realization::Copy
     }
 
+    fn materialization_heads(&self) -> Option<Vec<awaken_provisioning_contract::MemoryMaterializationHead>> {
+        Some(self.snapshot.materialization_heads())
+    }
+
     async fn teardown(self: Box<Self>) {
         if self.writable {
             let mut snapshot = self.snapshot;
