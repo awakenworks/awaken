@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { PRESETS } from "../src/components/agent/state-machine-presets";
+import { typedAgentTools } from "../test-support/agent-tools.mjs";
 import { MANAGED_HEADERS } from "./betas";
 
 // End-to-end proof that the visual editor's state-machine PRESET actually enforces at
@@ -45,11 +46,13 @@ test("read-before-write state machine blocks an unread write at runtime (real mo
       name: "SM RBW",
       model: { id: KIMI_MODEL },
       system: "You are a file assistant.",
-      tools: ["read", "write"],
+      // Tool-policy decision table: C1 read/write are members of the canonical
+      // Agent ToolSet, C2 both are always-allow, and C3 the state machine denies
+      // an unread write. Effects: E1 Managed authoring has one permission source,
+      // E2 the call reaches the machine, and E3 the unread write is blocked.
+      tools: typedAgentTools(["read", "write"]),
       plugins: ["state_machine"],
-      // Bypass the permission gate so the state machine is the gate under test.
       plugin_config: {
-        permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] },
         state_machine: { machines: [machine] },
       },
       context_policy: { kind: "keep_all" },

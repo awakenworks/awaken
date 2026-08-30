@@ -9,6 +9,8 @@ export function stageForPath(path: string): AuthorStage {
   }
   if (top === "plugin_config") {
     const section = path.split(".")[1] ?? "";
+    // Legacy permission validation paths migrate to the typed ToolSet editor in
+    // Build / Tools; this route does not restore the removed permission editor.
     return ["permission", "compact", "memory", "web_search"].includes(section)
       ? "build"
       : "advanced";

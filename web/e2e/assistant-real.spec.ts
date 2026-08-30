@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { MANAGED_HEADERS, MEMORY_HEADERS } from "./betas";
+import { typedAgentTools } from "../test-support/agent-tools.mjs";
 
 // Real-model e2e for the Admin Assistant's authoring. The assistant runs on a real model
 // (KIMI, submitted through the credential API — no server env), and authors a FULL agent
@@ -115,9 +116,9 @@ test("KIMI writes and recalls an Agent-bound memory store across fresh sessions"
       name: agent,
       model: { id: KIMI_MODEL },
       system: "Use the persistent memory file. WRITE facts the user asks you to remember; READ it when asked to recall. Always use the file tools.",
-      tools: ["bash", "read", "write", "glob", "grep"],
+      tools: typedAgentTools(["bash", "read", "write", "glob", "grep"]),
       plugins: [],
-      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      plugin_config: {},
       context_policy: { kind: "keep_all" },
       max_steps: 8,
     },

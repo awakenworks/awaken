@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { MANAGED_HEADERS, MEMORY_HEADERS } from "./betas";
+import { typedAgentTools } from "../test-support/agent-tools.mjs";
 
 // Real-LLM e2e via the CONFIG PLANE (no env model config). The backend runs in plain
 // management mode — NO AWAKEN_MODEL_SOURCE / GEMINI_API_KEY on the server. The model
@@ -107,8 +108,8 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
   const agent = `mem-agent-${Date.now()}`;
   await configureGemini(request);
 
-  // A memory store to bind. Author the agent with file tools + a bypass permission
-  // policy (a note-keeper should read/write its own memory autonomously), publish it.
+  // A memory store to bind. Author the Agent toolset with explicit autonomous
+  // file tools, then publish it.
   const store = await (await request.post("/v1/memory_stores", {
     headers: MEMORY_HEADERS,
     data: { name: `brain-${Date.now()}` },
@@ -120,9 +121,9 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
       model: { id: "gemini-2.5-flash" },
       system:
         "You are a note-keeping agent with a persistent memory file. To remember something, WRITE it to the memory file. To recall, READ the memory file. Always use your tools.",
-      tools: ["bash", "read", "write", "glob", "grep"],
+      tools: typedAgentTools(["bash", "read", "write", "glob", "grep"]),
       plugins: [],
-      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      plugin_config: {},
       context_policy: { kind: "keep_all" },
       max_steps: 8,
     },
@@ -184,9 +185,9 @@ test("Agent reads a bound read-only file (real model)", async ({ request }) => {
       name: agent,
       model: { id: "gemini-2.5-flash" },
       system: "You can read files with your tools. When asked about a file, READ it and answer from its contents.",
-      tools: ["bash", "read", "glob", "grep"],
+      tools: typedAgentTools(["bash", "read", "glob", "grep"]),
       plugins: [],
-      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      plugin_config: {},
       context_policy: { kind: "keep_all" },
       max_steps: 8,
     },

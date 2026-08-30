@@ -124,7 +124,9 @@ uncommitted tracked source is rejected before the browser opens.
 The following capabilities remain product proofs and do not generate marketing video:
 
 - `01-connect-model` verifies provider authentication, catalog import, and a real model response.
-- `03-tools-permissions` verifies that a destructive shell call is denied before execution.
+- `03-tools-permissions` verifies that a typed `always_ask` shell call pauses before execution,
+  one explicit human Deny produces the matching blocked result and terminal `end_turn`, and the
+  command's stdout marker never appears.
 - `04-resources-transparency` verifies cross-Session Memory write, extraction, recall, and trace; any runtime read failure blocks the proof.
 - `05-ai-authoring` verifies Assistant drafting and human publication authority.
 - `06-ai-state-machine` verifies read-before-write enforcement against a hostile instruction.
