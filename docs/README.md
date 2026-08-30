@@ -1,7 +1,7 @@
-# Awaken Runtime Design Corpus
+# Awaken Agents Execution Design Corpus
 
 This corpus configures the current repository as the design and guardrail home
-for `awaken-runtime`. It names the runtime-owned domain model, the ports around
+for the `awaken-runtime` execution core inside Awaken Agents. It names the runtime-owned domain model, the ports around
 that model, every runtime-related requirement inherited from the reference
 corpus, and the checks a change must satisfy before code is written.
 
