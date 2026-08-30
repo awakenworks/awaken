@@ -18,6 +18,38 @@ use thiserror::Error;
 use crate::agent_bindings::InferenceOptions;
 use crate::resolved::{ModelBinding, ToolDescriptor};
 
+/// Default deadline for a provider adapter to open and consume one complete
+/// model response. Reasoning-capable models may spend minutes before their first
+/// public token or typed tool call, so this is deliberately independent from a
+/// transport-idle detector.
+pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Runtime watchdog around the complete [`LlmExecutor`] attempt. It is a last
+/// resort for an executor that fails to enforce its own response deadline, and
+/// therefore must outlive [`DEFAULT_MODEL_RESPONSE_TIMEOUT`] so the provider's
+/// typed terminal outcome remains authoritative.
+pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(630);
+
+const _: () =
+    assert!(DEFAULT_MODEL_ATTEMPT_WATCHDOG.as_secs() > DEFAULT_MODEL_RESPONSE_TIMEOUT.as_secs());
+
+#[cfg(test)]
+mod inference_deadline_contract_tests {
+    use super::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT};
+
+    #[test]
+    fn provider_deadline_precedes_the_runtime_watchdog() {
+        // Deadline cause/effect table. Causes: C1 a provider terminates before
+        // its response deadline; C2 it reaches its own deadline; C3 an executor
+        // ignores every provider deadline and remains pending. Effects: E1 the
+        // provider result/error reaches Runtime unchanged; E2 only C3 is cut off
+        // by the outer watchdog. Rules D1=(C1|C2)=>E1 because response timeout <
+        // watchdog; D2=C3=>E2. Invariant: an outer watchdog must never preempt
+        // the canonical provider terminal boundary under default composition.
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
+    }
+}
+
 /// One model invocation request. Pure data so it can be logged, replayed, and
 /// snapshotted without holding a live provider handle (G3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

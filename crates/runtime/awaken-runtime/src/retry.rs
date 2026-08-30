@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use awaken_runtime_contract::llm::DEFAULT_MODEL_ATTEMPT_WATCHDOG;
 use awaken_runtime_contract::llm::Error;
 use awaken_runtime_contract::resilience::Classify;
 
@@ -39,7 +40,7 @@ impl Default for LlmRetryPolicy {
             max_retries: 2,
             backoff_base_ms: 500,
             overloaded_backoff_base_ms: 2_000,
-            attempt_timeout: Duration::from_secs(300),
+            attempt_timeout: DEFAULT_MODEL_ATTEMPT_WATCHDOG,
         }
     }
 }
@@ -113,6 +114,19 @@ mod tests {
             message: "overloaded".to_string(),
             retry_after,
         }
+    }
+
+    #[test]
+    fn default_attempt_watchdog_uses_the_shared_inference_contract() {
+        // Cause/effect rule D3: default Runtime composition + shared watchdog
+        // contract => the retry loop uses that exact outer bound. Effects: the
+        // provider response deadline wins first; custom test/host policies stay
+        // explicit. This connects the contract decision table to the one owner
+        // that executes the watchdog rather than duplicating a duration literal.
+        assert_eq!(
+            LlmRetryPolicy::default().attempt_timeout,
+            DEFAULT_MODEL_ATTEMPT_WATCHDOG
+        );
     }
 
     #[test]

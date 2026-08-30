@@ -12,8 +12,8 @@ use awaken_agent_contract::agent::content::{
 };
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
-    ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, DEFAULT_MODEL_RESPONSE_TIMEOUT, Error, LlmExecutor,
+    Result, StopReason, TokenUsage, ToolCall,
 };
 use genai::Client;
 use genai::chat::{
@@ -43,7 +43,6 @@ use transcript_projection::{
 // tool call. Keep that complete-response budget independent from the per-event
 // silence bound: using the same 120-second value for both made healthy streams
 // from reasoning models fail while they were still emitting progress.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long the stream may go silent between events before the response fails as
 /// a retryable timeout. `timeout` independently bounds the complete streaming
 /// inference, including opening and consuming the response; without both bounds,
@@ -57,7 +56,10 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[cfg(test)]
 mod default_timeout_tests {
-    use super::{DEFAULT_IDLE_TIMEOUT, DEFAULT_TIMEOUT};
+    use super::DEFAULT_IDLE_TIMEOUT;
+    use awaken_runtime_contract::llm::{
+        DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT,
+    };
 
     /// Cause/effect design: C1 the default complete-response and idle-silence
     /// budgets are selected together. Effect E1: the complete response retains
@@ -68,7 +70,8 @@ mod default_timeout_tests {
     /// five times the idle window; specialized overrides do not change defaults.
     #[test]
     fn complete_reasoning_response_has_a_larger_budget_than_transport_silence() {
-        assert!(DEFAULT_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 5);
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 5);
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
     }
 }
 
@@ -111,7 +114,7 @@ impl GenaiExecutor {
             client,
             adapter,
             unspecified_reasoning: Default::default(),
-            timeout: DEFAULT_TIMEOUT,
+            timeout: DEFAULT_MODEL_RESPONSE_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
