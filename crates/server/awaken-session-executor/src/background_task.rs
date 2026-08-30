@@ -30,8 +30,11 @@ const OBSERVER_ID: &str = "awaken.background-task.executor.v1";
 
 #[derive(Default)]
 struct BackgroundAdmission {
-    active: Mutex<BTreeMap<u64, ToolConcurrency>>,
-    next: Mutex<u64>,
+    /// Sequence allocation and active-claim admission share one critical
+    /// section. Checking compatibility and publishing the admitted claim must
+    /// be atomic; separate locks allow two incompatible arrivals to both
+    /// observe an empty active set before either inserts.
+    state: Mutex<(u64, BTreeMap<u64, ToolConcurrency>)>,
     changed: tokio::sync::Notify,
 }
 
@@ -39,27 +42,27 @@ impl BackgroundAdmission {
     async fn acquire(self: &Arc<Self>, claim: ToolConcurrency) -> AdmissionGuard {
         loop {
             let notified = self.changed.notified();
-            let compatible = self
-                .active
-                .lock()
-                .expect("background admission mutex poisoned")
-                .values()
-                .all(|active| active.compatible_with(&claim));
-            if compatible {
-                let mut next = self
-                    .next
+            {
+                let mut state = self
+                    .state
                     .lock()
-                    .expect("background sequence mutex poisoned");
-                *next = next.checked_add(1).expect("background admission exhausted");
-                let id = *next;
-                self.active
-                    .lock()
-                    .expect("background admission mutex poisoned")
-                    .insert(id, claim);
-                return AdmissionGuard {
-                    admission: self.clone(),
-                    id,
-                };
+                    .expect("background admission mutex poisoned");
+                if state
+                    .1
+                    .values()
+                    .all(|active| active.compatible_with(&claim))
+                {
+                    state.0 = state
+                        .0
+                        .checked_add(1)
+                        .expect("background admission exhausted");
+                    let id = state.0;
+                    state.1.insert(id, claim);
+                    return AdmissionGuard {
+                        admission: self.clone(),
+                        id,
+                    };
+                }
             }
             notified.await;
         }
@@ -74,9 +77,10 @@ struct AdmissionGuard {
 impl Drop for AdmissionGuard {
     fn drop(&mut self) {
         self.admission
-            .active
+            .state
             .lock()
             .expect("background admission mutex poisoned")
+            .1
             .remove(&self.id);
         self.admission.changed.notify_waiters();
     }
@@ -277,7 +281,86 @@ mod tests {
     };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ToolDescriptor};
     use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
-    use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolRecoveryPolicy};
+    use awaken_runtime_contract::tool::{
+        RawTool, ToolCall, ToolError, ToolOutputSpiller, ToolRecoveryPolicy, ToolResource,
+        ToolResourceAccess,
+    };
+
+    fn write_claim(resource: &str) -> ToolConcurrency {
+        ToolConcurrency::Resources(vec![ToolResourceAccess::Write(ToolResource::new(
+            "sandbox", resource,
+        ))])
+    }
+
+    #[tokio::test]
+    async fn admission_check_and_claim_publication_are_one_atomic_transition() {
+        // Cause/effect decision table:
+        // R1 no active claim + write(A) -> admit G1;
+        // R2 G1 active + write(A) -> conflicting G2 remains blocked;
+        // R3 G1 active + write(B) -> compatible G3 is admitted concurrently;
+        // R4 G1 released -> G2 is admitted exactly once.
+        // Constraint: compatibility check and active-map insertion are one
+        // linearization point; otherwise two R1 arrivals can both observe an
+        // empty set and violate R2.
+        let admission = Arc::new(BackgroundAdmission::default());
+        let first = admission.acquire(write_claim("a")).await;
+
+        let mut conflicting = {
+            let admission = admission.clone();
+            tokio::spawn(async move { admission.acquire(write_claim("a")).await })
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut conflicting)
+                .await
+                .is_err(),
+            "R2: a conflicting claim must not pass the active owner"
+        );
+
+        let compatible = admission.acquire(write_claim("b")).await;
+        drop(compatible);
+        assert!(!conflicting.is_finished(), "R3 preserves the R2 conflict");
+
+        drop(first);
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), conflicting)
+            .await
+            .expect("R4: release wakes the conflicting waiter")
+            .expect("R4: waiter task does not panic");
+        drop(second);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn simultaneous_conflicting_arrivals_never_overlap() {
+        // Race rule R5: N write(A) arrivals are released together while the
+        // active set is empty. Effect: every arrival eventually enters, but the
+        // observed maximum active critical sections is exactly one. This is the
+        // regression case for the former check-unlock-insert TOCTOU; the
+        // sequential-owner test above covers blocking and wake behavior.
+        let admission = Arc::new(BackgroundAdmission::default());
+        let barrier = Arc::new(tokio::sync::Barrier::new(17));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut arrivals = Vec::new();
+        for _ in 0..16 {
+            let admission = admission.clone();
+            let barrier = barrier.clone();
+            let active = active.clone();
+            let maximum = maximum.clone();
+            arrivals.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let guard = admission.acquire(write_claim("same")).await;
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(current, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                drop(guard);
+            }));
+        }
+        barrier.wait().await;
+        for arrival in arrivals {
+            arrival.await.expect("R5 arrival task");
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 1, "R5");
+    }
 
     struct CountingTool(AtomicUsize);
 
@@ -293,6 +376,25 @@ mod tests {
         ) -> Result<ToolOutput, awaken_runtime_contract::tool::ToolError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::ok(call.call_id, "done"))
+        }
+    }
+
+    struct SpillProbe(Arc<Mutex<Vec<(String, String, String)>>>);
+
+    #[async_trait]
+    impl ToolOutputSpiller for SpillProbe {
+        async fn spill(
+            &self,
+            run_id: &RunId,
+            call_id: &str,
+            content: String,
+        ) -> Result<String, ToolError> {
+            self.0.lock().expect("spill probe mutex poisoned").push((
+                run_id.0.clone(),
+                call_id.to_string(),
+                content,
+            ));
+            Ok(format!("artifact://{}/{call_id}", run_id.0))
         }
     }
 
@@ -375,7 +477,9 @@ mod tests {
         // deliveries race; C3 supervisor registration wins once -> E1 one tool
         // effect, E2 one process-local completion, E3 no observer-side commit;
         // C4 another plugin owns an AfterTool workflow hook -> E4 detached target
-        // execution never advances that foreground-only workflow event.
+        // execution never advances that foreground-only workflow event;
+        // C5 the canonical output spiller is bound -> E5 completion retains only
+        // its stable materialized result reference, not a parallel output store.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-test"));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
@@ -384,6 +488,7 @@ mod tests {
             supervisor.clone(),
         ));
         let counter = Arc::new(CountingTool(AtomicUsize::new(0)));
+        let spills = Arc::new(Mutex::new(Vec::new()));
         let after_tool_calls = Arc::new(AtomicUsize::new(0));
         let runtime = Arc::new(
             Runtime::new()
@@ -404,7 +509,7 @@ mod tests {
         let observer = BackgroundTaskTerminalObserver::new(
             runtime,
             snapshot,
-            RuntimeRunContext::new(),
+            RuntimeRunContext::new().with_tool_output_spiller(Arc::new(SpillProbe(spills.clone()))),
             commit.clone(),
             background.clone(),
             supervisor.clone(),
@@ -473,9 +578,24 @@ mod tests {
         let completion = supervisor.completion(&task.id).expect("C3/E2 completion");
         assert_eq!(completion.fence, fence);
         assert!(matches!(
-            completion.end,
-            BackgroundTaskEnd::Completed { .. }
+            &completion.end,
+            BackgroundTaskEnd::Completed { content, is_error: false }
+                if content == &vec![awaken_runtime_contract::ContentBlock::text(
+                    "artifact://background-task-test/call"
+                )]
         ));
+        assert_eq!(
+            spills
+                .lock()
+                .expect("spill probe mutex poisoned")
+                .as_slice(),
+            &[(
+                "background-task-test".to_string(),
+                "call".to_string(),
+                "done".to_string(),
+            )],
+            "C5/E5: detached execution reuses the canonical stable spill identity"
+        );
         assert!(
             supervisor.register(&task.id).is_none(),
             "completion remains a deduplication guard until durable Ended truth"
