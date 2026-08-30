@@ -6,6 +6,7 @@
 - Amended: 2026-08-29 — pre-realization cancellation does not fabricate a Runtime interval
 - Amended: 2026-08-29 — unattempted Dispatch projection amendment is Coordinator-owned
 - Amended: 2026-08-29 — profiled products submit typed Runs through canonical Session admission
+- Amended: 2026-08-31 — registered Workers record terminal publication rejection
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -719,3 +720,21 @@ the application; hosted composition projects the same fields into this wire
 and lets the leaf restore only the path-owned and fixed fields. That shared
 projector, not an Event batch builder, owns stable product Message identities
 and per-attempt tool/capability restrictions.
+
+## Amendment (2026-08-31): registered Workers record the same publication outcome
+
+ADR-0063 now distinguishes the sole Repository realizer's canonical receipt
+from a typed permanent expected-prior CAS rejection. This does not add Worker
+work or retry state. The existing terminal publication command remains the only
+projection under `SessionRealizationLease`; `SessionRealizationControl` accepts
+the corresponding receipt or rejection as mutually exclusive variants of that
+one command outcome.
+
+For either embedded or registered-Worker placement, the Session root CAS makes
+the outcome durable before the existing ordinary root cleanup command becomes
+visible. A lost HTTP response replays the same command-bound outcome. An
+unavailable realizer or control call records nothing and retains the command;
+an exact durable rejection suppresses further Git calls while still allowing
+root cleanup to remove the fresh Session working tree. The Worker HTTP adapter
+adds only the rejection variant of the existing command/receipt control wire;
+it owns no queue, Session phase, Git transport, or sidecar.

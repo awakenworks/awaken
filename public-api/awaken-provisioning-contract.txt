@@ -140,6 +140,15 @@ pub enum awaken_provisioning_contract::Realization
 pub awaken_provisioning_contract::Realization::Bind
 pub awaken_provisioning_contract::Realization::Copy
 pub awaken_provisioning_contract::Realization::Fuse
+pub enum awaken_provisioning_contract::RepositoryPublicationError
+pub awaken_provisioning_contract::RepositoryPublicationError::Rejected(awaken_provisioning_contract::RepositoryPublicationRejection)
+pub awaken_provisioning_contract::RepositoryPublicationError::Unavailable(awaken_provisioning_contract::SandboxError)
+pub enum awaken_provisioning_contract::RepositoryPublicationRejection
+pub awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent
+pub awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefChanged
+pub awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefChanged::observed_commit: alloc::string::String
+impl awaken_provisioning_contract::RepositoryPublicationRejection
+pub fn awaken_provisioning_contract::RepositoryPublicationRejection::verify(&self, &awaken_provisioning_contract::RepositoryPublicationExpectation) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
 pub enum awaken_provisioning_contract::RootfsSource
 pub awaken_provisioning_contract::RootfsSource::Dir
 pub awaken_provisioning_contract::RootfsSource::Dir::path_template: alloc::string::String
@@ -331,6 +340,7 @@ pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::new(impl cor
 pub struct awaken_provisioning_contract::RepositoryPublicationExpectation
 pub awaken_provisioning_contract::RepositoryPublicationExpectation::branch: alloc::string::String
 pub awaken_provisioning_contract::RepositoryPublicationExpectation::commit: alloc::string::String
+pub awaken_provisioning_contract::RepositoryPublicationExpectation::expected_prior_commit: core::option::Option<alloc::string::String>
 impl awaken_provisioning_contract::RepositoryPublicationExpectation
 pub fn awaken_provisioning_contract::RepositoryPublicationExpectation::validate(&self) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
 pub struct awaken_provisioning_contract::RepositoryPublicationReceipt
@@ -553,7 +563,7 @@ pub fn awaken_provisioning_contract::ProcessHandle::poll<'life0, 'async_trait>(&
 pub fn awaken_provisioning_contract::ProcessHandle::signal<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::ProcessHandle::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::ExitStatus, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_provisioning_contract::RepositoryRealizer: core::marker::Send + core::marker::Sync
-pub fn awaken_provisioning_contract::RepositoryRealizer::publish_repository<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::RepositoryRealizationPlan, &'life2 awaken_provisioning_contract::RepositoryPublicationExpectation, core::option::Option<&'life3 awaken_provisioning_contract::RepositoryHttpBasicCredential>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::RepositoryPublicationReceipt, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_provisioning_contract::RepositoryRealizer::publish_repository<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::RepositoryRealizationPlan, &'life2 awaken_provisioning_contract::RepositoryPublicationExpectation, core::option::Option<&'life3 awaken_provisioning_contract::RepositoryHttpBasicCredential>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::RepositoryPublicationReceipt, awaken_provisioning_contract::RepositoryPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_provisioning_contract::RepositoryRealizer::realize_repository<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::RepositoryRealizationPlan, core::option::Option<&'life2 awaken_provisioning_contract::RepositoryHttpBasicCredential>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_provisioning_contract::Sandbox: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::Sandbox::artifacts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::Artifact>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

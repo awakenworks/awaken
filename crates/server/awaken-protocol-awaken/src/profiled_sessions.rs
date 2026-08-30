@@ -331,8 +331,9 @@ mod tests {
 
     #[test]
     fn profiled_release_wire_follows_the_publication_decision_table() {
-        // Causes: C1 publication is absent/present; C2 binding, branch, and
-        // commit are complete; C3 the wire adds an unknown field. Effects: E1
+        // Causes: C1 publication is absent/present; C2 binding, branch, desired
+        // commit, and optional expected-prior commit are complete; C3 the wire
+        // adds an unknown field. Effects: E1
         // no-publication release retains the exact empty object; E2 a present
         // publication round-trips one typed selector/expectation; E3 missing or
         // unknown authority is rejected before the handler. Rules: W1 !C1=>E1;
@@ -350,6 +351,7 @@ mod tests {
                 expectation: RepositoryPublicationExpectation {
                     branch: "awf/work-unit-a".into(),
                     commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                    expected_prior_commit: None,
                 },
             }),
         };
@@ -358,6 +360,19 @@ mod tests {
             serde_json::from_value::<ProfiledSessionRelease>(encoded.clone()).unwrap(),
             request,
             "W2"
+        );
+        let mut update = request.clone();
+        update
+            .repository_publication
+            .as_mut()
+            .unwrap()
+            .expectation
+            .expected_prior_commit = Some("1111111111111111111111111111111111111111".into());
+        let update_wire = serde_json::to_value(&update).unwrap();
+        assert_eq!(
+            update_wire["repository_publication"]["expectation"]["expected_prior_commit"],
+            serde_json::json!("1111111111111111111111111111111111111111"),
+            "W2 explicit CAS prior"
         );
 
         let mut missing = encoded.clone();

@@ -520,6 +520,8 @@ struct RecordingCleanupRuntime {
     quiesce_release: tokio::sync::Notify,
     delegated_snapshot: Mutex<awaken_session_contract::DelegatedRunSnapshot>,
     publication_intents: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
+    reject_publication: AtomicBool,
+    fail_publication_once: AtomicBool,
     terminal_effect_order: Mutex<Vec<String>>,
 }
 
@@ -1296,7 +1298,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
     async fn execute_terminal_repository_publication(
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         self.publication_intents
             .lock()
             .unwrap()
@@ -1305,6 +1307,22 @@ impl SessionRuntime for RecordingCleanupRuntime {
             .lock()
             .unwrap()
             .push("publication".into());
+        if self.fail_publication_once.swap(false, Ordering::SeqCst) {
+            return Err(RunError::unavailable_classified(
+                "repository_publication_transport_unavailable",
+                "injected publication transport loss",
+            ));
+        }
+        if self.reject_publication.load(Ordering::SeqCst) {
+            let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
+                &command,
+                awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+            )
+            .map_err(|error| RunError::internal(error.to_string()))?;
+            return Ok(
+                awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(rejection),
+            );
+        }
         let awaken_session_contract::ResolvedInputSource::Repository {
             repository_id,
             config,
@@ -1316,14 +1334,16 @@ impl SessionRuntime for RecordingCleanupRuntime {
             ));
         };
         Ok(
-            awaken_session_contract::SessionRepositoryPublicationReceipt::new(
-                &command,
-                awaken_provisioning_contract::RepositoryPublicationReceipt {
-                    repository_id: repository_id.to_string(),
-                    source_remote_url: config.remote_url.clone(),
-                    branch: command.intent.expectation.branch.clone(),
-                    commit: command.intent.expectation.commit.clone(),
-                },
+            awaken_session_contract::SessionRepositoryPublicationEffect::Published(
+                awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+                    &command,
+                    awaken_provisioning_contract::RepositoryPublicationReceipt {
+                        repository_id: repository_id.to_string(),
+                        source_remote_url: config.remote_url.clone(),
+                        branch: command.intent.expectation.branch.clone(),
+                        commit: command.intent.expectation.commit.clone(),
+                    },
+                ),
             ),
         )
     }
@@ -1374,6 +1394,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
 struct FaultingSessionRepository {
     inner: Arc<dyn ManagedSessionRepository>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
+    get_override_once: Mutex<Option<PersistedSession>>,
     fail_operation_once: Mutex<Option<String>>,
     conflict_operation_once: Mutex<Option<String>>,
     running_conflict_operation_once: Mutex<Option<String>>,
@@ -1407,6 +1428,7 @@ impl FaultingSessionRepository {
         Self {
             inner,
             applied_create_roots: Mutex::new(Vec::new()),
+            get_override_once: Mutex::new(None),
             fail_operation_once: Mutex::new(None),
             conflict_operation_once: Mutex::new(None),
             running_conflict_operation_once: Mutex::new(None),
@@ -1425,6 +1447,10 @@ impl FaultingSessionRepository {
 
     fn applied_create_roots(&self) -> Vec<PersistedSession> {
         self.applied_create_roots.lock().unwrap().clone()
+    }
+
+    fn return_get_once(&self, session: PersistedSession) {
+        *self.get_override_once.lock().unwrap() = Some(session);
     }
 
     fn commit_then_conflict_once(&self, operation: &str) {
@@ -1676,6 +1702,9 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+        if let Some(session) = self.get_override_once.lock().unwrap().take() {
+            return Ok(session);
+        }
         if self.get_not_found_once.swap(false, Ordering::SeqCst) {
             return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
@@ -2078,6 +2107,7 @@ fn repository_publication_intent(
         expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/issue-coding".into(),
             commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            expected_prior_commit: None,
         },
     }
 }

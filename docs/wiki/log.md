@@ -724,3 +724,14 @@
   kept portable checkpoint bytes in the existing deployment composition.
 - Made Phase A the rollback floor before the gated Phase-B writer can activate,
   with zero durable `Restoring` operations as the deployment barrier.
+
+## 2026-08-31 — Fence Repository updates and retain permanent rejection
+
+- Extended the sole terminal Repository publication command with an optional
+  expected-prior commit used only as an exact remote-ref lease.
+- Kept transport loss retryable through post-attempt reobservation, while a
+  proven absent update lease or third commit becomes one typed permanent
+  rejection beside the existing receipt.
+- Reused the Session cleanup sidecar, root CAS, registered-Worker realization
+  control, and ordinary root cleanup; added no Git writer, queue, store, or phase
+  machine.

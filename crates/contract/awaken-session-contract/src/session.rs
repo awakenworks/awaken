@@ -1087,14 +1087,15 @@ pub trait SessionRuntime: Send + Sync {
     }
 
     /// Execute the exact root Repository publication command and return its
-    /// secret-free effect receipt. The caller verifies and durably records the
-    /// receipt before ordinary root cleanup may dispose the shared environment.
+    /// secret-free receipt or permanent rejection. The caller verifies and
+    /// durably records that outcome before ordinary root cleanup may dispose the
+    /// shared environment.
     /// Hosts must opt in explicitly; a compatibility no-op cannot acknowledge a
     /// requested publication.
     async fn execute_terminal_repository_publication(
         &self,
         _command: crate::SessionRepositoryPublicationCommand,
-    ) -> Result<crate::SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<crate::SessionRepositoryPublicationEffect, RunError> {
         Err(RunError::unavailable_classified(
             "session_repository_publication_runtime_unsupported",
             "runtime does not implement terminal Repository publication",
@@ -1291,6 +1292,14 @@ impl RunError {
             message: message.into(),
             kind: RunErrorKind::BadRequest,
             code: "invalid_request".into(),
+        }
+    }
+
+    pub fn bad_request_classified(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::BadRequest,
+            code: code.into(),
         }
     }
 

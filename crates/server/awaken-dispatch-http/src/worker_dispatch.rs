@@ -41,6 +41,7 @@ use awaken_worker_transport_security::{
 
 mod run_dispatch_endpoints;
 mod session_coordination;
+mod terminal_repository_publication;
 
 use run_dispatch_endpoints::{
     begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, deliver_and_claim,
@@ -49,6 +50,10 @@ use run_dispatch_endpoints::{
 use session_coordination::{
     session_agent_send, session_agent_settle, session_agents_list, session_model_request_admit,
     session_run_activity_admit,
+};
+use terminal_repository_publication::{
+    session_repository_publication_complete, session_repository_publication_poll,
+    session_repository_publication_reject,
 };
 
 /// Read-only, authenticated projection of current Environment warm demand.
@@ -460,6 +465,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             "/v1/worker/session/cleanup/repository-publication/complete",
             post(session_repository_publication_complete),
         )
+        .route(
+            "/v1/worker/session/cleanup/repository-publication/reject",
+            post(session_repository_publication_reject),
+        )
         .route("/v1/worker/session/agents/list", post(session_agents_list))
         .route(
             "/v1/worker/session/model-request/admit",
@@ -592,14 +601,6 @@ struct SessionCleanupCompleteReq {
     completion: awaken_session_contract::SessionCleanupCompletion,
 }
 
-#[derive(Deserialize)]
-struct SessionRepositoryPublicationCompleteReq {
-    identity: WorkerIdentity,
-    session_id: String,
-    lease: awaken_session_contract::SessionRealizationLease,
-    receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
-}
-
 async fn session_cleanup_claim_next(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -700,48 +701,6 @@ async fn session_cleanup_complete(
         session_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_cleanup_completion(&request.lease, request.completion)
-            .await
-            .map_err(RealizationHttpError::from)?;
-        Ok(json!({ "recorded": true }))
-    }
-    .await;
-    respond_realization(result)
-}
-
-async fn session_repository_publication_poll(
-    State(service): State<Arc<WorkerDispatchService>>,
-    Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<SessionCleanupPollReq>,
-) -> (StatusCode, Json<Value>) {
-    let result: Result<Value, RealizationHttpError> = async {
-        verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
-            .await?;
-        let projection = session_control(&service)
-            .map_err(RealizationHttpError::from)?
-            .terminal_repository_publication_command(&request.session_id, &request.lease)
-            .await
-            .map_err(RealizationHttpError::from)?;
-        Ok(json!({ "projection": projection }))
-    }
-    .await;
-    respond_realization(result)
-}
-
-async fn session_repository_publication_complete(
-    State(service): State<Arc<WorkerDispatchService>>,
-    Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<SessionRepositoryPublicationCompleteReq>,
-) -> (StatusCode, Json<Value>) {
-    let result: Result<Value, RealizationHttpError> = async {
-        verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
-            .await?;
-        session_control(&service)
-            .map_err(RealizationHttpError::from)?
-            .record_terminal_repository_publication_receipt(
-                &request.session_id,
-                &request.lease,
-                request.receipt,
-            )
             .await
             .map_err(RealizationHttpError::from)?;
         Ok(json!({ "recorded": true }))

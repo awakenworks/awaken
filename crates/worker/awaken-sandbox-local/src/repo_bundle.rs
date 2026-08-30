@@ -40,28 +40,36 @@ pub fn push_repo_bundle(
     plan: &pc::RepositoryRealizationPlan,
     expectation: &pc::RepositoryPublicationExpectation,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
-) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
-    expectation.validate()?;
+) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
+    expectation
+        .validate()
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if branch != expectation.branch {
-        return Err(pc::SandboxError::new(format!(
-            "repository export branch `{branch}` does not match expected branch `{}`",
-            expectation.branch
-        )));
+        return Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new(format!(
+                "repository export branch `{branch}` does not match expected branch `{}`",
+                expectation.branch
+            )),
+        ));
     }
-    let temp = tempfile::tempdir().map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    let temp = tempfile::tempdir().map_err(|error| {
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+    })?;
     let bundle_path = temp.path().join("repo.bundle");
-    let mut file = std::fs::File::create(&bundle_path)
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-    file.write_all(bundle)
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    let mut file = std::fs::File::create(&bundle_path).map_err(|error| {
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+    })?;
+    file.write_all(bundle).map_err(|error| {
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+    })?;
     let repo = temp.path().join("repo");
     let bundle_arg = bundle_path.to_string_lossy().into_owned();
     let repo_arg = repo.to_string_lossy().into_owned();
-    run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg])
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg]).map_err(|error| {
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+    })?;
     let root = IsolatedRoot::new(temp.path());
     push_repo_to_at(&root, "repo", plan, expectation, credential)
-        .map_err(|error| pc::SandboxError::new(error.to_string()))
 }
 
 #[cfg(test)]
@@ -136,6 +144,7 @@ mod tests {
         let expectation = pc::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: work.trim().into(),
+            expected_prior_commit: None,
         };
 
         assert!(push_repo_bundle(&changed, "absent", &plan, &expectation, None).is_err());

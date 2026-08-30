@@ -321,9 +321,22 @@ impl SessionApplication {
                 }
             })?;
         transition.session = durable.clone();
+        if let Some(rejection) = durable
+            .terminal_cleanup
+            .repository_publication_rejection(&command.session_id)
+            .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
+        {
+            return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
+                RunError::bad_request_classified(
+                    "repository_publication_rejected",
+                    rejection.effect_rejection.to_string(),
+                ),
+            ));
+        }
         let publication_receipt = durable
             .terminal_cleanup
-            .repository_publication_receipt()
+            .repository_publication_receipt(&command.session_id)
+            .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
             .cloned()
             .ok_or_else(|| {
                 SessionArchiveWithRepositoryPublicationError::Pending(

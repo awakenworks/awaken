@@ -293,8 +293,8 @@ process-local handle.
 | `HttpMemorySnapshotSource` / `HttpMemoryWritebackClient` | Implemented network adapters | Worker/Memory boundary | obtain one atomic snapshot and apply claim-fenced CAS create/update/delete-if-match under the frozen Workspace/store/config/access binding | config selection, silent overwrite, authoring/history/purge, Worker database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
-| `SessionRepositoryPublicationIntent` / command / receipt | Implemented typed terminal-effect protocol | Session aggregate | freeze one exact active writable `ResolvedInput` plus caller-approved branch/full commit; derive one root-only command and retain its canonical receipt in the existing cleanup root CAS | another cleanup queue/store, Resource re-resolution, credential/capability material, protocol-owned effect state |
-| `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct the working tree, and publish the exact caller-frozen branch/commit with operation-scoped transport credentials | remote repository ownership, authorization policy, commit selection, or a second publication path |
+| `SessionRepositoryPublicationIntent` / command / effect | Implemented typed terminal-effect protocol | Session aggregate | freeze one exact active writable `ResolvedInput` plus caller-approved branch/full commit and optional prior commit; derive one root-only command and retain exactly one canonical receipt or permanent CAS rejection in the existing cleanup root CAS | another cleanup queue/store, Resource re-resolution, credential/capability material, protocol-owned effect state |
+| `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct the working tree, and publish the exact caller-frozen branch/commit under an absent or expected-prior lease; reobserve after every push attempt and classify only proven stale state as permanent rejection | remote repository ownership, authorization policy, commit selection, or a second publication path |
 | `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding under either the current Run claim or the aggregate-derived terminal publication command plus realization lease, then select direct or deployment-mediated Git transport | configuration selection, upstream credential material, a fabricated Run claim, generic Resource dispatch |
 | `CatalogRepositoryBindingVerifier` | Implemented local adapter | Resource Catalog | delegate the exact live check to the existing `ResourceBindingValidator` | claim or HTTP policy, a second catalog |
 | `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker; for ordinary use prove the frozen dispatch binding under its claim, and for terminal publication re-derive the aggregate command under its realization lease before and after authorization; optionally return a short Gateway capability | upstream Git bytes, upstream plaintext credential, Worker database access, a parallel terminal authority |
@@ -460,7 +460,7 @@ Agent default binding  +  Session temporary attachment
        optional exact Repo publication
                        |
                        v
-       publication receipt root CAS
+      publication outcome root CAS
                        |
                        v
         root release / physical cleanup
@@ -716,23 +716,45 @@ Terminal reconciliation retains one causal order:
 durable terminal fence and target freeze
   -> settle every delegated child cleanup
   -> derive one root-only Repository publication command
-  -> verify/push the exact local symbolic branch and HEAD commit
-  -> persist the canonical publication receipt through the Session root CAS
+  -> verify the exact local symbolic branch and HEAD commit
+  -> observe the exact remote ref and create-or-update under its frozen lease
+  -> reobserve after every push attempt
+  -> persist the canonical publication receipt or permanent CAS rejection
+     through the Session root CAS
   -> expose and settle root cleanup
   -> remove the working tree, credential helper, headers, and lease
 ```
 
 The same `RepositoryRealizer` used for clone performs publication. It accepts
 only an in-sandbox Git directory with no object alternates, the exact symbolic
-branch, and the exact full HEAD commit. If the remote ref is absent, creation is
-protected by an absent-ref lease; if it already equals that commit, retry returns
-the same receipt; if it names another commit, publication fails without
-overwriting it. The receipt deliberately has no changed/replayed bit, so first
-success and exact response-loss replay are identical secret-free evidence. The
-source remote URL remains the receipt identity even when a separate Gateway URL
-is the authorized transport. Credential bytes and Gateway capabilities are
-opened only for the effect and are never persisted in the intent, realization
-plan, receipt, or Session root.
+branch, and the canonical lowercase 40-hex HEAD commit. Desired, prior, and
+observed object ids share that one wire; non-canonical text is rejected rather
+than normalized. With no expected prior commit, an absent
+remote ref may be created only under an absent-ref lease. With one frozen
+expected prior commit, an update is admitted only when the first observation
+equals that commit and uses it as the exact force-with-lease precondition. A
+remote already at the desired commit returns the same receipt. After every push
+attempt the adapter reobserves the ref: desired absorbs response loss, an
+unchanged precondition remains retryable, and an absent update lease or third
+commit is a typed permanent rejection. The receipt deliberately has no
+changed/replayed bit, so first success and exact response-loss replay are
+identical secret-free evidence.
+
+The Session root persists exactly one command-bound publication receipt or
+permanent rejection in the existing cleanup sidecar before it exposes ordinary
+root cleanup. Both the local coordinator and a registered Worker use the same
+realization-control/root-CAS path, and exact replay of a durable rejection makes
+no second Git call. Transport, authentication, observation, and I/O failures
+remain retryable and retain the same publication command. The source remote URL
+remains the receipt identity even when a separate Gateway URL is the authorized
+transport. Credential bytes and Gateway capabilities are opened only for the
+effect and are never persisted in the intent, realization plan, receipt,
+rejection, or Session root.
+
+The expected-prior and rejection fields are emitted only after Session,
+Runtime, Worker, and ingress/control readers share the new contract floor.
+Deny-unknown historical readers are not mixed with a writer that can persist or
+forward either field.
 
 With no explicit publication intent, terminal cleanup retains the pre-existing
 v1 JSON shape, effect ids, command/completion fingerprints, and terminal receipt
@@ -1024,7 +1046,10 @@ preserves every non-File input and exact Skill pin before it commits.
   materialization path is removed;
 - Repository publication is an explicit terminal Session release effect in the
   one `SessionCleanupOperation`; absent intent preserves the no-publication v1
-  path. Authored-Skill persistence retains its existing release owner, while
+  path. Its optional expected-prior commit is an exact remote-ref CAS lease, and
+  the same sidecar durably retains either the canonical receipt or a typed
+  permanent rejection before root cleanup. Authored-Skill persistence retains
+  its existing release owner, while
   `GET /v1/files` remains a read-only artifact projection and never triggers
   either write.
 - the misleading `MemoryFs` family and `memfs` module are removed rather than

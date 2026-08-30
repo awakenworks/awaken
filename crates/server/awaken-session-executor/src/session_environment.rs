@@ -1703,6 +1703,7 @@ mod tests {
         let expectation = pc::RepositoryPublicationExpectation {
             branch: "main".into(),
             commit: "0000000000000000000000000000000000000000".into(),
+            expected_prior_commit: None,
         };
         let export_error = container_repositories::push(&container, &plan, &expectation, None)
             .await
@@ -1911,6 +1912,7 @@ mod tests {
         let expectation = pc::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: String::from_utf8(commit).unwrap().trim().into(),
+            expected_prior_commit: None,
         };
         environment
             .remove_projection_path(".mnt/commit.txt")
