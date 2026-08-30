@@ -811,7 +811,9 @@ impl awaken_provisioning_contract::MemoryMount for TestMemoryMount {
         awaken_provisioning_contract::Realization::Copy
     }
 
-    async fn teardown(self: Box<Self>) {}
+    async fn teardown(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

@@ -658,6 +658,8 @@ mod tests {
 
 
 
+
+
 /// Capture only the durable heads, without writing a projection. Recovery uses
 /// this after reading the surviving sandbox copy so the subsequent harvest keeps
 /// the same compare-and-swap and concurrent-writer behavior as a live guard.

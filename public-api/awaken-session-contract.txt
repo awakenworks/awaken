@@ -484,21 +484,22 @@ pub awaken_session_contract::SessionEnvironmentState::Unmaterialized
 impl awaken_session_contract::SessionEnvironmentState
 pub fn awaken_session_contract::SessionEnvironmentState::apply_binding_receipt(&mut self, &awaken_session_contract::SessionEnvironmentReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
 pub fn awaken_session_contract::SessionEnvironmentState::assign_generation(&mut self, awaken_session_contract::SandboxGeneration) -> bool
-pub fn awaken_session_contract::SessionEnvironmentState::begin_restore(&mut self, &str, &str, u64, core::option::Option<awaken_session_contract::SessionRealizationLease>, u64) -> core::result::Result<&awaken_session_contract::SessionEnvironmentOperation, awaken_session_contract::SessionEnvironmentTransitionError>
-pub fn awaken_session_contract::SessionEnvironmentState::begin_suspend(&mut self, &str, &str, u64, core::option::Option<awaken_session_contract::SessionRealizationLease>) -> core::result::Result<&awaken_session_contract::SessionEnvironmentOperation, awaken_session_contract::SessionEnvironmentTransitionError>
 pub fn awaken_session_contract::SessionEnvironmentState::binding(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::SessionEnvironmentState::checkpoint(&self) -> core::option::Option<&awaken_provisioning_contract::sandbox::runtime::SandboxCheckpointRef>
-pub fn awaken_session_contract::SessionEnvironmentState::complete_restore(&mut self, &awaken_session_contract::RestoreReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
-pub fn awaken_session_contract::SessionEnvironmentState::complete_suspend(&mut self, &awaken_session_contract::SourceDisposedReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
 pub fn awaken_session_contract::SessionEnvironmentState::effect_id(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::SessionEnvironmentState::generation(&self) -> core::option::Option<&awaken_session_contract::SandboxGeneration>
 pub fn awaken_session_contract::SessionEnvironmentState::idle_since_unix_ms(&self) -> core::option::Option<u64>
 pub fn awaken_session_contract::SessionEnvironmentState::mark_active(&mut self)
 pub fn awaken_session_contract::SessionEnvironmentState::mark_idle(&mut self, u64)
-pub fn awaken_session_contract::SessionEnvironmentState::record_checkpoint(&mut self, &awaken_session_contract::CheckpointReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
-pub fn awaken_session_contract::SessionEnvironmentState::record_quiescence(&mut self, &awaken_session_contract::QuiescenceReceipt, &[awaken_session_contract::McpGenerationRef]) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
 pub fn awaken_session_contract::SessionEnvironmentState::restoring_request(&self, &str, &str) -> core::option::Option<awaken_provisioning_contract::sandbox::restore_contract::SandboxRestoreRequest>
 pub fn awaken_session_contract::SessionEnvironmentState::set_resident(&mut self, impl core::convert::Into<alloc::string::String>)
+impl awaken_session_contract::SessionEnvironmentState
+pub fn awaken_session_contract::SessionEnvironmentState::begin_restore(&mut self, &str, &str, u64, core::option::Option<awaken_session_contract::SessionRealizationLease>, u64) -> core::result::Result<&awaken_session_contract::SessionEnvironmentOperation, awaken_session_contract::SessionEnvironmentTransitionError>
+pub fn awaken_session_contract::SessionEnvironmentState::begin_suspend(&mut self, &str, &str, u64, core::option::Option<awaken_session_contract::SessionRealizationLease>) -> core::result::Result<&awaken_session_contract::SessionEnvironmentOperation, awaken_session_contract::SessionEnvironmentTransitionError>
+pub fn awaken_session_contract::SessionEnvironmentState::complete_restore(&mut self, &awaken_session_contract::RestoreReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
+pub fn awaken_session_contract::SessionEnvironmentState::complete_suspend(&mut self, &awaken_session_contract::SourceDisposedReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
+pub fn awaken_session_contract::SessionEnvironmentState::record_checkpoint(&mut self, &awaken_session_contract::CheckpointReceipt) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
+pub fn awaken_session_contract::SessionEnvironmentState::record_quiescence(&mut self, &awaken_session_contract::QuiescenceReceipt, &[awaken_session_contract::McpGenerationRef]) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentTransitionError>
 pub enum awaken_session_contract::SessionEnvironmentTransitionError
 pub awaken_session_contract::SessionEnvironmentTransitionError::AdoptSourceMismatch
 pub awaken_session_contract::SessionEnvironmentTransitionError::BindingAfterTerminal

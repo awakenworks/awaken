@@ -73,7 +73,7 @@ impl NamespaceProvider {
             layout: std::sync::RwLock::new(layout),
             realized: Vec::new(),
             secret_paths: Vec::new(),
-            memory_mounts: std::sync::Mutex::new(Vec::new()),
+            memory_mounts: tokio::sync::Mutex::new(Vec::new()),
             memory_mounter: self.memory_mounter.clone(),
             adopted_handle: Some(handle.clone()),
         })

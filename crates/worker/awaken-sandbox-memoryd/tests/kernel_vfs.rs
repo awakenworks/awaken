@@ -60,7 +60,7 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     rt.block_on(backend.create(store, "/notes/a.md", "note-a"))
         .unwrap();
 
-    let handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
+    let mut handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
         .expect("FUSE mount must succeed on a FUSE-capable host");
     // Give the mount a beat to settle before issuing syscalls.
     std::thread::sleep(Duration::from_millis(100));
@@ -112,7 +112,7 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
     // A fresh handle over the same durable store re-exposes the writes — they were
     // in the store of record, not a first-mount cache artifact.
     let backend2 = Arc::new(SqliteMemoryRepository::open(store_db.to_str().unwrap()).unwrap());
-    let handle2 = spawn_mount(backend2, store.into(), mnt.clone()).expect("remount");
+    let mut handle2 = spawn_mount(backend2, store.into(), mnt.clone()).expect("remount");
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(
         std::fs::read_to_string(mnt.join("renamed.md")).unwrap(),
@@ -178,13 +178,15 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
         "peer cache must invalidate"
     );
 
-    rt.block_on(mount_a.teardown());
+    rt.block_on(mount_a.teardown())
+        .expect("first peer teardown should succeed");
     assert_eq!(
         std::fs::read_to_string(mnt_b.join("x.md")).unwrap(),
         "two",
         "tearing down one sandbox must not tear down its peer"
     );
-    rt.block_on(mount_b.teardown());
+    rt.block_on(mount_b.teardown())
+        .expect("second peer teardown should succeed");
 
     std::fs::remove_dir_all(&store_root).ok();
     std::fs::remove_dir_all(&mnt_a).ok();
@@ -209,7 +211,7 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     rt.block_on(backend.create(store, "/f.md", "0123456789"))
         .unwrap();
 
-    let handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
+    let mut handle = spawn_mount(backend.clone(), store.into(), mnt.clone())
         .expect("mount")
         .with_drain_timeout(Duration::from_secs(2));
     assert_eq!(handle.open_fd_count(), 0, "no fds open before any syscall");
