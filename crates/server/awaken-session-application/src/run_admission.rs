@@ -19,7 +19,7 @@ use crate::{
     ConfiguredSessionRepository, CreateSessionCommand, McpAttachmentCandidate,
     McpAttachmentCandidateTarget, SessionApplication, SessionCreationError, SessionMutationError,
     SessionPreparationError, SessionRealizationError, SessionRepositoryOwner,
-    SessionRepositoryResourceInput,
+    SessionRepositoryResourceInput, session_repository_error,
 };
 
 /// Protocol-independent request to create a Session from one published Agent
@@ -77,14 +77,6 @@ pub enum SessionProjectionRecoveryError {
     Rejected(#[from] RunError),
     #[error("Session recovery is unavailable: {0}")]
     Unavailable(String),
-}
-
-fn repository_error(error: SessionRepositoryError) -> RunError {
-    match error {
-        SessionRepositoryError::NotFound => RunError::bad_request("Session was not found"),
-        SessionRepositoryError::Unavailable(message) => RunError::unavailable(message),
-        error => RunError::internal(error.to_string()),
-    }
 }
 
 fn mutation_error(error: SessionMutationError) -> RunError {
@@ -148,6 +140,45 @@ fn profiled_repository_attachment(
         },
         replaces: None,
     }
+}
+
+fn preflight_profiled_resources(
+    owner_scope: &str,
+    session_id: &str,
+    mutation_policy: awaken_session_contract::SessionMutationPolicy,
+    resource_inputs: &[awaken_session_contract::SessionInputAttachment],
+    repositories: &[ProfiledSessionRepositoryInput],
+) -> Result<Vec<awaken_session_contract::SessionInputAttachment>, RunError> {
+    let repository_owner = SessionRepositoryOwner::profiled(session_id);
+    for repository in repositories {
+        if repository.binding_id.as_str().trim().is_empty()
+            || repository.repository.workspace_id != owner_scope
+            || !repository_owner.owns_repository_id(&repository.repository.id)
+        {
+            return Err(RunError::bad_request(
+                "Profiled Session Repository binding is empty or outside its Session or Workspace",
+            ));
+        }
+        if !mutation_policy.admits_repository_credential_mutation()
+            && repository.repository.credential_material.is_some()
+        {
+            return Err(RunError::bad_request(
+                "profiled Session Repository credentials must be pre-existing Vault references",
+            ));
+        }
+    }
+
+    let mut collision_preflight = resource_inputs.to_vec();
+    collision_preflight.extend(repositories.iter().map(|repository| {
+        profiled_repository_attachment(
+            awaken_resource_contract::RepositoryId::from(repository.repository.id.clone()),
+            repository.repository.mount_path.clone(),
+            repository.binding_id.clone(),
+        )
+    }));
+    awaken_session_contract::SessionInputResolver::effective_bindings(&[], &collision_preflight)
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
+    Ok(collision_preflight)
 }
 
 impl SessionApplication {
@@ -341,9 +372,9 @@ impl SessionApplication {
             Ok(session) => session,
             Err(SessionRepositoryError::NotFound) => return Ok(None),
             Err(error) => {
-                return Err(SessionProjectionRecoveryError::Rejected(repository_error(
-                    error,
-                )));
+                return Err(SessionProjectionRecoveryError::Rejected(
+                    session_repository_error(error),
+                ));
             }
         };
         if !session.is_publicly_readable() {
@@ -423,6 +454,20 @@ impl SessionApplication {
                     ))
                 })?;
             session
+        } else if !crate::realization::environment_admits_realization_effects(&session.environment)
+        {
+            // Suspending/Hibernated/Restoring are canonical continuation
+            // phases, not invalid realization states. Install only the
+            // complete non-physical dispatch projection so the durable Run can
+            // be reserved. Its later activity boundary joins the one
+            // continuation operation and performs the Resident handoff before
+            // activation; no realization effect may run against the old phase.
+            self.install_dispatch_projection(&owner, &session)
+                .await
+                .map_err(|error| {
+                    SessionProjectionRecoveryError::Rejected(realization_error(error))
+                })?;
+            session
         } else {
             self.realize_session_after_refresh(thread_id)
                 .await
@@ -493,14 +538,6 @@ impl SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
-        self.refresh_executable_projections()
-            .await
-            .map_err(|error| {
-                RunError::unavailable_classified(
-                    "executable_projection_refresh_failed",
-                    format!("Executable projections could not be refreshed: {error}"),
-                )
-            })?;
         let CreateProfiledSessionCommand {
             owner_scope,
             session_id,
@@ -521,6 +558,24 @@ impl SessionApplication {
             tools: requested_tools,
             idempotency,
         } = command;
+        // Authored Repository paths and ownership are pure command facts. Reject
+        // them before refreshing catalogs or opening any model, Environment,
+        // MCP, Skill, File, Vault, Registry, Runtime, or Git dependency.
+        let collision_preflight = preflight_profiled_resources(
+            &owner_scope,
+            &session_id,
+            mutation_policy,
+            &resource_inputs,
+            &repositories,
+        )?;
+        self.refresh_executable_projections()
+            .await
+            .map_err(|error| {
+                RunError::unavailable_classified(
+                    "executable_projection_refresh_failed",
+                    format!("Executable projections could not be refreshed: {error}"),
+                )
+            })?;
         let profile = source_revision.map_or_else(
             || self.session_profile(&owner_scope, &agent_id),
             |revision| self.session_profile_at_revision(&owner_scope, &agent_id, revision),
@@ -549,6 +604,15 @@ impl SessionApplication {
             ))
             .into());
         }
+        let agent_resources = profile
+            .as_ref()
+            .map(|profile| profile.resources.as_slice())
+            .unwrap_or_default();
+        let effective_bindings = awaken_session_contract::SessionInputResolver::effective_bindings(
+            agent_resources,
+            &collision_preflight,
+        )
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
         // Model-override cause/effect rules: R1 absent -> inherit the Agent
         // publication; R2 equal -> reuse it; R3 different + resolvable -> freeze
         // the complete replacement route; R4 different + invalid/unavailable ->
@@ -650,6 +714,27 @@ impl SessionApplication {
             )
             .await?
             .snapshot;
+        if let Some(restriction) = network_restriction {
+            environment.network = environment.network.safe_intersection(&restriction);
+        }
+        // The same pure provider-effective Runtime gate used by Managed create,
+        // live manifests, and the final root CAS runs before Profiled
+        // Repository/Vault configuration or Skill/File materialization.
+        self.validate_session_sandbox_layout(
+            &session_id,
+            &awaken_session_contract::SessionSandboxLayout {
+                workspace_id: owner_scope.clone(),
+                agent_id: agent_id.clone(),
+                agent_revision: profile.as_ref().map(|profile| profile.source_revision),
+                runtime_placement: self.runtime_placement(),
+                model_override: model_override.clone(),
+                runtime: published_backend_ref.clone(),
+                mounts: mounts.clone(),
+                env: env.clone(),
+                environment: environment.clone(),
+                resources: effective_bindings,
+            },
+        )?;
         let initial_mcp = self
             .normalize_mcp_drafts(
                 &owner_scope,
@@ -658,46 +743,6 @@ impl SessionApplication {
                 &environment.credential_realization.mcp_holder,
             )
             .await?;
-        if let Some(restriction) = network_restriction {
-            environment.network = environment.network.safe_intersection(&restriction);
-        }
-        let agent_resources = profile
-            .as_ref()
-            .map(|profile| profile.resources.as_slice())
-            .unwrap_or_default();
-        let repository_owner = SessionRepositoryOwner::profiled(&session_id);
-        for repository in &repositories {
-            if repository.binding_id.as_str().trim().is_empty()
-                || repository.repository.workspace_id != owner_scope
-                || !repository_owner.owns_repository_id(&repository.repository.id)
-            {
-                return Err(RunError::bad_request(
-                    "Profiled Session Repository binding is empty or outside its Session or Workspace",
-                )
-                .into());
-            }
-            if !mutation_policy.admits_repository_credential_mutation()
-                && repository.repository.credential_material.is_some()
-            {
-                return Err(RunError::bad_request(
-                    "profiled Session Repository credentials must be pre-existing Vault references",
-                )
-                .into());
-            }
-        }
-        let mut collision_preflight = resource_inputs.clone();
-        collision_preflight.extend(repositories.iter().map(|repository| {
-            profiled_repository_attachment(
-                awaken_resource_contract::RepositoryId::from(repository.repository.id.clone()),
-                repository.repository.mount_path.clone(),
-                repository.binding_id.clone(),
-            )
-        }));
-        awaken_session_contract::SessionInputResolver::effective_bindings(
-            agent_resources,
-            &collision_preflight,
-        )
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
         let resolved_skills = if skills.is_empty() {
             None
         } else {
@@ -923,13 +968,13 @@ impl SessionApplication {
                         match self.session(thread_id).await {
                             Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
                             Err(SessionRepositoryError::NotFound) => Err(error),
-                            Err(error) => Err(repository_error(error)),
+                            Err(error) => Err(session_repository_error(error)),
                         }
                     }
                     Err(error) => Err(error),
                 }
             }
-            Err(error) => Err(repository_error(error)),
+            Err(error) => Err(session_repository_error(error)),
         }
     }
 }

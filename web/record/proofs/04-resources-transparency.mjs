@@ -3,6 +3,7 @@
 import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 import { MANAGED_HEADERS, MEMORY_HEADERS } from "../support/betas.mjs";
 import { BACKEND, createManagedSession, putAgent, requireJson, requireOk } from "../support/control-plane.mjs";
+import { typedAgentTools } from "../../test-support/agent-tools.mjs";
 
 const RUN = Date.now();
 const AGENT = `release-memory-keeper-${RUN}`;
@@ -22,9 +23,9 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
       name: "Release memory keeper",
       model: { id: LIVE_MODEL_ID },
       system: "Persistent project Memory is mounted at .mnt/mnt/memory/project. For a write request, call write once at .mnt/mnt/memory/project/release-policy.txt. For a recall request, use the recalled durable Memory context and answer concisely. Never inspect directories.",
-      tools: ["read", "write"],
+      tools: typedAgentTools(["read", "write"]),
       plugins: [],
-      plugin_config: { permission: { default_behavior: "allow", mode: "bypassPermissions", rules: [] } },
+      plugin_config: {},
       context_policy: { kind: "keep_all" },
       max_steps: 3,
   });

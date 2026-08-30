@@ -14,7 +14,9 @@ use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::terminal::redeliver_committed_terminal;
+use awaken_runtime_contract::terminal::{
+    CommittedTerminalProjection, committed_terminal_projection, deliver_committed_terminal,
+};
 
 use crate::Runtime;
 
@@ -99,27 +101,34 @@ impl Runtime {
         // Awaiting run resumes through its committed ticket, and only a missing or
         // orphan Running run enters execution/recovery. No synthetic "continue"
         // message is added to the transcript.
-        let mut state = match context
+        let terminal = context
             .reader
             .as_deref()
-            .and_then(|reader| reader.run_state(&run_id))
-        {
-            Some(state @ RunState::Ended(_)) => {
-                let reader = context
-                    .reader
-                    .as_deref()
-                    .expect("the terminal state was read from this reader");
-                let _ = redeliver_committed_terminal(
-                    reader,
-                    &context.terminal_observers,
-                    &run_id,
-                    &activation.thread_id,
-                )
-                .await;
+            .map(|reader| committed_terminal_projection(reader, &run_id, &activation.thread_id));
+        let mut state = match terminal {
+            Some(CommittedTerminalProjection::Exact(terminal)) => {
+                let state = RunState::Ended(terminal.cause.clone());
+                let _ = deliver_committed_terminal(&context.terminal_observers, &terminal).await;
                 return Ok(state);
             }
-            Some(RunState::Awaiting) => RunState::Awaiting,
-            Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
+            Some(CommittedTerminalProjection::IdentityConflict) => {
+                return Err(Error::Execution(
+                    "stable Run identity belongs to another Thread".to_string(),
+                ));
+            }
+            Some(CommittedTerminalProjection::Nonterminal) | None => match context
+                .reader
+                .as_deref()
+                .and_then(|reader| reader.run_state(&run_id))
+            {
+                Some(RunState::Awaiting) => RunState::Awaiting,
+                Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
+                Some(RunState::Ended(_)) => {
+                    return Err(Error::Execution(
+                        "committed Run changed while projecting terminal identity".to_string(),
+                    ));
+                }
+            },
         };
         while state == RunState::Awaiting {
             let reader = context.reader.as_deref().ok_or_else(|| {

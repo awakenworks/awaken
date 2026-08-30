@@ -75,7 +75,7 @@ impl SandboxRestorationEvidence {
     pub(super) fn verify(
         &self,
         request: &super::SandboxRestoreRequest,
-        spec: &super::SandboxSpec,
+        spec: &crate::SandboxSpec,
     ) -> Result<(), super::SandboxError> {
         request.validate_for_spec(spec)?;
         if self == &request.evidence(spec) {

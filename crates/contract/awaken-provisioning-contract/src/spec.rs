@@ -392,19 +392,101 @@ pub struct SandboxSpec {
     pub lease_ttl_secs: Option<u64>,
 }
 
+/// Exact immutable identity of one provider-visible sandbox realization.
+///
+/// Unlike [`SandboxCapacityShapeId`], this value deliberately includes the
+/// Session scope, command, and every creation-time mount. Providers use it only
+/// to prove that a physical object left behind before its durable Session receipt
+/// is the exact object requested by a retry; it is not a capacity-pool key and it
+/// carries no lease-owner identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SandboxRealizationFingerprint(String);
+
+/// Remove only operation-scoped capabilities from the immutable physical
+/// identity. A Memory materialization reference authorizes one live Resource
+/// operation; it is renewed independently from the logical store and Sandbox
+/// realization. Every other closed-spec field, including inline contents and
+/// content hashes, remains identity-bearing by default.
+fn immutable_realization_spec(spec: &SandboxSpec) -> SandboxSpec {
+    let mut identity = spec.clone();
+    for mount in &mut identity.mounts {
+        if let crate::MountSource::MemoryStore {
+            materialization_reference,
+            ..
+        } = &mut mount.source
+        {
+            *materialization_reference = None;
+        }
+    }
+    identity
+}
+
+impl SandboxRealizationFingerprint {
+    /// Fingerprint the immutable closed [`SandboxSpec`]. New fields participate
+    /// by default; only the Memory operation capability is projected out.
+    #[must_use]
+    pub fn from_spec(spec: &SandboxSpec) -> Self {
+        Self(awaken_agent_contract::stable_fingerprint(
+            &immutable_realization_spec(spec),
+        ))
+    }
+
+    /// Fingerprint a provider's final immutable projection together with the
+    /// complete effective spec that authorized it.
+    ///
+    /// Providers use this after resolving immutable infrastructure facts (for
+    /// example a content-addressed package image). The contract remains the
+    /// sole hashing/domain-separation authority while each provider owns only
+    /// its typed, secret-free projection. Ephemeral lease owners and temporary
+    /// staging locations must never be included.
+    #[must_use]
+    pub fn from_provider_projection(
+        spec: &SandboxSpec,
+        provider_projection: &impl Serialize,
+    ) -> Self {
+        let immutable_spec = immutable_realization_spec(spec);
+        Self(awaken_agent_contract::stable_fingerprint(&(
+            "sandbox-realization-with-provider-projection/v1",
+            immutable_spec,
+            provider_projection,
+        )))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for SandboxRealizationFingerprint {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for SandboxRealizationFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// Canonical identity of one substitutable, never-used sandbox capacity shape.
 ///
 /// This is the only shape algorithm used by proactive warmup, pool checkout,
 /// Worker receipts, and Coordinator placement preference. It excludes only the
 /// per-Session scope and the process command launched after environment creation.
 /// Every other current and future [`SandboxSpec`] field participates by default.
-/// Specs with creation-time mounts are deliberately not poolable.
+/// Mount-bearing specs are not substitutable. Filesystem continuity remains in
+/// the identity, while the concrete warm-capacity owner decides whether that
+/// shape may be checked out; this type is an identity, not a lifecycle-policy
+/// authority.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SandboxCapacityShapeId(String);
 
 impl SandboxCapacityShapeId {
-    /// Derive the exact poolable capacity identity, or `None` when the spec
+    /// Derive the exact substitutable capacity identity, or `None` when the spec
     /// contains Session-specific creation mounts.
     #[must_use]
     pub fn from_spec(spec: &SandboxSpec) -> Option<Self> {
@@ -566,6 +648,7 @@ pub enum RootfsSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MemoryWriteConsistency, MountAccess, MountLifetime, MountSource};
 
     /// Round-trip `value` and assert its serialized form carries `tag` verbatim.
     /// Pins the exact wire tag (the config→worker contract) alongside reparse-equality.
@@ -661,10 +744,114 @@ mod tests {
             outputs_path: "/mnt/session/outputs".into(),
             requests: Default::default(),
             limits: Default::default(),
-            filesystem_continuity: FilesystemContinuity::Retained,
+            filesystem_continuity: FilesystemContinuity::Ephemeral,
             lease_ttl_secs: None,
             control_services: Default::default(),
         }
+    }
+
+    #[test]
+    fn realization_identity_excludes_only_memory_operation_references() {
+        // Cause/effect decision table for the provider-visible immutable identity:
+        // C1 changes only the claim/effect-scoped Memory materialization reference;
+        // C2 changes the logical store; C3 changes required write consistency;
+        // C4 changes self-contained bytes and their digest. E1 keeps the same
+        // adoption/realization identity; E2 changes it. Rules: F1 C1=>E1 for both
+        // hashing entry points; F2 C2=>E2; F3 C3=>E2; F4 C4=>E2. Constraint:
+        // mount id/path/access/lifetime/required and every non-Memory spec field
+        // remain immutable identity; raw content is never discarded merely to
+        // repair one renewable Memory capability.
+        let mut base = capacity_spec();
+        base.mounts = vec![
+            MountRequirement {
+                mount_id: "memory".into(),
+                source: MountSource::MemoryStore {
+                    store_id: "store-a".into(),
+                    materialization_reference: Some("run-claim-a".into()),
+                    write_consistency: MemoryWriteConsistency::ProviderDefault,
+                },
+                mount_path: "/mnt/memory".into(),
+                access: MountAccess::ReadWrite,
+                lifetime: MountLifetime::PerRun,
+                required: true,
+            },
+            MountRequirement {
+                mount_id: "inline".into(),
+                source: MountSource::InlineBytes {
+                    contents: b"content-a".to_vec(),
+                    content_hash: Some("digest-a".into()),
+                },
+                mount_path: "/mnt/inline".into(),
+                access: MountAccess::ReadOnly,
+                lifetime: MountLifetime::PerRun,
+                required: true,
+            },
+        ];
+        let base_identity = SandboxRealizationFingerprint::from_spec(&base);
+        let base_provider_identity =
+            SandboxRealizationFingerprint::from_provider_projection(&base, &("provider", 1_u8));
+
+        let mut renewed = base.clone();
+        let MountSource::MemoryStore {
+            materialization_reference,
+            ..
+        } = &mut renewed.mounts[0].source
+        else {
+            unreachable!()
+        };
+        *materialization_reference = Some("run-claim-b".into());
+        assert_eq!(
+            SandboxRealizationFingerprint::from_spec(&renewed),
+            base_identity,
+            "F1 from_spec"
+        );
+        assert_eq!(
+            SandboxRealizationFingerprint::from_provider_projection(&renewed, &("provider", 1_u8),),
+            base_provider_identity,
+            "F1 provider projection"
+        );
+
+        let mut different_store = base.clone();
+        let MountSource::MemoryStore { store_id, .. } = &mut different_store.mounts[0].source
+        else {
+            unreachable!()
+        };
+        *store_id = "store-b".into();
+        assert_ne!(
+            SandboxRealizationFingerprint::from_spec(&different_store),
+            base_identity,
+            "F2"
+        );
+
+        let mut strict = base.clone();
+        let MountSource::MemoryStore {
+            write_consistency, ..
+        } = &mut strict.mounts[0].source
+        else {
+            unreachable!()
+        };
+        *write_consistency = MemoryWriteConsistency::WriteThroughRequired;
+        assert_ne!(
+            SandboxRealizationFingerprint::from_spec(&strict),
+            base_identity,
+            "F3"
+        );
+
+        let mut different_bytes = base;
+        let MountSource::InlineBytes {
+            contents,
+            content_hash,
+        } = &mut different_bytes.mounts[1].source
+        else {
+            unreachable!()
+        };
+        *contents = b"content-b".to_vec();
+        *content_hash = Some("digest-b".into());
+        assert_ne!(
+            SandboxRealizationFingerprint::from_spec(&different_bytes),
+            base_identity,
+            "F4"
+        );
     }
 
     #[test]
@@ -674,13 +861,16 @@ mod tests {
         // Session scope/attempt command fragments substitutable capacity
         // (S4,O6,D3,RPN72); F3 a mounted shape crosses Session bytes (S10,O3,D2,
         // RPN60). Cause graph: C1=only scope changes; C2=only command changes;
-        // C3=any creation field changes; C4=any mount exists. Effects: E1=same
-        // typed identity; E2=different identity; E3=not poolable.
-        // | Rule | C1 | C2 | C3 | C4 | Effect |
-        // | S1   | 1  | 0  | 0  | 0  | E1     |
-        // | S2   | 0  | 1  | 0  | 0  | E1     |
-        // | S3   | 0  | 0  | 1  | 0  | E2     |
-        // | S4   | -  | -  | -  | 1  | E3     |
+        // C3=any creation field changes; C4=any mount exists; C5=Retained
+        // continuity. Effects: E1=same typed identity; E2=different identity;
+        // E3=no substitutable capacity identity. Continuity is identity data;
+        // the concrete pool owns the separate Ephemeral-only admission rule.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | S1   | 1  | 0  | 0  | 0  | 0  | E1     |
+        // | S2   | 0  | 1  | 0  | 0  | 0  | E1     |
+        // | S3   | 0  | 0  | 1  | 0  | 0  | E2     |
+        // | S4   | -  | -  | -  | 1  | -  | E3     |
+        // | S5   | -  | -  | 1  | 0  | 1  | E2     |
         let base = capacity_spec();
         let base_id = SandboxCapacityShapeId::from_spec(&base).expect("poolable");
 
@@ -756,6 +946,14 @@ mod tests {
             required: true,
         });
         assert_eq!(SandboxCapacityShapeId::from_spec(&mounted), None, "S4");
+
+        let mut retained = capacity_spec();
+        retained.filesystem_continuity = FilesystemContinuity::Retained;
+        assert_ne!(
+            SandboxCapacityShapeId::from_spec(&retained),
+            Some(base_id),
+            "S5"
+        );
     }
 
     #[test]

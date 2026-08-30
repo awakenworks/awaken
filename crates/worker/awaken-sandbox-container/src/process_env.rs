@@ -2,23 +2,22 @@
 
 use super::*;
 
-const DEFAULT_XDG_CONFIG_HOME: &str = "/workspace/.config";
-const DEFAULT_XDG_CACHE_HOME: &str = "/workspace/.cache";
-const ACP_CONFIG_HOME: &str = "/workspace/.acp-config";
-const CODEX_CONFIG_HOME: &str = "/workspace/.codex";
-
 /// Runtime-owned configuration homes which may contain provider-created
 /// credential caches. Checkpoint decorators consume this exact contract instead
 /// of copying process-environment defaults.
 #[must_use]
 pub fn runtime_configuration_homes() -> &'static [&'static str] {
-    &[ACP_CONFIG_HOME, CODEX_CONFIG_HOME, DEFAULT_XDG_CONFIG_HOME]
+    &[
+        pc::WorkspaceLayout::ACP_CONFIG_ROOT,
+        pc::WorkspaceLayout::CODEX_CONFIG_ROOT,
+        pc::WorkspaceLayout::XDG_CONFIG_ROOT,
+    ]
 }
 
 fn workspace_scoped_path(value: &str) -> bool {
     let path = std::path::Path::new(value);
     path.is_absolute()
-        && path.starts_with("/workspace")
+        && path.starts_with(pc::WorkspaceLayout::ROOT)
         && path.components().all(|component| {
             !matches!(
                 component,
@@ -68,13 +67,16 @@ pub(super) fn bind_resident_process_environment(
 ) {
     env.retain(|(name, _)| !matches!(name.as_str(), "AWAKEN_PROJECT_DIR" | "AWAKEN_OUTPUTS_DIR"));
     env.extend([
-        ("AWAKEN_PROJECT_DIR".into(), "/workspace".into()),
+        (
+            "AWAKEN_PROJECT_DIR".into(),
+            pc::WorkspaceLayout::ROOT.into(),
+        ),
         ("AWAKEN_OUTPUTS_DIR".into(), outputs_path.into()),
     ]);
     for (name, default) in [
-        ("HOME", "/workspace"),
-        ("XDG_CONFIG_HOME", DEFAULT_XDG_CONFIG_HOME),
-        ("XDG_CACHE_HOME", DEFAULT_XDG_CACHE_HOME),
+        ("HOME", pc::WorkspaceLayout::ROOT),
+        ("XDG_CONFIG_HOME", pc::WorkspaceLayout::XDG_CONFIG_ROOT),
+        ("XDG_CACHE_HOME", pc::WorkspaceLayout::XDG_CACHE_ROOT),
     ] {
         let selected = selected_workspace_path(
             env.iter()
@@ -119,7 +121,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             pc::EnvVar {
                 name: "AWAKEN_PROJECT_DIR".into(),
                 value: pc::EnvValue::Inline {
-                    value: "/workspace".into(),
+                    value: pc::WorkspaceLayout::ROOT.into(),
                 },
                 visibility: pc::EnvVisibility::Process,
             },
@@ -131,9 +133,17 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
                 visibility: pc::EnvVisibility::Process,
             },
         ]);
-        bind_workspace_path(&mut command, "HOME", "/workspace");
-        bind_workspace_path(&mut command, "XDG_CONFIG_HOME", DEFAULT_XDG_CONFIG_HOME);
-        bind_workspace_path(&mut command, "XDG_CACHE_HOME", DEFAULT_XDG_CACHE_HOME);
+        bind_workspace_path(&mut command, "HOME", pc::WorkspaceLayout::ROOT);
+        bind_workspace_path(
+            &mut command,
+            "XDG_CONFIG_HOME",
+            pc::WorkspaceLayout::XDG_CONFIG_ROOT,
+        );
+        bind_workspace_path(
+            &mut command,
+            "XDG_CACHE_HOME",
+            pc::WorkspaceLayout::XDG_CACHE_ROOT,
+        );
         pc::materialize_process_command(
             &self.base_env,
             command,

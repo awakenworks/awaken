@@ -9,7 +9,11 @@ use awaken_session_contract::{
     SessionEnvironmentTransitionError, SessionExecutionState, SuspendPhase,
 };
 
-use super::{SessionApplication, SessionMutationError, SessionRecoveryCandidates};
+use super::realization::repository_control;
+use super::{
+    SessionApplication, SessionMutationError, SessionRecoveryCandidates,
+    validate_environment_continuation_topology,
+};
 
 fn expected_mcp_generations(
     session: &PersistedSession,
@@ -32,10 +36,58 @@ pub enum SessionContinuationError {
     Runtime(#[from] RunError),
     #[error("Session continuation transition failed: {0}")]
     Transition(#[from] SessionEnvironmentTransitionError),
+    #[error("Session continuation Memory reconciliation failed: {0}")]
+    Memory(#[from] awaken_session_contract::SessionMemoryReconciliationError),
     #[error("Session continuation is not available for a terminal Session")]
     Terminal,
     #[error("Session continuation did not converge")]
     DidNotConverge,
+}
+
+fn input_is_memory(input: &awaken_session_contract::ResolvedInput) -> bool {
+    matches!(
+        &input.source,
+        awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+    )
+}
+
+/// Validate the aggregate's current source binding before committing a suspend
+/// intent. A pending Memory generation has no single physical input/evidence
+/// join and therefore remains resident. Active Memory reuses the same neutral
+/// None/Some validator that source disposal invokes on historical rows.
+fn validate_suspend_memory_preflight(
+    session: &PersistedSession,
+) -> Result<(), awaken_session_contract::SessionMemoryReconciliationError> {
+    if session
+        .resources
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.inputs().iter().any(input_is_memory))
+    {
+        return Err(awaken_session_contract::SessionMemoryReconciliationError::ResourceMismatch);
+    }
+    let active_inputs = session.resources.active.inputs();
+    if !active_inputs.iter().any(input_is_memory) {
+        return Ok(());
+    }
+    let binding = session
+        .environment
+        .binding()
+        .ok_or(awaken_session_contract::SessionMemoryReconciliationError::EnvironmentMismatch)?;
+    let handle = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(binding)
+        .map_err(|error| {
+            awaken_session_contract::SessionMemoryReconciliationError::InvalidIntent(
+                error.to_string(),
+            )
+        })?;
+    let materializations = handle.memory_materializations().map_err(|error| {
+        awaken_session_contract::SessionMemoryReconciliationError::InvalidIntent(error.to_string())
+    })?;
+    awaken_session_contract::validate_continuation_memory_materializations(
+        active_inputs,
+        materializations,
+    )?;
+    Ok(())
 }
 
 impl SessionContinuationError {
@@ -45,6 +97,41 @@ impl SessionContinuationError {
 }
 
 impl SessionApplication {
+    pub(crate) async fn authorize_checkpoint_release_artifact_effect_from_root(
+        &self,
+        session_id: &str,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        let session = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .map_err(repository_control)?;
+        session
+            .authorize_checkpoint_release_artifact_effect(operation)
+            .map_err(|error| match error {
+                awaken_session_contract::SessionEnvironmentReceiptError::RealizationStale
+                | awaken_session_contract::SessionEnvironmentReceiptError::Mismatch => {
+                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
+                }
+                awaken_session_contract::SessionEnvironmentReceiptError::WrongPhase
+                    if session.is_terminal() =>
+                {
+                    awaken_session_contract::SessionRealizationControlFailure::Terminal
+                }
+                awaken_session_contract::SessionEnvironmentReceiptError::WrongPhase => {
+                    awaken_session_contract::SessionRealizationControlFailure::NotReady
+                }
+                error => awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                    error.to_string(),
+                ),
+            })?;
+        self.session_repository()
+            .owner(session_id)
+            .await
+            .map_err(repository_control)
+    }
+
     pub(super) async fn reconcile_environment_continuations_from(
         &self,
         candidates: &SessionRecoveryCandidates,
@@ -117,6 +204,10 @@ impl SessionApplication {
             .frozen_baseline()
             .ok_or_else(|| SessionContinuationError::Repository("baseline is not frozen".into()))?
             .clone();
+        validate_environment_continuation_topology(
+            baseline.runtime_placement,
+            &baseline.environment.idle_retention,
+        )?;
 
         match session.environment.clone() {
             SessionEnvironmentState::Resident {
@@ -135,11 +226,13 @@ impl SessionApplication {
                             .saturating_mul(1_000),
                     ) =>
             {
-                session.environment.begin_suspend(
+                validate_suspend_memory_preflight(&session)?;
+                session.environment.begin_suspend_at(
                     &owner_scope,
                     session_id,
                     session.activity_epoch,
                     session.realization.clone(),
+                    now_unix_ms,
                 )?;
                 self.commit_continuation(&owner_scope, session, "environment-suspend-intent")
                     .await?;
@@ -181,9 +274,6 @@ impl SessionApplication {
                 Ok(true)
             }
             SessionEnvironmentState::Suspending {
-                operation,
-                source_effect_id,
-                source_binding,
                 generation,
                 suspend_phase: SuspendPhase::Uploading,
                 ..
@@ -197,21 +287,10 @@ impl SessionApplication {
                     ));
                 }
                 let policy = &baseline.environment.idle_retention;
-                let request = awaken_session_contract::SandboxCheckpointRequest {
-                    workspace_id: owner_scope.clone(),
-                    session_id: session_id.to_string(),
-                    operation,
-                    source_effect_id: *source_effect_id,
-                    source_binding,
-                    generation,
-                    format: policy.checkpoint_format.clone(),
-                    created_at_unix_ms: now_unix_ms,
-                    expires_at_unix_ms: session
-                        .environment
-                        .generation()
-                        .map_or(now_unix_ms, |generation| generation.expires_at_unix_ms),
-                    max_bytes: policy.max_checkpoint_bytes,
-                };
+                let request = session
+                    .environment
+                    .checkpoint_request(&owner_scope, session_id, policy)?
+                    .ok_or(SessionEnvironmentTransitionError::WrongPhase)?;
                 let receipt = tokio::time::timeout(
                     std::time::Duration::from_secs(policy.max_checkpoint_duration_secs),
                     self.runtime()
@@ -230,22 +309,61 @@ impl SessionApplication {
                 Ok(true)
             }
             SessionEnvironmentState::Suspending {
-                operation,
-                source_effect_id,
                 source_binding,
                 generation,
                 suspend_phase: SuspendPhase::ReadyToDispose,
                 checkpoint: Some(_),
+                source_release_preparation: None,
+                ..
             } => {
+                let preparation = session
+                    .source_release_preparation_effect()
+                    .map_err(|error| {
+                        SessionContinuationError::Runtime(RunError::unavailable_classified(
+                            "session_environment_source_preparation_unauthorized",
+                            error.to_string(),
+                        ))
+                    })?;
                 let receipt = self
                     .runtime()
-                    .dispose_checkpoint_source(
+                    .prepare_checkpoint_source_disposal(
                         session_id,
-                        &operation,
-                        &source_effect_id,
+                        &preparation,
                         &generation,
                         &source_binding,
                     )
+                    .await?;
+                session
+                    .record_source_release_prepared(&receipt)
+                    .map_err(|error| {
+                        SessionContinuationError::Runtime(RunError::unavailable_classified(
+                            "session_environment_source_preparation_stale",
+                            error.to_string(),
+                        ))
+                    })?;
+                self.commit_continuation(
+                    &owner_scope,
+                    session,
+                    "environment-source-release-prepared",
+                )
+                .await?;
+                Ok(true)
+            }
+            SessionEnvironmentState::Suspending {
+                suspend_phase: SuspendPhase::Disposing,
+                checkpoint: Some(_),
+                source_release_preparation: Some(_),
+                ..
+            } => {
+                let disposal = session.source_release_disposal().map_err(|error| {
+                    SessionContinuationError::Runtime(RunError::unavailable_classified(
+                        "session_environment_source_disposal_unauthorized",
+                        error.to_string(),
+                    ))
+                })?;
+                let receipt = self
+                    .runtime()
+                    .dispose_prepared_checkpoint_source(session_id, &disposal)
                     .await?;
                 session.environment.complete_suspend(&receipt)?;
                 self.commit_continuation(&owner_scope, session, "environment-hibernated")
@@ -295,9 +413,21 @@ impl SessionApplication {
             if session.is_terminal() {
                 return Err(SessionContinuationError::Terminal);
             }
+            if let Some(baseline) = session.frozen_baseline() {
+                validate_environment_continuation_topology(
+                    baseline.runtime_placement,
+                    &baseline.environment.idle_retention,
+                )?;
+            }
             match session.environment.clone() {
-                SessionEnvironmentState::Unmaterialized
-                | SessionEnvironmentState::Resident { .. } => return Ok(session),
+                SessionEnvironmentState::Unmaterialized => return Ok(session),
+                SessionEnvironmentState::Resident { .. } => {
+                    if !self.requires_external_realization(&session) {
+                        self.synchronize_resident_environment_projection(&owner_scope, &session)
+                            .await?;
+                    }
+                    return Ok(session);
+                }
                 SessionEnvironmentState::Suspending { .. } => {
                     self.reconcile_environment_continuation(session_id, now_unix_ms)
                         .await?;
@@ -339,14 +469,20 @@ impl SessionApplication {
                     let request = session
                         .environment
                         .restoring_request(&owner_scope, session_id)
-                        .expect("Restoring state projects one exact request");
+                        .ok_or(SessionEnvironmentTransitionError::NotRestoring)?;
                     let receipt = self
                         .runtime()
                         .restore_checkpointed_session_environment(request)
                         .await?;
                     session.environment.complete_restore(&receipt)?;
-                    self.commit_continuation(&owner_scope, session, "environment-restored")
+                    let committed = self
+                        .commit_continuation(&owner_scope, session, "environment-restored")
                         .await?;
+                    if !self.requires_external_realization(&committed) {
+                        self.synchronize_resident_environment_projection(&owner_scope, &committed)
+                            .await?;
+                    }
+                    return Ok(committed);
                 }
             }
         }

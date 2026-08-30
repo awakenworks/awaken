@@ -372,11 +372,19 @@ test("the state-machine recording proves runtime enforcement, not just configura
 });
 
 test("interactive transcripts follow committed SSE frames without a manual refresh", () => {
+  // Cause/effect decision table: C1=the standalone Transcript owns an
+  // interactive composer; C2=the hook receives a committed SSE frame. R1
+  // C1+C2 projects the frame immediately through the canonical committed-cache
+  // seam; R2 !C1 keeps the existing buffered/refresh behavior. The options
+  // object is the sole hook contract; the retired positional signature is not a
+  // compatibility path.
   const transcript = readFileSync(resolve(here, "../src/components/session/Transcript.tsx"), "utf8");
   const hook = readFileSync(resolve(here, "../src/lib/useSessionLog.ts"), "utf8");
   assert.match(transcript, /useSessionLog\(base, queryKey, \{[\s\S]*followLive: viewProps\.composer \?\? true/);
+  assert.doesNotMatch(transcript, /useSessionLog\(base, queryKey, live, composer\)/);
   assert.match(hook, /if \(followLive\)/);
-  assert.match(hook, /setQueryData<SessionEvent\[\]>/);
+  assert.match(hook, /mergeCommittedSessionCache\(qc, queryKey, \[committed\]\)/);
+  assert.match(hook, /setPending\(next\)/);
 });
 
 test("streaming marketing results wait for the complete decision, not the first delta", () => {
@@ -412,15 +420,35 @@ test("overview captions point to visible UI evidence without long static waits",
 });
 
 test("tool governance, tool presentation, and Memory each have the right evidence owner", () => {
+  // Evidence-ownership cause/effect table: C1=a controlled native action is
+  // requested; C2=presentation aliases are configured; C3=Memory is mounted in
+  // two Sessions. E1=03 alone proves typed ownership, disabled unselected
+  // controlled members, pending approval, human denial, and terminal blocked
+  // result; E2=20 alone proves aliases; E3=04 alone proves durable recall.
+  // R1 C1+C2+C3 keeps the mechanisms disjoint while every fixture uses the
+  // typed ToolSet owner.
   const tools = readFileSync(resolve(proofsDir, "03-tools-permissions.mjs"), "utf8");
   const presentation = readFileSync(resolve(proofsDir, "20-tool-presentation.mjs"), "utf8");
   const memory = readFileSync(resolve(proofsDir, "04-resources-transparency.mjs"), "utf8");
-  assert.match(tools, /runtime denies the matching bash call before execution/);
+  assert.match(tools, /controlled typed ToolSet is persisted without legacy permission config/);
+  assert.match(tools, /runtime pauses the bash call awaiting explicit approval/);
   assert.match(tools, /Never retry a denied tool call/);
-  assert.match(tools, /DELETE BLOCKED BY POLICY/);
-  assert.match(tools, /agent\.tool_use" && event\.name === "bash"\)\)\.toHaveLength\(1\)/);
+  assert.match(tools, /Apply controlled modifications\|应用受控修改/);
+  assert.match(tools, /name: "write", enabled: false, permission_policy: \{ type: "always_ask" \}/);
+  assert.match(tools, /name: "edit", enabled: false, permission_policy: \{ type: "always_ask" \}/);
+  assert.match(tools, /awaiting approval\|待确认/);
+  assert.match(tools, /name: \/Deny\|拒绝/);
+  assert.match(tools, /evaluated_permission\)\.toBe\("ask"\)/);
+  assert.match(tools, /event\.type === "user\.tool_confirmation"/);
+  assert.match(tools, /event\.result === "deny"/);
+  assert.match(tools, /event\.type === "agent\.tool_result" && event\.tool_use_id === bashUseId/);
+  assert.match(tools, /deniedResult\?\.is_error\)\.toBe\(true\)/);
+  assert.match(tools, /blocked: denied/);
+  assert.match(tools, /latestIdle\?\.stop_reason\?\.type/);
+  assert.match(tools, /not\.toContain\("AWAKEN_APPROVAL_PROOF"\)/);
+  assert.doesNotMatch(tools, /DELETE BLOCKED BY POLICY|permission-editor|mcp__issues__create_issue/);
   assert.match(presentation, /mcp__issues__create_issue/);
-  assert.match(presentation, /config\.tools\)\.toEqual\(\["read"\]\)/);
+  assert.match(presentation, /typedAgentTools\(\["read"\]\)/);
   assert.match(presentation, /Show this tool to the model on demand/);
   assert.match(presentation, /exposure: "on_demand"/);
   assert.doesNotMatch(presentation, /Defer this tool|defer: true/);
@@ -429,7 +457,9 @@ test("tool governance, tool presentation, and Memory each have the right evidenc
   assert.match(memory, /memories\?view=full/);
   assert.match(memory, /memory\.content/);
   assert.match(memory, /durablePolicy = "Human approval is required before every external side effect\."/);
-  assert.match(memory, /tools: \["read", "write"\]/);
+  assert.match(memory, /tools: typedAgentTools\(\["read", "write"\]\)/);
+  assert.match(memory, /plugin_config: \{\}/);
+  assert.doesNotMatch(memory, /plugin_config: \{ permission:/);
   assert.match(memory, /max_steps: 3/);
   assert.match(memory, /\.mnt\/mnt\/memory\/project\/release-policy\.txt/);
   assert.doesNotMatch(memory, /Save resources|保存资源/);

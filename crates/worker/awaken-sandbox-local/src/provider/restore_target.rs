@@ -109,6 +109,18 @@ async fn lock_target(root: &Path) -> Result<std::fs::File, pc::SandboxError> {
     }
 }
 
+/// Hold the same process-shared target lock across checkpoint materialization.
+/// Acquisition and disposal use this inode too, so no concurrent caller can
+/// observe, populate, or delete a split physical target.
+pub(super) async fn lock_bound_target(
+    root: &Path,
+    expected: &pc::SandboxRestorationEvidence,
+) -> Result<std::fs::File, pc::SandboxError> {
+    let lock = lock_target(root).await?;
+    verify_binding(root, expected)?;
+    Ok(lock)
+}
+
 fn remove_target_binding(root: &Path) -> Result<(), pc::SandboxError> {
     match std::fs::remove_file(sidecar(root, "target.json")?) {
         Ok(()) => {}
@@ -255,7 +267,8 @@ pub(super) async fn dispose_bound_target(
             ));
         }
         Some(_) if physical_directory_exists(root)? => {
-            std::fs::remove_dir_all(root).map_err(err)?;
+            let identity = awaken_sandbox_fs::directory_identity_nofollow(root).map_err(err)?;
+            awaken_sandbox_fs::remove_directory_tree_exact(root, identity).map_err(err)?;
         }
         Some(_) | None => {}
     }

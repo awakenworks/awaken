@@ -1398,6 +1398,38 @@
       "managed_betas": [
         "managed-agents-2026-04-01"
       ],
+      "resource_params": {
+        "file": {
+          "optional": [
+            "mount_path"
+          ],
+          "required": [
+            "file_id",
+            "type"
+          ]
+        },
+        "github_repository": {
+          "optional": [
+            "checkout",
+            "mount_path"
+          ],
+          "required": [
+            "authorization_token",
+            "type",
+            "url"
+          ]
+        },
+        "memory_store": {
+          "optional": [
+            "access",
+            "instructions"
+          ],
+          "required": [
+            "memory_store_id",
+            "type"
+          ]
+        }
+      },
       "session": {
         "nested": {
           "agent": {

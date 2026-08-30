@@ -74,8 +74,10 @@ COPY deploy/images/sandbox/verify-acp-runtimes.py /usr/local/bin/awaken-verify-a
 RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes \
     && /usr/local/bin/awaken-verify-acp-runtimes --self-test
 
-# The execution-plane binary (host-built with `hand`) supplies both the ACP bridge
-# entrypoint and the Session's attached `hand --stdio` exec process.
+# The execution-plane binary (host-built with `hand`) supplies the ACP bridge,
+# the Session's attached `hand --stdio` process, the internal atomic Repository
+# publisher, and the nofollow terminal tree reader validated by `build.sh`
+# before an image is accepted.
 ARG BIN=deploy/images/sandbox/.awaken-sandbox.bin
 COPY ${BIN} /usr/local/bin/awaken-sandbox
 

@@ -76,6 +76,9 @@ MODEL_CATALOG_SQLITE_SOURCE = "crates/stores/awaken-model-catalog-store/src/sqli
 CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
 CONFIG_RESOLVER_STORES_SOURCE = "crates/control/awaken-config-resolver/src/stores.rs"
 CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
+CREDENTIAL_IN_MEMORY_REPO_SOURCE = (
+    "crates/control/awaken-credential-vault/src/repo/in_memory.rs"
+)
 CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
 CREDENTIAL_SQLITE_SOURCE = "crates/stores/awaken-credential-store/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/stores/awaken-credential-store/src/sealed.rs"
@@ -429,8 +432,14 @@ NON_PRODUCT_APIS = (
     ),
     (
         "InMemoryCredentialRepo",
-        CREDENTIAL_REPO_SOURCE,
+        CREDENTIAL_IN_MEMORY_REPO_SOURCE,
         r"\bpub\s+struct\s+InMemoryCredentialRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryCredentialRepo re-export",
+        CREDENTIAL_REPO_SOURCE,
+        r"\bpub\s+use\s+in_memory::InMemoryCredentialRepo\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -1517,7 +1526,10 @@ def selftest() -> None:
         CONFIG_RESOLVER_SOURCE: any_gate
         + "pub use reference_stores::{InMemoryAgentInputBindingRepository, "
         + "InMemoryProfileStore, InMemoryWebhookStore};",
-        CREDENTIAL_REPO_SOURCE: any_gate + "pub struct InMemoryCredentialRepo {}",
+        CREDENTIAL_IN_MEMORY_REPO_SOURCE: any_gate
+        + "pub struct InMemoryCredentialRepo {}",
+        CREDENTIAL_REPO_SOURCE: any_gate
+        + "pub use in_memory::InMemoryCredentialRepo;",
         CREDENTIAL_VAULT_SOURCE: any_gate
         + "pub struct InMemorySealedBlobStore {}\n"
         + any_gate

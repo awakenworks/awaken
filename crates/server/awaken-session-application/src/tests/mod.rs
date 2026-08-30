@@ -55,14 +55,13 @@ async fn install_complete_test_projection<R: SessionRuntime + ?Sized>(
             "test Session projection must carry complete frozen coordinates",
         ));
     }
-    runtime
-        .apply_session_inputs(
-            thread,
-            &projection.workspace_id,
-            projection.resource_revision,
-            &projection.resources,
-        )
-        .await?;
+    // Cause/effect rule P1: a complete frozen projection carries the aggregate's
+    // previous and desired Resource generations; the test Runtime must observe
+    // exactly that canonical transition through the production two-argument
+    // port, with no test-only reconstruction or legacy compatibility path.
+    let transition = projection
+        .resource_transition(awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects)?;
+    runtime.apply_session_inputs(thread, &transition).await?;
     if mode.adopts_resident_environment()
         && let Some(binding) = projection.environment.binding()
     {
@@ -519,6 +518,7 @@ struct RecordingCleanupRuntime {
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
+    fail_publication_once: AtomicBool,
     intents: Mutex<Vec<awaken_session_contract::SessionCleanupCommand>>,
     effective_ids: Mutex<BTreeSet<String>>,
     block_quiesce: AtomicBool,
@@ -527,8 +527,10 @@ struct RecordingCleanupRuntime {
     delegated_snapshot: Mutex<awaken_session_contract::DelegatedRunSnapshot>,
     publication_intents: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
     reject_publication: AtomicBool,
-    fail_publication_once: AtomicBool,
     terminal_effect_order: Mutex<Vec<String>>,
+    terminal_assignments: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupAssignment>>,
+    acknowledged_effects: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
+    acknowledged_completed: Mutex<Vec<(String, awaken_session_contract::SessionRealizationLease)>>,
 }
 
 #[derive(Default)]
@@ -680,14 +682,39 @@ impl SessionRuntime for NoopRuntime {
         Ok(Vec::new())
     }
 
-    async fn execute_terminal_cleanup(
+    async fn prepare_terminal_cleanup_for_effect(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        authorization
+            .verify_for(&effect)
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        let provider_prepared_effect_fence = effect
+            .sandbox_effect_fence()
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        awaken_session_contract::SessionCleanupPreparation::try_new(
+            &effect,
+            provider_prepared_effect_fence,
             Vec::new(),
+        )
+        .map_err(|error| RunError::internal(error.to_string()))
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
         ))
+    }
+
+    async fn install_terminal_cleanup_assignment(
+        &self,
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
     }
 
     async fn session_thread_recovery_snapshot(
@@ -1291,10 +1318,38 @@ impl SessionRuntime for RecordingCleanupRuntime {
         Ok(self.delegated_snapshot.lock().unwrap().clone())
     }
 
-    async fn execute_terminal_cleanup(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        intent: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        self.terminal_assignments
+            .lock()
+            .unwrap()
+            .push(assignment.clone());
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        authorization
+            .verify_for(&effect)
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        let assignment = self
+            .terminal_assignments
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .ok_or_else(|| RunError::internal("terminal effect has no installed assignment"))?;
+        if assignment.session_id != effect.command.session_id || assignment.lease != effect.lease {
+            return Err(RunError::internal(
+                "terminal effect does not match its installed assignment",
+            ));
+        }
+        let intent = effect.command.clone();
         if self.fail_before_effect_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::internal("injected pre-effect crash window"));
         }
@@ -1310,16 +1365,67 @@ impl SessionRuntime for RecordingCleanupRuntime {
         if self.fail_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::internal("injected cleanup crash window"));
         }
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &intent,
+        let provider_prepared_effect_fence = effect
+            .sandbox_effect_fence()
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        awaken_session_contract::SessionCleanupPreparation::try_new(
+            &effect,
+            provider_prepared_effect_fence,
             Vec::new(),
+        )
+        .map_err(|error| RunError::internal(error.to_string()))
+    }
+
+    async fn acknowledge_terminal_cleanup_preparation(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) {
+        self.acknowledged_effects
+            .lock()
+            .unwrap()
+            .push(effect.clone());
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        self.terminal_effect_order
+            .lock()
+            .unwrap()
+            .push("dispose".into());
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
         ))
     }
 
-    async fn execute_terminal_repository_publication(
+    async fn acknowledge_completed_terminal_cleanup(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) {
+        self.acknowledged_completed
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), lease.clone()));
+    }
+
+    async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
+        let exact = self
+            .terminal_assignments
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|assignment| assignment.lease == *lease);
+        if !exact {
+            return Err(RunError::internal(
+                "terminal Repository effect does not match its installed assignment",
+            ));
+        }
         self.publication_intents
             .lock()
             .unwrap()
@@ -1419,12 +1525,17 @@ struct FaultingSessionRepository {
     fail_operation_once: Mutex<Option<String>>,
     conflict_operation_once: Mutex<Option<String>>,
     running_conflict_operation_once: Mutex<Option<String>>,
+    realization_conflict_operation_once:
+        Mutex<Option<(String, awaken_session_contract::SessionRealizationLease)>>,
     tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
     fail_recovery_scan_once: AtomicBool,
     fail_environment_phase_count_once: AtomicBool,
     corrupt_environment_phase_count_once: AtomicBool,
     recovery_scan_count: AtomicUsize,
+    fail_recovery_scan_on_call: AtomicUsize,
+    quarantine_recovery_scan_on_call: AtomicUsize,
+    stall_recovery_cursor_on_call: AtomicUsize,
 }
 
 fn report_committed_mutation_as_conflict(
@@ -1453,12 +1564,16 @@ impl FaultingSessionRepository {
             fail_operation_once: Mutex::new(None),
             conflict_operation_once: Mutex::new(None),
             running_conflict_operation_once: Mutex::new(None),
+            realization_conflict_operation_once: Mutex::new(None),
             tombstone_after_operation_once: Mutex::new(None),
             get_not_found_once: AtomicBool::new(false),
             fail_recovery_scan_once: AtomicBool::new(false),
             fail_environment_phase_count_once: AtomicBool::new(false),
             corrupt_environment_phase_count_once: AtomicBool::new(false),
             recovery_scan_count: AtomicUsize::new(0),
+            fail_recovery_scan_on_call: AtomicUsize::new(0),
+            quarantine_recovery_scan_on_call: AtomicUsize::new(0),
+            stall_recovery_cursor_on_call: AtomicUsize::new(0),
         }
     }
 
@@ -1482,6 +1597,15 @@ impl FaultingSessionRepository {
         *self.running_conflict_operation_once.lock().unwrap() = Some(operation.to_string());
     }
 
+    fn commit_concurrent_realization_then_conflict_once(
+        &self,
+        operation: &str,
+        realization: awaken_session_contract::SessionRealizationLease,
+    ) {
+        *self.realization_conflict_operation_once.lock().unwrap() =
+            Some((operation.to_string(), realization));
+    }
+
     fn tombstone_after_operation_once(&self, operation: &str) {
         *self.tombstone_after_operation_once.lock().unwrap() = Some(operation.to_string());
     }
@@ -1494,18 +1618,54 @@ impl FaultingSessionRepository {
         self.fail_recovery_scan_once.store(true, Ordering::SeqCst);
     }
 
-    fn fail_environment_phase_count_once(&self) {
-        self.fail_environment_phase_count_once
-            .store(true, Ordering::SeqCst);
-    }
-
-    fn corrupt_environment_phase_count_once(&self) {
-        self.corrupt_environment_phase_count_once
-            .store(true, Ordering::SeqCst);
-    }
-
     fn recovery_scan_count(&self) -> usize {
         self.recovery_scan_count.load(Ordering::SeqCst)
+    }
+
+    fn fail_recovery_scan_on_call(&self, call: usize) {
+        self.fail_recovery_scan_on_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    fn quarantine_recovery_scan_on_call(&self, call: usize) {
+        self.quarantine_recovery_scan_on_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    fn stall_recovery_cursor_on_call(&self, call: usize) {
+        self.stall_recovery_cursor_on_call
+            .store(call, Ordering::SeqCst);
+    }
+
+    async fn commit_concurrent_root_as_conflict(
+        &self,
+        owner_scope: &str,
+        concurrent: PersistedSession,
+        operation: &str,
+    ) -> Result<
+        awaken_session_contract::SessionMutationResult,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        let session_id = concurrent.session_id.clone();
+        let expected_revision = concurrent.revision;
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(concurrent);
+        let payload_hash = payload.stable_hash();
+        let result = self
+            .inner
+            .commit_mutation(
+                owner_scope,
+                awaken_session_contract::SessionMutation {
+                    expected_revision,
+                    idempotency: awaken_session_contract::IdempotencyRecord {
+                        key: format!("test:{operation}:{session_id}:{}", expected_revision.0),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: Vec::new(),
+                },
+            )
+            .await?;
+        Ok(report_committed_mutation_as_conflict(result))
     }
 }
 
@@ -1593,7 +1753,6 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         if should_commit_running {
             let session_id = mutation.payload.session_id().to_string();
             let mut concurrent = self.inner.get(&session_id).await?;
-            let expected_revision = concurrent.revision;
             concurrent.begin_activity_epoch().ok_or_else(|| {
                 awaken_session_contract::SessionRepositoryError::InvalidMutation(
                     "injected concurrent activity exhausted its epoch".into(),
@@ -1613,27 +1772,32 @@ impl ManagedSessionRepository for FaultingSessionRepository {
                     ),
                 );
             }
-            let payload = awaken_session_contract::SessionMutationPayload::Replace(concurrent);
-            let payload_hash = payload.stable_hash();
-            let result = self
-                .inner
-                .commit_mutation(
+            return self
+                .commit_concurrent_root_as_conflict(owner_scope, concurrent, "concurrent-activity")
+                .await;
+        }
+        let concurrent_realization = {
+            let mut configured = self.realization_conflict_operation_once.lock().unwrap();
+            if configured
+                .as_ref()
+                .is_some_and(|(operation, _)| mutation.idempotency.key.contains(operation))
+            {
+                configured.take().map(|(_, realization)| realization)
+            } else {
+                None
+            }
+        };
+        if let Some(realization) = concurrent_realization {
+            let session_id = mutation.payload.session_id().to_string();
+            let mut concurrent = self.inner.get(&session_id).await?;
+            concurrent.realization = Some(realization);
+            return self
+                .commit_concurrent_root_as_conflict(
                     owner_scope,
-                    awaken_session_contract::SessionMutation {
-                        expected_revision,
-                        idempotency: awaken_session_contract::IdempotencyRecord {
-                            key: format!(
-                                "test:concurrent-activity:{session_id}:{}",
-                                expected_revision.0
-                            ),
-                            payload_hash,
-                        },
-                        payload,
-                        lifecycle_facts: Vec::new(),
-                    },
+                    concurrent,
+                    "concurrent-realization",
                 )
-                .await?;
-            return Ok(report_committed_mutation_as_conflict(result));
+                .await;
         }
         let should_tombstone = {
             let mut operation = self.tombstone_after_operation_once.lock().unwrap();
@@ -1732,21 +1896,35 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         self.inner.get(session_id).await
     }
 
-    async fn reconcilable_sessions(
+    async fn reconcilable_sessions_page(
         &self,
+        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
     ) -> Result<
         awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,
     > {
-        self.recovery_scan_count.fetch_add(1, Ordering::SeqCst);
-        if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst) {
+        let call = self.recovery_scan_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst)
+            || self.fail_recovery_scan_on_call.load(Ordering::SeqCst) == call
+        {
             return Err(
                 awaken_session_contract::SessionRepositoryError::Unavailable(
                     "injected recovery scan outage".into(),
                 ),
             );
         }
-        self.inner.reconcilable_sessions().await
+        let mut scan = self.inner.reconcilable_sessions_page(after).await?;
+        if self.quarantine_recovery_scan_on_call.load(Ordering::SeqCst) == call {
+            scan.quarantined
+                .push(awaken_session_contract::SessionRecoveryQuarantine {
+                    session_id: "injected-quarantine".into(),
+                    reason: "injected recovery quarantine".into(),
+                });
+        }
+        if self.stall_recovery_cursor_on_call.load(Ordering::SeqCst) == call {
+            scan.next_cursor = after.cloned();
+        }
+        Ok(scan)
     }
 
     async fn count_environment_phase(
@@ -1846,6 +2024,105 @@ struct RecordingEnvironmentSource {
     awakened: Mutex<BTreeSet<String>>,
     retired: Mutex<Vec<String>>,
     failures: Mutex<BTreeSet<String>>,
+}
+
+#[derive(Default)]
+struct RecordingWorkerObservations {
+    workers: Mutex<Vec<awaken_worker_contract::RegisteredWorker>>,
+    scripted: Mutex<VecDeque<WorkerObservationStep>>,
+    list_calls: AtomicUsize,
+    fail: AtomicBool,
+}
+
+enum WorkerObservationStep {
+    Workers(Vec<awaken_worker_contract::RegisteredWorker>),
+    Fail,
+}
+
+impl RecordingWorkerObservations {
+    fn replace(&self, workers: Vec<awaken_worker_contract::RegisteredWorker>) {
+        *self.workers.lock().unwrap() = workers;
+    }
+
+    fn script(&self, steps: impl IntoIterator<Item = WorkerObservationStep>) {
+        self.scripted.lock().unwrap().extend(steps);
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerObservationSource for RecordingWorkerObservations {
+    async fn list(
+        &self,
+    ) -> Result<Vec<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>
+    {
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(step) = self.scripted.lock().unwrap().pop_front() {
+            return match step {
+                WorkerObservationStep::Workers(workers) => Ok(workers),
+                WorkerObservationStep::Fail => {
+                    Err(awaken_worker_contract::RegistryError::Persistence(
+                        "injected Worker observation failure".into(),
+                    ))
+                }
+            };
+        }
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(awaken_worker_contract::RegistryError::Persistence(
+                "injected Worker observation failure".into(),
+            ));
+        }
+        Ok(self.workers.lock().unwrap().clone())
+    }
+}
+
+fn terminal_cleanup_worker(
+    target: &awaken_session_contract::SessionRealizationTarget,
+    manifest: awaken_worker_contract::WorkerManifest,
+) -> awaken_worker_contract::RegisteredWorker {
+    let identity = awaken_worker_contract::WorkerIdentity::new(
+        target.owner.clone(),
+        target
+            .runtime_incarnation
+            .strip_prefix(&format!("{}:", target.owner))
+            .and_then(|suffix| suffix.split_once(':'))
+            .map(|(_, incarnation)| incarnation)
+            .unwrap_or(target.runtime_incarnation.as_str()),
+        target
+            .runtime_incarnation
+            .strip_prefix(&format!("{}:", target.owner))
+            .and_then(|suffix| suffix.split_once(':'))
+            .and_then(|(generation, _)| generation.parse().ok())
+            .unwrap_or(1),
+    );
+    let capability_fingerprint = manifest
+        .fingerprint()
+        .expect("test Worker manifest fingerprint");
+    awaken_worker_contract::RegisteredWorker {
+        snapshot: awaken_worker_contract::WorkerSnapshot {
+            identity,
+            state: awaken_worker_contract::WorkerState::Ready,
+            manifest,
+            capability_fingerprint,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+            expires_at_ms: target.lease_expires_at_unix_ms,
+        },
+        heartbeat_sequence: 1,
+        observation_sequence: 0,
+        registered_at_ms: 1,
+        heartbeat_at_ms: 1,
+        drain_deadline_ms: None,
+    }
+}
+
+fn terminal_cleanup_manifest() -> awaken_worker_contract::WorkerManifest {
+    awaken_worker_contract::WorkerManifest {
+        runtime_protocol: awaken_worker_contract::VersionRange { min: 1, max: 2 },
+        dispatch_contract: awaken_worker_contract::VersionRange::exact(1),
+        ..Default::default()
+    }
 }
 
 impl RecordingEnvironmentSource {
@@ -2118,6 +2395,22 @@ fn repository_resources(
         Vec::new(),
     )
     .expect("valid writable Repository fixture")
+}
+
+fn credentialed_repository_resources(
+    binding_id: &str,
+    repository_id: &str,
+) -> awaken_session_contract::ResolvedSessionResources {
+    let resources = repository_resources(binding_id, repository_id);
+    let mut inputs = resources.inputs().to_vec();
+    let awaken_session_contract::ResolvedInputSource::Repository { config, .. } =
+        &mut inputs[0].source
+    else {
+        unreachable!("credential fixture is a Repository")
+    };
+    config.credential_binding = Some("repository-credential".into());
+    awaken_session_contract::ResolvedSessionResources::try_new(inputs, resources.skills().to_vec())
+        .expect("credentialed Repository fixture")
 }
 
 fn repository_publication_intent(

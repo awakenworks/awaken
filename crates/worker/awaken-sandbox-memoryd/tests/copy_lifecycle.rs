@@ -75,7 +75,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     std::fs::create_dir_all(first_projection.join("nested")).expect("create nested directory");
     std::fs::write(first_projection.join("nested/new.md"), "new").expect("create memory");
     std::fs::write(first_projection.join("invalid.bin"), [0xff, 0xfe]).expect("write invalid");
-    mount.teardown().await;
+    mount.teardown().await.unwrap();
     drop(mounter);
     drop(repository);
 
@@ -111,6 +111,6 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
         "M2/E3"
     );
 
-    replacement_mount.teardown().await;
+    replacement_mount.teardown().await.unwrap();
     std::fs::remove_dir_all(root).ok();
 }

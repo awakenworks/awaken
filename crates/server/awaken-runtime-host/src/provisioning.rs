@@ -15,16 +15,54 @@ use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_resource_contract::{FileCatalogError, FileRecord};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
-/// Anthropic Managed Agents' canonical sandbox-absolute deliverables directory.
-/// `AWAKEN_OUTPUTS_DIR`, Sandbox creation, durable handles, recovery, and Files
-/// harvesting all derive from this one value. Previously persisted handles retain
-/// their exact path and remain adoptable without a second live-path convention.
-const OUTPUTS_PATH: &str = "/mnt/session/outputs";
-
 #[derive(Debug)]
 pub(crate) enum RepositoryPublicationActivationError {
     Rejected(pc::RepositoryPublicationRejection),
     Failed(crate::host::HostError),
+}
+
+/// One physical-mount classifier shared by fresh-spec construction and live
+/// transition validation. MemoryStore mounts are provider create-time state;
+/// File mounts use the canonical late-attach port.
+pub(crate) fn resource_mount_is_create_time(mount: &pc::MountRequirement) -> bool {
+    matches!(mount.source, pc::MountSource::MemoryStore { .. })
+}
+
+/// The one pure Memory consistency decision shared by validation, effectful
+/// staging, and final Sandbox assembly. Checkpoint-and-release may proceed only
+/// when writable Memory is already write-through; read-only mounts and
+/// Resident environments retain provider defaults.
+pub(crate) fn projected_memory_write_consistency(
+    access: pc::MountAccess,
+    idle_retention: Option<&pc::SandboxIdleRetentionPolicy>,
+) -> pc::MemoryWriteConsistency {
+    if access == pc::MountAccess::ReadWrite
+        && idle_retention
+            .is_some_and(|policy| policy.mode == pc::SandboxIdleRetentionMode::CheckpointAndRelease)
+    {
+        pc::MemoryWriteConsistency::WriteThroughRequired
+    } else {
+        pc::MemoryWriteConsistency::ProviderDefault
+    }
+}
+
+/// Apply the canonical per-mount decision after the Environment Sandbox
+/// overlay so authored mounts cannot bypass the same consistency policy.
+fn project_memory_write_consistency(
+    mounts: &mut [pc::MountRequirement],
+    environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+) {
+    for mount in mounts {
+        if let pc::MountSource::MemoryStore {
+            write_consistency, ..
+        } = &mut mount.source
+        {
+            *write_consistency = projected_memory_write_consistency(
+                mount.access,
+                environment.map(|projection| &projection.idle_retention),
+            );
+        }
+    }
 }
 
 /// Canonical projection from the frozen Session Environment into neutral
@@ -75,14 +113,83 @@ pub(crate) fn project_environment(
         packages,
         sandbox: (!sandbox.is_empty()).then_some(sandbox),
         provisioning: environment.sandbox_provisioning,
+        idle_retention: environment.idle_retention.clone(),
     }
 }
 
+/// Whether any exact execution candidate launches an opaque ACP process inside
+/// the Session Sandbox. Backend-owned ACP is realized outside that projected
+/// Sandbox, so it must not strengthen this requirement.
+#[must_use]
+pub(crate) fn model_candidates_require_opaque_process<'a>(
+    candidates: impl IntoIterator<Item = &'a awaken_runtime_contract::resolved::ResolvedModelCandidate>,
+) -> bool {
+    candidates.into_iter().any(|candidate| {
+        matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(&candidate.binding().backend_ref),
+            awaken_runtime_contract::resolved::Backend::Acp(_)
+        ) && !matches!(
+            candidate.provisioning(),
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
+        )
+    })
+}
+
+/// Project the one effective frozen model set used by Session realization.
+/// A complete baseline override replaces the Agent route, exactly matching
+/// `resolve_canonical_session_projection`; otherwise the retained immutable
+/// Agent publication supplies primary plus fallbacks. Absence never triggers a
+/// mutable catalog lookup at this physical-effect boundary.
+#[must_use]
+pub(crate) fn frozen_session_requires_opaque_process(
+    published: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    baseline: Option<&awaken_session_contract::SessionBaseline>,
+) -> bool {
+    if let Some(publication) = baseline
+        .and_then(|baseline| baseline.model_override.as_ref())
+        .and_then(|override_| override_.publication.as_deref())
+    {
+        return model_candidates_require_opaque_process(
+            std::iter::once(&publication.primary).chain(publication.candidates.iter()),
+        );
+    }
+    published.is_some_and(|snapshot| {
+        model_candidates_require_opaque_process(
+            std::iter::once(&snapshot.resolved_spec.model_binding)
+                .chain(snapshot.resolved_spec.model_candidates.iter()),
+        )
+    })
+}
+
+/// Project every Session path cause once into the two neutral views consumed by
+/// physical realization and Worker admission. The provisioning contract's
+/// [`pc::SandboxRequirements::from_spec`] remains the sole owner of concrete
+/// isolation/tool-transparency/path-fidelity fields; this Host projection only
+/// supplies the complete cause and the matching effective spec.
+#[must_use]
+pub(crate) fn session_sandbox_projection(
+    spec: &pc::SandboxSpec,
+    has_repository: bool,
+    opaque_process: bool,
+) -> (pc::SandboxSpec, pc::SandboxRequirements) {
+    let requires_path_fidelity =
+        has_repository || opaque_process || spec.isolation >= pc::IsolationClass::Namespace;
+    let requirements = pc::SandboxRequirements::from_spec(spec, requires_path_fidelity);
+    let mut effective_spec = spec.clone();
+    // Copy the contract-owned isolation decision into the provider-visible
+    // physical spec; do not reconstruct the Namespace upgrade in the Host.
+    effective_spec.isolation = requirements.isolation;
+    (effective_spec, requirements)
+}
+
 /// Exact admission vector derived from the same canonical projection used by
-/// Session realization. `opaque_process` distinguishes ACP, whose process must
-/// see sandbox paths, from cooperative Native execution.
+/// Session realization. Repository presence is the frozen typed resource fact;
+/// `opaque_process` distinguishes projected ACP from cooperative Native
+/// execution. All callers use this complete signature so no compatibility
+/// overload can omit one Session path cause.
 pub(crate) fn sandbox_requirements(
     environment: &awaken_session_contract::EnvironmentSnapshot,
+    has_repository: bool,
     opaque_process: bool,
 ) -> pc::SandboxRequirements {
     let projection = project_environment(environment);
@@ -93,7 +200,7 @@ pub(crate) fn sandbox_requirements(
         Some(&projection),
         true,
     );
-    pc::SandboxRequirements::from_spec(&spec, opaque_process)
+    session_sandbox_projection(&spec, has_repository, opaque_process).1
 }
 
 /// Scheduling demand projected through the same Environment overlay used for
@@ -146,21 +253,45 @@ fn sandbox_spec_from_projection(
             .map(|projection| projection.packages.clone())
             .unwrap_or_default(),
         network,
-        outputs_path: OUTPUTS_PATH.to_owned(),
+        outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.to_owned(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Retained,
-        lease_ttl_secs: None,
         control_services: Default::default(),
+        lease_ttl_secs: None,
     };
-    environment
+    let mut spec = environment
         .and_then(|projection| projection.sandbox.clone())
-        .map_or(base.clone(), |sandbox| sandbox.apply(base))
+        .map_or(base.clone(), |sandbox| sandbox.apply(base));
+    project_memory_write_consistency(&mut spec.mounts, environment);
+    spec
+}
+
+/// Canonical mount-less durable Session shape used by cold creation and the
+/// capacity planner. It is intentionally Retained; a concrete warm-pool owner
+/// will return zero because durable Session filesystems cannot be transferred
+/// by rebinding an in-process scope.
+pub(crate) fn default_session_sandbox_spec(scope: &str) -> pc::SandboxSpec {
+    sandbox_spec_from_projection(scope, Vec::new(), Vec::new(), None, true)
 }
 
 pub(crate) struct EnvironmentCapacityProjection {
     pub(crate) spec: pc::SandboxSpec,
     pub(crate) shape_id: pc::SandboxCapacityShapeId,
+}
+
+/// One ephemeral, complete input snapshot for projecting a Session's physical
+/// Sandbox layout. It is assembled at the caller's single projection point and
+/// consumed immediately; the frozen Session and process-local slot remain the
+/// authorities for every field.
+pub(crate) struct ProjectedSandboxLayout<'a> {
+    pub(crate) resource_mounts: Vec<pc::MountRequirement>,
+    pub(crate) has_repositories: bool,
+    pub(crate) baseline_mounts: Option<&'a [pc::MountRequirement]>,
+    pub(crate) baseline_env: Option<&'a [pc::EnvVar]>,
+    pub(crate) content_delivery: Option<crate::session_slot::ManagedContentDelivery>,
+    pub(crate) environment: Option<&'a crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    pub(crate) network_isolation: bool,
 }
 
 /// Project one frozen Environment into both the creation request and its
@@ -217,12 +348,12 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         env: Vec::new(),
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
-        outputs_path: OUTPUTS_PATH.to_string(),
+        outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.to_string(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
-        lease_ttl_secs: None,
         control_services: Default::default(),
+        lease_ttl_secs: None,
     }
 }
 
@@ -311,33 +442,217 @@ impl SharedHost {
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
+    #[cfg(test)]
     pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
-        let mounts = self.thread_session_mounts(thread);
-        let has_repositories = self
+        let resources = self.thread_resources_snapshot(thread);
+        self.sandbox_spec_for_resources(thread, &resources)
+    }
+
+    /// Build the exact neutral Session spec for the provider selected by the
+    /// immutable Agent publication. Network projection is provider capability
+    /// dependent, so create/adopt/restore must not build with the process-wide
+    /// default and then execute on a BackendOwned provider.
+    pub(crate) fn sandbox_spec_for_provider(
+        &self,
+        thread: &str,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        let resources = self.thread_resources_snapshot(thread);
+        self.sandbox_spec_for_resources_and_provider(thread, &resources, provider)
+    }
+
+    /// Build the provider-selected physical substrate with only mounts that the
+    /// provider contract cannot attach later. The Session pending transition is
+    /// already durable before this create-time Memory effect; after create, the
+    /// V2 handle is persisted before any mutable workspace or Git effect.
+    pub(crate) fn sandbox_substrate_spec_for_provider(
+        &self,
+        thread: &str,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        let (create_time_mounts, has_repositories) = self
             .session_slots
-            .read(thread, |slot| !slot.resources.repositories.is_empty())
-            .unwrap_or(false);
+            .read(thread, |slot| {
+                let create_time_mounts = slot
+                    .resources
+                    .mounts
+                    .iter()
+                    .filter(|mount| resource_mount_is_create_time(mount))
+                    .cloned()
+                    .collect();
+                let has_repositories =
+                    slot.resource_transition.as_ref().is_some_and(|transition| {
+                        transition.desired().resources.inputs().iter().any(|input| {
+                            matches!(
+                                input.source,
+                                awaken_session_contract::ResolvedInputSource::Repository { .. }
+                            )
+                        })
+                    });
+                (create_time_mounts, has_repositories)
+            })
+            .unwrap_or_default();
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            create_time_mounts,
+            has_repositories,
+            provider.capabilities().network_isolation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec_for_resources(
+        &self,
+        thread: &str,
+        resources: &StagedResources,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout(
+            thread,
+            resources.mounts.clone(),
+            !resources.repositories.is_empty(),
+        )
+    }
+
+    pub(crate) fn sandbox_spec_for_resources_and_provider(
+        &self,
+        thread: &str,
+        resources: &StagedResources,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            resources.mounts.clone(),
+            !resources.repositories.is_empty(),
+            provider.capabilities().network_isolation,
+        )
+    }
+
+    /// Project a frozen aggregate manifest into the exact create-time provider
+    /// substrate without loading any File, Memory, Skill, Vault, or Repository
+    /// material. File mounts remain on the canonical late-attach path; cold
+    /// adoption retains only typed Memory identity for handle validation.
+    pub(crate) fn sandbox_spec_for_resolved_resources_and_provider(
+        &self,
+        thread: &str,
+        resources: &awaken_session_contract::ResolvedSessionResources,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
         let environment = self
             .session_slots
             .read(thread, |slot| slot.environment_projection.clone())
             .flatten();
-        let mut spec = sandbox_spec_from_projection(
+        let mounts = resources
+            .inputs()
+            .iter()
+            .filter_map(|input| {
+                crate::managed_resource_projection::resolved_input_validation_mount(
+                    input,
+                    environment.as_ref(),
+                )
+            })
+            .filter(resource_mount_is_create_time)
+            .collect();
+        let has_repositories = resources.inputs().iter().any(|input| {
+            matches!(
+                input.source,
+                awaken_session_contract::ResolvedInputSource::Repository { .. }
+            )
+        });
+        self.sandbox_spec_for_mount_layout_with_network(
             thread,
             mounts,
-            self.thread_session_env(thread),
-            environment.as_ref(),
+            has_repositories,
+            provider.capabilities().network_isolation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec_for_mount_layout(
+        &self,
+        thread: &str,
+        resource_mounts: Vec<pc::MountRequirement>,
+        has_repositories: bool,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            resource_mounts,
+            has_repositories,
             self.session_provider.capabilities().network_isolation,
+        )
+    }
+
+    fn sandbox_spec_for_mount_layout_with_network(
+        &self,
+        thread: &str,
+        resource_mounts: Vec<pc::MountRequirement>,
+        has_repositories: bool,
+        network_isolation: bool,
+    ) -> pc::SandboxSpec {
+        let (baseline, content_delivery, environment) = self
+            .session_slots
+            .read(thread, |slot| {
+                (
+                    slot.baseline.clone(),
+                    slot.content_delivery,
+                    slot.environment_projection.clone(),
+                )
+            })
+            .unwrap_or_default();
+        self.sandbox_spec_for_projected_layout(
+            thread,
+            ProjectedSandboxLayout {
+                resource_mounts,
+                has_repositories,
+                baseline_mounts: baseline.as_ref().map(|baseline| baseline.mounts.as_slice()),
+                baseline_env: baseline.as_ref().map(|baseline| baseline.env.as_slice()),
+                content_delivery,
+                environment: environment.as_ref(),
+                network_isolation,
+            },
+        )
+    }
+
+    pub(crate) fn sandbox_spec_for_projected_layout(
+        &self,
+        thread: &str,
+        projection: ProjectedSandboxLayout<'_>,
+    ) -> pc::SandboxSpec {
+        let mounts = crate::application::project_session_mounts(
+            projection.resource_mounts,
+            projection.baseline_mounts,
+            projection.content_delivery,
         );
-        // A Repository is addressed by one sandbox-absolute `/workspace/...`
-        // path through structured tools, Bash, Git, and opaque Agent processes.
-        // Workdir can only rewrite cooperative tool arguments, so admitting it
-        // here would create two path realities. Namespace is the minimum class;
-        // `create_session_environment` additionally checks the explicit
-        // tool-transparency/path-fidelity capability bits before any clone.
-        if has_repositories {
-            spec.isolation = spec.isolation.max(pc::IsolationClass::Namespace);
-        }
-        spec
+        let env = projection
+            .baseline_env
+            .map(<[pc::EnvVar]>::to_vec)
+            .unwrap_or_else(|| self.thread_session_env(thread));
+        let spec = sandbox_spec_from_projection(
+            thread,
+            mounts,
+            env,
+            projection.environment,
+            projection.network_isolation,
+        );
+        session_sandbox_projection(&spec, projection.has_repositories, false).0
+    }
+
+    pub(crate) fn validate_repository_environment_adoption_paths(
+        &self,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        spec: &pc::SandboxSpec,
+        repository_paths: &[&str],
+        historical_owned_paths: &[&str],
+    ) -> Result<pc::SandboxSpec, crate::host::HostError> {
+        let effective = provider
+            .effective_spec(spec)
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        pc::validate_repository_sandbox_adoption_layout(
+            repository_paths,
+            &effective,
+            historical_owned_paths,
+        )
+        .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        Ok(effective)
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
@@ -408,6 +723,7 @@ impl SharedHost {
     /// environment. The narrow port receives only a secret-free plan and an ephemeral
     /// transport credential after authorization/config resolution. A failure aborts
     /// activation so the Session cannot run believing a working tree exists.
+    #[cfg(test)]
     pub(crate) async fn realize_thread_repositories(
         &self,
         thread: &str,
@@ -435,6 +751,10 @@ impl SharedHost {
         binding_checks: &[ResourceBindingCheck],
         realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host::HostError> {
+        repository
+            .plan
+            .validate_mount_path()
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
         let credential = self
             .repository_operation_credential(thread, repository, binding_checks, None)
             .await?;
@@ -672,6 +992,11 @@ impl SharedHost {
             awaken_session_contract::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
+        repository.plan.validate_mount_path().map_err(|error| {
+            RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
+                error.to_string(),
+            ))
+        })?;
         expectation.validate().map_err(|error| {
             RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
                 error.to_string(),
@@ -712,58 +1037,6 @@ impl SharedHost {
         Ok(receipt)
     }
 
-    /// Harvest a thread's run-authored skills into the durable catalog (ADR-0036 D6/D8,
-    /// scan the workspace skill dir for skills the
-    /// agent authored this run — the self-authoring loop a Hermes-style agent runs — and
-    /// persist each under its id, so a skill written in this session is delivered to the
-    /// next one that opens against the same catalog. A no-op for a thread with no live
-    /// environment or a host with no durable skill store (nothing to persist into).
-    /// Idempotent: a re-scanned delivered skill puts identical bytes back under the same id.
-    pub async fn harvest_thread_skills(&self, thread: &str) -> Result<(), ResourcePurgeError> {
-        let env = self.session_environment(thread).await;
-        let Some(env) = env else {
-            return Ok(());
-        };
-        self.harvest_thread_skills_from_environment(thread, &env)
-            .await
-    }
-
-    /// Harvest from an exact owner-held Environment. Terminal cleanup uses this
-    /// after its background-work fence because a retryable Bound retirement is
-    /// deliberately hidden from ordinary Resident readers.
-    pub(crate) async fn harvest_thread_skills_from_environment(
-        &self,
-        thread: &str,
-        environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<(), ResourcePurgeError> {
-        if !self.skills.has_application() {
-            return Ok(());
-        }
-        let workspace = self.thread_workspace(thread);
-        self.persist_authored_skills(&workspace, environment.as_ref())
-            .await
-    }
-
-    /// Scan a live environment's workspace skill dir and persist each authored skill to the
-    /// durable catalog. Split from [`harvest_thread_skills`](Self::harvest_thread_skills) so
-    /// the scan→store path is testable with a real sandbox, without a full `SessionCtx`.
-    async fn persist_authored_skills(
-        &self,
-        workspace: &str,
-        env: &crate::session_environment::SessionEnvironment,
-    ) -> Result<(), ResourcePurgeError> {
-        for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
-            if let Some(result) = self
-                .skills
-                .persist_authored(workspace, &skill.id, &skill.content)
-                .await
-            {
-                result.map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-            }
-        }
-        Ok(())
-    }
-
     /// Persist every Agent-authored output before the environment can be disposed.
     /// The `(Session, logical path, content)` harvest key makes retries idempotent;
     /// Files API reads only this durable catalog and never scan the Sandbox.
@@ -772,20 +1045,6 @@ impl SharedHost {
         thread: &str,
     ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         self.artifact_harvester().harvest(thread).await
-    }
-
-    /// Harvest outputs from the exact terminal owner snapshot. This does not
-    /// broaden the ordinary Resident lookup to expose Retiring Environments.
-    pub(crate) async fn harvest_thread_artifacts_from_environment(
-        &self,
-        thread: &str,
-        environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
-        let harvester = self.artifact_harvester();
-        let claim = harvester.current_claim(thread);
-        harvester
-            .harvest_with_environment(thread, claim, environment)
-            .await
     }
 }
 
@@ -800,8 +1059,19 @@ pub(crate) struct ArtifactHarvester {
     session_slots: crate::session_slot::SessionRuntimeSlots,
     local_workspace: String,
     publisher: std::sync::Arc<
-        dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+        dyn awaken_resource_contract::ArtifactPublisher<
+                awaken_run_ingress::ArtifactPublicationFence,
+            >,
     >,
+}
+
+/// Closed, process-local choice of Artifact source for one harvest attempt.
+/// Receipt-only recovery is authorized exclusively by a terminal fence; it is
+/// never inferred for an ordinary Run whose live Environment is absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArtifactCaptureMode {
+    Live,
+    ReceiptOnly,
 }
 
 #[derive(Debug)]
@@ -820,8 +1090,10 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
     ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
-        let claim = self.current_claim(thread);
-        self.harvest_with_claim(thread, claim).await
+        let fence = self
+            .current_claim(thread)
+            .map(awaken_run_ingress::ArtifactPublicationFence::Run);
+        self.harvest_with_fence(thread, fence).await
     }
 
     pub(crate) async fn harvest_with_claim(
@@ -829,39 +1101,118 @@ impl ArtifactHarvester {
         thread: &str,
         claim: Option<awaken_run_ingress::RunClaim>,
     ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
-        let env = self
+        self.harvest_with_fence(
+            thread,
+            claim.map(awaken_run_ingress::ArtifactPublicationFence::Run),
+        )
+        .await
+    }
+
+    pub(crate) async fn harvest_with_fence(
+        &self,
+        thread: &str,
+        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+        self.harvest_with_fence_mode(thread, fence, ArtifactCaptureMode::Live)
+            .await
+    }
+
+    /// Execute one harvest through the sole publish/recovery owner. Callers may
+    /// select `ReceiptOnly` only when existing physical cleanup evidence proves
+    /// that live output capture must not be attempted.
+    pub(crate) async fn harvest_with_fence_mode(
+        &self,
+        thread: &str,
+        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        capture_mode: ArtifactCaptureMode,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+        self.harvest_with_fence_mode_from_environment(thread, fence, capture_mode, None)
+            .await
+    }
+
+    /// Use one exact owner-held Environment while retaining the same publisher,
+    /// fence validation, idempotency key, and receipt recovery path.
+    pub(crate) async fn harvest_with_environment_and_fence(
+        &self,
+        thread: &str,
+        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+        self.harvest_with_fence_mode_from_environment(
+            thread,
+            fence,
+            ArtifactCaptureMode::Live,
+            Some(environment),
+        )
+        .await
+    }
+
+    async fn harvest_with_fence_mode_from_environment(
+        &self,
+        thread: &str,
+        fence: Option<awaken_run_ingress::ArtifactPublicationFence>,
+        capture_mode: ArtifactCaptureMode,
+        exact_environment: Option<&Arc<crate::session_environment::SessionEnvironment>>,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+        let terminal_effect = fence.as_ref().and_then(|fence| match fence {
+            awaken_run_ingress::ArtifactPublicationFence::Terminal(effect) => Some(effect),
+            awaken_run_ingress::ArtifactPublicationFence::Run(_)
+            | awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(_) => None,
+        });
+        if capture_mode == ArtifactCaptureMode::ReceiptOnly && terminal_effect.is_none() {
+            return Err(ResourcePurgeError::Storage(
+                "receipt-only Artifact recovery requires a terminal fence".into(),
+            ));
+        }
+        let workspace_owner = terminal_effect
+            .map(|effect| effect.command.session_id.as_str())
+            .unwrap_or(thread);
+        let workspace = self
             .session_slots
-            .read(thread, |slot| slot.environment_owner.resident())
+            .read(workspace_owner, |slot| slot.workspace.clone())
             .flatten();
-        let Some(env) = env else {
+        let workspace = match (workspace, terminal_effect) {
+            (Some(workspace), _) => workspace,
+            (None, Some(_)) => {
+                return Err(ResourcePurgeError::Storage(
+                    "terminal Artifact recovery has no root Session Workspace projection".into(),
+                ));
+            }
+            (None, None) => self.local_workspace.clone(),
+        };
+        if capture_mode == ArtifactCaptureMode::ReceiptOnly {
+            return self
+                .recover_terminal_receipts(
+                    thread,
+                    workspace,
+                    terminal_effect.expect("receipt-only mode requires a terminal effect"),
+                )
+                .await;
+        }
+        let projected_environment = exact_environment.cloned().or_else(|| {
+            self.session_slots
+                .read(thread, |slot| slot.environment_owner.resident())
+                .flatten()
+        });
+        let Some(env) = projected_environment else {
+            if let Some(effect) = terminal_effect {
+                return self
+                    .recover_terminal_receipts(thread, workspace, effect)
+                    .await;
+            }
             return Ok(HarvestedArtifacts {
                 receipts: Vec::new(),
             });
         };
-        self.harvest_with_environment(thread, claim, &env).await
-    }
-
-    pub(crate) async fn harvest_with_environment(
-        &self,
-        thread: &str,
-        claim: Option<awaken_run_ingress::RunClaim>,
-        env: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         let artifacts = env
-            .artifacts()
+            .capture_artifacts()
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-        let workspace = self
-            .session_slots
-            .read(thread, |slot| slot.workspace.clone())
-            .flatten()
-            .unwrap_or_else(|| self.local_workspace.clone());
+        let idempotency_scope = terminal_effect.map(|effect| effect.operation_id().to_string());
         let mut receipts = Vec::new();
-        for artifact in artifacts {
-            let bytes = env
-                .read_artifact(&artifact.id)
-                .await
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        for captured in artifacts {
+            let artifact = captured.metadata;
+            let bytes = captured.bytes;
             let content_id = awaken_resource_contract::content_id(&bytes);
             if content_id != artifact.content_hash || content_id != artifact.id {
                 return Err(ResourcePurgeError::Storage(format!(
@@ -869,9 +1220,7 @@ impl ArtifactHarvester {
                     artifact.path
                 )));
             }
-            let logical_path = artifact
-                .path
-                .strip_prefix("/mnt/session/outputs/")
+            let logical_path = pc::WorkspaceLayout::outputs_relative(&artifact.path)
                 .or_else(|| artifact.path.strip_prefix("/outputs/"))
                 .unwrap_or(artifact.path.trim_start_matches('/'))
                 .to_string();
@@ -889,7 +1238,8 @@ impl ArtifactHarvester {
                 mime_type,
                 content_id,
                 bytes,
-                fence: claim.clone(),
+                idempotency_scope: idempotency_scope.clone(),
+                fence: fence.clone(),
             };
             publication
                 .verify()
@@ -904,6 +1254,26 @@ impl ArtifactHarvester {
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             receipts.push(receipt);
         }
+        Ok(HarvestedArtifacts { receipts })
+    }
+
+    async fn recover_terminal_receipts(
+        &self,
+        thread: &str,
+        workspace: String,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
+        let recovery = awaken_resource_contract::ArtifactRecovery {
+            workspace_id: workspace,
+            session_id: thread.to_string(),
+            idempotency_scope: effect.operation_id().to_string(),
+            fence: awaken_run_ingress::ArtifactPublicationFence::Terminal(effect.clone()),
+        };
+        let receipts = self
+            .publisher
+            .recover(recovery)
+            .await
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
         Ok(HarvestedArtifacts { receipts })
     }
 }
@@ -955,779 +1325,5 @@ impl SharedHost {
 /// exercise the host-plane provisioning bookkeeping directly; the wired
 /// memory/repo write-back happy paths run in `host::tests` through a real session.
 #[cfg(test)]
-mod provisioning_registry_tests {
-    use super::*;
-    use crate::host::SharedHost;
-    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
-    use awaken_sandbox_local::LocalProvider;
-
-    /// The logical path a staged resource realizes under, recovered from a projected
-    /// pc mount (`.mnt/<logical>`) so the registry assertions stay resource-oriented.
-    fn logical_of(m: &pc::MountRequirement) -> &str {
-        m.mount_path.strip_prefix(".mnt/").unwrap_or(&m.mount_path)
-    }
-
-    /// Whether a projected Workdir spec denies tool egress.
-    fn denies(spec: &pc::SandboxSpec) -> bool {
-        spec.deny_tool_egress
-    }
-
-    struct NoLlm;
-    #[async_trait::async_trait]
-    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
-        async fn infer(
-            &self,
-            _request: ChatRequest,
-        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-            unreachable!("provisioning bookkeeping never calls the model")
-        }
-    }
-
-    fn host() -> SharedHost {
-        SharedHost::new(Arc::new(NoLlm), "test")
-    }
-
-    #[derive(Default)]
-    struct RecordingPublicationRealizer {
-        calls: std::sync::Mutex<usize>,
-        mismatched_receipt: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl pc::RepositoryRealizer for RecordingPublicationRealizer {
-        async fn realize_repository(
-            &self,
-            _plan: &pc::RepositoryRealizationPlan,
-            _credential: Option<&pc::RepositoryHttpBasicCredential>,
-        ) -> Result<(), pc::SandboxError> {
-            unreachable!("publication helper never realizes a repository")
-        }
-
-        async fn publish_repository(
-            &self,
-            plan: &pc::RepositoryRealizationPlan,
-            expectation: &pc::RepositoryPublicationExpectation,
-            _credential: Option<&pc::RepositoryHttpBasicCredential>,
-        ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
-            *self.calls.lock().unwrap() += 1;
-            let mut receipt = pc::RepositoryPublicationReceipt::new(plan, expectation);
-            if self.mismatched_receipt {
-                receipt.repository_id.push_str("-wrong");
-            }
-            Ok(receipt)
-        }
-    }
-
-    fn root_terminal_cleanup_command(
-        session_id: &str,
-    ) -> awaken_session_contract::SessionCleanupCommand {
-        let mut operation = awaken_session_contract::SessionCleanupOperation::default();
-        assert!(operation.request(session_id));
-        operation.freeze_targets(session_id, [], 0, 0).unwrap();
-        operation.command_for(session_id, session_id).unwrap()
-    }
-
-    #[test]
-    fn session_and_housekeeping_filesystem_continuity_are_distinct() {
-        /* Continuity cause/effect table.
-         * Causes: C1 the spec realizes the canonical Session environment; C2
-         * the spec realizes a disposable child/probe environment. Effects: E1
-         * request retained writable state for DurableRequest recovery; E2
-         * request ephemeral state and therefore no configured continuation PVC.
-         * Rules: SC1 C1=>E1; SC2 C2=>E2. The typed field participates in the
-         * capacity identity, so the two requests cannot share warm capacity.
-         */
-        assert_eq!(
-            host().sandbox_spec("session").filesystem_continuity,
-            pc::FilesystemContinuity::Retained,
-            "SC1"
-        );
-        assert_eq!(
-            agent_run_sandbox_spec("probe").filesystem_continuity,
-            pc::FilesystemContinuity::Ephemeral,
-            "SC2"
-        );
-        assert_ne!(
-            pc::SandboxCapacityShapeId::from_spec(&host().sandbox_spec("session")),
-            pc::SandboxCapacityShapeId::from_spec(&agent_run_sandbox_spec("probe")),
-            "SC1/SC2"
-        );
-    }
-
-    /// A resource mount realized read-only under `.mnt/<logical>`.
-    fn resource_mount(logical: &str) -> pc::MountRequirement {
-        pc::MountRequirement {
-            mount_id: format!("id-{logical}"),
-            source: pc::MountSource::InlineBytes {
-                contents: format!("content of {logical}").into_bytes(),
-                content_hash: None,
-            },
-            mount_path: format!(".mnt/{logical}"),
-            access: pc::MountAccess::ReadOnly,
-            lifetime: pc::MountLifetime::PerRun,
-            required: true,
-        }
-    }
-
-    fn repository_activation(logical: &str) -> RepositoryActivation {
-        RepositoryActivation {
-            plan: pc::RepositoryRealizationPlan {
-                repository_id: format!("id-{logical}"),
-                mount_path: logical.to_string(),
-                source_remote_url: "https://example.invalid/x.git".to_string(),
-                transport_url: "https://example.invalid/x.git".to_string(),
-                initial_branch: None,
-                initial_commit: None,
-                access: pc::MountAccess::ReadWrite,
-            },
-            credential_pin: None,
-        }
-    }
-
-    #[test]
-    fn register_replaces_the_threads_staged_set() {
-        let host = host();
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
-                prompts: vec!["first".into()],
-                memory_prompts: Vec::new(),
-                binding_checks: Vec::new(),
-                repositories: vec![repository_activation("repo-a")],
-            },
-        );
-        // A second register REPLACES (correct at create time, before any first Run).
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                mounts: vec![resource_mount("c.md")],
-                prompts: vec!["second".into()],
-                memory_prompts: Vec::new(),
-                binding_checks: Vec::new(),
-                repositories: Vec::new(),
-            },
-        );
-
-        assert_eq!(host.sandbox_spec("t").mounts.len(), 1, "old mounts dropped");
-        assert_eq!(host.thread_session_prompts("t"), vec!["second".to_string()]);
-        assert!(
-            host.thread_repository_activations("t").is_empty(),
-            "old repository activation dropped"
-        );
-    }
-
-    #[test]
-    fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
-        // Cause graph: a frozen restriction plus a provider without strict network
-        // isolation selects the existing Workdir wrapper, not an unsupported
-        // admission requirement.
-        // | Rule | restriction | strict provider | network | deny wrapper |
-        // | W1 | absent | no | unrestricted | no |
-        // | W2 | none | no | unrestricted | yes |
-        let host = host();
-        // No registration and no egress: shared network, no mounts.
-        let bare = host.sandbox_spec("t");
-        assert!(!denies(&bare));
-        assert!(bare.mounts.is_empty());
-
-        host.install_environment_projection(
-            "t",
-            &awaken_session_contract::EnvironmentSnapshot {
-                environment_id: "environment".into(),
-                revision: awaken_session_contract::EnvironmentRevision(1),
-                self_hosted: false,
-                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                    "environment-1".into(),
-                ),
-                sandbox: Default::default(),
-                sandbox_provisioning: Default::default(),
-                idle_retention: Default::default(),
-                packages: Default::default(),
-                prepared_image: None,
-                network: awaken_session_contract::SessionNetworkPolicy::None,
-                credential_realization:
-                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
-            },
-        )
-        .expect("freeze test Environment");
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                mounts: vec![resource_mount("notes.md")],
-                ..Default::default()
-            },
-        );
-        let spec = host.sandbox_spec("t");
-        assert!(denies(&spec), "the thread's deny-egress policy is carried");
-        assert_eq!(
-            spec.network,
-            pc::NetworkPolicy::Unrestricted,
-            "Workdir does not claim strict network isolation in admission"
-        );
-        assert_eq!(spec.mounts.len(), 1);
-        assert_eq!(logical_of(&spec.mounts[0]), "notes.md");
-    }
-
-    #[tokio::test]
-    async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_paths() {
-        // Cause/effect graph: C1 Session has/has-not a Repository; C2 provider
-        // has/has-not tool transparency plus sandbox-absolute path fidelity.
-        // Effects: E1 repository demand is promoted to Namespace requirements;
-        // E2 a Workdir provider is rejected before environment creation/clone;
-        // E3 a no-repository Workdir Session retains its supported local tier.
-        //
-        // | Rule | Repository | Provider path contract | Effect |
-        // |---|---|---|---|
-        // | W1 | yes | split Workdir paths | E1+E2 |
-        // | W2 | no | split Workdir paths | E3 |
-        // | W3 | yes | transparent/fidelitous | admitted (covered by the real Namespace Hand test) |
-        // Constraint/invariant: SandboxSpec plus provider capabilities are the
-        // single admission authority; no Bash command rewriting or alias mount
-        // is introduced as a second path mapping.
-        let host = host();
-        let local = crate::session_environment::SessionEnvironmentProvider::workdir(
-            tempfile::tempdir().unwrap().path(),
-        );
-        let bare = host.sandbox_spec("bare");
-        assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
-
-        host.register_thread_resources(
-            "repository-session",
-            StagedResources {
-                repositories: vec![repository_activation("repo")],
-                ..Default::default()
-            },
-        );
-        let repository_spec = host.sandbox_spec("repository-session");
-        assert_eq!(
-            repository_spec.isolation,
-            pc::IsolationClass::Namespace,
-            "W1/E1"
-        );
-        let error = match host
-            .create_session_environment(&local, &repository_spec)
-            .await
-        {
-            Ok(_) => panic!("W1/E2 Workdir cannot offer one /workspace path"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .message
-                .contains("one sandbox-absolute workspace path"),
-            "W1/E2: {}",
-            error.message
-        );
-    }
-
-    #[tokio::test]
-    async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
-        // Managed repository Skill cause/effect rule R9. C1 the frozen mount is
-        // unsafe (the provider rejects it before Git) or C2 repository
-        // realization returns an error. E1 Session activation fails before
-        // Skill-root selection, snapshot, or prompt publication. This existing
-        // realization boundary is the only clone/fetch owner; Skill discovery
-        // never adds another transport path. Decision rows R9a=C1=>E1 and
-        // R9b=C2=>E1 exercise both causes through that same boundary.
-        struct FailingRepositoryRealizer;
-
-        #[async_trait::async_trait]
-        impl pc::RepositoryRealizer for FailingRepositoryRealizer {
-            async fn realize_repository(
-                &self,
-                _plan: &pc::RepositoryRealizationPlan,
-                _credential: Option<&pc::RepositoryHttpBasicCredential>,
-            ) -> Result<(), pc::SandboxError> {
-                Err(pc::SandboxError::new("clone failed"))
-            }
-
-            async fn publish_repository(
-                &self,
-                _plan: &pc::RepositoryRealizationPlan,
-                _expectation: &pc::RepositoryPublicationExpectation,
-                _credential: Option<&pc::RepositoryHttpBasicCredential>,
-            ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError>
-            {
-                unreachable!("R9 tests realization only")
-            }
-        }
-
-        let tmp = tempfile::tempdir().unwrap();
-        let env = crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(tmp.path())
-                .create_sandbox(&agent_run_sandbox_spec("s"))
-                .await
-                .unwrap(),
-        );
-        let host = host();
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                repositories: vec![RepositoryActivation {
-                    plan: pc::RepositoryRealizationPlan {
-                        repository_id: "repo-escape".into(),
-                        mount_path: "../escape".into(),
-                        source_remote_url: "https://example.invalid/x.git".into(),
-                        transport_url: "https://example.invalid/x.git".into(),
-                        initial_branch: None,
-                        initial_commit: None,
-                        access: pc::MountAccess::ReadWrite,
-                    },
-                    credential_pin: None,
-                }],
-                ..Default::default()
-            },
-        );
-        let err = host.realize_thread_repositories("t", &env).await;
-        assert!(
-            err.is_err(),
-            "R9a unsafe repo mount must abort Session start"
-        );
-
-        host.register_thread_resources(
-            "clone-failure",
-            StagedResources {
-                repositories: vec![repository_activation("repo")],
-                ..Default::default()
-            },
-        );
-        let error = host
-            .realize_thread_repositories("clone-failure", &FailingRepositoryRealizer)
-            .await
-            .expect_err("R9b clone failure must abort Session start");
-        assert!(error.message.contains("clone failed"), "R9b/E1: {error:?}");
-    }
-
-    #[tokio::test]
-    async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies_receipt() {
-        /* Publication-helper cause/effect table.
-         * Causes: C1 activation is read/write; C2 expectation has a valid exact
-         * coordinate; C3 adapter receipt is canonical. Effects: E1 invoke exactly
-         * one Realizer effect; E2 return the verified receipt; E3 reject before
-         * any adapter call; E4 reject mismatched evidence. Rules: H1 C1+C2+C3 =>
-         * E1+E2; H2 !C1=>E3; H3 !C2=>E3; H4 C1+C2+!C3=>E1+E4. The caller supplies
-         * the activation compiled from its frozen ResolvedInput; no thread Resource
-         * lookup or publish-all loop exists in this helper.
-         */
-        let host = host();
-        let repository = repository_activation("repo");
-        let expectation = pc::RepositoryPublicationExpectation {
-            branch: "awf/work".into(),
-            commit: "0123456789abcdef0123456789abcdef01234567".into(),
-            expected_prior_commit: None,
-        };
-        let realizer = RecordingPublicationRealizer::default();
-        let receipt = host
-            .publish_repository_activation(
-                "thread",
-                &repository,
-                &[],
-                &realizer,
-                &expectation,
-                None,
-            )
-            .await
-            .expect("H1");
-        receipt.verify(&repository.plan, &expectation).unwrap();
-        assert_eq!(*realizer.calls.lock().unwrap(), 1, "H1/E1");
-
-        let readonly = RepositoryActivation {
-            plan: pc::RepositoryRealizationPlan {
-                access: pc::MountAccess::ReadOnly,
-                ..repository.plan.clone()
-            },
-            credential_pin: None,
-        };
-        let error = host
-            .publish_repository_activation("thread", &readonly, &[], &realizer, &expectation, None)
-            .await
-            .expect_err("H2");
-        assert!(
-            matches!(
-                error,
-                RepositoryPublicationActivationError::Failed(error)
-                    if error.message.contains("read-only")
-            ),
-            "H2/E3"
-        );
-        assert_eq!(*realizer.calls.lock().unwrap(), 1, "H2 no effect");
-
-        let invalid = pc::RepositoryPublicationExpectation {
-            branch: "awf/work".into(),
-            commit: "short".into(),
-            expected_prior_commit: None,
-        };
-        host.publish_repository_activation("thread", &repository, &[], &realizer, &invalid, None)
-            .await
-            .expect_err("H3");
-        assert_eq!(*realizer.calls.lock().unwrap(), 1, "H3 no effect");
-
-        let mismatched = RecordingPublicationRealizer {
-            mismatched_receipt: true,
-            ..Default::default()
-        };
-        let error = host
-            .publish_repository_activation(
-                "thread",
-                &repository,
-                &[],
-                &mismatched,
-                &expectation,
-                None,
-            )
-            .await
-            .expect_err("H4");
-        assert!(
-            matches!(
-                error,
-                RepositoryPublicationActivationError::Failed(error)
-                    if error.message.contains("does not match")
-            ),
-            "H4/E4"
-        );
-        assert_eq!(*mismatched.calls.lock().unwrap(), 1, "H4/E1");
-    }
-
-    #[tokio::test]
-    async fn reverse_channels_are_safe_noops_without_a_live_session() {
-        let host = host();
-        // Stage a repo, but never create a session for the thread: reverse channels
-        // must early-return (no live env), not panic. Memory write-through is owned
-        // by the MemoryMount guard and therefore has no Host-side reverse channel.
-        host.register_thread_resources(
-            "t",
-            StagedResources {
-                repositories: vec![repository_activation("r")],
-                ..Default::default()
-            },
-        );
-        host.harvest_thread_skills("t").await.unwrap(); // no env / no store → no persist
-        assert!(
-            host.harvest_thread_artifacts("t")
-                .await
-                .unwrap()
-                .receipts
-                .is_empty()
-        );
-        assert!(
-            host.harvest_thread_artifacts("never-seen")
-                .await
-                .unwrap()
-                .receipts
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal() {
-        // Constraint/Invariant: the authoritative inputs and ownership boundaries
-        // documented here remain the only decision source; no parallel path is admitted.
-        // Decision rule: execute every reachable cause partition documented here and
-        // require its stated effects, including each fail-closed outcome.
-        use awaken_session_contract::SessionRuntime;
-        // Cause/effect decision table:
-        // R1 output present + live Sandbox => harvest creates one scoped File.
-        // R2 identical retry => same File id, no duplicate manifest row/reference.
-        // R3 terminal release => Sandbox gone while File metadata/bytes remain.
-        let storage = tempfile::tempdir().unwrap();
-        let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-        host.register_thread_workspace("session-artifacts", "workspace-a");
-        let spec = agent_run_sandbox_spec("session-artifacts");
-        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(storage.path())
-                .create_sandbox(&spec)
-                .await
-                .unwrap(),
-        ));
-        host.install_test_resident_session_environment("session-artifacts", environment.clone());
-        let output = storage
-            .path()
-            .join("session-artifacts")
-            .join(spec.outputs_path.trim_start_matches('/'))
-            .join("report.txt");
-        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-        std::fs::write(&output, b"durable report").unwrap();
-
-        let first = host
-            .harvest_thread_artifacts("session-artifacts")
-            .await
-            .unwrap();
-        let retry = host
-            .harvest_thread_artifacts("session-artifacts")
-            .await
-            .unwrap();
-        assert_eq!(first.receipts.len(), 1);
-        assert_eq!(retry.receipts[0].record.id, first.receipts[0].record.id);
-        assert!(first.receipts[0].record.id.starts_with("file_"));
-        assert!(first.receipts[0].record.downloadable);
-
-        crate::ManagedHost::new(host.clone())
-            .execute_terminal_cleanup(root_terminal_cleanup_command("session-artifacts"))
-            .await
-            .unwrap();
-        assert!(
-            host.session_environment("session-artifacts")
-                .await
-                .is_none()
-        );
-        let records = host
-            .file_application()
-            .expect("test startup installs File application")
-            .list("workspace-a", Some("session-artifacts"))
-            .await
-            .unwrap();
-        assert_eq!(records.len(), 1, "terminal retry remains idempotent");
-        assert_eq!(
-            host.file_application()
-                .expect("test startup installs File application")
-                .bytes("workspace-a", &records[0].id)
-                .await
-                .unwrap()
-                .unwrap()
-                .1,
-            b"durable report"
-        );
-    }
-
-    #[tokio::test]
-    async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
-        // Cause/effect decision table: C1 an output path happens to be named
-        // `skill-export/change.patch`; C2 no manifest or checksum sibling exists;
-        // C3 the same immutable bytes are harvested again. Effects: E1 the File
-        // aggregate publishes the exact bytes without interpreting the directory;
-        // E2 terminal harvest is not blocked by a second bundle-completion rule;
-        // E3 replay returns the same File identity. R1 C1+C2=>E1+E2;
-        // R2 C1+C2+C3=>E1+E2+E3.
-        let storage = tempfile::tempdir().unwrap();
-        let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-        host.register_thread_workspace("plain-files", "workspace-a");
-        let spec = agent_run_sandbox_spec("plain-files");
-        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(storage.path())
-                .create_sandbox(&spec)
-                .await
-                .unwrap(),
-        ));
-        host.install_test_resident_session_environment("plain-files", environment);
-        let output = storage
-            .path()
-            .join("plain-files")
-            .join(spec.outputs_path.trim_start_matches('/'))
-            .join("skill-export")
-            .join("change.patch");
-        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-        std::fs::write(&output, b"diff --git a/a b/a\n").unwrap();
-
-        let first = host
-            .harvest_thread_artifacts("plain-files")
-            .await
-            .expect("R1/E1+E2");
-        let replay = host
-            .harvest_thread_artifacts("plain-files")
-            .await
-            .expect("R2/E1+E2+E3");
-        assert_eq!(first.receipts.len(), 1, "R1/E1");
-        assert_eq!(replay.receipts.len(), 1, "R2/E3");
-        assert_eq!(
-            replay.receipts[0].record.id, first.receipts[0].record.id,
-            "R2/E3"
-        );
-    }
-
-    struct FailingFileCatalog;
-
-    use awaken_resource_contract::CreateFileRecordOutcome;
-
-    #[async_trait::async_trait]
-    impl FileCatalog for FailingFileCatalog {
-        async fn create_file(
-            &self,
-            _record: FileRecord,
-        ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
-            Err(FileCatalogError::Storage("injected catalog failure".into()))
-        }
-
-        async fn get_file(
-            &self,
-            _workspace_id: &str,
-            _file_id: &str,
-            _include_deleted: bool,
-        ) -> Result<Option<FileRecord>, FileCatalogError> {
-            Ok(None)
-        }
-
-        async fn list_files(
-            &self,
-            _workspace_id: &str,
-            _scope_id: Option<&str>,
-        ) -> Result<Vec<FileRecord>, FileCatalogError> {
-            Ok(Vec::new())
-        }
-
-        async fn mark_file_deleted(
-            &self,
-            _workspace_id: &str,
-            _file_id: &str,
-        ) -> Result<Option<FileRecord>, FileCatalogError> {
-            Ok(None)
-        }
-
-        async fn active_size_bytes(&self, _workspace_id: &str) -> Result<u64, FileCatalogError> {
-            Ok(0)
-        }
-    }
-
-    #[tokio::test]
-    async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
-        use awaken_session_contract::SessionRuntime;
-
-        // Test design. Causes: R4 has terminal output present while its durable
-        // catalog write fails. Effects: end_session fails and preserves both
-        // Environment and output for retry. Constraint/Invariant: sandbox disposal
-        // follows successful durable harvest, never precedes it. Decision rule:
-        // execute R4 and require failure with zero disposal.
-        let storage = tempfile::tempdir().unwrap();
-        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
-        let catalog = Arc::new(FailingFileCatalog);
-        raw_host.file_catalog = catalog.clone();
-        let application = Arc::new(awaken_resource_application::FileApplication::new(
-            raw_host.file_store(),
-            catalog,
-            raw_host
-                .resource_reclamation()
-                .expect("test lifecycle repository"),
-        ));
-        raw_host = raw_host.with_file_application(
-            application.clone(),
-            Arc::new(
-                awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
-            ),
-            Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
-        );
-        let host = Arc::new(raw_host);
-        let spec = agent_run_sandbox_spec("session-harvest-failure");
-        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(storage.path())
-                .create_sandbox(&spec)
-                .await
-                .unwrap(),
-        ));
-        host.install_test_resident_session_environment("session-harvest-failure", environment);
-        let output = storage
-            .path()
-            .join("session-harvest-failure")
-            .join(spec.outputs_path.trim_start_matches('/'))
-            .join("report.txt");
-        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-        std::fs::write(&output, b"retry me").unwrap();
-
-        let error = crate::ManagedHost::new(host.clone())
-            .execute_terminal_cleanup(root_terminal_cleanup_command("session-harvest-failure"))
-            .await
-            .unwrap_err();
-        assert!(error.message.contains("injected catalog failure"));
-        assert!(
-            host.session_environment("session-harvest-failure")
-                .await
-                .is_some()
-        );
-        assert_eq!(std::fs::read(output).unwrap(), b"retry me");
-    }
-
-    #[tokio::test]
-    async fn harvest_persists_an_agent_authored_skill_to_the_durable_catalog() {
-        // Hermes-style self-authoring (ADR-0036 D6/D8): a skill the agent writes under the
-        // workspace this run must be harvested into the durable catalog so the next session
-        // delivers it — the skill analogue of memory write-back.
-        let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
-        let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
-
-        // A real sandbox env with a skill authored under the workspace `skills/` dir.
-        let base = dir.join("sbx");
-        let env = crate::session_environment::SessionEnvironment::workdir(
-            LocalProvider::new(&base)
-                .create_sandbox(&agent_run_sandbox_spec("t"))
-                .await
-                .unwrap(),
-        );
-        let skill_dir = base.join("t").join("skills").join("notes");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\ndescription: authored this run\n---\nremember to hydrate",
-        )
-        .unwrap();
-
-        // The catalog is empty until the run-authored skill is harvested; after harvest it
-        // holds the skill, addressable for delivery to the next session.
-        assert!(
-            host.skills
-                .definitions(host.local_workspace())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        host.persist_authored_skills(host.local_workspace(), &env)
-            .await
-            .unwrap();
-        let ids = host
-            .skills
-            .definitions(host.local_workspace())
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|definition| definition.id)
-            .collect::<Vec<_>>();
-        assert!(
-            ids.iter().any(|id| id.as_str().contains("notes")),
-            "the authored skill must be persisted to the durable catalog: {ids:?}"
-        );
-
-        env.dispose().await.unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
-        // Cause/effect rule V1: C1 a Skill is persisted into the versioned
-        // catalog => E1 Managed advertisement contains its stable resource id
-        // and E2 the corresponding frozen bytes remain loadable. Constraint:
-        // display names and host-static specs cannot satisfy E2, so they cannot
-        // enter this Managed id set. The static exclusion row is covered by
-        // `managed_session_folds_builtins_into_the_agent_toolset`.
-        let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
-        let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
-        host.skills
-            .persist_authored(
-                host.local_workspace(),
-                "Greeter",
-                "---\nname: Greeter\ndescription: hi\n---\nsay hi",
-            )
-            .await;
-
-        let cid = "Greeter".to_string();
-        assert_eq!(
-            host.skills.managed_ids_in(host.local_workspace()),
-            vec![cid.clone()],
-            "Managed advertisement contains only the version-backed catalog id"
-        );
-
-        let version = host
-            .skills
-            .cache_snapshot_in(host.local_workspace())
-            .into_iter()
-            .find(|version| version.skill_id.as_str() == cid)
-            .expect("the advertised resource id must resolve to the Skill version");
-        assert!(version.skill_md().unwrap().ends_with(b"say hi"));
-        assert!(
-            host.skills
-                .cache_snapshot_in(host.local_workspace())
-                .into_iter()
-                .find(|version| version.skill_id.as_str() == "skill_deadbeefdeadbeef")
-                .is_none()
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+#[path = "provisioning/tests.rs"]
+mod provisioning_registry_tests;

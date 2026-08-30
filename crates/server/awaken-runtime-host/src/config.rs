@@ -152,12 +152,25 @@ fn toolset_permission_rules(
     let mut rules = Vec::new();
     for toolset in toolsets {
         match &toolset.source {
-            ToolsetSource::Agent => rules.extend(
-                toolset
-                    .overrides
-                    .iter()
-                    .map(|entry| rule(entry.name.clone(), entry.policy)),
-            ),
+            ToolsetSource::Agent => {
+                // The versioned Agent Toolset is closed, so its default is an
+                // executable policy for every omitted member rather than mere
+                // authoring metadata. Project the complete canonical roster;
+                // retain explicit Runtime-only Agent overrides separately.
+                rules.extend(
+                    awaken_session_contract::agent_toolset_members()
+                        .map(|name| rule(name.to_string(), toolset.policy_for(name))),
+                );
+                rules.extend(
+                    toolset
+                        .overrides
+                        .iter()
+                        .filter(|entry| {
+                            !awaken_session_contract::is_agent_toolset_member(&entry.name)
+                        })
+                        .map(|entry| rule(entry.name.clone(), entry.policy)),
+                );
+            }
             ToolsetSource::Mcp { server_name } => {
                 rules.push(rule(format!("mcp__{server_name}__*"), toolset.default));
                 rules.extend(toolset.overrides.iter().map(|entry| {
@@ -485,28 +498,6 @@ pub fn platform_plugin_capabilities_with_web_search(
             bound: fetch_manifest.bound,
         },
     ]
-}
-
-/// Every `plugin_config` section an author may set, WITH its JSON Schema: the
-/// installable plugins PLUS the always-on `permission` policy. Permission is a
-/// `plugin_config` section (not an installable plugin), so it is absent from
-/// [`platform_plugin_capabilities`]; the assistant needs it advertised — with its
-/// schema — or it cannot author a permission gate (it does not know the key/shape).
-pub fn authorable_config_sections() -> Vec<PluginCapability> {
-    authorable_config_sections_with_web_search(&WebSearchProviderRegistry::builtins())
-}
-
-pub fn authorable_config_sections_with_web_search(
-    providers: &WebSearchProviderRegistry,
-) -> Vec<PluginCapability> {
-    let mut sections = platform_plugin_capabilities_with_web_search(providers);
-    sections.push(PluginCapability {
-        id: PERMISSION_CONFIG_KEY.to_string(),
-        schema_keys: vec![PERMISSION_CONFIG_KEY.to_string()],
-        config_schema: Some(awaken_ext_permission::permission_config_schema()),
-        bound: Default::default(),
-    });
-    sections
 }
 
 /// The server's base authorization gate (the declarative permission policy). A
@@ -905,6 +896,97 @@ mod tests {
             rules.decide("mcp__docs__fetch", &serde_json::json!({})),
             ToolPermissionBehavior::RequireConfirmation
         );
+    }
+
+    #[tokio::test]
+    async fn typed_controlled_policy_has_one_native_and_acp_verdict() {
+        // Cause/effect graph: C1 an explicit Agent override enables an ordinary member;
+        // C2 an MCP member inherits its source default; C3 bash/write/edit carry
+        // exact controlled overrides; C4 an omitted Agent member inherits the
+        // disabled Toolset default; C5 a Runtime-only Agent override narrows the
+        // permissive baseline. E1 the Native gate outcome and E2 the ACP
+        // policy verdict are projections of the same EffectiveToolAuthorization;
+        // E3 ordinary Agent use is allowed while MCP and controlled mutations ask.
+        // Client-executed ResumeTicket closure is downstream of this decision and
+        // deliberately is not a second permission evaluator.
+        //
+        // Decision table:
+        // | rule | source | tool             | typed policy | Native | ACP |
+        // | V1   | Agent  | read             | exact allow  | allow  | allow |
+        // | V2   | MCP    | docs/search      | default ask  | ask    | ask |
+        // | V3   | Agent  | bash/write/edit  | exact ask    | ask    | ask |
+        // | V4   | Agent  | omitted glob     | default deny | deny   | deny |
+        // | V5   | Agent  | runtime agent_run| exact ask    | ask    | ask |
+        use awaken_runtime_contract::agent_bindings::{
+            ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
+            ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::GateOutcomeKind;
+
+        let ask = ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAsk,
+        };
+        let toolsets = vec![
+            ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+                overrides: std::iter::once(ToolPolicyOverride::new(
+                    "read",
+                    ToolExecutionPolicy::default(),
+                ))
+                .chain(
+                    ["bash", "write", "edit"]
+                        .into_iter()
+                        .map(|name| ToolPolicyOverride::new(name, ask)),
+                )
+                .chain(std::iter::once(ToolPolicyOverride::new("agent_run", ask)))
+                .collect(),
+            },
+            ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: "docs".into(),
+                },
+                default: ask,
+                overrides: Vec::new(),
+            },
+        ];
+        let authorization =
+            effective_tool_authorization(&ResolvedConfiguration::default(), &[], &toolsets);
+        let cases = [
+            ("read", GateOutcomeKind::Allow, "V1"),
+            (
+                "mcp__docs__search",
+                GateOutcomeKind::RequireConfirmation,
+                "V2",
+            ),
+            ("bash", GateOutcomeKind::RequireConfirmation, "V3"),
+            ("write", GateOutcomeKind::RequireConfirmation, "V3"),
+            ("edit", GateOutcomeKind::RequireConfirmation, "V3"),
+            ("glob", GateOutcomeKind::Block, "V4"),
+            ("agent_run", GateOutcomeKind::RequireConfirmation, "V5"),
+        ];
+        for (tool_id, expected, rule) in cases {
+            let call = awaken_runtime_contract::llm::ToolCall {
+                call_id: format!("call-{tool_id}"),
+                tool_id: tool_id.into(),
+                arguments: serde_json::json!({}),
+            };
+            let native = authorization
+                .gate
+                .gate(&call, &awaken_agent_contract::agent::state::Store::new())
+                .await;
+            let acp = authorization.policy.evaluate(&call).await;
+            assert_eq!(native.kind(), expected, "{rule}/E1 {tool_id}");
+            assert_eq!(
+                acp.kind().gate_outcome_kind(),
+                expected,
+                "{rule}/E2 {tool_id}"
+            );
+        }
     }
 
     #[tokio::test]

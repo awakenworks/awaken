@@ -308,6 +308,15 @@ mod tests {
         }
     }
 
+    /// Complete ordinary Host composition shared by Outcome controller tests.
+    /// The controller remains the sole Outcome owner; this fixture supplies only
+    /// the production Dispatch runtime required by context construction.
+    fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+        let host = Arc::new(SharedHost::new(model, "stub"));
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        host
+    }
+
     #[async_trait::async_trait]
     impl LlmExecutor for SequenceModel {
         async fn infer(
@@ -335,7 +344,7 @@ mod tests {
             "contains FINAL",
             r#"{"result":"satisfied","explanation":"rubric met"}"#,
         ]));
-        let host = SharedHost::new(model.clone(), "stub");
+        let host = outcome_test_host(model.clone());
         let report = completed(
             host.define_outcome("satisfied", "finish", "FINAL", 3)
                 .await
@@ -361,7 +370,7 @@ mod tests {
             "contains FINAL",
             r#"{"result":"satisfied","explanation":"rubric met"}"#,
         ]));
-        let host = SharedHost::new(model.clone(), "stub");
+        let host = outcome_test_host(model.clone());
         host.prepare_outcome("prepared", "stable-outcome", "finish", "FINAL", 3)
             .await
             .expect("H1 prepare");
@@ -396,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn committed_outcome_read_does_not_wait_for_command_locks() {
         let model = Arc::new(SequenceModel::new(&[]));
-        let host = SharedHost::new(model.clone(), "stub");
+        let host = outcome_test_host(model.clone());
         let ctx = host
             .ctx_for("concurrent-read", None)
             .await
@@ -423,7 +432,7 @@ mod tests {
             "now FINAL",
             r#"{"result":"satisfied","explanation":"rubric met"}"#,
         ]));
-        let host = SharedHost::new(model.clone(), "stub");
+        let host = outcome_test_host(model.clone());
         let report = completed(
             host.define_outcome("revision", "finish", "FINAL", 3)
                 .await
@@ -447,7 +456,7 @@ mod tests {
             r#"{"result":"needs_revision","explanation":"add FINAL"}"#,
             "acknowledged",
         ]));
-        let host = SharedHost::new(model.clone(), "stub");
+        let host = outcome_test_host(model.clone());
         let report = completed(
             host.define_outcome("max", "finish", "FINAL", 1)
                 .await

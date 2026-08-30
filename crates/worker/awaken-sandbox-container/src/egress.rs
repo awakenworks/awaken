@@ -3,7 +3,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 /// How egress maps onto a container network mode.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum NetworkMode {
     /// Full egress (default bridge).
     Open,
@@ -12,6 +12,32 @@ pub enum NetworkMode {
     /// Direct egress is blocked by the runtime boundary; the only reachable
     /// public path is a capability-authenticated allowlist proxy.
     Allowlist,
+}
+
+/// Stable, non-secret provider-effective egress facts. Capability tokens and
+/// signing keys are deliberately excluded; the opaque issuer revision changes
+/// whenever the key or deployment coordinate changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EgressRealizationIdentity {
+    pub network: NetworkMode,
+    pub proxy_endpoint: Option<String>,
+    pub capability_ttl_secs: Option<u64>,
+    pub issuer_revision: Option<String>,
+    /// Short-lived capability material is immutable container configuration and
+    /// therefore prevents response-loss reuse of an old Ready object.
+    pub ephemeral_capability: bool,
+}
+
+impl Default for EgressRealizationIdentity {
+    fn default() -> Self {
+        Self {
+            network: NetworkMode::Open,
+            proxy_endpoint: None,
+            capability_ttl_secs: None,
+            issuer_revision: None,
+            ephemeral_capability: false,
+        }
+    }
 }
 
 /// An optional conventional forward proxy for unrestricted container traffic.
@@ -120,6 +146,22 @@ impl AllowlistProxy {
             .unwrap_or_default();
         self.issue_at(scope, hosts, now)
     }
+
+    fn realization_identity(&self) -> EgressRealizationIdentity {
+        let mut revision = blake3::Hasher::new();
+        revision.update(b"awaken-allowlist-issuer-revision/v1\0");
+        revision.update(&(self.url.len() as u64).to_be_bytes());
+        revision.update(self.url.as_bytes());
+        revision.update(&self.ttl_secs.to_be_bytes());
+        revision.update(&self.signing_key);
+        EgressRealizationIdentity {
+            network: NetworkMode::Allowlist,
+            proxy_endpoint: Some(self.url.clone()),
+            capability_ttl_secs: Some(self.ttl_secs),
+            issuer_revision: Some(revision.finalize().to_hex().to_string()),
+            ephemeral_capability: true,
+        }
+    }
 }
 
 pub fn normalize_hostname(host: &str) -> Result<String, EgressError> {
@@ -151,6 +193,7 @@ pub struct EgressRealization {
     pub network: NetworkMode,
     /// `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` pairs — empty when direct or denied.
     pub proxy_env: Vec<(String, String)>,
+    pub identity: EgressRealizationIdentity,
 }
 
 /// Why an egress policy cannot be realized on this tier.
@@ -193,16 +236,31 @@ pub fn egress_plan_with_allowlist(
         pc::NetworkPolicy::Unrestricted => Ok(EgressRealization {
             network: NetworkMode::Open,
             proxy_env: proxy.map(proxy_env).unwrap_or_default(),
+            identity: EgressRealizationIdentity {
+                network: NetworkMode::Open,
+                proxy_endpoint: proxy.map(|proxy| proxy.url.clone()),
+                capability_ttl_secs: None,
+                issuer_revision: None,
+                ephemeral_capability: false,
+            },
         }),
         pc::NetworkPolicy::None => Ok(EgressRealization {
             network: NetworkMode::None,
             proxy_env: Vec::new(),
+            identity: EgressRealizationIdentity {
+                network: NetworkMode::None,
+                proxy_endpoint: None,
+                capability_ttl_secs: None,
+                issuer_revision: None,
+                ephemeral_capability: false,
+            },
         }),
         pc::NetworkPolicy::Allowlist { hosts } => {
             let proxy = allowlist_proxy.ok_or(EgressError::AllowlistUnsupported)?;
             Ok(EgressRealization {
                 network: NetworkMode::Allowlist,
                 proxy_env: proxy_env_url(proxy.issue(scope, hosts)?),
+                identity: proxy.realization_identity(),
             })
         }
     }

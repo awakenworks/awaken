@@ -30,10 +30,11 @@ use awaken_runtime_contract::tool::RawTool;
 
 use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
-    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
-    provision_repo_at, push_repo_to_at, rooted_raw_tools, scan_skill_dir_at,
+    DiscoveredSkillFile, IsolatedRoot, content_fingerprint, list_files_at, provision_repo_at,
+    push_repo_to_at, rooted_raw_tools, scan_skill_dir_at,
 };
 
+mod checkpoint;
 mod restore_target;
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -102,27 +103,6 @@ pub(crate) fn verify(source: &pc::MountSource, bytes: &[u8]) -> Result<(), pc::S
             )));
         }
     }
-    Ok(())
-}
-
-/// Tighten a materialized secret file to owner-only (`0600`) so other host users
-/// cannot read the credential bytes in the window before dispose shreds them.
-///
-/// This is the *local* provider's ceiling: it realizes onto the host filesystem,
-/// so it can restrict permissions but cannot keep the bytes off swap. True
-/// anti-swap isolation (a `tmpfs` with `noswap`) is the namespace/container
-/// provider's job — see [`SandboxCapabilities`](pc::SandboxCapabilities). The
-/// Secret bytes are resolved only at this provider boundary through the dedicated
-/// [`SecretBroker`](pc::SecretBroker), restricted immediately, and never carried in
-/// the declarative sandbox specification.
-#[cfg(unix)]
-pub(crate) fn restrict_to_owner(path: &std::path::Path) -> Result<(), pc::SandboxError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(err)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn restrict_to_owner(_path: &std::path::Path) -> Result<(), pc::SandboxError> {
     Ok(())
 }
 
@@ -219,65 +199,223 @@ impl LocalProvider {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<LocalSandbox, pc::SandboxError> {
+        self.create_sandbox_inner(spec, None, None).await
+    }
+
+    /// Realize a current durable Local sandbox under one aggregate-owned fence.
+    /// A rebuild must additionally supply the exact V2 source handle; a plain
+    /// create may not infer takeover authority from an absent same-spec root.
+    pub async fn create_sandbox_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: &pc::SandboxEffectFence,
+        source_handle: Option<&pc::SandboxHandle>,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        if let Some(handle) = source_handle {
+            handle.local_payload()?;
+        }
+        self.create_sandbox_inner(spec, Some(effect_fence), source_handle)
+            .await
+    }
+
+    async fn create_sandbox_inner(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: Option<&pc::SandboxEffectFence>,
+        source_handle: Option<&pc::SandboxHandle>,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
         pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
-        // Best-effort egress denial for rooted Workdir tools. This is not
-        // admission-gated whole-sandbox isolation (`NetworkPolicy`).
+        let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
+        let mut realization_guard = match effect_fence {
+            Some(effect_fence) => crate::realization_marker::ProviderCreationGuard::Current(
+                Box::new(crate::realization_marker::begin(
+                    sandbox.root.root(),
+                    &realization_fingerprint,
+                    effect_fence,
+                    source_handle
+                        .map(crate::realization_marker::rebuild_source)
+                        .transpose()?,
+                    None,
+                )?),
+            ),
+            None if source_handle.is_none() => {
+                crate::realization_marker::ProviderCreationGuard::Legacy(
+                    crate::realization_marker::begin_legacy(sandbox.root.root())?,
+                )
+            }
+            None => return Err(err("sandbox rebuild requires an aggregate effect fence")),
+        };
+        sandbox.secret_paths = spec
+            .mounts
+            .iter()
+            .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .collect::<Result<_, _>>()?;
         sandbox.deny_egress = spec.deny_tool_egress;
-        std::fs::create_dir_all(sandbox.root.root()).map_err(|error| {
-            err(format!(
-                "create sandbox root `{}`: {error}",
-                sandbox.root.root().display()
-            ))
-        })?;
-        // Outputs directory (sandbox-absolute → rejailed host path).
-        let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
-        std::fs::create_dir_all(&host_outputs).map_err(|error| {
-            err(format!(
-                "create sandbox outputs `{}`: {error}",
-                host_outputs.display()
-            ))
-        })?;
-
-        // Keep only references/literals in the Session environment. Process
-        // secrets are opened afresh by `build_command`, never retained as base
-        // plaintext on the sandbox object.
         sandbox.base_env.clone_from(&spec.env);
-        // All-or-nothing: a failed mount reaps the whole environment (no partial dir).
-        for req in &spec.mounts {
-            match self.realize_mount(&sandbox.root, req).await {
-                Ok((m, guard)) => {
-                    // Track a realized secret's host path so it can be shredded on
-                    // teardown (the credential bytes are materialized in the sandbox FS).
-                    if matches!(req.source, pc::MountSource::Secret { .. })
-                        && let Ok(path) = sandbox.root.resolve(&req.mount_path)
-                    {
-                        sandbox.secret_paths.push(path);
-                    }
-                    if matches!(
-                        req.source,
-                        pc::MountSource::Secret { .. }
-                            | pc::MountSource::MemoryStore { .. }
-                            | pc::MountSource::CacheVolume { .. }
-                    ) && let Ok(path) = sandbox.root.resolve(&req.mount_path)
-                    {
-                        sandbox.continuation_excluded_paths.push(path);
-                    }
-                    sandbox.realized.push(m);
-                    if let Some(guard) = guard {
-                        sandbox.memory_mounts.lock().unwrap().push(guard);
-                    }
-                }
-                Err(e) => {
-                    // Tear down any memory mounts already realized before reaping.
-                    sandbox.release_memory_mounts().await;
-                    let _ = std::fs::remove_dir_all(sandbox.root.root());
-                    return Err(e);
+        *sandbox
+            .owned_paths
+            .lock()
+            .expect("owned paths lock poisoned") = spec
+            .mounts
+            .iter()
+            .map(|mount| mount.mount_path.clone())
+            .collect();
+        sandbox.continuation_excluded_paths = spec
+            .mounts
+            .iter()
+            .filter(|mount| {
+                matches!(
+                    mount.source,
+                    pc::MountSource::Secret { .. }
+                        | pc::MountSource::MemoryStore { .. }
+                        | pc::MountSource::CacheVolume { .. }
+                )
+            })
+            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .collect::<Result<_, _>>()?;
+
+        // Ready is a completed physical attempt, not permission to reconcile
+        // provider-owned paths again. Rebuild the response only from the exact
+        // durable receipt while the retained-parent lock proves the same root.
+        if let Some(receipt) = realization_guard.completed_receipt()?.cloned() {
+            let (realized, materializations) =
+                crate::replay_completion_receipt(spec, &receipt, pc::Realization::Copy)?;
+            sandbox.realized = realized;
+            sandbox.memory_materializations = materializations;
+            sandbox.realization = realization_guard.complete(&receipt)?;
+            return Ok(sandbox);
+        }
+        // A retry must shred credential bytes left by the previous interrupted
+        // attempt before the marker guard clears that exact root. Missing paths
+        // are idempotent; any shred fault retains the Creating/Recreating evidence.
+        if realization_guard.is_incomplete() {
+            crate::shred_secret_paths_at(
+                &sandbox.root,
+                realization_guard.root_identity()?,
+                &sandbox.secret_paths,
+            )?;
+        }
+        realization_guard.prepare_root()?;
+        let root_identity = realization_guard
+            .root_identity()?
+            .ok_or_else(|| err("prepared Local sandbox has no root identity"))?;
+        let realization = async {
+            // Outputs directory (sandbox-absolute → rejailed host path).
+            let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
+            realization_guard.validate_before_mutation()?;
+            awaken_sandbox_fs::create_relative_directory_all(
+                sandbox.root.root(),
+                root_identity,
+                std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
+            )
+            .map_err(|error| {
+                err(format!(
+                    "create sandbox outputs `{}`: {error}",
+                    host_outputs.display()
+                ))
+            })?;
+
+            // Creating starts from an exact-owned empty root; Ready reconciles
+            // only immutable spec-owned destinations in place. No unknown path
+            // is removed in the response-loss replay.
+            for req in &spec.mounts {
+                let (mount, materialization) = self
+                    .realize_mount(
+                        &sandbox.root,
+                        root_identity,
+                        req,
+                        &sandbox.memory_mounts,
+                        &realization_guard,
+                    )
+                    .await?;
+                sandbox.realized.push(mount);
+                if let Some(materialization) = materialization {
+                    sandbox.memory_materializations.push(materialization);
                 }
             }
+            let receipt = crate::realization_marker::RealizationCompletionReceipt::new(
+                &sandbox.realized,
+                sandbox.memory_materializations.clone(),
+            )?;
+            let (realized, materializations) =
+                crate::replay_completion_receipt(spec, &receipt, pc::Realization::Copy)?;
+            sandbox.realized = realized;
+            sandbox.memory_materializations = materializations;
+            Ok::<_, pc::SandboxError>(receipt)
         }
+        .await;
+        let receipt = match realization {
+            Ok(receipt) => receipt,
+            Err(cause) => {
+                let teardown = sandbox.release_memory_mounts().await;
+                let shredding = if realization_guard.is_incomplete() {
+                    crate::shred_secret_paths_at(
+                        &sandbox.root,
+                        realization_guard.root_identity()?,
+                        &sandbox.secret_paths,
+                    )
+                } else {
+                    Ok(())
+                };
+                if teardown.is_err() || shredding.is_err() {
+                    return Err(err(format!(
+                        "sandbox realization failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+                        teardown
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                        shredding
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                    )));
+                }
+                if let Err(cleanup) = realization_guard.abort_creation() {
+                    return Err(err(format!(
+                        "sandbox realization failed: {cause}; exact-owned cleanup failed: {cleanup}"
+                    )));
+                }
+                return Err(cause);
+            }
+        };
+        sandbox.realization = match realization_guard.complete(&receipt) {
+            Ok(realization) => realization,
+            Err(cause) => {
+                let teardown = sandbox.release_memory_mounts().await;
+                let shredding = if realization_guard.is_incomplete() {
+                    crate::shred_secret_paths_at(
+                        &sandbox.root,
+                        realization_guard.root_identity()?,
+                        &sandbox.secret_paths,
+                    )
+                } else {
+                    Ok(())
+                };
+                if teardown.is_err() || shredding.is_err() {
+                    return Err(err(format!(
+                        "sandbox Ready publication failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+                        teardown
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                        shredding
+                            .as_ref()
+                            .err()
+                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
+                    )));
+                }
+                if let Err(cleanup) = realization_guard.abort_creation() {
+                    return Err(err(format!(
+                        "sandbox Ready publication failed: {cause}; exact-owned cleanup failed: {cleanup}"
+                    )));
+                }
+                return Err(cause);
+            }
+        };
         Ok(sandbox)
     }
 
@@ -291,20 +429,56 @@ impl LocalProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<LocalSandbox, pc::SandboxError> {
-        // Phase-A reader compatibility remains an ordinary-root pass-through:
-        // observing future evidence must not activate physical restoration.
-        // The spec-bound composition path below is the sole Phase-B adoption
-        // authority for an acquired exact target.
-        let root = crate::sandbox_dir(&self.base, &handle.sandbox_id);
-        self.adopt_sandbox_at(handle, root)
+        self.adopt_sandbox_inner(None, handle, None).await
     }
 
-    fn adopt_sandbox_at(
+    pub async fn adopt_sandbox_for_effect(
         &self,
+        spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-        root: PathBuf,
+        effect_fence: &pc::SandboxEffectFence,
     ) -> Result<LocalSandbox, pc::SandboxError> {
+        self.adopt_sandbox_inner(Some(spec), handle, Some(effect_fence))
+            .await
+    }
+
+    /// Adopt through the frozen security authority. Exact restoration evidence
+    /// selects the provider-owned restore root; ordinary handles continue
+    /// through the existing marker verifier.
+    pub async fn adopt_sandbox_with_spec(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        if handle.restoration().is_none() {
+            return self.adopt_sandbox_inner(Some(spec), handle, None).await;
+        }
+        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
+        if handle.sandbox_id != spec.scope {
+            return Err(err("local Sandbox handle does not match SandboxSpec scope"));
+        }
+        let evidence = handle
+            .restoration()
+            .ok_or_else(|| err("restored local handle has no exact evidence"))?;
         let payload = handle.local_payload()?;
+        if evidence.sandbox_spec_fingerprint() != pc::sandbox_spec_security_fingerprint(spec)
+            || pc::validate_checkpoint_exclusions_for_spec(
+                &payload.continuation_excluded_paths,
+                spec,
+            )
+            .is_err()
+            || evidence.checkpoint_exclusions_fingerprint()
+                != pc::checkpoint_exclusions_fingerprint(&payload.continuation_excluded_paths)
+            || payload.deny_tool_egress != spec.deny_tool_egress
+            || payload.outputs_path != spec.outputs_path
+            || payload.base_env != spec.env
+        {
+            return Err(err(
+                "restored local handle differs from the exact SandboxSpec or checkpoint exclusions",
+            ));
+        }
+        let root = restore_target::restoration_root(&self.base, evidence)?;
+        restore_target::verify_binding(&root, evidence)?;
         let mut sandbox = self.build_at(
             &handle.sandbox_id,
             &payload.outputs_path,
@@ -318,48 +492,175 @@ impl LocalProvider {
             .iter()
             .map(|path| sandbox.root.resolve(path).map_err(err))
             .collect::<Result<_, _>>()?;
-        sandbox.adopted_handle = Some(handle.clone());
         Ok(sandbox)
     }
 
-    /// Adopt through the frozen security authority. Restored handles are never
-    /// sufficient on their own because their compact locator intentionally does
-    /// not duplicate the full SandboxSpec.
-    pub async fn adopt_sandbox_with_spec(
+    /// Enter the terminal edge of the same marker lifecycle and reconstruct at
+    /// most the exact physical participant that still requires disposal. No
+    /// ordinary adoption, process, mount, or Hand effect occurs here.
+    pub fn prepare_terminal_sandbox_for_effect(
         &self,
         spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-    ) -> Result<LocalSandbox, pc::SandboxError> {
-        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
-        if handle.sandbox_id != spec.scope {
-            return Err(err("local Sandbox handle does not match SandboxSpec scope"));
-        }
-        if let Some(evidence) = handle.restoration() {
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Option<LocalSandbox>, pc::SandboxError> {
+        // Pure validation precedes marker admission. Exact copy evidence is
+        // carried for the Host's one recovered-CAS reconciliation; this cold
+        // provider object intentionally reconstructs no MemoryMount guard.
+        let mut materializations = crate::terminal_copy_materializations(spec, handle)?;
+        let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
+        let (id, outputs_path, base_env, owned_paths) = if let Some(handle) = handle {
             let payload = handle.local_payload()?;
-            if evidence.sandbox_spec_fingerprint() != pc::sandbox_spec_security_fingerprint(spec)
-                || pc::validate_checkpoint_exclusions_for_spec(
-                    &payload.continuation_excluded_paths,
-                    spec,
-                )
-                .is_err()
-                || evidence.checkpoint_exclusions_fingerprint()
-                    != pc::checkpoint_exclusions_fingerprint(&payload.continuation_excluded_paths)
-                || payload.deny_tool_egress != spec.deny_tool_egress
+            if handle.realization_fingerprint() != Some(&fingerprint)
+                || payload.outputs_path != spec.outputs_path
+                || payload.base_env != spec.env
             {
                 return Err(err(
-                    "restored local handle differs from the exact SandboxSpec or checkpoint exclusions",
+                    "Local terminal handle does not match the effective authorization spec",
                 ));
             }
-        }
-        let root = match handle.restoration() {
-            Some(evidence) => {
-                let root = restore_target::restoration_root(&self.base, evidence)?;
-                restore_target::verify_binding(&root, evidence)?;
-                root
-            }
-            None => crate::sandbox_dir(&self.base, &handle.sandbox_id),
+            (
+                handle.sandbox_id.as_str(),
+                payload.outputs_path.as_str(),
+                payload.base_env.clone(),
+                handle.owned_paths().unwrap_or_default().to_vec(),
+            )
+        } else {
+            (
+                spec.scope.as_str(),
+                spec.outputs_path.as_str(),
+                spec.env.clone(),
+                spec.mounts
+                    .iter()
+                    .map(|mount| mount.mount_path.clone())
+                    .collect(),
+            )
         };
-        self.adopt_sandbox_at(handle, root)
+        let mut sandbox = self.build(id, outputs_path);
+        let terminal = crate::realization_marker::begin_terminal_takeover(
+            sandbox.root.root(),
+            &fingerprint,
+            handle
+                .map(crate::realization_marker::rebuild_source)
+                .transpose()?,
+            expected_effect_fence,
+            terminal_effect_fence,
+        )?;
+        let Some((realization, removal)) = terminal else {
+            return Ok(None);
+        };
+        if let Some(receipt) = removal.completed_receipt()? {
+            let (realized, receipt_materializations) =
+                crate::replay_completion_receipt(spec, receipt, pc::Realization::Copy)?;
+            if receipt_materializations != materializations {
+                return Err(err(
+                    "Local terminal handle Memory evidence differs from the Ready receipt",
+                ));
+            }
+            sandbox.realized = realized;
+            materializations = receipt_materializations;
+        } else if handle.is_some() {
+            return Err(err(
+                "Local terminal handle targets a realization without a Ready receipt",
+            ));
+        }
+        sandbox.realization = crate::realization_marker::LiveRealization::Current(realization);
+        *sandbox
+            .terminal_removal
+            .lock()
+            .expect("terminal removal lock poisoned") = Some(removal);
+        sandbox.base_env = base_env;
+        sandbox.secret_paths = spec
+            .mounts
+            .iter()
+            .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .collect::<Result<_, _>>()?;
+        *sandbox
+            .owned_paths
+            .lock()
+            .expect("owned paths lock poisoned") = owned_paths;
+        sandbox.memory_materializations = materializations;
+        Ok(Some(sandbox))
+    }
+
+    async fn adopt_sandbox_inner(
+        &self,
+        spec: Option<&pc::SandboxSpec>,
+        handle: &pc::SandboxHandle,
+        effect_fence: Option<&pc::SandboxEffectFence>,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        let payload = handle.local_payload()?;
+        if let Some(spec) = spec
+            && (handle.realization_fingerprint()
+                != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
+                || payload.outputs_path != spec.outputs_path
+                || payload.base_env != spec.env)
+        {
+            return Err(err(
+                "Local sandbox handle does not match the effective adoption spec",
+            ));
+        }
+        let mut sandbox = self.build_at(
+            &handle.sandbox_id,
+            &payload.outputs_path,
+            crate::sandbox_dir(&self.base, &handle.sandbox_id),
+            handle.restoration().map(|_| handle.clone()),
+        );
+        let verified = crate::realization_marker::verify_adoption(
+            sandbox.root.root(),
+            handle.realization_fingerprint(),
+            handle.filesystem_effect_fence()?,
+            handle.filesystem_physical_incarnation()?,
+            effect_fence,
+        )?;
+        let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
+        sandbox.realization = match verified {
+            Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
+            None => crate::realization_marker::LiveRealization::LegacyAdopted,
+        };
+        sandbox.base_env.clone_from(&payload.base_env);
+        sandbox.continuation_excluded_paths = payload
+            .continuation_excluded_paths
+            .iter()
+            .map(|path| sandbox.root.resolve(path).map_err(err))
+            .collect::<Result<_, _>>()?;
+        if let Some(spec) = spec {
+            sandbox.secret_paths = spec
+                .mounts
+                .iter()
+                .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
+                .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+                .collect::<Result<_, _>>()?;
+        }
+        *sandbox
+            .owned_paths
+            .lock()
+            .expect("owned paths lock poisoned") =
+            handle.owned_paths().unwrap_or_default().to_vec();
+        let handle_materializations = handle
+            .memory_materializations()?
+            .unwrap_or_default()
+            .to_vec();
+        if let Some(receipt) = completion {
+            let (realized, materializations) = match spec {
+                Some(spec) => {
+                    crate::replay_completion_receipt(spec, &receipt, pc::Realization::Copy)?
+                }
+                None => (receipt.mounts(), receipt.memory_materializations().to_vec()),
+            };
+            if handle_materializations != materializations {
+                return Err(err(
+                    "Local sandbox handle Memory evidence differs from the Ready receipt",
+                ));
+            }
+            sandbox.realized = realized;
+            sandbox.memory_materializations = materializations;
+        } else {
+            sandbox.memory_materializations = handle_materializations;
+        }
+        Ok(sandbox)
     }
 
     /// Static capability evidence shared by provider admission and owners of an
@@ -383,8 +684,12 @@ impl LocalProvider {
     async fn realize_mount(
         &self,
         root: &IsolatedRoot,
+        root_identity: awaken_sandbox_fs::DirectoryIdentity,
         req: &pc::MountRequirement,
-    ) -> Result<(pc::RealizedMount, Option<Box<dyn pc::MemoryMount>>), pc::SandboxError> {
+        retained_mounts: &tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+        mutation_guard: &crate::realization_marker::ProviderCreationGuard,
+    ) -> Result<(pc::RealizedMount, Option<pc::MemoryMaterializationEvidence>), pc::SandboxError>
+    {
         let host = root.resolve(&req.mount_path).map_err(err)?;
         // A memory_store is a genuine keyed store (ADR-0038/0053), not a byte blob:
         // realize it through the injected mounter (FUSE where the kernel supports it,
@@ -407,6 +712,7 @@ impl LocalProvider {
                     req.mount_id
                 )));
             };
+            mutation_guard.validate_before_mutation()?;
             let guard = mounter
                 .mount(
                     materialization_reference.as_deref().unwrap_or(store_id),
@@ -414,12 +720,46 @@ impl LocalProvider {
                     req.access,
                 )
                 .await?;
+            let realization = guard.realization();
+            let materialization = match (realization, guard.materialization_heads()) {
+                (pc::Realization::Copy, Some(heads)) => {
+                    match pc::MemoryMaterializationEvidence::new(
+                        store_id.clone(),
+                        req.mount_path.clone(),
+                        heads,
+                    ) {
+                        Ok(evidence) => Some(evidence),
+                        Err(cause) => {
+                            retained_mounts.lock().await.push(guard);
+                            return Err(err(format!(
+                                "mount {:?}: invalid memory materialization evidence: {cause}; teardown guard retained",
+                                req.mount_id
+                            )));
+                        }
+                    }
+                }
+                (pc::Realization::Copy, None) => {
+                    retained_mounts.lock().await.push(guard);
+                    return Err(err(format!(
+                        "mount {:?}: copy-backed memory_store returned no durable heads; teardown guard retained",
+                        req.mount_id
+                    )));
+                }
+                (_, Some(_)) => {
+                    retained_mounts.lock().await.push(guard);
+                    return Err(err(format!(
+                        "mount {:?}: non-copy memory_store returned copy materialization heads; teardown guard retained",
+                        req.mount_id
+                    )));
+                }
+                (_, None) => None,
+            };
             if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-                && guard.realization() != pc::Realization::Fuse
+                && realization != pc::Realization::Fuse
             {
-                guard.teardown().await;
+                retained_mounts.lock().await.push(guard);
                 return Err(err(format!(
-                    "mount {:?}: memory_store requires write-through FUSE realization",
+                    "mount {:?}: memory_store requires write-through FUSE realization; teardown guard retained",
                     req.mount_id
                 )));
             }
@@ -427,10 +767,11 @@ impl LocalProvider {
                 mount_id: req.mount_id.clone(),
                 mount_path: req.mount_path.clone(),
                 access: req.access,
-                realization: guard.realization(),
+                realization,
                 content_hash: None,
             };
-            return Ok((realized, Some(guard)));
+            retained_mounts.lock().await.push(guard);
+            return Ok((realized, materialization));
         }
         let secret_broker = self
             .secret_broker
@@ -455,15 +796,18 @@ impl LocalProvider {
         let realized = match bytes {
             Some(bytes) => {
                 verify(&req.source, &bytes)?; // fail closed on content-hash mismatch
-                if let Some(parent) = host.parent() {
-                    std::fs::create_dir_all(parent).map_err(err)?;
-                }
-                std::fs::write(&host, &bytes).map_err(err)?;
-                // A realized secret is owner-only on disk (0600); the bytes are
-                // still shredded on dispose (see `secret_paths`/`shred_secrets`).
-                if matches!(req.source, pc::MountSource::Secret { .. }) {
-                    restrict_to_owner(&host)?;
-                }
+                let relative = host
+                    .strip_prefix(root.root())
+                    .map_err(|_| err("mount path escaped its exact sandbox root"))?;
+                mutation_guard.validate_before_mutation()?;
+                awaken_sandbox_fs::write_relative_file_atomic(
+                    root.root(),
+                    root_identity,
+                    relative,
+                    &bytes,
+                    0o600,
+                )
+                .map_err(err)?;
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
@@ -480,10 +824,18 @@ impl LocalProvider {
             }
             None => {
                 // Optional + unresolvable: create an empty placeholder so the path exists.
-                if let Some(parent) = host.parent() {
-                    std::fs::create_dir_all(parent).map_err(err)?;
-                }
-                std::fs::write(&host, b"").map_err(err)?;
+                let relative = host
+                    .strip_prefix(root.root())
+                    .map_err(|_| err("mount path escaped its exact sandbox root"))?;
+                mutation_guard.validate_before_mutation()?;
+                awaken_sandbox_fs::write_relative_file_atomic(
+                    root.root(),
+                    root_identity,
+                    relative,
+                    b"",
+                    0o600,
+                )
+                .map_err(err)?;
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
@@ -517,8 +869,13 @@ impl LocalProvider {
             secret_broker: self.secret_broker.clone(),
             realized: Vec::new(),
             secret_paths: Vec::new(),
-            memory_mounts: std::sync::Mutex::new(Vec::new()),
+            memory_mounts: tokio::sync::Mutex::new(Vec::new()),
+            memory_materializations: Vec::new(),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             continuation_excluded_paths: Vec::new(),
+            realization: crate::realization_marker::LiveRealization::LegacyAdopted,
+            terminal_removal: std::sync::Mutex::new(None),
+            owned_paths: std::sync::Mutex::new(Vec::new()),
             adopted_handle,
         }
     }
@@ -536,11 +893,63 @@ impl pc::SandboxProvider for LocalProvider {
         Self::capabilities()
     }
 
+    fn checkpoint_formats(&self) -> Vec<String> {
+        vec!["awaken-fs-tar-v1".into()]
+    }
+
     async fn create(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(self.create_sandbox(spec).await?))
+    }
+
+    async fn create_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(
+            self.create_sandbox_for_effect(spec, effect_fence, None)
+                .await?,
+        ))
+    }
+
+    async fn observe(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        handle.local_payload()?;
+        crate::realization_marker::observe_adoption(
+            &crate::sandbox_dir(&self.base, &handle.sandbox_id),
+            handle.realization_fingerprint(),
+            handle.filesystem_effect_fence()?,
+            handle.filesystem_physical_incarnation()?,
+            None,
+        )
+    }
+
+    async fn observe_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        handle.local_payload()?;
+        if handle.realization_fingerprint()
+            != Some(&pc::SandboxRealizationFingerprint::from_spec(spec))
+        {
+            return Ok(pc::SandboxObservation::Incompatible {
+                reason: "Local sandbox handle does not match the effective observation spec".into(),
+            });
+        }
+        crate::realization_marker::observe_adoption(
+            &crate::sandbox_dir(&self.base, &handle.sandbox_id),
+            handle.realization_fingerprint(),
+            handle.filesystem_effect_fence()?,
+            handle.filesystem_physical_incarnation()?,
+            Some(effect_fence),
+        )
     }
 
     async fn adopt(
@@ -550,6 +959,35 @@ impl pc::SandboxProvider for LocalProvider {
         Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 
+    async fn adopt_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(
+            self.adopt_sandbox_for_effect(spec, handle, effect_fence)
+                .await?,
+        ))
+    }
+
+    async fn prepare_terminal_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<Option<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+        Ok(self
+            .prepare_terminal_sandbox_for_effect(
+                spec,
+                handle,
+                expected_effect_fence,
+                terminal_effect_fence,
+            )?
+            .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+    }
+
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
@@ -557,6 +995,18 @@ impl pc::SandboxProvider for LocalProvider {
     ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
             .acquire_restore_sandbox(spec, request)
+            .await?
+            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+    }
+
+    async fn restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<pc::SandboxRestoreResult<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+        Ok(self
+            .restore_exact_sandbox(spec, request, store)
             .await?
             .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
@@ -590,17 +1040,53 @@ pub struct LocalSandbox {
     secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
     /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
-    memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    /// Canonical durable heads captured from copy-backed mounts at create, or
+    /// recovered verbatim from a validated current handle at adoption.
+    memory_materializations: Vec<pc::MemoryMaterializationEvidence>,
+    /// One process-local exact-evidence/effect acknowledgement. Durable Memory
+    /// heads remain owned by the handle and store; this only gates guard drain
+    /// against physical disposal.
+    memory_reconciliation_ack: pc::MemoryReconciliationAck,
     /// Host paths whose contents have an independent durable authority or carry
     /// credentials. They are rematerialized from that authority after restore.
     continuation_excluded_paths: Vec<PathBuf>,
-    /// Exact reader-owned wire handle retained only across adoption. Create and
-    /// ordinary creation emit the current legacy-None constructor shape; exact
-    /// physical restore acquisition installs the request-bound handle.
+    /// One coherent marker/legacy realization authority; current evidence
+    /// cannot drift across parallel optional fingerprint/fence/incarnation fields.
+    realization: crate::realization_marker::LiveRealization,
+    /// Present only on the cold terminal seam. Holding the guard here keeps the
+    /// one marker lock across prepare -> secret shred -> exact delete -> receipt.
+    terminal_removal: std::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
+    /// Complete sandbox-visible trees frozen into the current V2 handle.
+    owned_paths: std::sync::Mutex<Vec<String>>,
+    /// Exact restore-bound handle retained only for the unpublished/restored
+    /// physical target. Ordinary P/V2 handles remain derived from the marker.
     adopted_handle: Option<pc::SandboxHandle>,
 }
 
 impl LocalSandbox {
+    fn root_identity_for_access(
+        &self,
+    ) -> Result<Option<awaken_sandbox_fs::DirectoryIdentity>, pc::SandboxError> {
+        self.realization.root_identity_for_access(self.root.root())
+    }
+
+    fn require_root_identity(
+        &self,
+    ) -> Result<awaken_sandbox_fs::DirectoryIdentity, pc::SandboxError> {
+        self.realization.require_root_identity(self.root.root())
+    }
+
+    /// Reserve one provider-visible path in the durable V2 handle before a
+    /// live projection effect starts. Reservations are monotonic: retaining a
+    /// disjoint historical path is safer than losing evidence across a crash.
+    pub fn reserve_owned_path(&self, path: &str) {
+        let mut owned = self.owned_paths.lock().expect("owned paths lock poisoned");
+        if !owned.iter().any(|current| current == path) {
+            owned.push(path.to_string());
+        }
+    }
+
     /// Absolute host path used as the Workdir tier's agent workspace.
     ///
     /// ACP carries a `cwd` independently from the child process cwd. A bound ACP
@@ -621,46 +1107,45 @@ impl LocalSandbox {
         subdir: &str,
         files: &[(String, Vec<u8>, bool)],
     ) -> Result<(), pc::SandboxError> {
-        materialize_read_only_tree_at(&self.root, subdir, files)
+        let root_identity = self.require_root_identity()?;
+        materialize_read_only_tree_at(&self.root, root_identity, subdir, files)
     }
 
     /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
-    pub async fn release_memory_mounts(&self) {
-        let mounts: Vec<Box<dyn pc::MemoryMount>> =
-            std::mem::take(&mut self.memory_mounts.lock().unwrap());
-        for mount in mounts {
-            mount.teardown().await;
-        }
+    pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
+        crate::release_memory_mounts(&self.memory_mounts).await
     }
 
     /// Remove only the runtime-owned resource projection, preserving the rest of
     /// the Session workspace. Used when a live input manifest is replaced: a
     /// detached resource must not remain reachable as stale bytes under `.mnt`.
     pub fn clear_resource_projection(&self) -> Result<(), pc::SandboxError> {
-        let projection = self.root.resolve(".mnt").map_err(err)?;
-        let Ok(metadata) = std::fs::symlink_metadata(&projection) else {
-            return Ok(());
-        };
-        if metadata.file_type().is_symlink() || metadata.is_file() {
-            std::fs::remove_file(&projection).map_err(err)
-        } else {
-            std::fs::remove_dir_all(&projection).map_err(err)
-        }
+        let root_identity = self.require_root_identity()?;
+        awaken_sandbox_fs::remove_relative_entry_exact(
+            self.root.root(),
+            root_identity,
+            std::path::Path::new(pc::WorkspaceLayout::RESOURCE_PROJECTION_SUBDIR),
+        )
+        .map_err(err)
     }
 
     fn host_outputs(&self) -> Result<PathBuf, pc::SandboxError> {
         self.root.resolve(&self.outputs_path).map_err(err)
     }
 
-    /// Outputs scan → `(artifact, host_path)` pairs (shared with other tiers).
-    fn scan(&self) -> Result<Vec<(pc::Artifact, PathBuf)>, pc::SandboxError> {
-        crate::artifacts::scan_outputs(&self.host_outputs()?, &self.outputs_path)
+    /// Outputs scan → one descriptor-captured `(artifact, bytes)` snapshot.
+    fn scan(&self) -> Result<Vec<(pc::Artifact, Vec<u8>)>, pc::SandboxError> {
+        let Some(root_identity) = self.root_identity_for_access()? else {
+            return Ok(Vec::new());
+        };
+        crate::artifacts::scan_outputs(&self.root, root_identity, &self.outputs_path)
     }
 
     /// Build the child command (program, args, jailed cwd, reserved + declared env),
     /// leaving stdio for the caller to configure. Shared by `spawn`/`spawn_agent`.
     async fn build_command(&self, command: pc::Command) -> Result<TokioCommand, pc::SandboxError> {
+        let root_identity = self.require_root_identity()?;
         let broker = self
             .secret_broker
             .read()
@@ -678,9 +1163,23 @@ impl LocalSandbox {
             &command.cwd
         };
         let host_cwd = self.root.resolve(cwd_logical).map_err(err)?;
-        std::fs::create_dir_all(&host_cwd).map_err(err)?;
+        awaken_sandbox_fs::create_relative_directory_all(
+            self.root.root(),
+            root_identity,
+            host_cwd
+                .strip_prefix(self.root.root())
+                .map_err(|_| err("command cwd escaped its exact sandbox root"))?,
+        )
+        .map_err(err)?;
         let host_outputs = self.host_outputs()?;
-        std::fs::create_dir_all(&host_outputs).map_err(err)?;
+        awaken_sandbox_fs::create_relative_directory_all(
+            self.root.root(),
+            root_identity,
+            host_outputs
+                .strip_prefix(self.root.root())
+                .map_err(|_| err("outputs path escaped its exact sandbox root"))?,
+        )
+        .map_err(err)?;
 
         let mut cmd = TokioCommand::new(program);
         configure_process_group(&mut cmd);
@@ -759,14 +1258,42 @@ impl LocalSandbox {
 
     /// List regular files under `<root>/<subdir>` as `(logical_path, bytes)` — a
     /// session's output artifacts or a memory-harvest read. Paths are logical (G3).
-    pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {
-        list_files_at(&self.root, subdir)
+    pub fn list_files(&self, subdir: &str) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {
+        let Some(root_identity) = self.root_identity_for_access()? else {
+            if !self.memory_materializations.is_empty() {
+                return Err(err(
+                    "copy-backed Memory lost its exact sandbox root before reconciliation",
+                ));
+            }
+            return Ok(Vec::new());
+        };
+        let files = list_files_at(&self.root, root_identity, subdir.trim_start_matches('/'))?;
+        // The neutral scanner treats a concurrently missing physical root as
+        // empty. Recovered Memory reconciliation cannot: an empty candidate
+        // after root loss would authorize deletion of durable heads. Recheck
+        // the exact incarnation after the descriptor-captured snapshot.
+        if !self.memory_materializations.is_empty() {
+            self.require_root_identity()?;
+        }
+        Ok(files)
     }
 
     /// Scan `<root>/<subdir>/*/SKILL.md` live, returning neutral file data (the host
     /// parses the skill model). Re-scanned each call so a run-authored skill is seen.
-    pub fn scan_skill_dir(&self, subdir: &str) -> Vec<DiscoveredSkillFile> {
-        scan_skill_dir_at(&self.root, subdir)
+    pub fn scan_skill_dir(
+        &self,
+        subdir: &str,
+    ) -> Result<Vec<DiscoveredSkillFile>, pc::SandboxError> {
+        let Some(root_identity) = self.root_identity_for_access()? else {
+            return Ok(Vec::new());
+        };
+        scan_skill_dir_at(
+            &self.root,
+            root_identity,
+            subdir.trim_start_matches('/'),
+            subdir.trim_start_matches('/'),
+        )
+        .map_err(Into::into)
     }
 
     /// Materialize host-projected, non-secret configuration inside this existing
@@ -778,26 +1305,28 @@ impl LocalSandbox {
         logical: &str,
         contents: &[u8],
     ) -> Result<(), pc::SandboxError> {
-        let path = jailed_at(&self.root, logical).map_err(err)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(err)?;
-        }
-        std::fs::write(&path, contents).map_err(err)?;
-        restrict_to_owner(&path)?;
-        Ok(())
+        let root_identity = self.require_root_identity()?;
+        awaken_sandbox_fs::write_relative_file_atomic(
+            self.root.root(),
+            root_identity,
+            std::path::Path::new(logical.trim_start_matches('/')),
+            contents,
+            0o600,
+        )
+        .map_err(err)
     }
 
     /// Remove one dynamically projected workspace path without tearing down the
     /// Session environment. The same lexical jail used by materialization rejects
     /// escape attempts; missing paths are an idempotent success.
     pub fn remove_inline(&self, logical: &str) -> Result<(), pc::SandboxError> {
-        let path = self.root.resolve(logical).map_err(err)?;
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path).map_err(err),
-            Ok(_) => std::fs::remove_file(path).map_err(err),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(err(error)),
-        }
+        let root_identity = self.require_root_identity()?;
+        awaken_sandbox_fs::remove_relative_entry_exact(
+            self.root.root(),
+            root_identity,
+            std::path::Path::new(logical.trim_start_matches('/')),
+        )
+        .map_err(err)
     }
 }
 
@@ -808,6 +1337,8 @@ impl pc::RepositoryRealizer for LocalSandbox {
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
+        self.require_root_identity()?;
+        plan.validate_mount_path()?;
         provision_repo_at(
             &self.root,
             &plan.mount_path,
@@ -816,7 +1347,9 @@ impl pc::RepositoryRealizer for LocalSandbox {
             plan.initial_commit.as_deref(),
             credential,
         )
-        .map_err(err)
+        .map_err(err)?;
+        self.reserve_owned_path(&plan.mount_path);
+        Ok(())
     }
 
     async fn publish_repository(
@@ -825,6 +1358,10 @@ impl pc::RepositoryRealizer for LocalSandbox {
         expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
+        self.require_root_identity()
+            .map_err(pc::RepositoryPublicationError::Unavailable)?;
+        plan.validate_mount_path()
+            .map_err(pc::RepositoryPublicationError::Unavailable)?;
         push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential)
     }
 }
@@ -843,17 +1380,35 @@ impl pc::Sandbox for LocalSandbox {
             .continuation_excluded_paths
             .iter()
             .filter_map(|path| path.strip_prefix(self.root.root()).ok())
-            .map(|path| format!("/{}", path.to_string_lossy().trim_start_matches('/')))
+            .map(|path| path.to_string_lossy().into_owned())
             .collect();
-        pc::SandboxHandle::local(
-            &self.id,
-            pc::LocalSandboxHandleV1 {
-                outputs_path: self.outputs_path.clone(),
-                base_env: self.base_env.clone(),
-                continuation_excluded_paths,
-                deny_tool_egress: self.deny_egress,
-            },
-        )
+        let previous = pc::LocalSandboxHandleV1 {
+            outputs_path: self.outputs_path.clone(),
+            base_env: self.base_env.clone(),
+            continuation_excluded_paths,
+            deny_tool_egress: self.deny_egress,
+        };
+        match self.realization.current() {
+            Some(realization) => pc::SandboxHandle::local_v2(
+                &self.id,
+                pc::LocalSandboxHandleV2 {
+                    previous,
+                    realization_fingerprint: realization.fingerprint().clone(),
+                    effect_fence: realization.effect_fence().clone(),
+                    physical_incarnation: realization.physical_incarnation().to_owned(),
+                    owned_paths: self
+                        .owned_paths
+                        .lock()
+                        .expect("owned paths lock poisoned")
+                        .clone(),
+                },
+            )
+            .with_memory_materializations(self.memory_materializations.clone())
+            .expect("Local sandbox cached canonical Memory materialization evidence"),
+            // V1 adoption is a decode-only compatibility path. Re-emitting V1
+            // preserves that boundary and cannot fabricate a marker or path WAL.
+            None => pc::SandboxHandle::local(&self.id, previous),
+        }
     }
 
     async fn spawn(
@@ -873,6 +1428,40 @@ impl pc::Sandbox for LocalSandbox {
         Ok(Box::new(LocalProcess::spawned(child)))
     }
 
+    async fn checkpoint(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
+        self.create_checkpoint(request, store).await
+    }
+
+    async fn checkpoint_for_effect(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
+        self.create_checkpoint_for_effect(request, store, effect_fence)
+            .await
+    }
+
+    async fn cleanup_checkpoint_for_terminal(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        expected_effect_fence: &pc::SandboxEffectFence,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<(), pc::SandboxError> {
+        self.cleanup_checkpoint_for_terminal(
+            request,
+            store,
+            expected_effect_fence,
+            terminal_effect_fence,
+        )
+        .await
+    }
+
     async fn attach(
         &self,
         _req: pc::MountRequirement,
@@ -890,9 +1479,9 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        for (artifact, host) in self.scan()? {
+        for (artifact, bytes) in self.scan()? {
             if artifact.id == id {
-                return std::fs::read(&host).map_err(err);
+                return Ok(bytes);
             }
         }
         Err(err(format!("no artifact with id {id:?}")))
@@ -914,11 +1503,25 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        Ok(if self.root.root().exists() {
-            pc::SandboxStatus::Ready
-        } else {
-            pc::SandboxStatus::Terminated
-        })
+        let entry = awaken_sandbox_fs::classify_nofollow(self.root.root()).map_err(err)?;
+        match (&self.realization, entry) {
+            (_, awaken_sandbox_fs::PathEntry::Absent) => Ok(pc::SandboxStatus::Terminated),
+            (
+                crate::realization_marker::LiveRealization::Current(evidence),
+                awaken_sandbox_fs::PathEntry::Directory(observed),
+            ) if observed == evidence.root_identity() => Ok(pc::SandboxStatus::Ready),
+            (
+                crate::realization_marker::LiveRealization::LegacyCreated(evidence),
+                awaken_sandbox_fs::PathEntry::Directory(observed),
+            ) if observed == evidence.root_identity() => Ok(pc::SandboxStatus::Ready),
+            (
+                crate::realization_marker::LiveRealization::LegacyAdopted,
+                awaken_sandbox_fs::PathEntry::Directory(_),
+            ) => Ok(pc::SandboxStatus::Ready),
+            _ => Err(err(
+                "sandbox root has a foreign file type or physical identity",
+            )),
+        }
     }
 
     async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
@@ -926,1031 +1529,109 @@ impl pc::Sandbox for LocalSandbox {
     }
 
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        // Order: harvest memory (reads edits back, unmounts FUSE) → shred secrets
-        // (overwrite credential bytes) → reap the directory. Memory harvest must run
-        // before shred so a promised write-back is never lost; both run before reap.
-        self.release_memory_mounts().await;
-        self.shred_secrets();
-        let root = self.root.root();
         if let Some(evidence) = self
             .adopted_handle
             .as_ref()
             .and_then(pc::SandboxHandle::restoration)
         {
-            restore_target::dispose_bound_target(root, evidence).await?;
-        } else if root.exists() {
-            std::fs::remove_dir_all(root).map_err(err)?;
+            self.release_memory_mounts().await?;
+            self.shred_secrets()?;
+            return restore_target::dispose_bound_target(self.root.root(), evidence).await;
         }
-        Ok(())
+        if self.realization.current().is_some() {
+            return Err(err(
+                "current durable sandbox disposal requires an aggregate effect fence",
+            ));
+        }
+        self.release_memory_mounts().await?;
+        self.shred_secrets()?;
+        crate::realization_marker::dispose_legacy(
+            self.root.root(),
+            self.realization.legacy_live_identity(),
+        )
+    }
+
+    async fn acknowledge_memory_reconciliation(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+        complete_materializations: &[pc::MemoryMaterializationEvidence],
+    ) -> Result<(), pc::SandboxError> {
+        crate::acknowledge_memory_reconciliation(
+            &self.memory_reconciliation_ack,
+            &self.memory_mounts,
+            effect_fence,
+            complete_materializations,
+            || {
+                let handle = pc::Sandbox::handle(self);
+                Ok(handle
+                    .memory_materializations()?
+                    .unwrap_or_default()
+                    .to_vec())
+            },
+            || {
+                crate::authorize_terminal_disposal(
+                    self.root.root(),
+                    &self.realization,
+                    &self.terminal_removal,
+                    effect_fence,
+                )
+                .map(|_| ())
+            },
+        )
+        .await
+    }
+
+    async fn prepare_disposal_for_effect(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        let handle = pc::Sandbox::handle(self);
+        let complete_materializations = handle.memory_materializations()?.unwrap_or_default();
+        crate::prepare_terminal_disposal(
+            &self.memory_reconciliation_ack,
+            complete_materializations,
+            self.root.root(),
+            &self.realization,
+            &self.terminal_removal,
+            effect_fence,
+        )
+    }
+
+    async fn dispose_for_effect(
+        &self,
+        authorization: &pc::SandboxDisposalAuthorization,
+    ) -> Result<(), pc::SandboxError> {
+        crate::dispose_terminal_realization(
+            &self.memory_mounts,
+            self.root.root(),
+            &self.secret_paths,
+            &self.terminal_removal,
+            authorization,
+        )
+        .await
     }
 }
 
 impl LocalSandbox {
     /// Overwrite each realized secret file's bytes with zeros before the directory is
     /// reaped, so a materialized credential does not survive in freed disk blocks
-    /// (ADR-0023 shred-on-teardown). Best-effort: a missing/short file is skipped.
-    fn shred_secrets(&self) {
-        for path in &self.secret_paths {
-            if let Ok(meta) = std::fs::metadata(path) {
-                let _ = std::fs::write(path, vec![0u8; meta.len() as usize]);
-            }
-        }
+    /// (ADR-0023 shred-on-teardown). Every nofollow overwrite must succeed before
+    /// root deletion; failure retains the marker and exact root for retry.
+    fn shred_secrets(&self) -> Result<(), pc::SandboxError> {
+        crate::shred_secret_paths_at(
+            &self.root,
+            self.root_identity_for_access()?,
+            &self.secret_paths,
+        )
     }
 }
 
 #[cfg(test)]
-mod shred_tests {
-    use super::*;
-    use awaken_provisioning_contract::{
-        IsolationClass, MountAccess, MountLifetime, MountRequirement, MountSource, NetworkPolicy,
-        ResourceLimits, Sandbox, SandboxSpec,
-    };
-
-    struct Broker;
-
-    #[async_trait]
-    impl pc::SecretBroker for Broker {
-        async fn materialize(&self, reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-            assert_eq!(reference, "broker://k");
-            Ok(b"broker-secret".to_vec())
-        }
-
-        async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
-            Err(pc::SandboxError::new("process secrets are not supported"))
-        }
-
-        async fn write_back(
-            &self,
-            _reference: &str,
-            _bytes: Vec<u8>,
-        ) -> Result<(), pc::SandboxError> {
-            unreachable!("the Workdir provider accepts only read-only brokered secrets")
-        }
-    }
-
-    fn secret_spec(scope: &str) -> SandboxSpec {
-        SandboxSpec {
-            scope: scope.into(),
-            isolation: IsolationClass::Workdir,
-            mounts: vec![MountRequirement {
-                mount_id: "auth".into(),
-                source: MountSource::Secret {
-                    reference: "broker://k".into(),
-                    content_hash: None,
-                },
-                mount_path: "/workspace/.auth".into(),
-                access: MountAccess::ReadWrite,
-                lifetime: MountLifetime::PerRun,
-                required: true,
-            }],
-            env: Vec::new(),
-            packages: Default::default(),
-            network: NetworkPolicy::Unrestricted,
-            outputs_path: "/mnt/session/outputs".into(),
-            requests: Default::default(),
-            limits: ResourceLimits::default(),
-            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-            lease_ttl_secs: None,
-            control_services: Default::default(),
-            environment: None,
-            command: Vec::new(),
-            deny_tool_egress: false,
-        }
-    }
-
-    #[tokio::test]
-    async fn dispose_shreds_a_materialized_secret_before_reaping() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider =
-            LocalProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
-        let sandbox = provider
-            .create_sandbox(&secret_spec("t-shred"))
-            .await
-            .unwrap();
-
-        // The credential is materialized in the sandbox FS and tracked for shredding.
-        assert_eq!(sandbox.secret_paths.len(), 1);
-        let path = sandbox.secret_paths[0].clone();
-        assert_eq!(std::fs::read(&path).unwrap(), b"sk-secret");
-
-        // Shred overwrites the bytes with zeros (runs before the directory is reaped).
-        sandbox.shred_secrets();
-        assert_eq!(std::fs::read(&path).unwrap(), vec![0u8; 9]);
-
-        // A non-secret mount is NOT tracked (only credentials are shredded).
-        sandbox.dispose().await.unwrap();
-        assert!(!path.exists());
-    }
-
-    #[tokio::test]
-    async fn a_read_only_secret_uses_the_dedicated_broker() {
-        let source = MountSource::Secret {
-            reference: "broker://k".into(),
-            content_hash: None,
-        };
-        let broker: Arc<dyn pc::SecretBroker> = Arc::new(Broker);
-        let bytes = resolve_source(&source, &HashMap::new(), &None, Some(&broker))
-            .await
-            .unwrap();
-
-        assert_eq!(bytes.unwrap(), b"broker-secret");
-    }
-
-    #[tokio::test]
-    async fn a_brokered_writable_secret_fails_closed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path()).with_secret_broker(Arc::new(Broker));
-
-        let error = match provider
-            .create_sandbox(&secret_spec("t-broker-write"))
-            .await
-        {
-            Ok(_) => panic!("brokered writable Secret must fail closed"),
-            Err(error) => error,
-        };
-        assert!(error.0.contains("cannot write back"));
-    }
-
-    #[tokio::test]
-    async fn clearing_resource_projection_revokes_stale_mounts_but_keeps_workspace_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut spec = secret_spec("clear-projection");
-        spec.mounts.clear();
-        let sandbox = LocalProvider::new(tmp.path())
-            .create_sandbox(&spec)
-            .await
-            .unwrap();
-        let root = sandbox.root.root();
-        std::fs::create_dir_all(root.join(".mnt/private")).unwrap();
-        std::fs::write(root.join(".mnt/private/secret.txt"), "secret").unwrap();
-        std::fs::write(root.join("work.txt"), "keep").unwrap();
-
-        sandbox.clear_resource_projection().unwrap();
-
-        assert!(!root.join(".mnt").exists());
-        assert_eq!(
-            std::fs::read_to_string(root.join("work.txt")).unwrap(),
-            "keep"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_materialized_secret_is_owner_only_on_disk() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let provider =
-            LocalProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
-        let sandbox = provider
-            .create_sandbox(&secret_spec("t-perms"))
-            .await
-            .unwrap();
-
-        let path = sandbox.secret_paths[0].clone();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o600,
-            "a realized secret must be owner-only, got {mode:o}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_non_secret_mount_is_not_tracked_for_shredding() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path()).with_blob("file-x", b"data".to_vec());
-        let mut spec = secret_spec("t-nosecret");
-        spec.mounts[0].source = MountSource::File {
-            file_id: "file-x".into(),
-            content_hash: None,
-        };
-        let sandbox = provider.create_sandbox(&spec).await.unwrap();
-        assert!(
-            sandbox.secret_paths.is_empty(),
-            "only Secret mounts are shredded"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_source_handles_every_mount_variant() {
-        let mut blobs = HashMap::new();
-        blobs.insert("f1".to_string(), b"file".to_vec());
-        blobs.insert("r1".to_string(), b"res".to_vec());
-        let none_store: Option<Arc<dyn pc::BlobSource>> = None;
-
-        let file = MountSource::File {
-            file_id: "f1".into(),
-            content_hash: None,
-        };
-        assert_eq!(
-            resolve_source(&file, &blobs, &none_store, None)
-                .await
-                .unwrap(),
-            Some(b"file".to_vec())
-        );
-        let resource = MountSource::Resource {
-            resource_id: "r1".into(),
-            content_hash: None,
-        };
-        assert_eq!(
-            resolve_source(&resource, &blobs, &none_store, None)
-                .await
-                .unwrap(),
-            Some(b"res".to_vec())
-        );
-        // Typed inline content short-circuits before any store hit.
-        let inline = MountSource::Inline {
-            contents: "inline".into(),
-        };
-        assert_eq!(
-            resolve_source(&inline, &blobs, &none_store, None)
-                .await
-                .unwrap(),
-            Some(b"inline".to_vec())
-        );
-        let binary = vec![0, 0xff, 0x80, b'\n'];
-        let carried = MountSource::InlineBytes {
-            contents: binary.clone(),
-            content_hash: Some(content_fingerprint(&binary)),
-        };
-        assert_eq!(
-            resolve_source(&carried, &blobs, &none_store, None)
-                .await
-                .unwrap(),
-            Some(binary.clone()),
-            "binary input must round-trip without UTF-8 coercion"
-        );
-        assert!(verify(&carried, &binary).is_ok());
-        assert!(verify(&carried, b"corrupt").is_err());
-        // A memory store is not byte-resolvable through this path.
-        let mem = MountSource::MemoryStore {
-            store_id: "m".into(),
-            materialization_reference: None,
-            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-        };
-        assert_eq!(
-            resolve_source(&mem, &blobs, &none_store, None)
-                .await
-                .unwrap(),
-            None
-        );
-        // An unknown id resolves to nothing.
-        let missing = MountSource::File {
-            file_id: "nope".into(),
-            content_hash: None,
-        };
-        assert_eq!(
-            resolve_source(&missing, &blobs, &none_store, None)
-                .await
-                .unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn declared_hash_and_verify_are_fail_closed_per_variant() {
-        assert_eq!(
-            declared_hash(&MountSource::Resource {
-                resource_id: "r".into(),
-                content_hash: Some("h".into()),
-            }),
-            Some("h")
-        );
-        // Non-hashable variants have no declared hash.
-        assert_eq!(
-            declared_hash(&MountSource::MemoryStore {
-                store_id: "m".into(),
-                materialization_reference: None,
-                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-            }),
-            None
-        );
-        assert_eq!(
-            declared_hash(&MountSource::InlineBytes {
-                contents: Vec::new(),
-                content_hash: Some("carried-hash".into()),
-            }),
-            Some("carried-hash")
-        );
-
-        let src = MountSource::File {
-            file_id: "f".into(),
-            content_hash: Some(content_fingerprint(b"right")),
-        };
-        assert!(verify(&src, b"right").is_ok());
-        assert!(verify(&src, b"wrong").is_err());
-        // No declared hash → nothing to verify against.
-        assert!(
-            verify(
-                &MountSource::Inline {
-                    contents: String::new()
-                },
-                b"any"
-            )
-            .is_ok()
-        );
-    }
-
-    fn bare_spec(scope: &str) -> SandboxSpec {
-        let mut s = secret_spec(scope);
-        s.mounts = Vec::new();
-        s
-    }
-
-    #[tokio::test]
-    async fn a_nested_resolvable_mount_and_an_optional_unresolvable_one_both_realize() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path()).with_blob("data-x", b"payload".to_vec());
-        let mut spec = bare_spec("t-mounts");
-        spec.mounts = vec![
-            // Resolvable at a nested path → parent dirs are created (Some branch).
-            MountRequirement {
-                mount_id: "data".into(),
-                source: MountSource::File {
-                    file_id: "data-x".into(),
-                    content_hash: None,
-                },
-                mount_path: "/workspace/deep/data.bin".into(),
-                access: MountAccess::ReadWrite,
-                lifetime: MountLifetime::PerRun,
-                required: true,
-            },
-            // Optional + unresolvable → an empty placeholder (None branch).
-            MountRequirement {
-                mount_id: "opt".into(),
-                source: MountSource::File {
-                    file_id: "absent".into(),
-                    content_hash: None,
-                },
-                mount_path: "/workspace/deep2/opt.bin".into(),
-                access: MountAccess::ReadWrite,
-                lifetime: MountLifetime::PerRun,
-                required: false,
-            },
-        ];
-        let sandbox = provider.create_sandbox(&spec).await.unwrap();
-        let realized = sandbox.realized();
-        assert_eq!(realized.len(), 2);
-        let opt = realized.iter().find(|m| m.mount_id == "opt").unwrap();
-        assert_eq!(opt.content_hash, None, "the placeholder carries no hash");
-        let data = realized.iter().find(|m| m.mount_id == "data").unwrap();
-        assert!(data.content_hash.is_some());
-    }
-
-    #[tokio::test]
-    async fn build_command_honors_cwd_and_inline_env_and_rejects_empty_argv() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-        let sandbox = provider.create_sandbox(&bare_spec("t-cmd")).await.unwrap();
-        assert_eq!(
-            sandbox.workspace_path(),
-            crate::sandbox_dir(tmp.path(), "t-cmd")
-        );
-
-        let mut cmd = pc::Command::new(["/bin/true"]);
-        cmd.cwd = "/work".into();
-        cmd.env = vec![pc::EnvVar {
-            name: "K".into(),
-            value: pc::EnvValue::Inline { value: "V".into() },
-            visibility: pc::EnvVisibility::Process,
-        }];
-        assert!(sandbox.build_command(cmd).await.is_ok());
-
-        let empty = pc::Command::new(Vec::<String>::new());
-        assert!(sandbox.build_command(empty).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn a_spawned_local_process_reports_its_pid_and_reaps() {
-        use awaken_provisioning_contract::ProcessHandle;
-        let mut command = successful_command();
-        let child = command.spawn().unwrap();
-        let proc = LocalProcess::spawned(child);
-        assert!(!proc.id().is_empty());
-        let status = proc.wait().await.unwrap();
-        assert_eq!(status.code, Some(0));
-    }
-
-    #[cfg(windows)]
-    fn successful_command() -> TokioCommand {
-        let mut command = TokioCommand::new("cmd.exe");
-        command.args(["/D", "/C", "exit /b 0"]);
-        command
-    }
-
-    #[cfg(not(windows))]
-    fn successful_command() -> TokioCommand {
-        TokioCommand::new("true")
-    }
-}
-
+#[path = "provider/shred_tests.rs"]
+mod shred_tests;
 /// The Workdir-tier host helpers that replace the legacy `Environment` methods —
 /// rooted tools, repo provisioning/write-back, artifact/skill scanning — exercised
 /// on a `LocalSandbox` built through the pc `SandboxProvider` path.
 #[cfg(test)]
-mod workdir_helper_tests {
-    use super::*;
-    use crate::git_transport::git_stdout;
-    use awaken_provisioning_contract::{
-        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
-    };
-
-    fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
-        SandboxSpec {
-            scope: scope.into(),
-            isolation: IsolationClass::Workdir,
-            mounts: Vec::new(),
-            env: Vec::new(),
-            // The Workdir tier admits only unrestricted network (it cannot enforce
-            // isolation); egress denial for the rooted bash tool rides `extra`.
-            packages: Default::default(),
-            network: NetworkPolicy::Unrestricted,
-            outputs_path: "/mnt/session/outputs".into(),
-            requests: Default::default(),
-            limits: ResourceLimits::default(),
-            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-            lease_ttl_secs: None,
-            control_services: Default::default(),
-            environment: None,
-            command: Vec::new(),
-            deny_tool_egress: deny_egress,
-        }
-    }
-
-    fn git(cwd: &std::path::Path, args: &[&str]) {
-        let ok = std::process::Command::new("git")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .current_dir(cwd)
-            .args(args)
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok, "git {args:?}");
-    }
-
-    #[tokio::test]
-    async fn rooted_tools_are_nonempty_and_egress_tracks_the_network_policy() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-
-        let open = provider
-            .create_sandbox(&workdir_spec("t-open", false))
-            .await
-            .unwrap();
-        assert!(!open.deny_egress);
-        // The full built-in capability surface is composed as RawTools.
-        assert!(!open.rooted_tools().is_empty());
-
-        let closed = provider
-            .create_sandbox(&workdir_spec("t-closed", true))
-            .await
-            .unwrap();
-        assert!(closed.deny_egress);
-        // Egress denial changes the tool wrapper, not the tool set's size.
-        assert_eq!(open.rooted_tools().len(), closed.rooted_tools().len());
-    }
-
-    #[tokio::test]
-    async fn list_files_and_scan_skill_dir_read_the_realized_root() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-        let sandbox = provider
-            .create_sandbox(&workdir_spec("t-scan", false))
-            .await
-            .unwrap();
-        let root = sandbox.root.root().to_path_buf();
-
-        // Output artifacts are collected as (logical_path, bytes), sorted, recursively.
-        std::fs::create_dir_all(root.join("outputs/sub")).unwrap();
-        std::fs::write(root.join("outputs/a.txt"), b"A").unwrap();
-        std::fs::write(root.join("outputs/sub/b.txt"), b"B").unwrap();
-        assert_eq!(
-            sandbox.list_files("outputs"),
-            vec![
-                ("a.txt".to_string(), b"A".to_vec()),
-                ("sub/b.txt".to_string(), b"B".to_vec()),
-            ]
-        );
-
-        // Managed Skill discovery decision table. C1 file is under the exact
-        // `.claude/skills` root; C2 it has exactly one Skill directory level;
-        // C3 its filename is `SKILL.md`. D1 C1+C2+C3 => discover one logical
-        // Skill. D2 wrong root, D3 root-level file, D4 extra nesting, and D5
-        // missing canonical filename => ignore. This owns Anthropic's repository
-        // discovery shape while the host remains the Skill semantic owner.
-        std::fs::create_dir_all(root.join(".claude/skills/greet")).unwrap();
-        std::fs::write(root.join(".claude/skills/greet/SKILL.md"), "# greet").unwrap();
-        std::fs::write(root.join(".claude/skills/SKILL.md"), "# root").unwrap();
-        std::fs::create_dir_all(root.join(".claude/skills/nested/too-deep")).unwrap();
-        std::fs::write(
-            root.join(".claude/skills/nested/too-deep/SKILL.md"),
-            "# nested",
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join(".claude/skills/missing")).unwrap();
-        std::fs::write(root.join(".claude/skills/missing/skill.md"), "# wrong name").unwrap();
-        std::fs::create_dir_all(root.join("skills/outside")).unwrap();
-        std::fs::write(root.join("skills/outside/SKILL.md"), "# outside").unwrap();
-
-        let skills = sandbox.scan_skill_dir(".claude/skills");
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "greet");
-        assert_eq!(skills[0].dir, ".claude/skills/greet");
-        assert_eq!(skills[0].content, "# greet");
-    }
-
-    /// Repository realization cause/effect decision table:
-    /// | Rule | Destination / Agent Git config | Frozen plan | Effect |
-    /// |---|---|---|---|
-    /// | R1 | absent | valid | clone the exact repository |
-    /// | R2 | already realized | exact replay | succeed without replacing Agent state |
-    /// | R3 | occupied | different remote/checkout | reject without modifying the tree |
-    /// | R4 | origin and `url.*.insteadOf` target attacker | exact authored remote plus branch/commit | push only the absent exact ref; attacker unchanged |
-    /// | R5 | R4 after successful push | same plan/coordinate | return the identical canonical receipt |
-    #[tokio::test]
-    async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
-        let tmp = tempfile::tempdir().unwrap();
-        let base = tmp.path();
-        // Seed a bare "remote" with one commit.
-        let seed = base.join("seed");
-        std::fs::create_dir_all(&seed).unwrap();
-        git(&seed, &["init", "-q"]);
-        git(&seed, &["checkout", "-q", "-b", "main"]);
-        git(&seed, &["config", "user.email", "seed@t"]);
-        git(&seed, &["config", "user.name", "seed"]);
-        std::fs::write(seed.join("README.md"), "hello").unwrap();
-        git(&seed, &["add", "-A"]);
-        git(&seed, &["commit", "-q", "-m", "seed"]);
-        let bare = base.join("remote.git");
-        git(
-            base,
-            &[
-                "clone",
-                "-q",
-                "--bare",
-                seed.to_str().unwrap(),
-                bare.to_str().unwrap(),
-            ],
-        );
-        let attacker = base.join("attacker.git");
-        git(
-            base,
-            &[
-                "clone",
-                "-q",
-                "--bare",
-                seed.to_str().unwrap(),
-                attacker.to_str().unwrap(),
-            ],
-        );
-        let seed_head = std::process::Command::new("git")
-            .current_dir(&seed)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
-        let seed_head = String::from_utf8(seed_head.stdout)
-            .unwrap()
-            .trim()
-            .to_owned();
-
-        let provider = LocalProvider::new(base.join("envs"));
-        let sandbox = provider
-            .create_sandbox(&workdir_spec("t-repo", false))
-            .await
-            .unwrap();
-        let root = sandbox.root.root().to_path_buf();
-        let plan = pc::RepositoryRealizationPlan {
-            repository_id: "repo-1".into(),
-            mount_path: "workspace/repo".into(),
-            source_remote_url: bare.to_string_lossy().into_owned(),
-            transport_url: bare.to_string_lossy().into_owned(),
-            initial_branch: None,
-            initial_commit: None,
-            access: pc::MountAccess::ReadWrite,
-        };
-
-        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-            .await
-            .unwrap();
-        let repo_dir = root.join("workspace/repo");
-        assert_eq!(
-            std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
-            "hello"
-        );
-        std::fs::write(repo_dir.join("PRESERVED"), "agent state").unwrap();
-        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-            .await
-            .expect("R2 exact replay is idempotent");
-        assert_eq!(
-            std::fs::read_to_string(repo_dir.join("PRESERVED")).unwrap(),
-            "agent state",
-            "R2 preserves the existing working tree"
-        );
-        let conflicting = pc::RepositoryRealizationPlan {
-            source_remote_url: base.join("different.git").to_string_lossy().into_owned(),
-            transport_url: base.join("different.git").to_string_lossy().into_owned(),
-            ..plan.clone()
-        };
-        assert!(
-            pc::RepositoryRealizer::realize_repository(&sandbox, &conflicting, None)
-                .await
-                .is_err(),
-            "R3 conflicting realization fails closed"
-        );
-        assert_eq!(
-            std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
-            "hello",
-            "R3 does not replace the authoritative tree"
-        );
-        // Provision sets NO committer identity — that is the agent's to own.
-        let cfg = std::process::Command::new("git")
-            .current_dir(&repo_dir)
-            .args(["config", "--local", "user.name"])
-            .output()
-            .unwrap();
-        assert!(
-            cfg.stdout.is_empty(),
-            "provision must not set a committer identity"
-        );
-
-        // Nothing authored yet: an explicit exact seed coordinate observes the
-        // already-current remote and returns its canonical receipt.
-        let initial_branch = git_stdout(Some(&repo_dir), &["symbolic-ref", "--short", "HEAD"])
-            .unwrap()
-            .trim()
-            .to_owned();
-        let seed_expectation = pc::RepositoryPublicationExpectation {
-            branch: initial_branch,
-            commit: seed_head.clone(),
-            expected_prior_commit: None,
-        };
-        let seed_receipt =
-            pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &seed_expectation, None)
-                .await
-                .unwrap();
-        seed_receipt.verify(&plan, &seed_expectation).unwrap();
-
-        // The AGENT configures its own identity and authors a commit in the jail — a clean
-        // working tree afterwards (it committed everything), which the OLD harvest would have
-        // wrongly skipped. The host then only pushes.
-        git(&repo_dir, &["config", "user.email", "hermes@agent.local"]);
-        git(&repo_dir, &["config", "user.name", "Hermes"]);
-        git(&repo_dir, &["checkout", "-b", "awf/work"]);
-        std::fs::write(repo_dir.join("NEW.txt"), "agent").unwrap();
-        git(&repo_dir, &["add", "-A"]);
-        git(&repo_dir, &["commit", "-q", "-m", "agent: add NEW.txt"]);
-        let agent_commit = git_stdout(Some(&repo_dir), &["rev-parse", "HEAD"])
-            .unwrap()
-            .trim()
-            .to_owned();
-        let expectation = pc::RepositoryPublicationExpectation {
-            branch: "awf/work".into(),
-            commit: agent_commit,
-            expected_prior_commit: None,
-        };
-
-        // The Agent owns this config and may point both the named remote and an
-        // `insteadOf` rewrite at an attacker. Publication must ignore both and
-        // consume only the immutable plan URL passed by the host.
-        let attacker_url = attacker.to_string_lossy().into_owned();
-        let frozen_url = plan.transport_url.clone();
-        git(&repo_dir, &["remote", "set-url", "origin", &attacker_url]);
-        let rewrite_key = format!("url.{attacker_url}.insteadOf");
-        git(&repo_dir, &["config", &rewrite_key, &frozen_url]);
-
-        // R4 pushes the frozen target even though both Agent-authored mechanisms
-        // select the attacker. R5 compares the exact target and becomes a no-op.
-        let first = pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &expectation, None)
-            .await
-            .expect("R4");
-        let replay =
-            pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &expectation, None)
-                .await
-                .expect("R5");
-        assert_eq!(first, replay, "R4/R5");
-
-        let attacker_head = std::process::Command::new("git")
-            .args([
-                "--git-dir",
-                attacker.to_str().unwrap(),
-                "rev-parse",
-                "refs/heads/main",
-            ])
-            .output()
-            .unwrap();
-        assert_eq!(
-            String::from_utf8(attacker_head.stdout).unwrap().trim(),
-            seed_head,
-            "R4 attacker ref must remain unchanged"
-        );
-
-        // The bare remote carries the AGENT's commit — its own message and author, not a
-        // canned harvest commit by a fake user.
-        let log = std::process::Command::new("git")
-            .current_dir(&bare)
-            .args(["log", "-1", "refs/heads/awf/work", "--pretty=%an|%ae|%s"])
-            .output()
-            .unwrap();
-        let log = String::from_utf8_lossy(&log.stdout);
-        assert!(log.contains("agent: add NEW.txt"), "agent's message: {log}");
-        assert!(log.contains("Hermes"), "agent's author name: {log}");
-        assert!(
-            log.contains("hermes@agent.local"),
-            "agent's author email: {log}"
-        );
-    }
-
-    #[tokio::test]
-    async fn repository_realizer_checks_out_the_exact_commit_pin() {
-        // Cause graph: commit checkout in frozen config -> realization plan
-        // -> clone tokenless origin -> detached checkout -> exact tree/HEAD.
-        //
-        // Decision table:
-        // | Rule | Branch | Commit | Expected behavior |
-        // | G1 | none | valid reachable SHA | detached exact SHA/tree |
-        // | G2 | none | invalid SHA | fail realization, no fallback to HEAD |
-        let tmp = tempfile::tempdir().unwrap();
-        let seed = tmp.path().join("seed-commit");
-        std::fs::create_dir_all(&seed).unwrap();
-        git(&seed, &["init", "-q"]);
-        git(&seed, &["config", "user.email", "seed@t"]);
-        git(&seed, &["config", "user.name", "seed"]);
-        std::fs::write(seed.join("VERSION"), "one").unwrap();
-        git(&seed, &["add", "-A"]);
-        git(&seed, &["commit", "-q", "-m", "one"]);
-        let first = std::process::Command::new("git")
-            .current_dir(&seed)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
-        let first = String::from_utf8(first.stdout).unwrap().trim().to_string();
-        std::fs::write(seed.join("VERSION"), "two").unwrap();
-        git(&seed, &["commit", "-q", "-am", "two"]);
-
-        let provider = LocalProvider::new(tmp.path().join("envs"));
-        let sandbox = provider
-            .create_sandbox(&workdir_spec("exact-commit", false))
-            .await
-            .unwrap();
-        let plan = pc::RepositoryRealizationPlan {
-            repository_id: "repo-commit".into(),
-            mount_path: "workspace/repo".into(),
-            source_remote_url: seed.to_string_lossy().into_owned(),
-            transport_url: seed.to_string_lossy().into_owned(),
-            initial_branch: None,
-            initial_commit: Some(first.clone()),
-            access: pc::MountAccess::ReadOnly,
-        };
-        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-            .await
-            .unwrap();
-        let realized = sandbox.root.root().join("workspace/repo");
-        assert_eq!(
-            std::fs::read_to_string(realized.join("VERSION")).unwrap(),
-            "one"
-        );
-        let head = std::process::Command::new("git")
-            .current_dir(&realized)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
-        assert_eq!(String::from_utf8(head.stdout).unwrap().trim(), first);
-
-        let invalid = pc::RepositoryRealizationPlan {
-            mount_path: "workspace/invalid".into(),
-            initial_commit: Some("0000000000000000000000000000000000000000".into()),
-            ..plan
-        };
-        assert!(
-            pc::RepositoryRealizer::realize_repository(&sandbox, &invalid, None)
-                .await
-                .is_err(),
-            "G2 invalid commit fails instead of using the remote default HEAD"
-        );
-    }
-
-    #[tokio::test]
-    async fn repository_realizer_rejects_a_jail_escape() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-        let sandbox = provider
-            .create_sandbox(&workdir_spec("t-escape", false))
-            .await
-            .unwrap();
-        let plan = pc::RepositoryRealizationPlan {
-            repository_id: "repo-escape".into(),
-            mount_path: "../escape".into(),
-            source_remote_url: "http://x".into(),
-            transport_url: "http://x".into(),
-            initial_branch: None,
-            initial_commit: None,
-            access: pc::MountAccess::ReadOnly,
-        };
-        assert!(
-            pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn dynamic_inline_projection_handles_file_directory_and_missing_removal() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sandbox = LocalProvider::new(tmp.path())
-            .create_sandbox(&workdir_spec("inline-lifecycle", false))
-            .await
-            .unwrap();
-
-        sandbox
-            .materialize_inline("nested/value", b"value")
-            .unwrap();
-        sandbox.remove_inline("nested/value").unwrap();
-        sandbox
-            .materialize_inline("nested/value", b"value")
-            .unwrap();
-        sandbox.remove_inline("nested").unwrap();
-        sandbox.remove_inline("nested").unwrap();
-    }
-
-    fn restore_request(excluded_mounts: Vec<String>) -> pc::SandboxRestoreRequest {
-        pc::SandboxRestoreRequest {
-            workspace_id: "workspace-a".into(),
-            session_id: "checkpoint-session".into(),
-            effect_id: "blake3:0000000000000000000000000000000000000000000000000000000000000001"
-                .into(),
-            generation_id: "generation-a".into(),
-            checkpoint: pc::SandboxCheckpointRef {
-                id: "checkpoint-a".into(),
-                format: "portable-provider-owned-format".into(),
-                digest: "sha256:checkpoint-a".into(),
-                size_bytes: 7,
-                created_at_unix_ms: 20,
-                expires_at_unix_ms: 10_000,
-                environment_fingerprint: "environment".into(),
-                base_image_fingerprint: "base-image".into(),
-                excluded_mounts,
-                suspend_effect_id: "suspend".into(),
-            },
-        }
-    }
-
-    /*
-     * Exact local-target decision table (R1-R4, R7-R8).
-     * Causes: C1 no target; C2 exact evidence exists; C3 fresh provider; C4
-     * concurrent acquisition; C5 source checkpoint unavailable; C6 provider
-     * exclusion superset; C7 restored handle carries deny-tool-egress.
-     * Effects: E1 reserve one directory/evidence sidecar; E2 return one handle;
-     * E3 recover without checkpoint-byte access or process memory; E4 preserve
-     * the exact exclusion list and security posture.
-     * Rules: R1=C1=>E1; R2=C2=>E2; R3=C2+C3+C5=>E2+E3;
-     * R4=C1+C4=>E1+E2; R7=C6+C7=>E4.
-     */
-    #[tokio::test]
-    async fn exact_restore_target_replays_across_concurrent_and_fresh_local_providers() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut spec = workdir_spec("checkpoint-session", true);
-        spec.mounts.push(pc::MountRequirement {
-            mount_id: "input-a".into(),
-            source: pc::MountSource::Inline {
-                contents: "authority-owned".into(),
-            },
-            mount_path: "/workspace/input-a".into(),
-            access: pc::MountAccess::ReadWrite,
-            required: true,
-            lifetime: pc::MountLifetime::Session,
-        });
-        let exclusions = vec!["/runtime/config-home".into(), "/workspace/input-a".into()];
-        let request = restore_request(exclusions.clone());
-        let left_provider = LocalProvider::new(tmp.path());
-        let right_provider = LocalProvider::new(tmp.path());
-
-        let (left, right) = tokio::join!(
-            pc::SandboxProvider::acquire_restore(&left_provider, &spec, &request),
-            pc::SandboxProvider::acquire_restore(&right_provider, &spec, &request),
-        );
-        let left = left.unwrap();
-        let right = right.unwrap();
-        assert_ne!(left.disposition(), right.disposition(), "R1/R4");
-        let left_handle = left.target().handle();
-        let right_handle = right.target().handle();
-        assert_eq!(left_handle, right_handle, "R2/E2");
-        assert_eq!(
-            left_handle
-                .local_payload()
-                .unwrap()
-                .continuation_excluded_paths,
-            exclusions,
-            "R7/E4"
-        );
-        assert!(
-            left_handle.local_payload().unwrap().deny_tool_egress,
-            "R7/E4"
-        );
-
-        let evidence = request.evidence(&spec);
-        let root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
-        assert!(root.is_dir(), "R1/E1");
-        let fresh_provider = LocalProvider::new(tmp.path());
-        let replay = pc::SandboxProvider::acquire_restore(&fresh_provider, &spec, &request)
-            .await
-            .unwrap();
-        assert_eq!(
-            replay.disposition(),
-            pc::SandboxRestoreTargetDisposition::Recovered,
-            "R3/E3"
-        );
-        assert_eq!(replay.target().handle(), left_handle, "R3/E2");
-        assert_eq!(
-            fresh_provider
-                .adopt_sandbox_with_spec(&spec, &left_handle)
-                .await
-                .unwrap()
-                .handle(),
-            left_handle,
-            "R3/E2"
-        );
-
-        drop(left);
-        drop(right);
-        drop(replay);
-        pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request)
-            .await
-            .unwrap();
-        assert!(!root.exists(), "R8 exact disposal");
-    }
-
-    /*
-     * Local mismatch/orphan rules (R5-R6). C1 target evidence differs; C2 an
-     * unfenced directory occupies the deterministic target; C3 exact evidence
-     * points at a symlink instead of a physical provider directory. E1 reject
-     * without replacing/deleting either object. R5=C1=>E1; R6=C2|C3=>E1.
-     */
-    #[tokio::test]
-    async fn exact_restore_target_rejects_mismatched_evidence_and_unfenced_orphan() {
-        let tmp = tempfile::tempdir().unwrap();
-        let spec = workdir_spec("checkpoint-session", false);
-        let provider = LocalProvider::new(tmp.path());
-        let request = restore_request(Vec::new());
-        let target = pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-            .await
-            .unwrap();
-        let evidence = request.evidence(&spec);
-        let root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
-        let file_name = root.file_name().unwrap().to_string_lossy();
-        let sidecar = root
-            .parent()
-            .unwrap()
-            .join(format!(".{file_name}.awaken-restore-target.json"));
-        let mut other = request.clone();
-        other.generation_id = "generation-b".into();
-        std::fs::write(
-            &sidecar,
-            serde_json::to_vec(&serde_json::json!({
-                "evidence": other.evidence(&spec)
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-                .await
-                .is_err(),
-            "R5/E1"
-        );
-        assert!(root.exists(), "R5/E1 preserve target");
-
-        drop(target);
-        std::fs::remove_dir_all(&root).unwrap();
-        std::fs::remove_file(&sidecar).unwrap();
-        std::fs::create_dir_all(&root).unwrap();
-        assert!(
-            pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-                .await
-                .is_err(),
-            "R6/E1"
-        );
-        assert!(root.exists(), "R6/E1 preserve orphan");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-
-            std::fs::remove_dir_all(&root).unwrap();
-            let outside = tmp.path().join("outside-provider-target");
-            std::fs::create_dir(&outside).unwrap();
-            std::fs::write(outside.join("sentinel"), b"outside").unwrap();
-            symlink(&outside, &root).unwrap();
-            std::fs::write(
-                &sidecar,
-                serde_json::to_vec(&serde_json::json!({ "evidence": evidence })).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
-                    .await
-                    .is_err(),
-                "R6/C3/E1"
-            );
-            assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
-        }
-    }
-}
+#[path = "provider/workdir_helper_tests.rs"]
+mod workdir_helper_tests;

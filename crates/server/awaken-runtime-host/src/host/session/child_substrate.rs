@@ -9,7 +9,6 @@ impl SharedHost {
     pub(crate) async fn session_child_execution_substrate(
         &self,
         thread: &str,
-        mut adopted: Option<crate::session_environment::SessionEnvironment>,
         frozen_parent: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<ChildExecutionSubstrate, HostError> {
         let lifecycle = self
@@ -26,55 +25,9 @@ impl SharedHost {
             .session_slots
             .read(thread, |slot| slot.environment_owner.resident())
             .flatten();
-        let prepared = self.prepared_session_environment(thread);
-        if let (Some(prepared), Some(extra)) = (&prepared, adopted.as_ref()) {
-            if prepared.environment.handle() != extra.handle() {
-                return Err(HostError::internal(format!(
-                    "thread {thread} is already preparing a different sandbox"
-                )));
-            }
-            extra
-                .stop_bound_processes()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-            adopted = None;
-        }
-        if let Some(candidate) = prepared {
-            let environment = self
-                .complete_prepared_session_environment(thread, &candidate, true)
-                .await?;
-            drop(lifecycle_guard);
-            return self
-                .child_execution_substrate_from_environment(thread, warm_context, environment)
-                .await;
-        }
-        let environment = match (retained, adopted) {
-            (Some(existing), Some(adopted)) => {
-                if existing.handle() != adopted.handle() {
-                    return Err(HostError::internal(format!(
-                        "thread {thread} is already bound to a different sandbox"
-                    )));
-                }
-                adopted
-                    .stop_bound_processes()
-                    .await
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                existing
-            }
-            (Some(existing), None) => existing,
-            (None, Some(adopted)) => {
-                let environment = Arc::new(adopted);
-                let candidate =
-                    self.begin_session_environment_adoption(thread, environment.clone())?;
-                self.complete_prepared_session_environment(thread, &candidate, false)
-                    .await?
-            }
-            (None, None) => {
-                if !self.session_environment_owner_is_vacant(thread) {
-                    return Err(HostError::internal(
-                        "a prior parent Session Environment transition requires lifecycle retry",
-                    ));
-                }
+        let environment = match retained {
+            Some(existing) => existing,
+            None => {
                 let parent = frozen_parent
                     .cloned()
                     .or_else(|| {
@@ -92,19 +45,14 @@ impl SharedHost {
                         "a delegated child has no parent Session environment",
                     ));
                 }
-                let provider = self.session_environment_provider(
-                    parent.resolved_spec.model_binding.provisioning(),
-                )?;
-                let environment = Arc::new(
-                    self.create_session_environment(provider, &self.sandbox_spec(thread))
-                        .await?,
-                );
-                let candidate =
-                    self.begin_session_environment_preparation(thread, environment.clone())?;
-                self.complete_prepared_session_environment(thread, &candidate, true)
+                let provider = self.projected_session_environment_provider(thread, None)?;
+                self.create_reserved_session_environment_under_lifecycle(thread, provider)
                     .await?
             }
         };
+        let environment = self
+            .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+            .await?;
         drop(lifecycle_guard);
         self.child_execution_substrate_from_environment(thread, warm_context, environment)
             .await
@@ -168,7 +116,10 @@ impl SharedHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
+    use crate::host::worker_resolver::test_support::{
+        AdoptionModel, eager_environment, install_complete_projection_for_snapshot,
+        test_activation, with_empty_session_resources,
+    };
     use awaken_run_ingress::{Clock as _, DispatchQueue as _, WorkerResolver as _};
     use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -181,6 +132,9 @@ mod tests {
         // Environment and commit substrate; E3 never construct parent plugins or
         // a child Session slot. Rule S1=C1+C2+C3=>E1+E2+E3. The absent parent-only
         // auxiliary makes any accidental full parent context construction fail.
+        // C4 installs the parent's complete Runtime projection and the child
+        // dispatch's exact empty-Resource envelope through their canonical ports;
+        // the child must not carry a competing Runtime projection for its parent.
         let parent_thread = "cold-physical-parent";
         let child_thread = "cold-physical-child";
         let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("parent")
@@ -201,16 +155,23 @@ mod tests {
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
         );
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-        host.session_slots.update(parent_thread, |slot| {
-            slot.published_snapshot = Some(parent);
-            slot.agent_id = Some("parent".into());
-        });
-        let request = awaken_run_ingress::RunDispatch::new(test_activation(
-            child_thread,
-            "run-cold-physical-child",
-        ))
-        .for_session(ThreadId(parent_thread.into()));
+        let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        install_complete_projection_for_snapshot(
+            &managed,
+            parent_thread,
+            host.local_workspace(),
+            eager_environment(),
+            &parent,
+        )
+        .await;
+        let request = with_empty_session_resources(
+            awaken_run_ingress::RunDispatch::new(test_activation(
+                child_thread,
+                "run-cold-physical-child",
+            ))
+            .for_session(ThreadId(parent_thread.into())),
+            host.local_workspace(),
+        );
         store.enqueue(request).await.expect("enqueue S1");
         let claimed = store
             .claim(

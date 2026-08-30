@@ -19,13 +19,10 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
+use awaken_agent_contract::agent::run::RunState;
 #[cfg(test)]
-use awaken_agent_contract::agent::run::Record as RunRecord;
-#[cfg(test)]
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-#[cfg(test)]
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-#[cfg(test)]
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 #[cfg(test)]
 use awaken_run_ingress::AnyDispatchStore;
@@ -39,6 +36,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 #[cfg(test)]
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::llm::ThreadUsage;
 #[cfg(test)]
 use awaken_runtime_contract::resolved::Backend;
 #[cfg(test)]
@@ -52,26 +50,64 @@ use awaken_sandbox_local::LocalProvider;
 
 #[cfg(test)]
 use crate::agent_catalog::AgentCatalog;
+use crate::config::latest_assistant_text;
 #[cfg(test)]
 use crate::config::{effective_tool_authorization, server_config};
 
 mod child_execution;
 mod root_execution;
 pub(crate) use child_execution::{
-    AgentRunBoundary, ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest,
-    RunScheduler, child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
+    ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest, RunScheduler,
+    child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
     run_configured_agent_until_boundary,
 };
 #[cfg(test)]
-use child_execution::{
-    await_committed_child_boundary, isolated_child_recovery_projection, settled_agent_boundary,
-};
-use root_execution::usage_from_committed;
+use child_execution::{await_committed_child_boundary, isolated_child_recovery_projection};
 pub(crate) use root_execution::{
     AgentExecution, AgentRunError, AgentRunSandbox, run_agent, run_configured_agent_with_id,
 };
 #[cfg(test)]
 use root_execution::{run_agent_until_boundary, run_configured_agent};
+
+/// One ordinary lifecycle boundary reached by an Agent Run.
+///
+/// Delegated and directly admitted Runs use the same `Runtime::execute` /
+/// `Runtime::resume` transitions. The parent only observes whether its child
+/// ended or is awaiting; the committed `ResumeTicket` remains the sole authority
+/// for what may resume it.
+pub(crate) enum AgentRunBoundary {
+    Ended { text: String, usage: ThreadUsage },
+    Awaiting,
+}
+
+/// Project one committed settled state into the shared root/child boundary.
+/// This is the sole success/failure classifier for configured Agent Runs.
+fn settled_agent_boundary(
+    reader: &dyn CommittedThreadView,
+    thread_id: &ThreadId,
+    state: RunState,
+) -> Result<AgentRunBoundary, AgentRunError> {
+    match state {
+        RunState::Awaiting => Ok(AgentRunBoundary::Awaiting),
+        RunState::Ended(
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd
+            | awaken_agent_contract::agent::run::EndCause::MaxSteps,
+        ) => Ok(AgentRunBoundary::Ended {
+            text: latest_assistant_text(&reader.committed_messages(thread_id)),
+            usage: ThreadUsage::from_committed_state(&reader.committed_state(thread_id)),
+        }),
+        RunState::Ended(cause) => Err(AgentRunError::Runtime(
+            awaken_runtime_contract::execution::Error::Execution(format!(
+                "Agent Run ended unsuccessfully: {cause:?}"
+            )),
+        )),
+        RunState::Running => Err(AgentRunError::Runtime(
+            awaken_runtime_contract::execution::Error::Execution(
+                "an Agent Run escaped without reaching a settled boundary".to_string(),
+            ),
+        )),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -949,8 +985,17 @@ mod tests {
 
     #[tokio::test]
     async fn stable_auxiliary_run_reuses_committed_terminal_truth_without_reinference() {
+        // Cause/effect graph: C1 stable Run is absent or nonterminal; C2 it is
+        // already terminal; C3 the Fresh provider is available; C4 the caller's
+        // Thread identity matches committed truth. E1 provision and execute once;
+        // E2 redeliver committed terminal truth without provider/model effects;
+        // E3 preserve the one transcript/result; E4 reject an identity conflict
+        // before provider I/O. Decision table: R1 !C2 && C3 -> E1;
+        // R2 C2 && C4 && !C3 -> E2+E3; R3 C2 && !C4 && !C3 -> E4. The poisoned
+        // provider root makes R2/R3 fail if terminal admission follows create.
         let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
+        let provider_root = tmp.path().join("provider");
+        let provider = LocalProvider::new(&provider_root);
         let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
         let model = Arc::new(CountingModel(AtomicUsize::new(0)));
         let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -961,24 +1006,54 @@ mod tests {
         };
         let run_id = RunId("aux/stable/run".into());
 
-        for input in ["first", "ignored retry input"] {
-            let (reply, _) = run_configured_agent_with_id(
-                &catalog,
-                AgentRunSandbox::Fresh(&provider),
-                model.clone(),
-                "worker",
-                "aux/stable",
-                run_id.clone(),
-                vec![user(input)],
-                Vec::new(),
-                context(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(reply, "stable");
-        }
+        let (reply, _) = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            model.clone(),
+            "worker",
+            "aux/stable",
+            run_id.clone(),
+            vec![user("first")],
+            Vec::new(),
+            context(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "stable", "R1/E1");
 
-        assert_eq!(model.0.load(Ordering::SeqCst), 1);
+        std::fs::rename(&provider_root, tmp.path().join("completed-provider")).unwrap();
+        std::fs::write(&provider_root, b"provider must not be reopened").unwrap();
+        let (reply, _) = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            model.clone(),
+            "worker",
+            "aux/stable",
+            run_id.clone(),
+            vec![user("ignored retry input")],
+            Vec::new(),
+            context(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, "stable", "R2/E2");
+
+        let error = run_configured_agent_with_id(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            model.clone(),
+            "worker",
+            "aux/foreign-thread",
+            run_id.clone(),
+            vec![user("foreign retry")],
+            Vec::new(),
+            context(),
+        )
+        .await
+        .expect_err("R3/E4: stable identity is bound to its committed Thread");
+        assert!(error.to_string().contains("belongs to another Thread"));
+
+        assert_eq!(model.0.load(Ordering::SeqCst), 1, "R2/E2");
         assert!(matches!(
             commit.run_state(&run_id),
             Some(RunState::Ended(_))
@@ -989,7 +1064,8 @@ mod tests {
                 .iter()
                 .filter(|message| message.role == Role::Assistant)
                 .count(),
-            1
+            1,
+            "R2/E3"
         );
     }
 
@@ -1062,10 +1138,11 @@ mod tests {
     async fn known_agent_without_commit_history_authority_fails_closed() {
         // Cause/effect graph:
         // C1 agent resolves; C2 commit authority supplied; C3 history reader supplied.
-        // E1 execute on caller authority; E2 configuration error; E3 no volatile store.
+        // E1 execute on caller authority; E2 configuration error; E3 no provider I/O.
         // Decision table: R1 C1/T,C2/T,C3/T -> E1; R2 C1/T,C2/F,C3/F -> E2+E3.
         // This case owns R2; ordinary successful Agent tests above own R1.
-        let provider = LocalProvider::new(std::env::temp_dir().join("awaken-no-implicit-store"));
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path().join("sandboxes"));
         let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
         let error = run_configured_agent(
             &catalog,
@@ -1086,6 +1163,10 @@ mod tests {
                 .to_string()
                 .contains("explicitly owned commit/history context"),
             "got: {error}"
+        );
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "R2/E3: authority validation precedes Fresh sandbox creation"
         );
     }
 

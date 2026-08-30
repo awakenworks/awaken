@@ -125,29 +125,6 @@ fn owned_binding(owner: &SessionEnvironmentOwner) -> Option<&str> {
 }
 
 impl SessionEnvironmentOwner {
-    pub(super) fn seed_pending_adoption(
-        &mut self,
-        identity: BoundSessionEnvironmentIdentity,
-        binding: String,
-    ) -> Result<(), HostError> {
-        match self {
-            Self::Vacant => {
-                *self = Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
-                    identity,
-                    binding,
-                });
-                Ok(())
-            }
-            Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
-                identity: current_identity,
-                binding: current_binding,
-            }) if current_identity == &identity && current_binding == &binding => Ok(()),
-            _ => Err(HostError::internal(
-                "pending Session Environment adoption conflicts with its current owner",
-            )),
-        }
-    }
-
     pub(super) fn install_projection(
         &mut self,
         projected: ProjectedEnvironmentOwner,
@@ -306,6 +283,27 @@ impl SessionEnvironmentOwner {
         Ok(candidate)
     }
 
+    /// Consume a cold pending owner only after the provider has proved that its
+    /// exact durable handle is closed. The caller holds the lifecycle lock and
+    /// supplies the identity captured before observation, so a same-binding ABA
+    /// projection cannot be cleared by stale evidence.
+    pub(super) fn discard_closed_pending_adoption(
+        &mut self,
+        expected_identity: &BoundSessionEnvironmentIdentity,
+        expected_binding: &str,
+    ) -> bool {
+        let Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption { identity, binding }) =
+            self
+        else {
+            return false;
+        };
+        if identity != expected_identity || binding != expected_binding {
+            return false;
+        }
+        *self = Self::Vacant;
+        true
+    }
+
     pub(super) fn publish_prepared(
         &mut self,
         expected: &UnboundSessionEnvironment,
@@ -351,25 +349,6 @@ impl SessionEnvironmentOwner {
                 "Session Environment restore lost its exact durable phase",
             )),
         }
-    }
-
-    pub(super) fn complete_restore_target_disposal(
-        &mut self,
-        request: &awaken_session_contract::SandboxRestoreRequest,
-    ) -> Result<(), HostError> {
-        let Self::Restoring(SessionEnvironmentRestoration::Awaiting { request: current }) = self
-        else {
-            return Err(HostError::internal(
-                "restored-target disposal has no exact Restoring owner fence",
-            ));
-        };
-        if current != request {
-            return Err(HostError::internal(
-                "restored-target disposal does not match its durable request",
-            ));
-        }
-        *self = Self::Vacant;
-        Ok(())
     }
 
     pub(super) fn begin_retirement(
@@ -477,6 +456,7 @@ impl SessionEnvironmentOwner {
         true
     }
 
+    #[cfg(test)]
     pub(super) fn observe_retirement_status<E>(
         &mut self,
         expected: &RetiringSessionEnvironment,
@@ -493,39 +473,10 @@ impl SessionEnvironmentOwner {
             Err(error) => Err(error),
         }
     }
-
-    pub(super) fn reactivate_retiring(
-        &mut self,
-        expected: &RetiringSessionEnvironment,
-    ) -> Result<(), HostError> {
-        let Self::Retiring(current) = self else {
-            return Err(HostError::internal(
-                "Session Environment reactivation has no Retiring owner",
-            ));
-        };
-        if !current.exact_matches(expected) {
-            return Err(HostError::internal(
-                "Session Environment reactivation lost its exact owner fence",
-            ));
-        }
-        if !matches!(
-            &current.cause,
-            SessionEnvironmentRetirementCause::RecoveryDiscard
-                | SessionEnvironmentRetirementCause::RealizationRevocation
-        ) {
-            return Err(HostError::internal(
-                "this Session Environment retirement cause cannot be reactivated",
-            ));
-        }
-        let RetiringEnvironmentOwner::Bound(owned) = &current.owned else {
-            return Err(HostError::internal(
-                "an unpersisted Environment candidate cannot be reactivated",
-            ));
-        };
-        *self = Self::Resident(owned.clone());
-        Ok(())
-    }
-
+    /// Move only an exact durable owner revoked by realization loss back to
+    /// its canonical adoption phase. The physical Sandbox remains untouched;
+    /// provider adoption must construct the fresh Hand wrapper. LegacyDirect
+    /// retirement is owned by the separate typed physical-rebuild path.
     pub(super) fn prepare_retiring_realization_adoption(
         &mut self,
         expected: &RetiringSessionEnvironment,
@@ -547,6 +498,14 @@ impl SessionEnvironmentOwner {
                 "an unpersisted Environment candidate cannot be re-adopted",
             ));
         };
+        if !matches!(
+            &owned.identity,
+            BoundSessionEnvironmentIdentity::Durable { .. }
+        ) {
+            return Err(HostError::internal(
+                "LegacyDirect revocation requires typed physical rebuild",
+            ));
+        }
         *self = Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
             identity: owned.identity.clone(),
             binding: owned.binding.clone(),
@@ -555,7 +514,7 @@ impl SessionEnvironmentOwner {
     }
 }
 
-pub(super) fn committed_identity(
+pub(in crate::host::session) fn committed_identity(
     receipt: &awaken_session_contract::SessionEnvironmentReceipt,
     committed: awaken_session_contract::SessionEnvironmentState,
 ) -> Result<BoundSessionEnvironmentIdentity, HostError> {

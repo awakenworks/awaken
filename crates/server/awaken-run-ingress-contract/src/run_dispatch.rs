@@ -80,42 +80,6 @@ impl SessionResourceEnvelope {
     }
 }
 
-/// Worker-side action for one frozen Session Resource generation. The decision
-/// is kept in the durable-ingress contract so every Runtime adapter applies the
-/// same replay, revision, and Workspace fence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionResourceInstallDecision {
-    Stage,
-    Replace,
-    Reject,
-}
-
-/// Decide whether an incoming durable generation is a first/exact staging, an
-/// authorized replacement, or a stale/cross-Workspace rejection. Only the
-/// Session authority may amend an unattempted dispatch projection in place;
-/// claimed Workers remain fenced from changing same-revision content.
-#[must_use]
-pub const fn session_resource_install_decision(
-    previous_exists: bool,
-    exact_replay: bool,
-    workspace_matches: bool,
-    previous_revision: u64,
-    incoming_revision: u64,
-    authority_amends_unattempted: bool,
-) -> SessionResourceInstallDecision {
-    if !previous_exists || exact_replay {
-        return SessionResourceInstallDecision::Stage;
-    }
-    if workspace_matches
-        && (incoming_revision > previous_revision
-            || (authority_amends_unattempted && incoming_revision == previous_revision))
-    {
-        SessionResourceInstallDecision::Replace
-    } else {
-        SessionResourceInstallDecision::Reject
-    }
-}
-
 /// Canonical secret-free payload carried by [`SessionRuntimeEnvelope`].
 ///
 /// The durable ingress contract owns this wire shape because both claim
@@ -172,46 +136,6 @@ impl SessionRuntimeEnvelope {
         &self,
     ) -> Result<DispatchedSessionRuntimeProjection, serde_json::Error> {
         serde_json::from_str(&self.projection_json)
-    }
-}
-
-#[cfg(kani)]
-mod kani_proofs {
-    use super::{SessionResourceInstallDecision, session_resource_install_decision};
-
-    #[kani::proof]
-    fn session_resource_replacement_requires_newer_or_authority_amended_generation() {
-        let previous_exists: bool = kani::any();
-        let exact_replay: bool = kani::any();
-        let workspace_matches: bool = kani::any();
-        let previous_revision: u64 = kani::any();
-        let incoming_revision: u64 = kani::any();
-        let authority_amends_unattempted: bool = kani::any();
-
-        let decision = session_resource_install_decision(
-            previous_exists,
-            exact_replay,
-            workspace_matches,
-            previous_revision,
-            incoming_revision,
-            authority_amends_unattempted,
-        );
-        assert_eq!(
-            decision == SessionResourceInstallDecision::Replace,
-            previous_exists
-                && !exact_replay
-                && workspace_matches
-                && (incoming_revision > previous_revision
-                    || (authority_amends_unattempted && incoming_revision == previous_revision))
-        );
-        assert_eq!(
-            decision == SessionResourceInstallDecision::Reject,
-            previous_exists
-                && !exact_replay
-                && (!workspace_matches
-                    || incoming_revision < previous_revision
-                    || (incoming_revision == previous_revision && !authority_amends_unattempted))
-        );
     }
 }
 
@@ -674,47 +598,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn session_resource_install_decision_follows_the_complete_table() {
-        use SessionResourceInstallDecision::{Reject, Replace, Stage};
-
-        // Cause/effect graph: C1 previous manifest exists; C2 exact replay;
-        // C3 Workspace matches; C4 incoming revision is newer/equal/older; C5
-        // the Session authority proves an unattempted in-place amendment.
-        // Effects are Stage, Replace, or Reject. Claimed Workers always have
-        // !C5, so same-revision content replacement remains impossible.
-        //
-        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
-        // | I1 | F | any | any | any | any | Stage |
-        // | I2 | T | T | any | any | any | Stage |
-        // | I3 | T | F | T | newer | any | Replace |
-        // | I4 | T | F | T | equal | T | Replace |
-        // | I5 | T | F | T | equal | F | Reject |
-        // | I6 | T | F | T | older | any | Reject |
-        // | I7 | T | F | F | any | any | Reject |
-        let rules = [
-            (false, false, false, 9, 0, false, Stage),
-            (true, true, false, 9, 0, false, Stage),
-            (true, false, true, 9, 10, false, Replace),
-            (true, false, true, 9, 9, true, Replace),
-            (true, false, true, 9, 9, false, Reject),
-            (true, false, true, 9, 8, true, Reject),
-            (true, false, false, 9, 10, true, Reject),
-        ];
-        for (previous, replay, workspace, old, incoming, amendment, expected) in rules {
-            assert_eq!(
-                session_resource_install_decision(
-                    previous,
-                    previous && replay,
-                    workspace,
-                    old,
-                    incoming,
-                    amendment,
-                ),
-                expected
-            );
-        }
-    }
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ModelProvisioning, ResolvedSpec,

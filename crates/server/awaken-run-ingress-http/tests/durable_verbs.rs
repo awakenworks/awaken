@@ -29,7 +29,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::SharedHost;
+use awaken_runtime_host::{ManagedHost, SharedHost};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -102,7 +102,8 @@ fn contains_id(list: &Value, key: &str, id: &str) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
-    // Cause/effect decision table: C1 durable queue configured, C2 run lease
+    // Cause/effect decision table: C1 durable queue and its canonical Session
+    // Runtime composition are configured, C2 run lease
     // expired, C3 retry budget exhausted, C4 dead letter present, C5 newer Run
     // submitted. R1 C1 -> list succeeds; R2 C2+C3 -> explicit quarantine creates dead letter;
     // R3 C4 -> purge removes it; R4 C5 -> stale run is superseded. The single
@@ -114,6 +115,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         mem.clone() as Arc<dyn Dispatch>
     ));
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(any));
+    let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let router = durable_ops_router(host);
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");

@@ -176,14 +176,28 @@ test("Agent Release shows immutable published versions newest-first on desktop a
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("Tools tab renders the Permissions editor (data-driven from capabilities.policies)", async ({ page }) => {
+test("Tools tab renders the controlled typed preset from capabilities.toolsets", async ({ page, request }) => {
+  // Permission-authoring cause/effect table: C1=the capability document is
+  // projected; C2=typed Agent toolsets are present. E1=no legacy `policies`
+  // authoring surface exists; E2=controlled members come only from toolsets.
+  // R1 C1+C2 -> E1+E2. A second policy catalog must never be advertised.
   await page.goto("/w/default/agents/new");
   await openBuild(page, "Tools & permissions");
-  await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
-  await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
-  // Add a rule → an editable glob-pattern row appears.
-  await page.getByRole("button", { name: /add rule/ }).click();
-  await expect(page.getByPlaceholder('bash(command ~ "*rm -rf*")')).toBeVisible();
+  await expect(page.getByRole("button", { name: "Apply controlled modifications" })).toBeEnabled();
+  const capabilities = await (await request.get(
+    await workspaceApiPath(request, "/v1/capabilities"),
+  )).json();
+  expect(capabilities).not.toHaveProperty("policies");
+  expect(capabilities.toolsets).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "agent_toolset_20260401",
+      members: expect.arrayContaining([
+        expect.objectContaining({ name: "bash" }),
+        expect.objectContaining({ name: "write" }),
+        expect.objectContaining({ name: "edit" }),
+      ]),
+    }),
+  ]));
 });
 
 test("Quickstart publishes, starts a durable Session, and hands its exact SDK coordinates forward", async ({ page, request }) => {
@@ -273,7 +287,12 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   await expect(managedExample).toContainText(`environment_id: "${environment.id}"`);
 });
 
-test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {
+test("controlled preset persists one typed Toolset without legacy permission config", async ({ page, request }) => {
+  // Controlled-preset cause/effect table: C1=the preset is applied to a draft;
+  // C2=no tools are selected; C3=the draft is saved and reloaded. E1=one typed
+  // Agent ToolSet owns the approval policy; E2=controlled members are ask-only
+  // but remain disabled; E3=no legacy plugin permission document is persisted;
+  // E4=the preset remains editable after reload. R1 C1+C2+C3 -> E1+E2+E3+E4.
   const id = `perm-e2e-${Date.now()}`;
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
@@ -281,12 +300,7 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   await page.getByLabel("System instructions").fill("You gate your tools.");
   await openBuild(page, "Tools & permissions");
 
-  const editor = page.locator(".permission-editor");
-  // Default decision → Deny (only the default-decision Segmented exists yet).
-  await editor.getByRole("button", { name: "Deny" }).first().click();
-  await page.getByRole("button", { name: /add rule/ }).click();
-  const pattern = 'bash(command ~ "*rm -rf*")';
-  await editor.getByPlaceholder(pattern).fill(pattern);
+  await page.getByRole("button", { name: "Apply controlled modifications" }).click();
 
   const initialSave = page.waitForResponse((response) =>
     response.request().method() === "PUT"
@@ -295,10 +309,28 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   expect((await initialSave).ok()).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
 
-  // Reload → the authored policy rehydrates from the stored config (round-trips).
+  const stored = await (await request.get(
+    await workspaceApiPath(request, `/v1/config/agents/${id}`),
+  )).json();
+  expect(stored.plugin_config.permission).toBeUndefined();
+  const agentToolsets = stored.tools.filter(
+    (tool: { type?: string }) => tool.type === "agent_toolset_20260401",
+  );
+  expect(agentToolsets).toHaveLength(1);
+  for (const name of ["bash", "write", "edit"]) {
+    expect(agentToolsets[0].configs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name,
+        enabled: false,
+        permission_policy: { type: "always_ask" },
+      }),
+    ]));
+  }
+
+  // Reload keeps the pure preset projection editable without a second preset field.
   await page.reload();
   await openBuild(page, "Tools & permissions");
-  await expect(editor.getByPlaceholder(pattern)).toHaveValue(pattern);
+  await expect(page.getByRole("button", { name: "Apply controlled modifications" })).toBeVisible();
 });
 
 test("Agent editor persists and publishes a direct MCP binding plus MCP tool override", async ({ page, request }) => {

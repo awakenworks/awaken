@@ -482,13 +482,23 @@ pub(super) async fn prepare_runtime_routers(
         host_builder = host_builder.with_runtime_authority(runtime_authority);
     }
     let artifact_publisher = resource_application.artifact_publisher();
-    let artifact_publisher = local_dispatch.map_or(artifact_publisher.clone(), |dispatch| {
+    let claim_fenced_artifact_publisher = local_dispatch.map(|dispatch| {
         Arc::new(awaken_coordinator::ClaimFencedArtifactPublisher::new(
-            artifact_publisher,
+            artifact_publisher.clone(),
             dispatch,
         ))
-            as Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>
     });
+    let artifact_publisher =
+        claim_fenced_artifact_publisher
+            .as_ref()
+            .map_or(artifact_publisher, |publisher| {
+                publisher.clone()
+                    as Arc<
+                        dyn awaken_resource_contract::ArtifactPublisher<
+                                awaken_run_ingress::ArtifactPublicationFence,
+                            >,
+                    >
+            });
     host_builder = host_builder
         .with_artifact_publisher(artifact_publisher)
         .with_skill_bundle_source(resource_application.skill_bundle_source())
@@ -666,6 +676,11 @@ pub(super) async fn prepare_runtime_routers(
         session_application.set_managed_list_price_provider(provider);
     }
     let session_application = Arc::new(session_application);
+    if let Some(publisher) = claim_fenced_artifact_publisher {
+        publisher
+            .install_session_control(session_application.clone())
+            .map_err(|error| format!("install terminal Artifact authority: {error}"))?;
+    }
     let event_batch_cutover_validation =
         session_application.session_event_batch_cutover_validation_source();
     awaken_coordinator::install_managed_agent_coordination(&managed_host, &session_application)

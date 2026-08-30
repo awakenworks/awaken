@@ -10,6 +10,15 @@ struct ProtocolProjectionRuntime;
 struct ActivationOnlySessionRunRuntime {
     reservations: Mutex<Vec<AdmitSessionRun>>,
     deliveries: Mutex<Vec<SessionRunDelivery>>,
+    restores: AtomicUsize,
+    events: Mutex<Vec<&'static str>>,
+    projection_installs: Mutex<
+        Vec<(
+            awaken_session_contract::FrozenSessionProjection,
+            awaken_session_contract::SessionProjectionInstallMode,
+        )>,
+    >,
+    adoptions: Mutex<Vec<(String, String, String)>>,
 }
 
 #[async_trait::async_trait]
@@ -20,7 +29,38 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        self.events.lock().unwrap().push(match &mode {
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch => {
+                "dispatch_projection"
+            }
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                prepare_session: true,
+                ..
+            } if projection.environment.binding().is_some() => "resident_projection",
+            awaken_session_contract::SessionProjectionInstallMode::Realization { .. } => {
+                "realization_projection"
+            }
+        });
+        self.projection_installs
+            .lock()
+            .unwrap()
+            .push((projection.clone(), mode.clone()));
         install_complete_test_projection(self, thread, projection, mode).await
+    }
+
+    async fn adopt_session_environment(
+        &self,
+        agent: &str,
+        thread: &str,
+        binding: &str,
+    ) -> Result<(), RunError> {
+        self.events.lock().unwrap().push("adopt");
+        self.adoptions.lock().unwrap().push((
+            agent.to_string(),
+            thread.to_string(),
+            binding.to_string(),
+        ));
+        Ok(())
     }
 
     async fn run(
@@ -55,6 +95,7 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         &self,
         delivery: SessionRunDelivery,
     ) -> Result<SessionRunActivation, RunError> {
+        self.events.lock().unwrap().push("activate");
         self.deliveries.lock().unwrap().push(delivery);
         Ok(SessionRunActivation::Activated)
     }
@@ -63,8 +104,42 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         &self,
         command: AdmitSessionRun,
     ) -> Result<SessionRunReservation, RunError> {
+        self.events.lock().unwrap().push("reserve");
         self.reservations.lock().unwrap().push(command);
         Ok(SessionRunReservation::Reserved)
+    }
+
+    async fn activate_and_observe_session_run(
+        &self,
+        admission: AdmittedSessionRun,
+        _input_message_ids: Vec<String>,
+        _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunError> {
+        self.events.lock().unwrap().push("activate");
+        self.deliveries.lock().unwrap().push(
+            admission
+                .delivery()
+                .expect("fresh foreground admission carries a delivery")
+                .clone(),
+        );
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
+    }
+
+    async fn restore_checkpointed_session_environment(
+        &self,
+        request: awaken_session_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
+        self.events.lock().unwrap().push("restore");
+        self.restores.fetch_add(1, Ordering::SeqCst);
+        Ok(awaken_session_contract::RestoreReceipt {
+            effect_id: request.effect_id,
+            generation_id: request.generation_id,
+            checkpoint_id: request.checkpoint.id,
+            binding: "restored-binding".into(),
+        })
     }
 
     fn model(&self) -> String {
@@ -120,6 +195,9 @@ async fn background_attention_uses_canonical_session_admission_without_observing
         .await
         .expect("B1 background admission");
 
+    // B1/E1-E2 readback is synchronous evidence only. Keep each recording
+    // lock in its own lexical scope so the durable repository read below can
+    // never await while holding a test-side projection lock.
     {
         let reservations = runtime.reservations.lock().unwrap();
         assert_eq!(reservations.len(), 1, "B1/E1");
@@ -149,6 +227,111 @@ async fn background_attention_uses_canonical_session_admission_without_observing
             .execution,
         SessionExecutionState::Running,
         "B1/E3 background caller did not wait for settlement",
+    );
+}
+
+#[tokio::test]
+async fn public_run_reserves_then_restores_and_projects_before_activation() {
+    // Hibernated public-admission cause/effect graph: C1 a nonterminal local
+    // Session carries one live Hibernated checkpoint; C2 realization rejects
+    // continuation phases as physical effects; C3 the durable Run reservation
+    // succeeds; C4 restore commits Resident; C5 activation follows. Effects:
+    // E1 install only the existing non-physical Dispatch projection before the
+    // reservation; E2 reserve before restore; E3 after the Resident CAS install
+    // the complete Realization(prepare=true) projection with the current exact
+    // lease and adopt its exact binding; E4 activate only after E3; E5 one
+    // restore and no parallel queue.
+    //
+    // | Rule | phase at recovery | pre-reserve projection | restore | Effect |
+    // | H1 | Hibernated | Dispatch only | succeeds | E1-E5 |
+    // | H2 | Unmaterialized/Resident | canonical realization | n/a | adjacent realization tests |
+    // | H3 | terminal/invalid | none | none | reject through existing gates |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repository.as_ref(),
+        super::continuation::hibernated_session("public-restore", u64::MAX),
+    )
+    .await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let sessions = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let protocol = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        sessions,
+        |_| "workspace".into(),
+        |_| Some("agent".into()),
+    );
+
+    awaken_session_contract::RunApplication::run(
+        &protocol,
+        "public-restore-operation",
+        "public-restore",
+        None,
+        vec![awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id("public-restore-input".into()),
+            awaken_agent_contract::agent::message::Role::User,
+            "resume",
+        )],
+    )
+    .await
+    .expect("H1 public driving Run");
+
+    assert_eq!(
+        runtime.events.lock().unwrap().as_slice(),
+        [
+            "dispatch_projection",
+            "reserve",
+            "restore",
+            "resident_projection",
+            "adopt",
+            "activate",
+        ],
+        "H1/E1-E4",
+    );
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "H1/E5");
+    let resident = repository.get("public-restore").await.expect("H1 root");
+    assert!(
+        matches!(
+            resident.environment,
+            awaken_session_contract::SessionEnvironmentState::Resident { .. }
+        ),
+        "H1/E3",
+    );
+    let projections = runtime.projection_installs.lock().unwrap();
+    assert_eq!(projections.len(), 2, "H1/E1+E3");
+    assert!(
+        matches!(
+            projections[0].1,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch
+        ),
+        "H1/E1",
+    );
+    assert!(
+        matches!(
+            &projections[1].1,
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                lease,
+                prepare_session: true,
+            } if Some(lease) == resident.realization.as_ref()
+        ),
+        "H1/E3",
+    );
+    assert_eq!(projections[1].0.environment, resident.environment, "H1/E3");
+    drop(projections);
+    assert_eq!(
+        runtime.adoptions.lock().unwrap().as_slice(),
+        [(
+            "agent".into(),
+            "public-restore".into(),
+            "restored-binding".into(),
+        )],
+        "H1/E3 exact adoption precedes activation",
     );
 }
 

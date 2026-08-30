@@ -730,14 +730,29 @@ impl SessionRuntime for EchoFake {
         })
     }
 
-    async fn execute_terminal_cleanup(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            Vec::new(),
-        ))
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        awaken_protocol_managed::test_support::complete_terminal_cleanup_preparation(
+            &effect,
+            &authorization,
+        )
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(awaken_protocol_managed::test_support::complete_terminal_cleanup_disposal(&effect))
     }
 
     async fn run(

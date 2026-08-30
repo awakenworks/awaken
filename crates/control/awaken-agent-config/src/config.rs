@@ -803,6 +803,51 @@ impl AgentConfig {
 }
 
 impl AgentConfig {
+    /// Return the single canonical value admitted by mutable Agent authoring.
+    ///
+    /// Historical `plugin_config.permission` remains deserializable and
+    /// compilable so immutable publications keep their exact execution
+    /// contract. A mutable write cannot preserve that argument-sensitive policy
+    /// in the typed Toolset vocabulary, however, and silently translating its
+    /// `ask`/`deny` rules would change effective behavior or tool visibility.
+    /// Reject it before storage; an operator must explicitly replace it with a
+    /// typed Agent/MCP Toolset in a new revision.
+    pub fn canonicalize_mutable_authoring(&self) -> Result<Self, String> {
+        if self.plugin_config.contains_key("permission") {
+            return Err(
+                "permission migration_required: replace plugin_config.permission with typed Agent/MCP toolsets before saving a new revision"
+                    .into(),
+            );
+        }
+        Ok(self.clone())
+    }
+
+    /// Apply the lifecycle half of mutable-write admission against the exact
+    /// revision a caller will fence at persistence. Storage adapters use this
+    /// pure domain decision inside audited transactions after replay detection;
+    /// ordinary application writes use it immediately before revision CAS.
+    pub fn canonicalize_mutable_authoring_against(
+        &self,
+        current: Option<&Self>,
+    ) -> Result<Self, String> {
+        let config = self.canonicalize_mutable_authoring()?;
+        let valid = match current {
+            None => config.lifecycle() == AgentLifecycle::Published,
+            Some(stored) => match stored.lifecycle() {
+                AgentLifecycle::Published => config.lifecycle() == AgentLifecycle::Published,
+                AgentLifecycle::Disabled => stored == &config,
+                AgentLifecycle::Archived => false,
+            },
+        };
+        if !valid {
+            return Err(format!(
+                "agent `{}` lifecycle transition requires its dedicated command",
+                config.id
+            ));
+        }
+        Ok(config)
+    }
+
     /// Validate the structural ownership contract shared by every Agent write,
     /// preview, publication, and Session override path. An MCP server and its
     /// policy are one logical integration even though the Managed Agents wire

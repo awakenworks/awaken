@@ -24,6 +24,7 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
+use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router};
 use axum::Router;
 use axum::body::Body;
@@ -249,7 +250,7 @@ impl LlmExecutor for NativeDelegatingModel {
     }
 }
 
-fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
+fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_runtime_host::authorable_tools())
@@ -275,14 +276,18 @@ fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
-        .with_agent_publications(Arc::new(publications))
-        .with_remote_attempt_executor(awaken_runtime_host::RemoteAttemptInstallation {
-            executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
-                transport,
-            )))),
-            credential_realization: Default::default(),
-        })
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
+            .with_agent_publications(Arc::new(publications))
+            .with_remote_attempt_executor(awaken_runtime_host::RemoteAttemptInstallation {
+                executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
+                    transport,
+                )))),
+                credential_realization: Default::default(),
+            }),
+    );
+    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    host
 }
 
 fn published_delegating_host(
@@ -290,7 +295,7 @@ fn published_delegating_host(
     credential: CredentialAccess,
     security_fingerprint: String,
     materializer: awaken_credential_materializer::PinnedCredentialMaterializer,
-) -> SharedHost {
+) -> Arc<SharedHost> {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
         .tools(awaken_runtime_host::authorable_tools())
@@ -316,9 +321,15 @@ fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
-        .with_agent_publications(Arc::new(publications))
-        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer)))
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
+            .with_agent_publications(Arc::new(publications))
+            .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(
+                materializer,
+            ))),
+    );
+    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    host
 }
 
 #[test]

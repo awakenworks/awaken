@@ -10,7 +10,7 @@ use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
-    verify_claim_owner, verify_current_worker_identity,
+    verify_claim_owner,
 };
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -18,6 +18,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+
+use crate::worker_authority::{
+    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+};
 
 const REPOSITORY_BINDING_PATH: &str = "/v1/worker/resources/repositories/verify";
 
@@ -91,27 +95,45 @@ pub trait RepositoryTransportAuthorizer: Send + Sync {
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError>;
 }
 
-/// Validate additive issuer expiry evidence without changing legacy one-shot
-/// host-operation semantics. A long-lived workload consumer separately requires
-/// `Some`; this common Worker boundary rejects any supplied evidence that is
-/// already dead or exceeds the currently revalidated claim/lease.
-fn transport_expiry_is_bounded(
+/// Temporal scope applied to an issuer-owned Repository capability. Ordinary
+/// Run work cannot outlive its dispatch claim. Terminal publication is already
+/// one exact aggregate-authorized operation, so its trusted issuer may mint a
+/// one-shot capability long enough to finish after the short Worker heartbeat
+/// lease, but must report that capability's live expiry. The Session generation
+/// is revalidated before and after issuance and the Host revalidates it again
+/// after Git I/O.
+#[derive(Clone, Copy)]
+enum RepositoryTransportExpiryRule {
+    BoundToAuthority(u64),
+    TrustedTerminalOperation,
+}
+
+/// Validate additive issuer expiry evidence without changing legacy Run
+/// host-operation semantics. `None` remains compatible only there; the new
+/// terminal Gateway entry requires an external issuer to return `Some(live)`.
+/// Long-lived workload consumers separately require `Some` at their boundary.
+fn transport_expiry_is_admitted(
     transport: &RepositoryTransport,
     now_unix_ms: u64,
-    authority_expires_at_unix_ms: u64,
+    rule: RepositoryTransportExpiryRule,
 ) -> bool {
     match transport {
-        RepositoryTransport::Direct
-        | RepositoryTransport::GatewayMediated {
+        RepositoryTransport::Direct => true,
+        RepositoryTransport::GatewayMediated {
             expires_at_unix_ms: None,
             ..
-        } => true,
+        } => matches!(rule, RepositoryTransportExpiryRule::BoundToAuthority(_)),
         RepositoryTransport::GatewayMediated {
             expires_at_unix_ms: Some(expires_at),
             ..
         } => {
             expires_at.is_live_at(now_unix_ms)
-                && expires_at.unix_ms() <= authority_expires_at_unix_ms
+                && match rule {
+                    RepositoryTransportExpiryRule::BoundToAuthority(upper_bound) => {
+                        expires_at.unix_ms() <= upper_bound
+                    }
+                    RepositoryTransportExpiryRule::TrustedTerminalOperation => true,
+                }
         }
     }
 }
@@ -420,7 +442,11 @@ async fn verify_run_repository_binding(
     if !revalidated {
         return StatusCode::CONFLICT.into_response();
     }
-    if !transport_expiry_is_bounded(&transport, unix_now_ms(), claim_expires_ms) {
+    if !transport_expiry_is_admitted(
+        &transport,
+        unix_now_ms(),
+        RepositoryTransportExpiryRule::BoundToAuthority(claim_expires_ms),
+    ) {
         return StatusCode::FORBIDDEN.into_response();
     }
     match transport {
@@ -445,17 +471,18 @@ async fn verify_terminal_repository_binding(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now_ms = unix_now_ms();
-    if verify_current_worker_identity(directory, worker, identity, now_ms, false)
-        .await
-        .is_err()
-        || authority.lease.owner != identity.worker_id
-        || authority.lease.runtime_incarnation != identity.lease_owner()
-        || !awaken_session_contract::realization_lease_is_live_at(
-            authority.lease.expires_at_unix_ms,
-            now_ms,
-        )
+    if let Some(status) = verify_session_worker_effect(
+        directory,
+        worker,
+        identity,
+        &authority.lease,
+        now_ms,
+        SessionWorkerEffectTemporalRule::TerminalGeneration,
+    )
+    .await
+    .rejection_status()
     {
-        return StatusCode::FORBIDDEN.into_response();
+        return status.into_response();
     }
     let projection = match control
         .terminal_repository_publication_command(&authority.command.session_id, &authority.lease)
@@ -468,6 +495,26 @@ async fn verify_terminal_repository_binding(
         }
         Err(_) => return StatusCode::CONFLICT.into_response(),
     };
+    if !awaken_session_contract::realization_lease_authorizes(
+        &projection.current_lease,
+        &authority.lease,
+        now_ms,
+    ) {
+        return StatusCode::CONFLICT.into_response();
+    }
+    if let Some(status) = verify_session_worker_effect(
+        directory,
+        worker,
+        identity,
+        &projection.current_lease,
+        now_ms,
+        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+    )
+    .await
+    .rejection_status()
+    {
+        return status.into_response();
+    }
     if projection.workspace_id != request.workspace_id {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -499,7 +546,7 @@ async fn verify_terminal_repository_binding(
             input: canonical.intent.input.clone(),
             authority: RepositoryTransportAuthority::TerminalPublication {
                 command: Box::new(canonical.clone()),
-                lease: authority.lease.clone(),
+                lease: projection.current_lease.clone(),
             },
         })
         .await
@@ -507,21 +554,45 @@ async fn verify_terminal_repository_binding(
         Ok(transport) => transport,
         Err(_) => return StatusCode::FORBIDDEN.into_response(),
     };
-    let revalidated =
-        verify_current_worker_identity(directory, worker, identity, unix_now_ms(), false)
-            .await
-            .is_ok()
-            && control
-                .terminal_repository_publication_command(&canonical.session_id, &authority.lease)
-                .await
-                .is_ok_and(|projected| projected.as_ref() == Some(&projection));
-    if !revalidated {
+    let latest = match control
+        .terminal_repository_publication_command(&canonical.session_id, &authority.lease)
+        .await
+    {
+        Ok(Some(latest)) => latest,
+        _ => return StatusCode::CONFLICT.into_response(),
+    };
+    let latest_now_ms = unix_now_ms();
+    if latest.workspace_id != projection.workspace_id
+        || latest.command != projection.command
+        || !awaken_session_contract::realization_lease_generation_authorizes(
+            &latest.current_lease,
+            &projection.current_lease,
+        )
+        || !awaken_session_contract::realization_lease_authorizes(
+            &latest.current_lease,
+            &authority.lease,
+            latest_now_ms,
+        )
+    {
         return StatusCode::CONFLICT.into_response();
     }
-    if !transport_expiry_is_bounded(
+    if let Some(status) = verify_session_worker_effect(
+        directory,
+        worker,
+        identity,
+        &latest.current_lease,
+        latest_now_ms,
+        SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+    )
+    .await
+    .rejection_status()
+    {
+        return status.into_response();
+    }
+    if !transport_expiry_is_admitted(
         &transport,
-        unix_now_ms(),
-        authority.lease.expires_at_unix_ms,
+        latest_now_ms,
+        RepositoryTransportExpiryRule::TrustedTerminalOperation,
     ) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -529,13 +600,6 @@ async fn verify_terminal_repository_binding(
         RepositoryTransport::Direct => StatusCode::NO_CONTENT.into_response(),
         transport => (StatusCode::OK, Json(transport)).into_response(),
     }
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -578,13 +642,17 @@ mod tests {
     }
 
     #[test]
-    fn gateway_actual_expiry_cannot_outlive_its_authority() {
+    fn gateway_actual_expiry_obeys_run_and_terminal_operation_rules() {
         /* Dynamic expiry decision table:
          * C1=Direct; C2=Gateway expiry absent/present; C3=present expiry live;
-         * C4=present expiry <= current claim/lease. E1=preserve additive legacy
-         * host operations; E2=accept bounded issuer evidence; E3=fail closed.
-         * Rules: X1 C1=>E1; X2 !C1&&!C2=>E1;
-         * X3 !C1+C2+C3+C4=>E2; X4 !C1+C2+(!C3||!C4)=>E3.
+         * C4=Run-bounded versus trusted exact terminal operation; C5=present
+         * expiry <= current Run claim. E1=preserve Direct and additive legacy
+         * Run host operations; E2=accept bounded Run evidence; E3=accept a live
+         * issuer-owned terminal capability beyond the heartbeat lease; E4=fail
+         * closed on a terminal capability without expiry, dead evidence, or a
+         * widened Run capability. Rules: X1 C1=>E1; X2 Run+!C1+!C2=>E1;
+         * X3 Terminal+!C1+!C2=>E4; X4 Run+C2+C3+C5=>E2;
+         * X5 Terminal+C2+C3=>E3; X6 C2+!C3 or Run+C2+!C5=>E4.
          */
         let gateway = |expiry: Option<u64>| RepositoryTransport::GatewayMediated {
             remote_url: "https://gateway.invalid/git/repository".into(),
@@ -593,14 +661,32 @@ mod tests {
                 awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new(value).unwrap()
             }),
         };
-        assert!(transport_expiry_is_bounded(
+        let run = RepositoryTransportExpiryRule::BoundToAuthority(200);
+        let terminal = RepositoryTransportExpiryRule::TrustedTerminalOperation;
+        assert!(transport_expiry_is_admitted(
             &RepositoryTransport::Direct,
             100,
-            200
+            run,
         ));
-        assert!(transport_expiry_is_bounded(&gateway(None), 100, 200));
-        assert!(transport_expiry_is_bounded(&gateway(Some(150)), 100, 200));
-        assert!(!transport_expiry_is_bounded(&gateway(Some(100)), 100, 200));
-        assert!(!transport_expiry_is_bounded(&gateway(Some(201)), 100, 200));
+        assert!(transport_expiry_is_admitted(
+            &RepositoryTransport::Direct,
+            100,
+            terminal,
+        ));
+        assert!(transport_expiry_is_admitted(&gateway(None), 100, run));
+        assert!(!transport_expiry_is_admitted(&gateway(None), 100, terminal,));
+        assert!(transport_expiry_is_admitted(&gateway(Some(150)), 100, run));
+        assert!(!transport_expiry_is_admitted(&gateway(Some(100)), 100, run));
+        assert!(!transport_expiry_is_admitted(&gateway(Some(201)), 100, run));
+        assert!(transport_expiry_is_admitted(
+            &gateway(Some(225)),
+            100,
+            terminal,
+        ));
+        assert!(!transport_expiry_is_admitted(
+            &gateway(Some(100)),
+            100,
+            terminal,
+        ));
     }
 }

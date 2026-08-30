@@ -44,6 +44,9 @@ kind: Role
 metadata:
   name: awaken-product-runtime
 rules:
+  # This overlay does not enable k8s_continuation_volume. If that capability is
+  # enabled here, its same reviewed change must grant persistentvolumeclaims
+  # create/get/delete; the runtime must not rely on ambient cluster-admin access.
   - apiGroups: [""]
     resources: ["pods", "configmaps"]
     verbs: ["create", "get", "list", "update", "delete", "deletecollection"]

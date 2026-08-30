@@ -121,11 +121,10 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
 }
 
 #[cfg(feature = "container-docker")]
-fn docker_runtime(
+fn configure_docker_runtime(
+    mut runtime: awaken_sandbox_container::docker::DockerRuntime,
     settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
-    let mut runtime = awaken_sandbox_container::docker::DockerRuntime::connect_local(8080)
-        .map_err(|error| format!("docker runtime: {error}"))?;
     if let Some(registry) = &settings.package_image_registry {
         runtime = runtime.with_package_registry(registry);
     }
@@ -141,14 +140,37 @@ fn docker_runtime(
     )
 }
 
+#[cfg(feature = "container-docker")]
+fn docker_runtime(
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
+    configure_docker_runtime(
+        awaken_sandbox_container::docker::DockerRuntime::connect_local(8080)
+            .map_err(|error| format!("docker runtime: {error}"))?,
+        settings,
+    )
+}
+
+#[cfg(feature = "container-docker")]
+fn docker_runtime_for_realization(
+    realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
+    configure_docker_runtime(
+        awaken_sandbox_container::docker::DockerRuntime::connect_local_for_realization(
+            realization_namespace,
+            8080,
+        )
+        .map_err(|error| format!("docker runtime: {error}"))?,
+        settings,
+    )
+}
+
 #[cfg(feature = "container-podman")]
-fn podman_runtime(
+fn configure_podman_runtime(
+    mut runtime: awaken_sandbox_container::podman::PodmanRuntime,
     settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
-    let mut runtime = awaken_sandbox_container::podman::PodmanRuntime::with_bin(
-        8080,
-        settings.podman_bin.clone(),
-    );
     if let Some(registry) = &settings.package_image_registry {
         runtime = runtime.with_package_registry(registry);
     }
@@ -161,6 +183,34 @@ fn podman_runtime(
         runtime.with_package_cache_ttl(std::time::Duration::from_secs(
             settings.package_local_cache_ttl_secs,
         )),
+    )
+}
+
+#[cfg(feature = "container-podman")]
+fn podman_runtime(
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
+    configure_podman_runtime(
+        awaken_sandbox_container::podman::PodmanRuntime::with_bin(
+            8080,
+            settings.podman_bin.clone(),
+        ),
+        settings,
+    )
+}
+
+#[cfg(feature = "container-podman")]
+fn podman_runtime_for_realization(
+    realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
+    configure_podman_runtime(
+        awaken_sandbox_container::podman::PodmanRuntime::with_bin_for_realization(
+            realization_namespace,
+            8080,
+            settings.podman_bin.clone(),
+        ),
+        settings,
     )
 }
 
@@ -250,6 +300,30 @@ pub async fn build_container_environment(
     image: Option<&str>,
     settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<ContainerEnvironmentComponents, String> {
+    let process_id = std::process::id().to_string();
+    let legacy_namespace =
+        awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+            "legacy-container-composition",
+            process_id.as_str(),
+        ])
+        .map_err(|error| error.to_string())?;
+    build_container_environment_for_realization(legacy_namespace, tier, image, settings).await
+}
+
+/// Canonical durable-Session builder. Every concrete runtime receives the same
+/// installation-stable namespace; adapters may project it but must not derive a
+/// process/lease identity independently.
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+pub async fn build_container_environment_for_realization(
+    realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    tier: SandboxTier,
+    image: Option<&str>,
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<ContainerEnvironmentComponents, String> {
     if settings.container_hand_residency == ContainerHandResidency::Resident
         && tier != SandboxTier::K8s
     {
@@ -258,12 +332,18 @@ pub async fn build_container_environment(
     let built = match tier {
         #[cfg(feature = "container-docker")]
         SandboxTier::Docker => {
-            let runtime = Arc::new(docker_runtime(settings)?);
+            let runtime = Arc::new(docker_runtime_for_realization(
+                realization_namespace.clone(),
+                settings,
+            )?);
             finish(runtime.clone(), image, settings, Some(runtime))?
         }
         #[cfg(feature = "container-podman")]
         SandboxTier::Podman => {
-            let runtime = Arc::new(podman_runtime(settings)?);
+            let runtime = Arc::new(podman_runtime_for_realization(
+                realization_namespace.clone(),
+                settings,
+            )?);
             finish(runtime.clone(), image, settings, Some(runtime))?
         }
         #[cfg(feature = "container-k8s")]
@@ -272,10 +352,14 @@ pub async fn build_container_environment(
             // Exec-attached Session environments do not publish an ACP port. Keep the
             // constructor's legacy address inert until that adapter parameter is removed.
             let inert = "127.0.0.1:1".parse().expect("literal socket address");
-            let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, inert)
-                .await
-                .map_err(|error| format!("k8s runtime: {error}"))?
-                .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
+            let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect_for_realization(
+                namespace,
+                realization_namespace,
+                inert,
+            )
+            .await
+            .map_err(|error| format!("k8s runtime: {error}"))?
+            .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
             if let Some(continuation) = settings.k8s_continuation_volume.clone() {
                 runtime = runtime.with_continuation_volume(continuation);
             }
@@ -335,6 +419,20 @@ pub async fn build_container_environment(
             SandboxTier::Namespace => "namespace",
         }
     ))
+}
+
+#[cfg(not(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+)))]
+pub async fn build_container_environment_for_realization(
+    _realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
+    tier: SandboxTier,
+    image: Option<&str>,
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<ContainerEnvironmentComponents, String> {
+    build_container_environment(tier, image, settings).await
 }
 
 #[cfg(all(test, feature = "container-podman"))]

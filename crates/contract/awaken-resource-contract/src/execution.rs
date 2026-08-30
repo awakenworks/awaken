@@ -210,14 +210,60 @@ pub struct ArtifactPublication<C> {
     /// Digest observed while the Sandbox was still fenced and live.
     pub content_id: String,
     pub bytes: Vec<u8>,
+    /// Optional caller-owned idempotency namespace. Ordinary Run harvests keep
+    /// this absent and therefore retain their v1 identity byte-for-byte;
+    /// terminal cleanup supplies its durable cleanup operation id.
+    pub idempotency_scope: Option<String>,
     pub fence: Option<C>,
 }
 
+/// One terminal-only readback request for already-durable artifact receipts.
+///
+/// The fence stays opaque to Resources. Driving adapters must admit only the
+/// exact terminal effect whose operation id equals `idempotency_scope` before
+/// invoking the File application. The application remains the sole owner of
+/// the durable catalog read and receipt reconstruction.
+#[derive(Debug, Clone)]
+pub struct ArtifactRecovery<C> {
+    pub workspace_id: String,
+    pub session_id: String,
+    pub idempotency_scope: String,
+    pub fence: C,
+}
+
 impl<C> ArtifactPublication<C> {
+    /// Project the canonical execution publication into the Resources File
+    /// application. Execution fencing remains owned by the driving adapter;
+    /// every File-owned fact is preserved without introducing another command
+    /// value or argument list.
+    #[must_use]
+    pub fn into_file_application(self) -> ArtifactPublication<()> {
+        ArtifactPublication {
+            effect_id: self.effect_id,
+            workspace_id: self.workspace_id,
+            session_id: self.session_id,
+            logical_path: self.logical_path,
+            mime_type: self.mime_type,
+            content_id: self.content_id,
+            bytes: self.bytes,
+            idempotency_scope: self.idempotency_scope,
+            fence: None,
+        }
+    }
+
     pub fn verify(&self) -> Result<(), ArtifactPublicationError> {
         let actual = content_id(&self.bytes);
         let expected_effect =
             harvest_idempotency_key(&self.session_id, &self.logical_path, &self.content_id);
+        if self
+            .idempotency_scope
+            .as_deref()
+            .is_some_and(|scope| scope.trim().is_empty())
+        {
+            return Err(ArtifactPublicationError::new(
+                "artifact idempotency scope must be nonempty",
+            ));
+        }
         if self.content_id != actual {
             return Err(ArtifactPublicationError::new(
                 "artifact bytes do not match the asserted content id",
@@ -229,6 +275,80 @@ impl<C> ArtifactPublication<C> {
             ));
         }
         Ok(())
+    }
+}
+
+impl<C> ArtifactRecovery<C> {
+    pub fn verify(&self) -> Result<(), ArtifactPublicationError> {
+        if self.workspace_id.trim().is_empty()
+            || self.session_id.trim().is_empty()
+            || self.idempotency_scope.trim().is_empty()
+        {
+            return Err(ArtifactPublicationError::new(
+                "artifact recovery requires an exact Workspace, Session, and idempotency scope",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reconstruct canonical receipts from the existing File aggregate view.
+    /// Nonmatching ordinary/older-terminal records are ignored; conflicting
+    /// duplicate evidence fails closed instead of choosing one arbitrarily.
+    pub fn receipts_from_records(
+        &self,
+        records: impl IntoIterator<Item = FileRecord>,
+    ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
+        self.verify()?;
+        let mut receipts = records
+            .into_iter()
+            .filter_map(|mut record| {
+                let logical_path = record.logical_path.as_deref()?;
+                let effect_id =
+                    harvest_idempotency_key(&self.session_id, logical_path, &record.blob_id);
+                (record.workspace_id == self.workspace_id
+                    && record.scope_id.as_deref() == Some(self.session_id.as_str())
+                    && record.harvest_key.as_deref() == Some(effect_id.as_str())
+                    && record.artifact_idempotency_scope.as_deref()
+                        == Some(self.idempotency_scope.as_str()))
+                .then(|| {
+                    // `deleted` describes the current logical File lifecycle,
+                    // not the original publication effect. Normalize it to the
+                    // creation receipt so response-loss readback is byte-for-byte
+                    // equal before and after a later logical delete.
+                    record.deleted = false;
+                    ArtifactPublicationReceipt {
+                        effect_id,
+                        content_id: record.blob_id.clone(),
+                        record,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        if !ArtifactPublicationReceipt::canonicalize(&mut receipts) {
+            return Err(ArtifactPublicationError::new(
+                "artifact recovery found duplicate durable effect evidence",
+            ));
+        }
+        Ok(receipts)
+    }
+
+    pub fn verify_receipts(
+        &self,
+        receipts: &[ArtifactPublicationReceipt],
+    ) -> Result<(), ArtifactPublicationError> {
+        let canonical = self.receipts_from_records(
+            receipts
+                .iter()
+                .map(|receipt| receipt.record.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        if canonical == receipts {
+            Ok(())
+        } else {
+            Err(ArtifactPublicationError::new(
+                "artifact recovery response is not canonical",
+            ))
+        }
     }
 }
 
@@ -249,6 +369,7 @@ struct ArtifactReceiptEvidence {
     same_session: bool,
     same_path: bool,
     exact_harvest_key: bool,
+    exact_terminal_scope: bool,
 }
 
 #[must_use]
@@ -260,6 +381,7 @@ const fn artifact_receipt_admitted(evidence: ArtifactReceiptEvidence) -> bool {
         && evidence.same_session
         && evidence.same_path
         && evidence.exact_harvest_key
+        && evidence.exact_terminal_scope
 }
 
 #[cfg(kani)]
@@ -273,6 +395,7 @@ fn artifact_publication_receipt_requires_every_identity_axis() {
         same_session: kani::any(),
         same_path: kani::any(),
         exact_harvest_key: kani::any(),
+        exact_terminal_scope: kani::any(),
     };
     assert_eq!(
         artifact_receipt_admitted(evidence),
@@ -283,10 +406,38 @@ fn artifact_publication_receipt_requires_every_identity_axis() {
             && evidence.same_session
             && evidence.same_path
             && evidence.exact_harvest_key
+            && evidence.exact_terminal_scope
     );
 }
 
 impl ArtifactPublicationReceipt {
+    /// Canonicalize one receipt set at its domain owner. Every caller uses the
+    /// same effect-id order and duplicate rule; transport recovery and Session
+    /// completion must not maintain parallel ordering policies.
+    pub fn canonicalize(receipts: &mut [Self]) -> bool {
+        receipts.sort_by(|left, right| left.effect_id.cmp(&right.effect_id));
+        receipts
+            .windows(2)
+            .all(|pair| pair[0].effect_id != pair[1].effect_id)
+    }
+
+    pub fn from_publication_record<C>(
+        publication: &ArtifactPublication<C>,
+        mut record: FileRecord,
+    ) -> Result<Self, ArtifactPublicationError> {
+        // A tombstone is a later File lifecycle fact. Receipt evidence always
+        // represents the original successful publication, so response-loss
+        // readback must normalize it to the creation shape.
+        record.deleted = false;
+        let receipt = Self {
+            effect_id: publication.effect_id.clone(),
+            content_id: publication.content_id.clone(),
+            record,
+        };
+        receipt.verify(publication)?;
+        Ok(receipt)
+    }
+
     pub fn verify<C>(
         &self,
         publication: &ArtifactPublication<C>,
@@ -302,6 +453,12 @@ impl ArtifactPublicationReceipt {
                 == Some(publication.logical_path.as_str()),
             exact_harvest_key: self.record.harvest_key.as_deref()
                 == Some(publication.effect_id.as_str()),
+            exact_terminal_scope: publication
+                .idempotency_scope
+                .as_deref()
+                .is_none_or(|scope| {
+                    self.record.artifact_idempotency_scope.as_deref() == Some(scope)
+                }),
         }) {
             Ok(())
         } else {
@@ -329,6 +486,15 @@ pub trait ArtifactPublisher<C: Send + Sync + 'static = ()>: Send + Sync {
         &self,
         publication: ArtifactPublication<C>,
     ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError>;
+
+    async fn recover(
+        &self,
+        _recovery: ArtifactRecovery<C>,
+    ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
+        Err(ArtifactPublicationError::new(
+            "artifact recovery is not configured by the composition root",
+        ))
+    }
 }
 
 pub struct UnavailableArtifactPublisher;
@@ -386,6 +552,7 @@ mod tests {
             mime_type: "text/x-diff".into(),
             content_id: content_id.clone(),
             bytes,
+            idempotency_scope: None,
             fence: None,
         };
         let receipt = ArtifactPublicationReceipt {
@@ -404,6 +571,7 @@ mod tests {
                 scope_id: Some("session-1".into()),
                 logical_path: Some("outputs/change.patch".into()),
                 harvest_key: Some(effect_id),
+                artifact_idempotency_scope: None,
                 deleted: false,
             },
         };
@@ -413,11 +581,12 @@ mod tests {
     #[test]
     fn ordinary_artifact_receipt_requires_the_exact_publication() {
         // Causes: C1 bytes still match their content id; C2 the publication's
-        // effect id is the canonical Session/path/content key; C3 every receipt
-        // identity axis (effect, content, blob, Workspace, Session, path, and
-        // harvest key) matches. Effect E1 is an admitted ordinary File receipt;
-        // E2 is an explicit rejection with no secondary aggregate completion.
-        // Decision rules: A1=C1+C2+C3=>E1; A2=!C1||!C2||any !C3=>E2.
+        // effect id is the canonical Session/path/content key; C3 optional
+        // terminal scope is absent or nonblank; C4 every receipt identity axis
+        // (effect, content, blob, Workspace, Session, path, and harvest key)
+        // matches. Effect E1 is an admitted ordinary File receipt; E2 is an
+        // explicit rejection with no secondary aggregate completion. Decision
+        // rules: A1=C1+C2+C3+C4=>E1; A2=any false cause=>E2.
         let (publication, receipt) = artifact();
         receipt.verify(&publication).expect("A1/E1");
 
@@ -427,6 +596,9 @@ mod tests {
         let mut invalid_publication = publication.clone();
         invalid_publication.effect_id = "noncanonical-effect".into();
         assert!(receipt.verify(&invalid_publication).is_err(), "A2/!C2");
+        let mut invalid_publication = publication.clone();
+        invalid_publication.idempotency_scope = Some("  ".into());
+        assert!(receipt.verify(&invalid_publication).is_err(), "A2/!C3");
 
         let mut mismatches = Vec::new();
         let mut candidate = receipt.clone();
@@ -451,8 +623,124 @@ mod tests {
         candidate.record.harvest_key = Some("other-harvest".into());
         mismatches.push(("harvest key", candidate));
         for (axis, candidate) in mismatches {
-            assert!(candidate.verify(&publication).is_err(), "A2/!C3 {axis}");
+            assert!(candidate.verify(&publication).is_err(), "A2/!C4 {axis}");
         }
+    }
+
+    #[test]
+    fn file_application_projection_preserves_every_resource_fact_and_drops_only_the_fence() {
+        // Cause/effect decision table: C1 the execution publication carries a
+        // fence; C2 every Resources-owned fact (effect, Workspace, Session,
+        // path, media type, content identity, bytes, and optional terminal
+        // scope) is present. P1 C1+C2 projects one unfenced publication with
+        // every C2 fact byte-for-byte unchanged; P2 an absent fence follows
+        // the same projection. The File application therefore receives the
+        // existing canonical value object, never a second parallel command.
+        let (base, _) = artifact();
+        let publication = ArtifactPublication {
+            effect_id: base.effect_id.clone(),
+            workspace_id: base.workspace_id.clone(),
+            session_id: base.session_id.clone(),
+            logical_path: base.logical_path.clone(),
+            mime_type: base.mime_type.clone(),
+            content_id: base.content_id.clone(),
+            bytes: base.bytes.clone(),
+            idempotency_scope: Some("cleanup-current".into()),
+            fence: Some("claim"),
+        };
+
+        let expected = publication.clone();
+        let projected = publication.into_file_application();
+        assert_eq!(projected.effect_id, expected.effect_id, "P1 effect");
+        assert_eq!(
+            projected.workspace_id, expected.workspace_id,
+            "P1 Workspace"
+        );
+        assert_eq!(projected.session_id, expected.session_id, "P1 Session");
+        assert_eq!(projected.logical_path, expected.logical_path, "P1 path");
+        assert_eq!(projected.mime_type, expected.mime_type, "P1 media type");
+        assert_eq!(projected.content_id, expected.content_id, "P1 content");
+        assert_eq!(projected.bytes, expected.bytes, "P1 bytes");
+        assert_eq!(
+            projected.idempotency_scope, expected.idempotency_scope,
+            "P1 terminal scope"
+        );
+        assert_eq!(projected.fence, None, "P1 fence");
+
+        let mut unfenced = expected;
+        unfenced.fence = None;
+        assert_eq!(unfenced.into_file_application().fence, None, "P2");
+    }
+
+    #[test]
+    fn terminal_recovery_filters_exact_file_association_and_normalizes_tombstones() {
+        // Cause/effect table: R1 terminal scope on the canonical v1 harvest key
+        // preserves the ordinary effect identity; R2 exact Workspace/Session/key
+        // + exact scope reconstructs one receipt; R3 ordinary/older scope/foreign
+        // records are ignored; R4 a tombstone reconstructs the original
+        // `deleted=false` publication receipt; R5 duplicate exact evidence fails.
+        let (mut publication, _) = artifact();
+        publication.idempotency_scope = Some("cleanup-current".into());
+        let mut current = ArtifactPublicationReceipt::from_publication_record(
+            &publication,
+            FileRecord {
+                id: "file-current".into(),
+                workspace_id: publication.workspace_id.clone(),
+                blob_id: publication.content_id.clone(),
+                filename: publication.logical_path.clone(),
+                mime_type: publication.mime_type.clone(),
+                size_bytes: publication.bytes.len() as u64,
+                created_at: "2026-08-29T00:00:00Z".into(),
+                expires_at: None,
+                downloadable: true,
+                scope_id: Some(publication.session_id.clone()),
+                logical_path: Some(publication.logical_path.clone()),
+                harvest_key: Some(publication.effect_id.clone()),
+                artifact_idempotency_scope: Some("cleanup-current".into()),
+                deleted: false,
+            },
+        )
+        .expect("R1/R2");
+        assert_eq!(
+            publication.effect_id,
+            crate::harvest_idempotency_key(
+                &publication.session_id,
+                &publication.logical_path,
+                &publication.content_id,
+            ),
+            "R1"
+        );
+        let recovery = ArtifactRecovery {
+            workspace_id: publication.workspace_id.clone(),
+            session_id: publication.session_id.clone(),
+            idempotency_scope: "cleanup-current".into(),
+            fence: (),
+        };
+        let mut tombstone = current.record.clone();
+        tombstone.deleted = true;
+        let mut ordinary = current.record.clone();
+        ordinary.id = "file-ordinary".into();
+        ordinary.artifact_idempotency_scope = None;
+        let mut old_terminal = current.record.clone();
+        old_terminal.id = "file-old-terminal".into();
+        old_terminal.artifact_idempotency_scope = Some("cleanup-old".into());
+        let mut foreign = current.record.clone();
+        foreign.id = "file-foreign".into();
+        foreign.workspace_id = "workspace-foreign".into();
+        assert_eq!(
+            recovery
+                .receipts_from_records([ordinary, old_terminal, foreign, tombstone.clone()])
+                .expect("R2-R4"),
+            vec![current.clone()],
+            "R2-R4"
+        );
+        current.record.deleted = false;
+        assert!(
+            recovery
+                .receipts_from_records([tombstone.clone(), tombstone])
+                .is_err(),
+            "R5"
+        );
     }
 
     #[test]

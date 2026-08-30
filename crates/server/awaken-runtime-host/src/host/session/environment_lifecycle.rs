@@ -13,16 +13,171 @@ use crate::session_slot::{
 
 mod publication;
 mod state;
+mod terminal_cleanup;
+mod terminal_preparation;
 
+pub(super) use state::committed_identity;
 use state::{RetirementSelection, checkpoint_source_identity, projected_environment_owner};
 
-/// One atomic process-local retirement transition. The Runtime context is
-/// removed from the slot together with its Environment owner and exists only in
-/// the caller's stack while provider status is awaited; it is never durable or
-/// independently discoverable.
+/// One atomic process-local retirement transition. A successful transition
+/// detaches the Runtime together with its Environment owner; an unmatched
+/// exact-selection leaves both untouched.
 struct LocalRetirementTransition {
     owner: RetiringSessionEnvironment,
-    runtime: Option<Arc<SessionCtx>>,
+}
+
+/// One process-local teardown projection derived from the frozen aggregate
+/// Environment state. It carries no authority of its own; keeping the state and
+/// optional physical owner together prevents terminal checkpoint and Sandbox
+/// cleanup from re-reading or independently interpreting the slot.
+struct TerminalEnvironmentPreparation {
+    state: awaken_session_contract::SessionEnvironmentState,
+    environment: PreparedBoundEnvironment,
+    pending_checkpoint: Option<awaken_session_contract::SandboxCheckpointRequest>,
+}
+
+/// Exact decoded binding, provider-effective spec, and any process-local
+/// owner observations produced by the single adoption validator.
+type ValidatedSessionEnvironmentAdoption = (
+    awaken_provisioning_contract::SandboxHandle,
+    awaken_provisioning_contract::SandboxSpec,
+    Option<Arc<crate::session_environment::SessionEnvironment>>,
+    Option<UnboundSessionEnvironment>,
+);
+
+/// Process-local projection of which source effects remain legal after the
+/// provider observation. The provider-owned [`SandboxObservation`] remains the
+/// only physical fact; this mode merely keeps live I/O, source preparation,
+/// and already-prepared recovery from drifting into three independent tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalEffectMode {
+    LiveUnprepared,
+    RecoverOnlyUnprepared,
+    RecoverOnlyAlreadyPrepared,
+}
+
+/// One exact terminal owner plus its non-durable I/O mode. This stays inside
+/// runtime-host and is never serialized, acknowledged, or used as mutation
+/// authority.
+pub(crate) struct PreparedBoundEnvironment {
+    pub(crate) environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
+    durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
+    effect_mode: TerminalEffectMode,
+}
+
+impl PreparedBoundEnvironment {
+    fn new(
+        environment: Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>,
+        durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
+        effect_mode: TerminalEffectMode,
+    ) -> Self {
+        Self {
+            environment,
+            durable_handle,
+            effect_mode,
+        }
+    }
+
+    /// Join the provider's physical observation with the aggregate's closed
+    /// continuation predecessor. The latter dominates: after A is durable,
+    /// total physical absence is a response-loss recovery case rather than an
+    /// excuse to repeat live source effects under terminal T.
+    fn with_preparation_authorization(
+        mut self,
+        authorization: &awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Self {
+        if authorization.inherited_provider_disposal().is_some() {
+            self.effect_mode = TerminalEffectMode::RecoverOnlyAlreadyPrepared;
+        }
+        self
+    }
+
+    pub(crate) fn permits_live_io(&self) -> bool {
+        self.effect_mode == TerminalEffectMode::LiveUnprepared
+    }
+
+    fn requires_provider_preparation(&self) -> bool {
+        self.effect_mode != TerminalEffectMode::RecoverOnlyAlreadyPrepared
+    }
+
+    fn source_effects_are_already_prepared(&self) -> bool {
+        self.effect_mode == TerminalEffectMode::RecoverOnlyAlreadyPrepared
+    }
+
+    fn durable_handle(&self) -> Option<&awaken_provisioning_contract::SandboxHandle> {
+        self.durable_handle.as_ref()
+    }
+}
+
+/// Pure terminal Memory projection produced before Artifact, checkpoint, or
+/// provider effects. The contract owns the optional-handle join and intent
+/// construction; this transient plan only carries its exact result forward.
+struct TerminalMemoryPlan {
+    intents: Vec<awaken_session_contract::SessionTerminalMemoryIntent>,
+    acknowledged_materializations:
+        Option<Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>>,
+    workspace_id: Option<String>,
+}
+
+/// Borrowed inputs for the single unavailable-observation phase under the
+/// Session lifecycle lock. Every authority remains in its existing typed value;
+/// this transient view neither mirrors the slot nor survives the call.
+struct UnavailableEnvironmentRecovery<'a> {
+    thread: &'a str,
+    binding: &'a str,
+    source_generation_id: Option<&'a str>,
+    pending_adoption: Option<(BoundSessionEnvironmentIdentity, String)>,
+    policy: SessionEnvironmentUnavailablePolicy,
+    provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    handle: &'a awaken_provisioning_contract::SandboxHandle,
+    observation: &'a awaken_provisioning_contract::SandboxObservation,
+}
+
+/// Borrowed inputs for one terminal Environment installation phase. The
+/// aggregate effect fence, provider spec, handle, and optional restore fence
+/// remain their canonical value objects; this context owns no lifecycle fact.
+struct TerminalEnvironmentInstallation<'a> {
+    thread: &'a str,
+    binding: Option<&'a str>,
+    provider: &'a crate::session_environment::SessionEnvironmentProvider,
+    spec: &'a awaken_provisioning_contract::SandboxSpec,
+    handle: Option<&'a awaken_provisioning_contract::SandboxHandle>,
+    expected_effect_fence: Option<&'a awaken_provisioning_contract::SandboxEffectFence>,
+    effect_fence: &'a awaken_provisioning_contract::SandboxEffectFence,
+}
+
+impl TerminalEnvironmentPreparation {
+    /// Resident and suspending states still name the Agent-authored source.
+    /// Hibernated has no live root, while Restoring may contain only a partial
+    /// replay of checkpoint bytes and must never publish those bytes as fresh
+    /// terminal output.
+    fn harvests_agent_outputs(&self) -> bool {
+        terminal_state_harvests_agent_outputs(&self.state)
+    }
+
+    /// Select the one artifact edge without conflating aggregate state with
+    /// provider I/O safety. Once the provider reports `Disposing`, durable
+    /// receipt recovery is mandatory even when the aggregate state would not
+    /// authorize a live output read.
+    fn artifact_capture_mode(&self) -> Option<crate::provisioning::ArtifactCaptureMode> {
+        if !self.environment.permits_live_io() {
+            Some(crate::provisioning::ArtifactCaptureMode::ReceiptOnly)
+        } else if self.harvests_agent_outputs() {
+            Some(crate::provisioning::ArtifactCaptureMode::Live)
+        } else {
+            None
+        }
+    }
+}
+
+fn terminal_state_harvests_agent_outputs(
+    state: &awaken_session_contract::SessionEnvironmentState,
+) -> bool {
+    matches!(
+        state,
+        awaken_session_contract::SessionEnvironmentState::Resident { .. }
+            | awaken_session_contract::SessionEnvironmentState::Suspending { .. }
+    )
 }
 
 impl SharedHost {
@@ -49,38 +204,6 @@ impl SharedHost {
                 slot.environment_owner.durable_binding().map(str::to_owned)
             })
             .flatten()
-    }
-
-    pub(crate) fn frozen_session_environment_provisioning(
-        &self,
-        thread: &str,
-    ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, HostError> {
-        self.session_slots
-            .read(thread, |slot| {
-                slot.published_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning().clone())
-            })
-            .flatten()
-            .ok_or_else(|| {
-                HostError::internal(format!(
-                    "Session {thread} has no exact frozen Environment provider"
-                ))
-            })
-    }
-
-    fn validate_frozen_session_environment_provisioning(
-        &self,
-        thread: &str,
-        asserted: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, HostError> {
-        let frozen = self.frozen_session_environment_provisioning(thread)?;
-        if &frozen != asserted {
-            return Err(HostError::internal(
-                "Session Environment provider differs from its frozen publication",
-            ));
-        }
-        Ok(frozen)
     }
 
     fn validate_suspend_operation(
@@ -233,31 +356,51 @@ impl SharedHost {
             .update(thread, |slot| slot.environment_owner.begin_restore(request))
     }
 
-    pub(crate) fn complete_session_environment_restore_target_disposal(
+    /// Compile the one provider-effective spec used by active adoption,
+    /// continuation disposal, and terminal takeover. A terminal projection
+    /// supplies the previous Resource endpoint because that is what the exact
+    /// physical substrate contains; no continuation path may reconstruct a
+    /// second layout from ambient slot state.
+    fn session_environment_adoption_spec(
         &self,
         thread: &str,
-        request: &awaken_session_contract::SandboxRestoreRequest,
-    ) -> Result<(), HostError> {
-        self.session_slots.update(thread, |slot| {
-            slot.environment_owner
-                .complete_restore_target_disposal(request)
-        })
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        resolved_resources: Option<&awaken_session_contract::ResolvedSessionResources>,
+    ) -> awaken_provisioning_contract::SandboxSpec {
+        match resolved_resources {
+            Some(resources) => {
+                self.sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider)
+            }
+            None => self
+                .session_slots
+                .read(thread, |slot| slot.resource_transition.clone())
+                .flatten()
+                .map_or_else(
+                    || self.sandbox_spec_for_provider(thread, provider),
+                    |transition| {
+                        self.sandbox_spec_for_resolved_resources_and_provider(
+                            thread,
+                            &transition.desired().resources,
+                            provider,
+                        )
+                    },
+                ),
+        }
     }
 
-    /// Resolve an opaque durable binding through the one Session environment
-    /// provider. Retiring owners are never tool-visible; an authorized adoption
-    /// may reactivate the exact Ready owner, while rebuild clears only a
-    /// provider-confirmed Terminated owner.
-    pub(crate) async fn adopt_bound_session_environment(
+    /// Decode and validate one durable binding against the exact provider and
+    /// frozen Resource layout before any backend observation or process effect.
+    /// Ordinary recovery supplies the desired transition endpoint; terminal
+    /// cleanup supplies the previous endpoint that the bound substrate actually
+    /// contains. Keeping this projection shared prevents two handle/layout
+    /// validators from drifting.
+    fn validated_session_environment_adoption(
         &self,
         thread: &str,
-        encoded: Option<&str>,
-        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-        rebuild_unavailable: bool,
-    ) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), HostError> {
-        let Some(encoded) = encoded else {
-            return Ok((None, false));
-        };
+        encoded: &str,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        resolved_resources: Option<&awaken_session_contract::ResolvedSessionResources>,
+    ) -> Result<ValidatedSessionEnvironmentAdoption, HostError> {
         let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
             .map_err(|error| {
                 HostError::internal(format!("invalid Session sandbox binding: {error}"))
@@ -268,187 +411,80 @@ impl SharedHost {
                 handle.sandbox_id
             )));
         }
+        let spec = self.session_environment_adoption_spec(thread, provider, resolved_resources);
+        let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
+        let (retained, candidate) = self
+            .session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
+                    candidate,
+                )) => (None, Some(candidate.clone())),
+                owner => (owner.terminal_bound_environment(), None),
+            })
+            .unwrap_or_default();
+        let resident = retained
+            .map(|owned| {
+                if owned.binding != encoded {
+                    return Err(HostError::internal(
+                        "Session Environment retry conflicts with its retained binding",
+                    ));
+                }
+                Ok(owned.environment)
+            })
+            .transpose()?;
+        if let Some(candidate) = &candidate
+            && (candidate.binding != encoded || candidate.environment.handle() != handle)
+        {
+            return Err(HostError::internal(
+                "Session Environment retry conflicts with its hidden Candidate binding",
+            ));
+        }
+        if let Some(environment) = resident.as_ref() {
+            let resident_handle = environment.handle();
+            if resident_handle != handle {
+                return Err(HostError::internal(format!(
+                    "Session {thread} is already bound to sandbox {}, not {}",
+                    resident_handle.sandbox_id, handle.sandbox_id
+                )));
+            }
+        }
+        Ok((handle, spec, resident, candidate))
+    }
+
+    /// Resolve an opaque durable binding through the one Session lifecycle
+    /// owner. Pure decode/layout validation precedes aggregate authorization;
+    /// effect-free provider observation, exact adoption, root receipt, delivery
+    /// cache, slot publication, and Resource convergence then execute under one
+    /// process-local lifecycle lock. `rebuild_unavailable` only admits typed,
+    /// exact-incarnation unavailability; provider errors remain retryable.
+    pub(crate) async fn adopt_bound_session_environment(
+        &self,
+        thread: &str,
+        encoded: Option<&str>,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        source_generation_id: Option<&str>,
+        rebuild_unavailable: bool,
+    ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+        let Some(encoded) = encoded else {
+            return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
+        };
         let lifecycle = self
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
-        if let Some(environment) = self.session_environment(thread).await {
-            if environment.handle() != handle {
-                return Err(HostError::internal(format!(
-                    "Session {thread} is already bound to a different sandbox"
-                )));
-            }
-            if rebuild_unavailable {
-                let retired = self
-                    .retire_current_environment(
-                        thread,
-                        SessionEnvironmentRetirementCause::RecoveryDiscard,
-                        RetirementSelection::Exact(&environment),
-                    )?
-                    .ok_or_else(|| {
-                        HostError::internal(format!(
-                            "lost the sandbox recovery fence for Session {thread}"
-                        ))
-                    })?;
-                return match environment.status().await {
-                    Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
-                        self.reactivate_retired_environment(thread, &retired)?;
-                        Ok((None, false))
-                    }
-                    Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
-                        self.validate_frozen_session_environment_provisioning(
-                            thread,
-                            provisioning,
-                        )?;
-                        if !self.confirm_terminated_retirement(thread, &retired.owner) {
-                            return Err(HostError::internal(
-                                "terminated recovery owner lost its exact Retiring fence",
-                            ));
-                        }
-                        Ok((None, true))
-                    }
-                    Ok(status) => Err(HostError::internal(format!(
-                        "Session sandbox {} is not ready ({status:?})",
-                        handle.sandbox_id
-                    ))),
-                    Err(error) => Err(HostError::internal(format!(
-                        "could not inspect Session sandbox {}: {error}",
-                        handle.sandbox_id
-                    ))),
-                };
-            }
-            return match environment.status().await {
-                Ok(awaken_provisioning_contract::SandboxStatus::Ready) => Ok((None, false)),
-                Ok(status) => Err(HostError::internal(format!(
-                    "Session sandbox {} is not ready ({status:?})",
-                    handle.sandbox_id
-                ))),
-                Err(error) => Err(HostError::internal(format!(
-                    "could not inspect Session sandbox {}: {error}",
-                    handle.sandbox_id
-                ))),
-            };
-        }
-        if let Some(candidate) = self.prepared_session_environment(thread) {
-            if candidate.binding != encoded {
-                return Err(HostError::internal(format!(
-                    "Session {thread} is already preparing a different sandbox"
-                )));
-            }
-            if candidate.requires_initial_provisioning() {
-                self.complete_prepared_session_environment(thread, &candidate, false)
-                    .await?;
-                return Ok((None, false));
-            }
-            self.validate_frozen_session_environment_provisioning(thread, provisioning)?;
-            return self
-                .complete_adopted_session_environment_candidate(
-                    thread,
-                    &candidate,
-                    &handle,
-                    rebuild_unavailable,
-                )
-                .await;
-        }
-        let retiring = self
-            .session_slots
-            .read(thread, |slot| match &slot.environment_owner {
-                SessionEnvironmentOwner::Retiring(retiring)
-                    if retiring.owned.binding() == encoded =>
-                {
-                    Some(retiring.clone())
-                }
-                _ => None,
-            })
-            .flatten();
-        if let Some(retiring) = retiring {
-            let environment = retiring.owned.environment();
-            match environment.status().await {
-                Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
-                    if retiring.cause == SessionEnvironmentRetirementCause::RealizationRevocation {
-                        // Revocation stopped the process-level Hand permanently.
-                        // Keep the physical Sandbox, but force provider adoption
-                        // to construct a fresh wrapper and Hand binding.
-                        self.session_slots.update(thread, |slot| {
-                            slot.environment_owner
-                                .prepare_retiring_realization_adoption(&retiring)?;
-                            slot.runtime = None;
-                            Ok::<(), HostError>(())
-                        })?;
-                    } else {
-                        self.session_slots.update(thread, |slot| {
-                            slot.environment_owner.reactivate_retiring(&retiring)
-                        })?;
-                        return Ok((None, false));
-                    }
-                }
-                Ok(awaken_provisioning_contract::SandboxStatus::Terminated)
-                    if rebuild_unavailable =>
-                {
-                    self.validate_frozen_session_environment_provisioning(thread, provisioning)?;
-                    if !self.confirm_terminated_retirement(thread, &retiring) {
-                        return Err(HostError::internal(
-                            "terminated recovery owner lost its exact Retiring fence",
-                        ));
-                    }
-                    return Ok((None, true));
-                }
-                Ok(status) => {
-                    return Err(HostError::internal(format!(
-                        "Session sandbox {} is not ready ({status:?})",
-                        handle.sandbox_id
-                    )));
-                }
-                Err(error) => {
-                    return Err(HostError::internal(format!(
-                        "could not inspect Session sandbox {}: {error}",
-                        handle.sandbox_id
-                    )));
-                }
-            }
-        }
-        if let Some((_, binding)) = self.pending_environment_adoption(thread) {
-            if binding != encoded {
-                return Err(HostError::internal(format!(
-                    "Session {thread} is awaiting a different durable sandbox"
-                )));
-            }
-        } else if !self.session_environment_owner_is_vacant(thread) {
-            return Err(HostError::internal(format!(
-                "Session {thread} has a non-adoptable Environment owner phase"
-            )));
-        }
-        let frozen_provisioning =
-            self.validate_frozen_session_environment_provisioning(thread, provisioning)?;
-        let provider = self.session_environment_provider(&frozen_provisioning)?;
-        let spec = self.sandbox_spec(thread);
-        let sandbox = provider
-            .adopt(&spec, &handle)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        // No await is permitted between provider return and this ownership
-        // transition. Cancellation from the next poll retains the exact Arc.
-        let candidate = self.begin_session_environment_adoption(thread, Arc::new(sandbox))?;
-        self.complete_adopted_session_environment_candidate(
+        self.adopt_bound_session_environment_under_lifecycle(
             thread,
-            &candidate,
-            &handle,
-            rebuild_unavailable,
+            encoded,
+            provider,
+            source_generation_id,
+            if rebuild_unavailable {
+                SessionEnvironmentUnavailablePolicy::Rebuild
+            } else {
+                SessionEnvironmentUnavailablePolicy::Reject
+            },
+            None,
         )
         .await
-    }
-
-    pub(crate) fn has_environment_retired_for_realization_revocation(&self, thread: &str) -> bool {
-        self.session_slots
-            .read(thread, |slot| {
-                matches!(
-                    &slot.environment_owner,
-                    SessionEnvironmentOwner::Retiring(retiring)
-                        if retiring.cause
-                            == SessionEnvironmentRetirementCause::RealizationRevocation
-                )
-            })
-            .unwrap_or(false)
     }
 
     /// Retire the process-local Environment retained when a prior realization
@@ -459,7 +495,8 @@ impl SharedHost {
     pub(crate) async fn rebuild_claimed_legacy_environment_after_revocation(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_provisioning_contract::SandboxHandle>, HostError> {
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> Result<(), HostError> {
         let retiring = self
             .session_slots
             .read(thread, |slot| match &slot.environment_owner {
@@ -483,86 +520,357 @@ impl SharedHost {
             })
             .flatten();
         let Some(retiring) = retiring else {
-            return Ok(None);
+            return Ok(());
         };
         let environment = retiring.owned.environment();
-        let retired_handle = environment.handle();
-        match environment.status().await {
-            Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
+        let handle = environment.handle();
+        let neutral_spec = self.session_environment_adoption_spec(thread, provider, None);
+        let spec = provider
+            .effective_adoption_layout(&neutral_spec, &handle)
+            .map_err(|error| {
+                HostError::classified(
+                    "session_environment_observation_incompatible",
+                    error.to_string(),
+                )
+            })?
+            .spec;
+        let observation = provider
+            .observe_effective(&spec, &handle)
+            .await
+            .map_err(|error| {
+                HostError::unavailable_classified(
+                    "session_environment_observation_indeterminate",
+                    format!(
+                        "could not inspect Session sandbox {}: {error}",
+                        handle.sandbox_id
+                    ),
+                )
+            })?;
+        match observation {
+            awaken_provisioning_contract::SandboxObservation::Ready => {
                 self.dispose_and_confirm_retirement(thread, &retiring)
                     .await?;
-                Ok(Some(retired_handle))
+                Ok(())
             }
-            Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
+            observation
+            @ awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
+                ..
+            } => {
+                provider
+                    .validate_closed_observation(&handle, &observation)
+                    .map_err(|error| {
+                        HostError::classified(
+                            "session_environment_observation_incompatible",
+                            error.to_string(),
+                        )
+                    })?;
                 if !self.confirm_terminated_retirement(thread, &retiring) {
                     return Err(HostError::internal(
                         "terminated legacy recovery owner lost its exact Retiring fence",
                     ));
                 }
-                Ok(Some(retired_handle))
+                Ok(())
             }
-            Ok(status) => Err(HostError::internal(format!(
-                "Session sandbox {} is not ready ({status:?})",
-                environment.handle().sandbox_id,
-            ))),
-            Err(error) => Err(HostError::internal(format!(
-                "could not inspect Session sandbox {}: {error}",
-                environment.handle().sandbox_id,
-            ))),
+            observation
+            @ (awaken_provisioning_contract::SandboxObservation::Terminal { .. }
+            | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
+                provider
+                    .validate_closed_observation(&handle, &observation)
+                    .map_err(|error| {
+                        HostError::classified(
+                            "session_environment_observation_incompatible",
+                            error.to_string(),
+                        )
+                    })?;
+                self.dispose_and_confirm_retirement(thread, &retiring)
+                    .await?;
+                Ok(())
+            }
+            awaken_provisioning_contract::SandboxObservation::Provisioning => {
+                Err(HostError::unavailable_classified(
+                    "session_environment_provisioning",
+                    format!(
+                        "Session sandbox {} is still provisioning",
+                        handle.sandbox_id
+                    ),
+                ))
+            }
+            awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => Err(
+                HostError::classified("session_environment_observation_incompatible", reason),
+            ),
         }
     }
 
-    async fn complete_adopted_session_environment_candidate(
+    pub(super) async fn adopt_bound_session_environment_under_lifecycle(
         &self,
         thread: &str,
-        candidate: &UnboundSessionEnvironment,
-        handle: &awaken_provisioning_contract::SandboxHandle,
-        rebuild_unavailable: bool,
-    ) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), HostError> {
-        if candidate.effect_kind() != awaken_session_contract::SessionEnvironmentEffectKind::Adopt {
+        encoded: &str,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        source_generation_id: Option<&str>,
+        unavailable_policy: SessionEnvironmentUnavailablePolicy,
+        preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,
+    ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+        let (handle, spec, mut resident, candidate) =
+            self.validated_session_environment_adoption(thread, encoded, provider, None)?;
+        // Realization revocation permanently closed the old process-level Hand,
+        // but a durable owner still names the physical Sandbox. Retain its exact
+        // fence through typed observation; only Ready may move it back to
+        // AwaitingAdoption so canonical provider adoption constructs a fresh
+        // wrapper over the same handle and root. LegacyDirect is deliberately
+        // excluded: its claimed recovery owns physical disposal and same-id
+        // creation instead.
+        let revoked_durable = self
+            .session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Retiring(retiring)
+                    if matches!(
+                        (&retiring.cause, &retiring.owned),
+                        (
+                            SessionEnvironmentRetirementCause::RealizationRevocation,
+                            RetiringEnvironmentOwner::Bound(BoundSessionEnvironment {
+                                identity: BoundSessionEnvironmentIdentity::Durable { .. },
+                                binding,
+                                ..
+                            }),
+                        ) if binding == encoded
+                    ) =>
+                {
+                    Some(retiring.clone())
+                }
+                _ => None,
+            })
+            .flatten();
+        // Capture the exact pending identity before provider I/O. Closed
+        // observation may clear only this value; a same-binding aggregate ABA
+        // installed while observation is in flight must survive.
+        let pending_adoption = self.pending_environment_adoption(thread);
+        let authorized;
+        let effect = match preauthorized {
+            Some(effect) => effect,
+            None => {
+                authorized = self
+                    .authorize_environment_effect_before_io(
+                        thread,
+                        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                        Some(encoded),
+                    )
+                    .await?;
+                &authorized
+            }
+        };
+        if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+            binding,
+        } = &effect.authorization
+            && binding != encoded
+        {
             return Err(HostError::internal(
-                "provider adoption cannot consume a create candidate",
+                "Session Environment adoption effect already committed another binding",
             ));
         }
-        let environment = candidate.environment.clone();
-        match environment.status().await {
-            Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
-                environment
-                    .reconcile_adopted_mounts(&self.thread_session_mounts(thread))
+        let observation = match effect.provider_fence.as_ref() {
+            Some(effect_fence) => {
+                provider
+                    .observe_effective_for_effect(&spec, &handle, effect_fence)
                     .await
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                self.complete_prepared_session_environment(thread, candidate, false)
-                    .await?;
-                Ok((None, false))
             }
-            Ok(awaken_provisioning_contract::SandboxStatus::Terminated) if rebuild_unavailable => {
-                let retired = self
-                    .retire_current_environment(
-                        thread,
-                        SessionEnvironmentRetirementCause::RecoveryDiscard,
-                        RetirementSelection::Exact(&environment),
-                    )?
-                    .ok_or_else(|| {
-                        HostError::internal(
-                            "terminated adopted sandbox lost its exact Candidate fence",
-                        )
+            None => provider.observe_effective(&spec, &handle).await,
+        }
+        .map_err(|error| {
+            HostError::unavailable_classified(
+                "session_environment_observation_indeterminate",
+                format!(
+                    "could not inspect Session sandbox {}: {error}",
+                    handle.sandbox_id
+                ),
+            )
+        })?;
+        // Ready-adoption cause/effect table: C1 the validated exact handle is
+        // already Resident or ordinarily Retiring; C2 an exact hidden Candidate
+        // was retained across cancellation; C3 no process-local owner exists;
+        // C4 a durable owner was Retiring for RealizationRevocation. E1 C1 reuses
+        // the exact Arc/identity and performs only Resource reconciliation, with
+        // zero Candidate, binding persistence, or publication; E2 C2 reuses its
+        // Arc and retries only the existing persistence/publication edge; E3 C3
+        // adopts once and enters that same edge; E4 C4 adopts the same physical
+        // handle through a fresh wrapper/Hand. A foreign binding or handle has
+        // already failed validation above and reaches no rule.
+        match observation {
+            awaken_provisioning_contract::SandboxObservation::Ready => {
+                if let Some(retiring) = revoked_durable {
+                    self.session_slots.update(thread, |slot| {
+                        slot.environment_owner
+                            .prepare_retiring_realization_adoption(&retiring)
                     })?;
-                if !self.confirm_terminated_retirement(thread, &retired.owner) {
-                    return Err(HostError::internal(
-                        "terminated adopted sandbox lost its exact Retiring fence",
+                    // Validation captured the old Arc before the exact phase
+                    // transition. Its Hand is closed, so Ready must flow through
+                    // canonical provider adoption rather than reuse that Arc.
+                    resident = None;
+                }
+                let environment = match (resident, candidate) {
+                    (Some(environment), None) => environment,
+                    (None, Some(candidate)) => {
+                        self.publish_session_environment_under_lifecycle(
+                            thread,
+                            candidate.environment,
+                            effect,
+                            crate::session_slot::EnvironmentResourceReconciliation::Adopted,
+                        )
+                        .await?
+                    }
+                    (None, None) => {
+                        let environment = Arc::new(
+                            provider
+                            .adopt_effective_for_effect(
+                                &spec,
+                                &handle,
+                                effect.provider_fence.as_ref(),
+                            )
+                            .await
+                            .map_err(|error| {
+                                HostError::unavailable_classified(
+                                    "session_environment_adoption_indeterminate",
+                                    error.to_string(),
+                                )
+                            })?,
+                        );
+                        self.publish_session_environment_under_lifecycle(
+                            thread,
+                            environment,
+                            effect,
+                            crate::session_slot::EnvironmentResourceReconciliation::Adopted,
+                        )
+                        .await?
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(HostError::internal(
+                            "Session Environment cannot be both retained and unpublished",
+                        ));
+                    }
+                };
+                self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+                    .await?;
+                self.session_slots.update(thread, |slot| {
+                    slot.environment_rebuild_source = None;
+                });
+                Ok(SessionEnvironmentAdoptionDisposition::Ready)
+            }
+            awaken_provisioning_contract::SandboxObservation::Provisioning => {
+                Err(HostError::unavailable_classified(
+                    "session_environment_provisioning",
+                    format!(
+                        "Session sandbox {} is still provisioning",
+                        handle.sandbox_id
+                    ),
+                ))
+            }
+            observation
+            @ (awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
+                ..
+            }
+            | awaken_provisioning_contract::SandboxObservation::Terminal { .. }
+            | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
+                if candidate.is_some() {
+                    return Err(HostError::unavailable_classified(
+                        "session_environment_candidate_observation_closed",
+                        "retained Session Environment Candidate is no longer Ready",
                     ));
                 }
-                Ok((None, true))
+                self.record_unavailable_session_environment_under_lifecycle(
+                    UnavailableEnvironmentRecovery {
+                        thread,
+                        binding: encoded,
+                        source_generation_id,
+                        pending_adoption,
+                        policy: unavailable_policy,
+                        provider,
+                        handle: &handle,
+                        observation: &observation,
+                    },
+                    resident.as_ref(),
+                )
+                .await
             }
-            Ok(status) => Err(HostError::internal(format!(
-                "Session sandbox {} is not ready ({status:?})",
-                handle.sandbox_id
-            ))),
-            Err(error) => Err(HostError::internal(format!(
-                "could not inspect Session sandbox {}: {error}",
-                handle.sandbox_id
-            ))),
+            awaken_provisioning_contract::SandboxObservation::Incompatible { reason } => Err(
+                HostError::classified("session_environment_observation_incompatible", reason),
+            ),
         }
+    }
+
+    /// Convert only exact provider evidence into the existing aggregate Rebuild
+    /// transition. Both a proved-absent realization and an exact terminal
+    /// realization use this one policy owner; adapters never decide whether a
+    /// Session may replace its durable binding.
+    async fn record_unavailable_session_environment_under_lifecycle(
+        &self,
+        recovery: UnavailableEnvironmentRecovery<'_>,
+        resident: Option<&Arc<crate::session_environment::SessionEnvironment>>,
+    ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+        let UnavailableEnvironmentRecovery {
+            thread,
+            binding,
+            source_generation_id,
+            pending_adoption,
+            policy,
+            provider,
+            handle,
+            observation,
+        } = recovery;
+        provider
+            .validate_closed_observation(handle, observation)
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        match policy {
+            SessionEnvironmentUnavailablePolicy::Reject => Err(HostError::internal(format!(
+                "Session sandbox {} is unavailable or terminal",
+                handle.sandbox_id
+            ))),
+            SessionEnvironmentUnavailablePolicy::Rebuild => {
+                if let Some(environment) = resident
+                    && !self.discard_observed_session_environment(thread, environment)
+                {
+                    return Err(HostError::internal(format!(
+                        "lost the sandbox recovery fence for Session {thread}"
+                    )));
+                }
+                if let Some((identity, pending_binding)) = pending_adoption
+                    && !self
+                        .session_slots
+                        .modify(thread, |slot| {
+                            slot.environment_owner
+                                .discard_closed_pending_adoption(&identity, &pending_binding)
+                        })
+                        .unwrap_or(false)
+                {
+                    return Err(HostError::internal(format!(
+                        "lost the pending sandbox recovery fence for Session {thread}"
+                    )));
+                }
+                self.session_slots.update(thread, |slot| {
+                    slot.environment_rebuild_source = Some((
+                        binding.to_string(),
+                        source_generation_id.map(str::to_string),
+                    ));
+                });
+                Ok(SessionEnvironmentAdoptionDisposition::RebuildRequired)
+            }
+        }
+    }
+
+    /// Consume only the closed provider evidence validated immediately above.
+    /// No second status read may weaken that exact physical observation or
+    /// create a competing recovery fact.
+    fn discard_observed_session_environment(
+        &self,
+        thread: &str,
+        expected: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> bool {
+        let Ok(Some(retirement)) = self.retire_current_environment(
+            thread,
+            SessionEnvironmentRetirementCause::RecoveryDiscard,
+            RetirementSelection::Exact(expected),
+        ) else {
+            return false;
+        };
+        self.confirm_terminated_retirement(thread, &retirement.owner)
     }
 
     fn retire_current_environment(
@@ -574,37 +882,13 @@ impl SharedHost {
         self.session_slots
             .modify(thread, |slot| {
                 let retirement = slot.environment_owner.begin_retirement(cause, selection)?;
-                Ok(retirement.map(|owner| LocalRetirementTransition {
-                    owner,
-                    runtime: slot.runtime.take(),
+                Ok(retirement.map(|owner| {
+                    slot.runtime = None;
+                    LocalRetirementTransition { owner }
                 }))
             })
             .transpose()
             .map(Option::flatten)
-    }
-
-    fn reactivate_retired_environment(
-        &self,
-        thread: &str,
-        transition: &LocalRetirementTransition,
-    ) -> Result<(), HostError> {
-        self.session_slots
-            .modify(thread, |slot| {
-                if slot.runtime.is_some() {
-                    return Err(HostError::internal(
-                        "Session Environment reactivation found a replacement Runtime",
-                    ));
-                }
-                slot.environment_owner
-                    .reactivate_retiring(&transition.owner)?;
-                slot.runtime = transition.runtime.clone();
-                Ok(())
-            })
-            .unwrap_or_else(|| {
-                Err(HostError::internal(
-                    "Session Environment reactivation lost its Runtime slot",
-                ))
-            })
     }
 
     fn confirm_terminated_retirement(
@@ -619,6 +903,7 @@ impl SharedHost {
             .unwrap_or(false)
     }
 
+    #[cfg(test)]
     fn observe_retirement_status<E>(
         &self,
         thread: &str,
@@ -634,6 +919,7 @@ impl SharedHost {
         }
     }
 
+    #[cfg(test)]
     async fn stop_and_confirm_retirement(
         &self,
         thread: &str,
@@ -658,180 +944,128 @@ impl SharedHost {
             .dispose()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        let cleared = self
-            .observe_retirement_status(thread, retirement, environment.status().await)
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        if !cleared {
+        if !self.confirm_terminated_retirement(thread, retirement) {
             return Err(HostError::internal(
-                "retired Session Environment still reports a live Sandbox",
+                "retired Session Environment owner changed after physical disposal",
             ));
         }
         Ok(())
     }
 
-    /// Dispose one unpublished candidate without ever dropping its slot owner
-    /// across provider I/O. Cancellation, provider error, a live status, or an
-    /// ABA fence loss leaves `Retiring` available to the same lifecycle retry.
-    pub(crate) async fn dispose_unpublished_session_environment(
-        &self,
-        thread: &str,
-        expected: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<(), HostError> {
-        let retirement = self
-            .retire_current_environment(
-                thread,
-                SessionEnvironmentRetirementCause::UnpublishedCandidate,
-                RetirementSelection::Exact(expected),
-            )?
-            .ok_or_else(|| {
-                HostError::internal(
-                    "unpublished Session Environment cleanup lost its exact owner fence",
-                )
-            })?;
-        self.dispose_and_confirm_retirement(thread, &retirement.owner)
-            .await
-    }
-
-    /// Execute the irreversible checkpoint-source disposal for the exact
-    /// durable suspend operation. A missing local Arc with a pending durable
-    /// binding is adopted into Retiring before any provider call; Vacant is an
-    /// unavailable owner, never a successful no-op.
-    pub(crate) async fn dispose_checkpoint_source_environment(
+    /// Freeze the exact checkpoint source in Retiring only after every
+    /// quiescence and source-durability participant has completed. This is the
+    /// Preparation-to-Disposal ownership edge; it performs no provider I/O.
+    pub(crate) fn retain_checkpoint_source_environment_for_disposal(
         &self,
         thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
-        source_effect_id: &str,
         generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<(), HostError> {
         self.validate_suspend_operation(thread, operation, generation)?;
-        let expected_identity =
-            checkpoint_source_identity(source_effect_id, source_binding, generation);
         let cause = SessionEnvironmentRetirementCause::CheckpointSource {
             operation: operation.clone(),
             generation: generation.clone(),
         };
-        let owner = self
-            .session_slots
-            .read(thread, |slot| slot.environment_owner.clone())
-            .unwrap_or_default();
-        let retirement = match owner {
-            SessionEnvironmentOwner::Resident(owned) => {
-                if owned.identity != expected_identity
-                    || owned.binding != source_binding
-                    || !serde_json::to_string(&owned.environment.handle())
-                        .is_ok_and(|binding| binding == source_binding)
-                {
-                    return Err(HostError::internal(
-                        "checkpoint source disposal does not match its exact resident owner",
-                    ));
-                }
-                self.retire_current_environment(
-                    thread,
-                    cause.clone(),
-                    RetirementSelection::Exact(&owned.environment),
-                )?
-                .ok_or_else(|| {
-                    HostError::internal(
-                        "checkpoint source disposal lost its exact resident owner fence",
-                    )
-                })?
-                .owner
-            }
-            SessionEnvironmentOwner::Retiring(retirement) => {
-                let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
-                    return Err(HostError::internal(
-                        "checkpoint source disposal cannot consume an unbound retirement",
-                    ));
-                };
-                if retirement.cause != cause
-                    || owned.identity != expected_identity
-                    || owned.binding != source_binding
-                {
-                    return Err(HostError::internal(
-                        "checkpoint source disposal does not match its exact retained retirement",
-                    ));
-                }
-                retirement
-            }
-            SessionEnvironmentOwner::Preparing(
-                SessionEnvironmentPreparation::AwaitingAdoption { identity, binding },
-            ) => {
-                if identity != expected_identity || binding != source_binding {
-                    return Err(HostError::internal(
-                        "checkpoint source disposal does not match its durable pending owner",
-                    ));
-                }
-                self.adopt_pending_environment_for_retirement(
-                    thread,
-                    &identity,
-                    &binding,
-                    cause.clone(),
+        let retirement = self
+            .retire_current_environment(
+                thread,
+                cause.clone(),
+                RetirementSelection::Exact(environment),
+            )?
+            .ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_checkpoint_source_owner_changed",
+                    "checkpoint source lost its exact Resident owner before Preparation completed",
                 )
-                .await?
-            }
-            SessionEnvironmentOwner::Vacant => {
-                // Prove the exact frozen provider before installing a cold
-                // pending owner. The seed then survives cancellation of adopt.
-                self.frozen_session_environment_provisioning(thread)?;
-                self.session_slots.update(thread, |slot| {
-                    slot.environment_owner.seed_pending_adoption(
-                        expected_identity.clone(),
-                        source_binding.to_string(),
-                    )
-                })?;
-                self.adopt_pending_environment_for_retirement(
-                    thread,
-                    &expected_identity,
-                    source_binding,
-                    cause.clone(),
-                )
-                .await?
-            }
-            SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(_))
-            | SessionEnvironmentOwner::Restoring(_) => {
-                return Err(HostError::internal(
-                    "checkpoint source disposal conflicts with an in-flight Environment owner",
-                ));
-            }
+            })?;
+        let RetiringEnvironmentOwner::Bound(owned) = &retirement.owner.owned else {
+            return Err(HostError::internal(
+                "checkpoint source Preparation retained an unpublished owner",
+            ));
         };
-        self.dispose_and_confirm_retirement(thread, &retirement)
-            .await
+        if retirement.owner.cause != cause
+            || !matches!(
+                &owned.identity,
+                BoundSessionEnvironmentIdentity::Durable {
+                    generation: owned_generation,
+                    ..
+                } if owned_generation == generation
+            )
+            || owned.binding != source_binding
+        {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source Preparation retained different durable authority",
+            ));
+        }
+        Ok(())
     }
 
-    /// Adopt one exact durable pending binding directly into Retiring. This is
-    /// the only cold cleanup adoption edge shared by checkpoint disposal,
-    /// realization revocation, and terminal cleanup. Provider return is
-    /// immediately captured by the slot owner before another await may cancel
-    /// the caller.
-    async fn adopt_pending_environment_for_retirement(
+    /// Consume only the exact Retiring owner and durable provider preparation.
+    /// Artifact, Memory, Hand, MCP, observation, and provider preparation are
+    /// forbidden here; this is the physical-only Disposal phase.
+    pub(crate) async fn dispose_prepared_checkpoint_source_environment(
         &self,
         thread: &str,
-        identity: &BoundSessionEnvironmentIdentity,
-        binding: &str,
-        cause: SessionEnvironmentRetirementCause,
-    ) -> Result<RetiringSessionEnvironment, HostError> {
-        let provisioning = self.frozen_session_environment_provisioning(thread)?;
-        let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(binding)
-            .map_err(|error| {
-                HostError::internal(format!("invalid pending Session sandbox binding: {error}"))
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_contract::SandboxGeneration,
+        source_binding: &str,
+        authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
+    ) -> Result<(), HostError> {
+        self.validate_suspend_operation(thread, operation, generation)?;
+        let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
+            operation: operation.clone(),
+            generation: generation.clone(),
+        };
+        let retirement = self
+            .session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
+                _ => None,
+            })
+            .flatten()
+            .ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_checkpoint_source_not_prepared",
+                    "checkpoint source Disposal has no retained Preparation owner",
+                )
             })?;
-        if handle.sandbox_id != thread {
-            return Err(HostError::internal(format!(
-                "pending sandbox {} does not belong to Session {thread}",
-                handle.sandbox_id
-            )));
+        let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
+            return Err(HostError::internal(
+                "checkpoint source Disposal cannot consume an unpublished owner",
+            ));
+        };
+        if retirement.cause != expected_cause
+            || !matches!(
+                &owned.identity,
+                BoundSessionEnvironmentIdentity::Durable {
+                    generation: owned_generation,
+                    ..
+                } if owned_generation == generation
+            )
+            || owned.binding != source_binding
+        {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source Disposal does not match its retained Preparation owner",
+            ));
         }
-        let adopted = Arc::new(
-            self.session_environment_provider(&provisioning)?
-                .adopt(&self.sandbox_spec(thread), &handle)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?,
-        );
-        self.session_slots.update(thread, |slot| {
-            slot.environment_owner
-                .begin_retirement_with_adopted(identity, binding, adopted, cause)
-        })
+        owned
+            .environment
+            .dispose_for_effect(authorization)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?;
+        if !self.confirm_terminated_retirement(thread, &retirement) {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source owner changed after exact physical Disposal",
+            ));
+        }
+        self.session_slots
+            .update(thread, |slot| slot.runtime = None);
+        Ok(())
     }
 
     /// Forget a dead environment only after its exact Arc/binding/identity and
@@ -858,20 +1092,6 @@ impl SharedHost {
             .unwrap_or(false)
     }
 
-    fn pending_environment_adoption(
-        &self,
-        thread: &str,
-    ) -> Option<(BoundSessionEnvironmentIdentity, String)> {
-        self.session_slots
-            .read(thread, |slot| match &slot.environment_owner {
-                SessionEnvironmentOwner::Preparing(
-                    SessionEnvironmentPreparation::AwaitingAdoption { identity, binding },
-                ) => Some((identity.clone(), binding.clone())),
-                _ => None,
-            })
-            .flatten()
-    }
-
     /// Revoke process-local authority without dropping the physical owner. The
     /// wrapper enters Retiring before stop/status and stays there while the
     /// Sandbox is live or its outcome is unknown; a later authorized adoption
@@ -883,20 +1103,24 @@ impl SharedHost {
         let cause = SessionEnvironmentRetirementCause::RealizationRevocation;
         let retirement = match self.retire_current_environment(
             thread,
-            cause.clone(),
+            cause,
             RetirementSelection::Current,
-        ) {
-            Ok(Some(retirement)) => Some(retirement.owner),
-            Ok(None) => match self.pending_environment_adoption(thread) {
-                Some((identity, binding)) => Some(
-                    self.adopt_pending_environment_for_retirement(
-                        thread, &identity, &binding, cause,
-                    )
-                    .await?,
-                ),
-                None => None,
-            },
-            Err(error) => return Err(error),
+        )? {
+            Some(retirement) => Some(retirement.owner),
+            None if self.pending_environment_adoption(thread).is_some() => {
+                // Revocation decision table: C1 durable binding is projected,
+                // C2 no exact local Arc has been adopted, and C3 no terminal
+                // effect fence authorizes cold reconstruction. E1 fail before
+                // draining MCP or clearing any frozen provider/layout input;
+                // E2 retain AwaitingAdoption for the canonical terminal or
+                // ordinary adoption retry. Reconstructing here would duplicate
+                // terminal preparation and manufacture physical authority.
+                return Err(HostError::unavailable_classified(
+                    "session_environment_revocation_pending_adoption",
+                    "Session Environment revocation cannot retire a durable binding without its exact local owner",
+                ));
+            }
+            None => None,
         };
 
         self.drain_mcp_projections(thread, &[]).await?;
@@ -906,10 +1130,13 @@ impl SharedHost {
                     self.dispose_and_confirm_retirement(thread, &retirement)
                         .await
                 }
-                RetiringEnvironmentOwner::Bound(_) => self
-                    .stop_and_confirm_retirement(thread, &retirement)
+                RetiringEnvironmentOwner::Bound(_) => retirement
+                    .owned
+                    .environment()
+                    .stop_bound_processes()
                     .await
-                    .map(|_| ()),
+                    .map(|_| ())
+                    .map_err(|error| HostError::internal(error.to_string())),
             },
             None => Ok(()),
         };
@@ -961,81 +1188,120 @@ impl SharedHost {
         Ok(true)
     }
 
-    /// End a Session under the caller-held lifecycle guard. The exact terminal
-    /// effect becomes part of `Retiring` before any stop/dispose/status await.
-    pub(crate) async fn end_session(
+    fn pending_environment_adoption(
         &self,
         thread: &str,
-        terminal_effect_id: &str,
-    ) -> Result<(), HostError> {
-        let cause = SessionEnvironmentRetirementCause::Terminal {
-            effect_id: terminal_effect_id.to_string(),
-        };
-        let (retirement, adopted_for_cleanup) = if let Some(retirement) =
-            self.retire_current_environment(thread, cause.clone(), RetirementSelection::Current)?
-        {
-            (Some(retirement.owner), false)
-        } else if let Some((identity, binding)) = self.pending_environment_adoption(thread) {
+    ) -> Option<(BoundSessionEnvironmentIdentity, String)> {
+        self.session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Preparing(
+                    SessionEnvironmentPreparation::AwaitingAdoption { identity, binding },
+                ) => Some((identity.clone(), binding.clone())),
+                _ => None,
+            })
+            .flatten()
+    }
+}
+
+#[cfg(test)]
+mod terminal_output_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_effect_mode_keeps_live_recovery_and_provider_preparation_coupled() {
+        /* Process-local mode table HT0. Causes: C1 provider observation is
+         * Ready/Terminal, definitive primary absence, or Disposing; C2 the
+         * exact cleanup owner may be present/absent. Effects: E1 only live mode
+         * permits source reads; E2 live and unprepared-recovery require the
+         * provider preparation edge; E3 only Disposing proves that source
+         * effects were already prepared. The owner presence does not change
+         * these rules. This single projector prevents Artifact, Memory, and
+         * provider callers from inventing separate observation policies.
+         *
+         * | Rule | observation projection | live I/O | provider prep | prior prep |
+         * | T0 | LiveUnprepared | yes | yes | no |
+         * | T1 | RecoverOnlyUnprepared | no | yes | no |
+         * | T2 | RecoverOnlyAlreadyPrepared | no | no | yes | */
+        let cases = [
             (
-                Some(
-                    self.adopt_pending_environment_for_retirement(
-                        thread, &identity, &binding, cause,
-                    )
-                    .await?,
-                ),
+                PreparedBoundEnvironment::new(None, None, TerminalEffectMode::LiveUnprepared),
                 true,
-            )
-        } else {
-            match self.session_slots.read(thread, |slot| {
-                matches!(slot.environment_owner, SessionEnvironmentOwner::Vacant)
-            }) {
-                Some(true) | None => (None, false),
-                Some(false) => {
-                    return Err(HostError::internal(
-                        "terminal cleanup has an Environment owner without an adoptable binding",
-                    ));
-                }
-            }
+                true,
+                false,
+            ),
+            (
+                PreparedBoundEnvironment::new(
+                    None,
+                    None,
+                    TerminalEffectMode::RecoverOnlyUnprepared,
+                ),
+                false,
+                true,
+                false,
+            ),
+            (
+                PreparedBoundEnvironment::new(
+                    None,
+                    None,
+                    TerminalEffectMode::RecoverOnlyAlreadyPrepared,
+                ),
+                false,
+                false,
+                true,
+            ),
+        ];
+        for (prepared, live_io, provider_preparation, already_prepared) in cases {
+            assert_eq!(prepared.permits_live_io(), live_io);
+            assert_eq!(
+                prepared.requires_provider_preparation(),
+                provider_preparation,
+            );
+            assert_eq!(
+                prepared.source_effects_are_already_prepared(),
+                already_prepared,
+            );
+        }
+    }
+
+    #[test]
+    fn only_agent_authored_terminal_states_read_live_outputs() {
+        /* Host terminal-output table HT1. Causes: C1 aggregate state is
+         * Resident/Suspending/otherwise; C2 provider I/O mode is Live or
+         * RecoverOnly. Effects: E1 Agent-authored+Live uses the one live
+         * ArtifactHarvester edge; E2 non-Agent-authored+Live skips live
+         * capture; E3 every RecoverOnly state invokes receipt recovery and
+         * performs no live read. Rules: HT1a Resident|Suspending+Live=>E1;
+         * HT1b otherwise+Live=>E2; HT1c any+RecoverOnly=>E3. C2 dominates C1:
+         * a durable Disposing gate must never be mistaken for "no artifacts"
+         * merely because the aggregate state is non-Agent-authored. */
+        let resident = awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: "binding-a".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
         };
+        assert!(terminal_state_harvests_agent_outputs(&resident), "HT1a");
+        assert!(
+            !terminal_state_harvests_agent_outputs(
+                &awaken_session_contract::SessionEnvironmentState::Unmaterialized
+            ),
+            "HT1b"
+        );
 
-        self.drain_mcp_projections(thread, &[]).await?;
-        if let Some(retirement) = retirement {
-            let env = retirement.owned.environment();
-            if adopted_for_cleanup || env.needs_recovered_memory_reconciliation() {
-                let mounter = self.memory_mounter().ok_or_else(|| {
-                    HostError::internal("recovered Memory copy has no MemoryMounter")
-                })?;
-                for mount in self.thread_session_mounts(thread) {
-                    if let awaken_provisioning_contract::MountSource::MemoryStore {
-                        store_id,
-                        materialization_reference,
-                        ..
-                    } = &mount.source
-                    {
-                        let files = env
-                            .list_frozen_mount_files(&mount.mount_path)
-                            .await
-                            .map_err(|error| HostError::internal(error.to_string()))?;
-                        mounter
-                            .reconcile_recovered_copy(
-                                materialization_reference.as_deref().unwrap_or(store_id),
-                                &files,
-                                mount.access,
-                            )
-                            .await
-                            .map_err(|error| HostError::internal(error.to_string()))?;
-                    }
-                }
-            }
-            self.dispose_and_confirm_retirement(thread, &retirement)
-                .await?;
-        }
-
-        self.session_slots.remove(thread);
-        if let Some(relay) = self.mcp_relay.get() {
-            relay.remove_routes(thread);
-        }
-        Ok(())
+        let disposing_non_agent_state = TerminalEnvironmentPreparation {
+            state: awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+            environment: PreparedBoundEnvironment::new(
+                None,
+                None,
+                TerminalEffectMode::RecoverOnlyAlreadyPrepared,
+            ),
+            pending_checkpoint: None,
+        };
+        assert_eq!(
+            disposing_non_agent_state.artifact_capture_mode(),
+            Some(crate::provisioning::ArtifactCaptureMode::ReceiptOnly),
+            "HT1c"
+        );
     }
 }
 

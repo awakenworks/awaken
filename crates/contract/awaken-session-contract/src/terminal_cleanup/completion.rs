@@ -7,14 +7,49 @@ use super::{SessionCleanupCommand, SessionCleanupError, session_cleanup_completi
 use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub(super) fn canonical_thread_artifact_receipt_fingerprint(
+    domain: &str,
+    command: &SessionCleanupCommand,
+    artifact_receipts: &mut [ArtifactPublicationReceipt],
+) -> (bool, String) {
+    let receipts_are_unique = ArtifactPublicationReceipt::canonicalize(artifact_receipts);
+    let artifact_evidence = artifact_receipts
+        .iter()
+        .map(|receipt| (receipt.effect_id.as_str(), receipt.content_id.as_str()))
+        .collect::<Vec<_>>();
+    let fingerprint = command.restore_target.as_ref().map_or_else(
+        || {
+            crate::stable_fingerprint(&(
+                domain,
+                command.session_id.as_str(),
+                command.thread_id.as_str(),
+                command.effect_id.as_str(),
+                artifact_evidence.as_slice(),
+            ))
+        },
+        |request| {
+            crate::stable_fingerprint(&(
+                "session-terminal-cleanup-thread-restore-v1",
+                domain,
+                command.session_id.as_str(),
+                command.thread_id.as_str(),
+                command.effect_id.as_str(),
+                request,
+                artifact_evidence.as_slice(),
+            ))
+        },
+    );
+    (receipts_are_unique, fingerprint)
+}
+
 /// Untrusted Runtime report that one per-thread cleanup command completed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SessionCleanupCompletion {
-    pub session_id: String,
-    pub thread_id: String,
-    pub effect_id: String,
-    pub artifact_receipts: Vec<ArtifactPublicationReceipt>,
-    pub receipt_fingerprint: String,
+pub(super) struct SessionCleanupCompletion {
+    pub(super) session_id: String,
+    pub(super) thread_id: String,
+    pub(super) effect_id: String,
+    pub(super) artifact_receipts: Vec<ArtifactPublicationReceipt>,
+    pub(super) receipt_fingerprint: String,
 }
 
 /// Decode-only shape for the aggregate receipt removed with the redundant
@@ -120,36 +155,16 @@ impl<'de> Deserialize<'de> for SessionCleanupCompletion {
 
 impl SessionCleanupCompletion {
     #[must_use]
-    pub fn new(
+    pub(super) fn new(
         command: &SessionCleanupCommand,
         mut artifact_receipts: Vec<ArtifactPublicationReceipt>,
     ) -> Self {
-        artifact_receipts.sort_by(|left, right| left.effect_id.cmp(&right.effect_id));
-        let artifact_evidence = artifact_receipts
-            .iter()
-            .map(|receipt| (receipt.effect_id.as_str(), receipt.content_id.as_str()))
-            .collect::<Vec<_>>();
-        let receipt_fingerprint = command.restore_target.as_ref().map_or_else(
-            || {
-                crate::stable_fingerprint(&(
-                    "session-terminal-cleanup-thread-receipt-v1",
-                    command.session_id.as_str(),
-                    command.thread_id.as_str(),
-                    command.effect_id.as_str(),
-                    artifact_evidence.as_slice(),
-                ))
-            },
-            |request| {
-                crate::stable_fingerprint(&(
-                    "session-terminal-cleanup-thread-restore-receipt-v1",
-                    command.session_id.as_str(),
-                    command.thread_id.as_str(),
-                    command.effect_id.as_str(),
-                    request,
-                    artifact_evidence.as_slice(),
-                ))
-            },
-        );
+        let (_receipts_are_unique, receipt_fingerprint) =
+            canonical_thread_artifact_receipt_fingerprint(
+                "session-terminal-cleanup-thread-receipt-v1",
+                command,
+                &mut artifact_receipts,
+            );
         Self {
             session_id: command.session_id.clone(),
             thread_id: command.thread_id.clone(),
@@ -159,21 +174,24 @@ impl SessionCleanupCompletion {
         }
     }
 
-    pub fn verify(
+    pub(super) fn verify(
         &self,
         command: &SessionCleanupCommand,
     ) -> Result<VerifiedSessionCleanupReceipt, SessionCleanupError> {
-        let duplicate_artifact = self
-            .artifact_receipts
-            .windows(2)
-            .any(|pair| pair[0].effect_id == pair[1].effect_id);
-        let canonical = Self::new(command, self.artifact_receipts.clone());
+        let mut canonical_receipts = self.artifact_receipts.clone();
+        let (receipts_are_unique, canonical_fingerprint) =
+            canonical_thread_artifact_receipt_fingerprint(
+                "session-terminal-cleanup-thread-receipt-v1",
+                command,
+                &mut canonical_receipts,
+            );
         if !session_cleanup_completion_admitted(
-            !duplicate_artifact,
+            receipts_are_unique,
             self.session_id == command.session_id,
             self.thread_id == command.thread_id,
             self.effect_id == command.effect_id,
-            *self == canonical,
+            self.artifact_receipts == canonical_receipts
+                && self.receipt_fingerprint == canonical_fingerprint,
         ) {
             return Err(SessionCleanupError::ReceiptMismatch);
         }
@@ -182,47 +200,20 @@ impl SessionCleanupCompletion {
             completion: self.clone(),
         })
     }
-
-    /// Verify the Runtime result against the exact effect-bearing command,
-    /// then collapse it back to the aggregate's existing per-thread receipt.
-    /// `SessionEnvironmentState::Restoring` remains the sole durable target
-    /// authority; the target-bound fingerprint is a fail-forward transport
-    /// fence that prevents a Phase-A Worker from silently skipping disposal.
-    pub fn into_aggregate_completion(
-        self,
-        command: &SessionCleanupCommand,
-    ) -> Result<Self, SessionCleanupError> {
-        self.verify(command)?;
-        if command.restore_target.is_none() {
-            return Ok(self);
-        }
-        let aggregate_command = SessionCleanupCommand {
-            session_id: command.session_id.clone(),
-            thread_id: command.thread_id.clone(),
-            effect_id: command.effect_id.clone(),
-            restore_target: None,
-        };
-        Ok(Self::new(&aggregate_command, self.artifact_receipts))
-    }
 }
 
 /// Exact, process-local completion evidence admitted against one cleanup
 /// command. It is intentionally not serializable and has no public constructor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedSessionCleanupReceipt {
+pub(super) struct VerifiedSessionCleanupReceipt {
     command: SessionCleanupCommand,
     completion: SessionCleanupCompletion,
 }
 
 impl VerifiedSessionCleanupReceipt {
     #[must_use]
-    pub fn command(&self) -> &SessionCleanupCommand {
+    pub(super) fn command(&self) -> &SessionCleanupCommand {
         &self.command
-    }
-
-    #[must_use]
-    pub fn completion(&self) -> &SessionCleanupCompletion {
-        &self.completion
     }
 
     pub(super) fn thread_id(&self) -> &str {
@@ -261,64 +252,53 @@ mod tests {
                 scope_id: Some("session".into()),
                 logical_path: Some(format!("outputs/{effect_id}.txt")),
                 harvest_key: Some(effect_id.into()),
+                artifact_idempotency_scope: None,
                 deleted: false,
             },
         }
     }
 
-    fn restore_request() -> crate::SandboxRestoreRequest {
-        crate::SandboxRestoreRequest {
-            workspace_id: "workspace".into(),
-            session_id: "session".into(),
-            effect_id: awaken_agent_contract::collision_resistant_fingerprint(
-                "awaken-test-restoration-effect-v1",
-                &[b"terminal-cleanup-effect"],
-            ),
-            generation_id: "generation".into(),
-            checkpoint: crate::SandboxCheckpointRef {
-                id: "checkpoint".into(),
-                format: "provider-owned".into(),
-                digest: "digest".into(),
-                size_bytes: 7,
-                created_at_unix_ms: 1,
-                expires_at_unix_ms: 2,
-                environment_fingerprint: "environment".into(),
-                base_image_fingerprint: "base".into(),
-                excluded_mounts: Vec::new(),
-                suspend_effect_id: "suspend".into(),
-            },
-        }
-    }
-
     #[test]
-    fn restoring_cleanup_transport_is_fail_forward_then_normalizes_to_one_aggregate_receipt() {
-        /* Restore-cleanup transport table. C1 exact Phase-B target is present;
-         * C2 a legacy Worker returns the target-free completion; C3 the exact
-         * target-bound completion returns. Effects: E1 reject C2 before root
-         * CAS; E2 admit C3; E3 normalize only after verification to the
-         * aggregate's existing receipt, leaving Environment as sole target
-         * authority. Rules RC1=C1+C2=>E1; RC2=C1+C3=>E2+E3. */
-        let base = SessionCleanupCommand {
-            session_id: "session".into(),
-            thread_id: "session".into(),
-            effect_id: "cleanup-effect".into(),
-            restore_target: None,
-        };
-        let exact = base.clone().with_restore_target(restore_request()).unwrap();
+    fn restoring_target_is_an_exact_completion_axis() {
+        // Cause/effect table: T1 root command has no restore target => legacy
+        // completion domain; T2 it carries the exact durable Restoring tuple =>
+        // target-bound receipt; T3 either receipt is checked against the other
+        // command => reject. This prevents a Phase-A Worker from acknowledging
+        // cleanup without disposing the already-created exact target.
+        let base = SessionCleanupCommand::new("session", "session", "root");
+        let exact = base
+            .clone()
+            .with_restore_target(crate::SandboxRestoreRequest {
+                workspace_id: "workspace".into(),
+                session_id: "session".into(),
+                effect_id: awaken_agent_contract::collision_resistant_fingerprint(
+                    "awaken-terminal-restore-test-v1",
+                    &[b"effect"],
+                ),
+                generation_id: "generation".into(),
+                checkpoint: crate::SandboxCheckpointRef {
+                    id: "checkpoint".into(),
+                    format: "test".into(),
+                    digest: "digest".into(),
+                    size_bytes: 1,
+                    created_at_unix_ms: 1,
+                    expires_at_unix_ms: 2,
+                    environment_fingerprint: "environment".into(),
+                    base_image_fingerprint: "image".into(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: "suspend".into(),
+                },
+            })
+            .unwrap();
         let legacy = SessionCleanupCompletion::new(&base, Vec::new());
-        assert!(
-            legacy.clone().into_aggregate_completion(&exact).is_err(),
-            "RC1/E1"
-        );
-
         let bound = SessionCleanupCompletion::new(&exact, Vec::new());
-        assert!(
-            bound.verify(&base).is_err(),
-            "RC2 exact target is mandatory"
+        assert_ne!(
+            legacy.receipt_fingerprint, bound.receipt_fingerprint,
+            "T1/T2"
         );
-        let normalized = bound.into_aggregate_completion(&exact).unwrap();
-        assert_eq!(normalized, legacy, "RC2/E2+E3");
-        normalized.verify(&base).expect("RC2/E3 aggregate receipt");
+        assert!(legacy.verify(&exact).is_err(), "T3");
+        assert!(bound.verify(&base).is_err(), "T3");
+        bound.verify(&exact).expect("T2");
     }
 
     fn removed_bundle(fingerprint: &str) -> serde_json::Value {
@@ -485,5 +465,37 @@ mod tests {
             serde_json::from_value::<SessionCleanupCompletion>(unknown_purpose).is_err(),
             "D3/E3 closed historical purpose",
         );
+    }
+
+    #[test]
+    fn multi_artifact_live_and_recovery_orders_share_one_canonical_receipt_policy() {
+        // Cause/effect decision table:
+        // C1 live harvest and durable recovery return the same distinct effects
+        // in different orders => E1 one canonical order and identical completion
+        // fingerprint; C2 either path carries duplicate effect identity => E2
+        // completion verification rejects. ArtifactPublicationReceipt owns both
+        // sorting and duplicate classification; Session cleanup only consumes it.
+        let command = SessionCleanupCommand {
+            session_id: "session".into(),
+            thread_id: "thread".into(),
+            effect_id: "cleanup".into(),
+            restore_target: None,
+        };
+        let live = SessionCleanupCompletion::new(
+            &command,
+            vec![artifact("b", "sha256:b"), artifact("a", "sha256:a")],
+        );
+        let recovered = SessionCleanupCompletion::new(
+            &command,
+            vec![artifact("a", "sha256:a"), artifact("b", "sha256:b")],
+        );
+        assert_eq!(live, recovered, "E1 order-independent completion");
+        live.verify(&command).expect("E1 canonical completion");
+
+        let duplicate = SessionCleanupCompletion::new(
+            &command,
+            vec![artifact("a", "sha256:a"), artifact("a", "sha256:other")],
+        );
+        assert!(duplicate.verify(&command).is_err(), "E2 duplicate rejected");
     }
 }

@@ -156,6 +156,11 @@ impl WorkerDaemonConfig {
             &data_dir,
         )?;
         let mut runtime = awaken_runtime_host::DeploymentConfig::ephemeral();
+        // `data_dir` is the standalone Worker's installation-stable root. The
+        // Runtime derives its durable workspace identity here rather than from
+        // a process incarnation, so a restarted container Worker can discover
+        // and reconcile the same physical Session realizations.
+        runtime.storage_dir = Some(data_dir.clone());
         runtime.sandbox_tier = file
             .sandbox_tier
             .as_deref()
@@ -323,7 +328,8 @@ mod tests {
     /// interval, C6 the projected signer exists and matches Worker identity, C7
     /// the sandbox tier belongs to the canonical runtime vocabulary, C8 the raw
     /// server endpoint is carried only by Worker startup and lowers once into the
-    /// authenticated `WorkerUpstream` rather than being copied into Runtime axes.
+    /// authenticated `WorkerUpstream` rather than being copied into Runtime axes,
+    /// C9 `data_dir` is the installation-stable Runtime storage coordinate.
     /// R1 all true -> an isolated, resource/inference-capable Worker; R2
     /// !C1/!C2/!C4/!C5/!C7 -> config validation failure; R3 !C3 -> serde rejects the
     /// unknown authority field; R4 !C6 -> startup fails before any network
@@ -340,12 +346,17 @@ mod tests {
         )
         .unwrap();
         write(&format!(
-            "role='worker'\nmode='server'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            "role='worker'\nmode='server'\ndata_dir='{}'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            directory.path().display(),
             credential.display()
         ));
         let resolved = WorkerDaemonConfig::load(&path, None).expect("R1");
         assert!(resolved.runtime.database_url.is_none(), "R1");
-        assert!(resolved.runtime.storage_dir.is_none(), "R1");
+        assert_eq!(
+            resolved.runtime.storage_dir.as_deref(),
+            Some(directory.path()),
+            "R1/C9 uses the authored installation root as durable Runtime identity"
+        );
         let worker = resolved
             .build()
             .await

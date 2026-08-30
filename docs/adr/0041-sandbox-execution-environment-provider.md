@@ -130,6 +130,36 @@ adapters**. The neutral seam is realized as the crate
   sandbox-absolute or a logical/content-addressed reference; host paths live only
   inside a provider. Enforcer: `check_crate_boundaries.py` (contract depends on no
   OS/driver crate) + the crate's public-API snapshot (`public-api/`).
+- **Repository path fidelity.** `ResolvedInput.mount_path` remains the exact
+  durable/Agent-visible value; provider adapters may validate but never relocate
+  it. The standard Managed wire allows an explicit container path, while the
+  current substitutable provider profile admits only canonical
+  `/workspace/<child>` Repository paths because Container writable-root and
+  continuation semantics do not yet preserve arbitrary roots. The shared
+  `validate_repository_mount_path` gate runs during new resolution, Manifest
+  preflight, cold runtime admission, and each realizer before credentials or Git;
+  unsupported historical values remain loadable but cannot start a workload.
+  Enforcer: contract decision table plus Managed/Namespace/Container tests that
+  assert `/repo` fails without creating `/workspace/repo`.
+  `WorkspaceLayout` in `awaken-provisioning-contract` is the sole owner of
+  Runtime-controlled workspace roots (`.mnt`, delivered Skills, ACP/tool config,
+  and Awaken state); providers consume those constants rather than maintaining
+  a second denylist. A separate shared *final-layout* validator compares the
+  exact Repository trees with the provider-effective `SandboxSpec`: projected
+  File/Memory mounts, frozen baseline mounts, outputs, inline runtime-directory
+  values, and Container extra mounts. Cold projection validates the prospective
+  baseline and Environment before publishing either; live replacement validates
+  before Skill/File materialization; create validates before CacheVolume prewarm;
+  adopt and restore validate before provider I/O. The provider adapters retain a
+  final `RepositoryRealizationPlan` check as an independently callable effect-edge
+  fence, not as another path policy.
+  Agent-authoring defaults are the same Provisioning layout fact:
+  `resource_input_default_mounts` owns the closed File/Memory/Repository value,
+  derives the Repository member through `WorkspaceLayout::child("repo")`, and is
+  projected read-only as `/v1/capabilities.resource_inputs.default_mounts`.
+  Assistant and Console adapters consume that projection/value; they never keep a
+  local path table. Explicit authored paths remain exact, while the Admin Resource
+  PUT applies the shared Repository validator before its existing store port.
 - **G13 — the environment authors no runtime state.** Sandbox tools yield
   content/error only; artifacts and telemetry are downstream projections, never a
   commit path. Enforcer: the `HandOutput`/`RawTool` boundary in

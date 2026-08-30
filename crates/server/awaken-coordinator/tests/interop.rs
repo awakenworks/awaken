@@ -355,7 +355,9 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     // Constraints/invariants: AG-UI, Managed, and AI SDK are wire projections of
     // one committed Thread; no adapter owns a parallel resume or history track.
     // Decision rule: X2=C1 without C2 -> awaiting; X3=C1+C2 -> result-before-answer
-    // causality remains visible through the third protocol.
+    // causality remains visible through the third protocol. X4=C1+C2 on the
+    // default test stack -> the canonical Host context realization completes;
+    // no adapter-specific stack override or resume path is permitted.
     let app = build_custom_router();
 
     let (_, created) = call(

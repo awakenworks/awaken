@@ -1,10 +1,11 @@
 import type {
   AgentConfig,
+  AgentToolsetMemberCap,
   CredentialSource,
   InputBinding,
   ManagedToolsetCap,
   PluginCap,
-  PolicyCap,
+  ResourceInputDefaultMounts,
   RuntimeCap,
   ToolCap,
 } from "../../lib/api/types";
@@ -20,6 +21,7 @@ interface Props {
   config: AgentConfig;
   baseline: Partial<AgentConfig>;
   resources: InputBinding[];
+  resourceInputDefaults?: ResourceInputDefaultMounts;
   resourcesError?: Error;
   resourceRevision: number;
   isNew: boolean;
@@ -32,8 +34,8 @@ interface Props {
   runtimes: RuntimeCap[];
   tools: ToolCap[];
   toolsets: ManagedToolsetCap[];
+  agentToolsetMembers: AgentToolsetMemberCap[];
   plugins: PluginCap[];
-  policies: PolicyCap[];
   credentials: CredentialSource[];
   changed: (path: string) => boolean;
   onPatch: (value: Partial<AgentConfig>) => void;
@@ -58,6 +60,7 @@ export default function AgentEditorStages(props: Props) {
         allModels={props.allModels}
         runtimes={props.runtimes}
         availableTools={props.tools.map((tool) => tool.id)}
+        agentToolsetMembers={props.agentToolsetMembers}
         availablePlugins={props.plugins.map((plugin) => plugin.id)}
         canRun={props.canRun}
         idEditable={props.isNew}
@@ -80,10 +83,11 @@ export default function AgentEditorStages(props: Props) {
         runtimes={props.runtimes}
         tools={props.tools}
         toolsets={props.toolsets}
+        agentToolsetMembers={props.agentToolsetMembers}
         plugins={props.plugins}
-        policies={props.policies}
         credentials={props.credentials}
         resources={props.resources}
+        resourceInputDefaults={props.resourceInputDefaults}
         resourcesError={props.resourcesError}
         changed={props.changed}
         onSectionChange={props.onBuilderSectionChange}

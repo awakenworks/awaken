@@ -131,6 +131,38 @@ pub fn complete_session_projection_init(
     Ok(mode.prepares_session().then(|| projection.session_init()))
 }
 
+/// Complete the preparation half of a protocol test Runtime through the same
+/// closed authorization join as production. Keeping this in the shared test
+/// adapter prevents each router/state fixture from recreating the retired
+/// one-stage cleanup path or silently ignoring the effect echoed by Control.
+pub fn complete_terminal_cleanup_preparation(
+    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    authorization: &awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+) -> Result<awaken_session_contract::SessionCleanupPreparation, awaken_session_contract::RunError> {
+    authorization
+        .verify_for(effect)
+        .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
+    let provider_prepared_effect_fence = effect
+        .sandbox_effect_fence()
+        .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
+    awaken_session_contract::SessionCleanupPreparation::try_new(
+        effect,
+        provider_prepared_effect_fence,
+        Vec::new(),
+    )
+    .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
+}
+
+/// Complete the physical half of a protocol test Runtime from the one typed
+/// aggregate command. The receipt constructor remains the canonical identity
+/// owner; this helper owns no cleanup state or compatibility behavior.
+#[must_use]
+pub fn complete_terminal_cleanup_disposal(
+    effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+) -> awaken_session_contract::SessionCleanupDisposalReceipt {
+    awaken_session_contract::SessionCleanupDisposalReceipt::new(&effect.command)
+}
+
 #[must_use]
 pub fn environment_components() -> (
     Arc<EnvironmentAuthoringState>,

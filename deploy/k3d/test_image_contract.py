@@ -53,6 +53,19 @@ def main() -> None:
     product_resources = (product / "resources.yaml").read_text()
     assert 'resources: ["networkpolicies"]' in product_resources
     assert 'verbs: ["get", "list", "watch"]' in product_resources
+    # Continuation-volume/RBAC cause-effect decision table. C1 the overlay omits
+    # k8s_continuation_volume; C2 its runtime Role omits an exact PVC rule. E1 no
+    # dormant PVC mutation authority is granted. Rule KRB1: C1+C2 => E1. Enabling
+    # the capability must change both causes together and grant only
+    # persistentvolumeclaims create/get/delete in that overlay.
+    for overlay_resources in (resources, product_resources):
+        active_yaml = "\n".join(
+            line
+            for line in overlay_resources.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "k8s_continuation_volume" not in active_yaml
+        assert 'resources: ["persistentvolumeclaims"]' not in active_yaml
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
     assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources

@@ -168,20 +168,20 @@ pub awaken_cli::CoordinatorAuthorityHandles::postgres_pool: core::option::Option
 pub awaken_cli::CoordinatorAuthorityHandles::run_lifecycle: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>>
 pub awaken_cli::CoordinatorAuthorityHandles::run_recovery: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>
 pub awaken_cli::CoordinatorAuthorityHandles::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
-pub awaken_cli::CoordinatorAuthorityHandles::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
-pub awaken_cli::CoordinatorAuthorityHandles::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub awaken_cli::CoordinatorAuthorityHandles::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>
+pub awaken_cli::CoordinatorAuthorityHandles::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
 pub struct awaken_cli::CoordinatorServiceAdapters
 pub awaken_cli::CoordinatorServiceAdapters::cloud_native_credential_realization: core::option::Option<awaken_credential_contract::CredentialRealizationProfile>
 pub awaken_cli::CoordinatorServiceAdapters::inference_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>
 pub awaken_cli::CoordinatorServiceAdapters::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_cli::CoordinatorServiceAdapters::worker_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>
-pub awaken_cli::CoordinatorServiceAdapters::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
+pub awaken_cli::CoordinatorServiceAdapters::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
 impl awaken_cli::CoordinatorServiceAdapters
 pub fn awaken_cli::CoordinatorServiceAdapters::with_cloud_native_credential_realization(self, awaken_credential_contract::CredentialRealizationProfile) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_repository_transport_authorizer(self, alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_authenticator(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
-pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
+pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>) -> Self
 pub struct awaken_cli::DrainController
 impl awaken_cli::DrainController
 pub fn awaken_cli::DrainController::active_streams(&self) -> usize

@@ -681,7 +681,11 @@ mod tests {
     struct FailingExecutor;
 
     struct RecordingArtifactPublisher {
-        inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>,
+        inner: Arc<
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_run_ingress::ArtifactPublicationFence,
+                >,
+        >,
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>>,
         dispatch: Arc<awaken_run_ingress::AnyDispatchStore>,
     }
@@ -777,19 +781,24 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>
+    impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::ArtifactPublicationFence>
         for RecordingArtifactPublisher
     {
         async fn publish(
             &self,
             publication: awaken_resource_contract::ArtifactPublication<
-                awaken_run_ingress::RunClaim,
+                awaken_run_ingress::ArtifactPublicationFence,
             >,
         ) -> Result<
             awaken_resource_contract::ArtifactPublicationReceipt,
             awaken_resource_contract::ArtifactPublicationError,
         > {
-            let _guard = if let Some(claim) = publication.fence.as_ref() {
+            let claim = publication.fence.as_ref().and_then(|fence| match fence {
+                awaken_run_ingress::ArtifactPublicationFence::Run(claim) => Some(claim),
+                awaken_run_ingress::ArtifactPublicationFence::CheckpointRelease(_) => None,
+                awaken_run_ingress::ArtifactPublicationFence::Terminal(_) => None,
+            });
+            let _guard = if let Some(claim) = claim {
                 Some(
                     awaken_run_ingress::DispatchQueue::lock_commit_epoch(
                         self.dispatch.as_ref(),
@@ -811,7 +820,7 @@ mod tests {
             self.claims
                 .lock()
                 .expect("recorded claims mutex poisoned")
-                .push(publication.fence.clone());
+                .push(claim.cloned());
             self.inner.publish(publication).await
         }
     }

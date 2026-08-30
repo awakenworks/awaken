@@ -57,10 +57,6 @@ fn dream_auxiliary_routes() -> Router {
     let capabilities = awaken_config_service::capabilities_router(
         awaken_runtime_host::authorable_tools(),
         awaken_runtime_host::platform_plugin_capabilities(),
-        vec![awaken_config_service::PolicyCapability::new(
-            "permission",
-            awaken_ext_permission::permission_config_schema(),
-        )],
         vec![awaken_config_service::RuntimeCapability::native()],
     );
     let console_context = Router::new()

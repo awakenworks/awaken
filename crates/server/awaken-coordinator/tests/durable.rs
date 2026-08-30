@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::{HostResume, SharedHost};
+use awaken_coordinator::{HostResume, ManagedHost, SharedHost};
 use awaken_scenario_host::CustomToolModel;
 
 fn user(id: &str, text: &str) -> Message {
@@ -29,17 +29,25 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-async fn host_over(dir: &std::path::Path) -> SharedHost {
+fn host_with_client_tool(host: SharedHost) -> Arc<SharedHost> {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
-    deployment.storage_dir = Some(dir.to_path_buf());
-    let authority = awaken_coordinator::init_scenario_runtime(&deployment)
+    let host = Arc::new(host.with_client_tools(client_tools));
+    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    host
+}
+
+async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
+    let mut authority_deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    authority_deployment.storage_dir = Some(dir.to_path_buf());
+    let authority = awaken_coordinator::init_scenario_runtime(&authority_deployment)
         .await
         .expect("open Coordinator-owned SQLite runtime authority");
-    SharedHost::new(Arc::new(CustomToolModel), "custom")
-        .with_client_tools(client_tools)
-        .with_store_dir(dir.to_path_buf())
-        .with_runtime_authority(authority)
+    let mut worker_deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    worker_deployment.sandbox_dir = Some(dir.join(format!("sandbox-{process}")));
+    host_with_client_tool(
+        SharedHost::new_with_deployment(Arc::new(CustomToolModel), "custom", worker_deployment)
+            .with_runtime_authority(authority),
+    )
 }
 
 #[tokio::test]
@@ -57,15 +65,17 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     let thread = "durable-1";
 
     // Restart-recovery FMECA / cause-effect decision table:
-    // C1=Coordinator injects an authority, C2=the replacement opens the same
-    // durable root. R1 C1+C2 -> awaiting ticket and history recover; R2 !C1 ->
-    // fail closed/no implicit Host store; R3 C1+!C2 -> clean independent state.
+    // C1=Coordinator injects an authority and the canonical dispatch Session
+    // Runtime, C2=the replacement opens the same durable root, C3=each simulated
+    // process owns a distinct process-local sandbox root. R1 C1+C2+C3 -> awaiting
+    // ticket and history recover; R2 !C1 -> fail closed/no implicit Host store;
+    // R3 C1+!C2 -> clean independent state.
     // This case proves R1 end to end; the in-memory case below proves the R2/R3
     // non-recovery effect without reintroducing a second Host-owned store path.
     // 1. First "process": execute a Run that awaits on the client tool, then drop the
     //    host — the run's history and awaiting ticket are now only in the store.
     let pending_id = {
-        let host = host_over(&dir).await;
+        let host = host_over(&dir, "first").await;
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
@@ -92,7 +102,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     };
 
     // 2. A brand-new host over the SAME store directory recovers the awaiting run.
-    let host = host_over(&dir).await;
+    let host = host_over(&dir, "replacement").await;
     assert!(
         host.is_awaiting(thread).await,
         "the rebuilt host recovers the awaiting run from the durable store"
@@ -140,19 +150,20 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
 /// starts clean. This pins the durability contract to the store, not the type.
 #[tokio::test]
 async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
+    // Cause/effect table: C1 both hosts install the canonical dispatch Session
+    // Runtime; C2 no Coordinator-owned durable authority is injected. R1 C1+!C2
+    // -> the first host can await normally, while its replacement starts clean.
     let thread = "ephemeral-1";
-    let client_tools = HashSet::from(["submit_answer".to_string()]);
 
     {
-        let host = SharedHost::new(Arc::new(CustomToolModel), "custom")
-            .with_client_tools(client_tools.clone());
+        let host = host_with_client_tool(SharedHost::new(Arc::new(CustomToolModel), "custom"));
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
         assert!(host.is_awaiting(thread).await);
     }
 
-    let host = SharedHost::new(Arc::new(CustomToolModel), "custom").with_client_tools(client_tools);
+    let host = host_with_client_tool(SharedHost::new(Arc::new(CustomToolModel), "custom"));
     assert!(
         !host.is_awaiting(thread).await,
         "an in-memory host starts clean; the awaiting run does not survive"

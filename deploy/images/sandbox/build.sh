@@ -148,19 +148,28 @@ build_image() {
 # Image-availability FMECA decision table. C1=the selected tag exists;
 # C2=it carries the current production environment label; C3=its real Hand
 # entry point starts; C4=curl exists; C5=the pinned Rust quality components
-# exist. E1=reuse exactly that image; E2=build through this authoritative
-# script, then require the same acceptance checks.
+# exist; C6=the same configured execution binary exposes atomic no-replace
+# Repository publication; C7=that binary exposes the descriptor-relative
+# nofollow tree reader used for terminal participant recovery. E1=reuse exactly
+# that image; E2=build through this authoritative script, then require the same
+# acceptance checks.
 #
-# | Rule | mode | C1 | C2 | C3 | C4 | C5 | Effect |
-# |---|---|---|---|---|---|---|---|
-# | I1 | build | - | - | - | - | - | E2, then full acceptance |
-# | I2 | ensure | T | T | T | T | T | E1 |
-# | I3 | ensure | otherwise | | | | | E2, then full acceptance |
-# | I4 | ensure-hand | T | - | T | - | - | E1 for the Hand-only E2E fixture |
-# | I5 | ensure-hand | otherwise | | | | | E2, then full acceptance |
+# | Rule | mode | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Effect |
+# |---|---|---|---|---|---|---|---|---|---|
+# | I1 | build | - | - | - | - | - | - | - | E2, then full acceptance |
+# | I2 | ensure | T | T | T | T | T | T | T | E1 |
+# | I3 | ensure | otherwise | | | | | | | E2, then full acceptance |
+# | I4 | ensure-hand | T | - | T | - | - | T | T | E1 for the Hand-only E2E fixture |
+# | I5 | ensure-hand | otherwise | | | | | | | E2, then full acceptance |
 accept_hand() {
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" \
+    repository-publish-noreplace --check
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" \
+    read-tree-nofollow --check
 }
 
 image_exists() {

@@ -25,7 +25,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryStreamSink;
-use awaken_worker_runtime::WorkerControlClient;
+use awaken_worker_runtime::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, ManualWorkerClock, SignedWorkerAuthenticator,
     SignedWorkerRequestAuthorizer, WorkerRequestAuthenticator, WorkerSigningCredential,
@@ -44,15 +44,86 @@ struct RecordingSessionControl {
     agent_lists: AtomicUsize,
     agent_messages: Mutex<Vec<awaken_session_contract::SessionAgentMessageCommand>>,
     agent_boundaries: Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
+    terminal_control_calls: AtomicUsize,
     cleanup_claims: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
-    cleanup_commands: Mutex<Option<Vec<awaken_session_contract::SessionCleanupCommand>>>,
-    cleanup_completions: Mutex<Vec<awaken_session_contract::SessionCleanupCompletion>>,
+    cleanup_action: Mutex<Option<awaken_session_contract::SessionTerminalCleanupAction>>,
+    preparation_authorization:
+        Mutex<Option<awaken_session_contract::SessionTerminalCleanupPreparationAuthorization>>,
+    authorized_preparations: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
+    cleanup_preparations: Mutex<Vec<awaken_session_contract::SessionCleanupPreparation>>,
+    authorized_disposals: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupDisposalEffect>>,
+    cleanup_disposals: Mutex<Vec<awaken_session_contract::SessionCleanupDisposalReceipt>>,
     repository_publication_projection:
         Mutex<Option<awaken_session_contract::SessionRepositoryPublicationProjection>>,
     repository_publication_receipts:
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
     repository_publication_rejections:
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
+}
+
+#[derive(Clone, Default)]
+enum EnvironmentAuthorizationMode {
+    #[default]
+    Authorized,
+    AlreadyApplied(String),
+    Unowned,
+    Unavailable,
+}
+
+#[derive(Default)]
+struct RecordingEnvironmentBindings {
+    mode: Mutex<EnvironmentAuthorizationMode>,
+    intents: Mutex<Vec<awaken_session_contract::SessionEnvironmentEffectIntent>>,
+    receipts: Mutex<Vec<awaken_session_contract::SessionEnvironmentReceipt>>,
+    persisted_environment: Mutex<awaken_session_contract::SessionEnvironmentState>,
+    reject_persist: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionEnvironmentBindingSink for RecordingEnvironmentBindings {
+    async fn authorize(
+        &self,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::RunError,
+    > {
+        self.intents.lock().unwrap().push(intent.clone());
+        match self.mode.lock().unwrap().clone() {
+            EnvironmentAuthorizationMode::Authorized => {
+                Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized)
+            }
+            EnvironmentAuthorizationMode::AlreadyApplied(binding) => Ok(
+                awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                    binding,
+                },
+            ),
+            EnvironmentAuthorizationMode::Unowned => {
+                Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned)
+            }
+            EnvironmentAuthorizationMode::Unavailable => {
+                Err(awaken_session_contract::RunError::unavailable_classified(
+                    "session_environment_authorization_unavailable",
+                    "binding authority is temporarily unavailable",
+                ))
+            }
+        }
+    }
+
+    async fn persist(
+        &self,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
+        if self.reject_persist.load(Ordering::SeqCst) {
+            return Err(awaken_session_contract::RunError::unavailable_classified(
+                "session_environment_persist_unavailable",
+                "binding persistence is temporarily unavailable",
+            ));
+        }
+        self.receipts.lock().unwrap().push(receipt);
+        Ok(self.persisted_environment.lock().unwrap().clone())
+    }
 }
 
 #[derive(Default)]
@@ -200,6 +271,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),
+        previous_resource_manifest: None,
         mcp: Vec::new(),
         tools: Default::default(),
         request_context: Vec::new(),
@@ -306,6 +378,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.cleanup_claims.lock().unwrap().push(target.clone());
         let projection = self
             .projection
@@ -327,23 +400,82 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         ))
     }
 
-    async fn terminal_cleanup_commands(
+    async fn terminal_cleanup_work(
         &self,
-        _session_id: &str,
-        _lease: &awaken_session_contract::SessionRealizationLease,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
-        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        Option<awaken_session_contract::SessionTerminalCleanupWork>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
-        Ok(self.cleanup_commands.lock().unwrap().clone())
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
+        let Some(action) = self.cleanup_action.lock().unwrap().clone() else {
+            return Ok(None);
+        };
+        let projection = self
+            .projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        Ok(Some(awaken_session_contract::SessionTerminalCleanupWork {
+            assignment: awaken_session_contract::SessionTerminalCleanupAssignment {
+                session_id: session_id.to_string(),
+                projection,
+                lease: lease.clone(),
+            },
+            action,
+        }))
     }
 
-    async fn record_terminal_cleanup_completion(
+    async fn authorize_terminal_cleanup_effect(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) -> Result<
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
+        self.authorized_preparations
+            .lock()
+            .unwrap()
+            .push(effect.clone());
+        self.preparation_authorization
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+    }
+
+    async fn record_terminal_cleanup_preparation(
         &self,
         _lease: &awaken_session_contract::SessionRealizationLease,
-        completion: awaken_session_contract::SessionCleanupCompletion,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.cleanup_completions.lock().unwrap().push(completion);
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
+        self.cleanup_preparations.lock().unwrap().push(preparation);
+        Ok(())
+    }
+
+    async fn authorize_terminal_cleanup_disposal(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
+        self.authorized_disposals
+            .lock()
+            .unwrap()
+            .push(effect.clone());
+        Ok("workspace".into())
+    }
+
+    async fn record_terminal_cleanup_disposal(
+        &self,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
+        self.cleanup_disposals.lock().unwrap().push(receipt);
         Ok(())
     }
 
@@ -355,6 +487,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self
             .repository_publication_projection
             .lock()
@@ -368,6 +501,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         _lease: &awaken_session_contract::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.repository_publication_receipts
             .lock()
             .unwrap()
@@ -606,6 +740,12 @@ fn activation() -> RunActivation {
     )
 }
 
+fn standard_worker_dispatch(activation: RunActivation) -> RunDispatch {
+    let mut dispatch = RunDispatch::new(activation);
+    dispatch.placement.runtime_protocol_version = 1;
+    dispatch
+}
+
 /// Shared Worker-auth middleware decision table and FMECA:
 /// F1 warmup projection accepts bootstrap/stale identity and leaks Environment
 /// configuration (S8 O3 D3, RPN72); F2 warmup route invents a second auth decision
@@ -638,6 +778,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
     let session_work = Arc::new(RecordingSessionWorkAuthority::default());
+    let environment_bindings = Arc::new(RecordingEnvironmentBindings::default());
     let live_stream = Arc::new(MemoryStreamSink::new());
     let service = WorkerDispatchService::new(
         dispatch.clone(),
@@ -648,6 +789,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     .with_worker_directory(directory.clone(), 30_000)
     .with_session_control(session_control.clone())
     .with_session_coordination(session_control.clone())
+    .with_session_environment_bindings(environment_bindings.clone())
     .with_session_work_authority(session_work.clone())
     .with_stream_sink(live_stream.clone());
     let warmup = awaken_session_contract::EnvironmentSnapshot {
@@ -696,10 +838,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let bootstrap = WorkerUpstream::new(format!("http://{address}"))
         .with_worker_id("signed-http-worker")
         .with_request_authorizer(authorizer);
-    let manifest = WorkerManifest {
+    let mut manifest = WorkerManifest {
         build_digest: "signed-http-build".into(),
         ..WorkerManifest::default()
     };
+    manifest.runtime_protocol.min = 1;
+    manifest.runtime_protocol.max = 2;
     // Worker lease receipt decision rules: successful registration and Applied
     // heartbeat both disclose the same positive Coordinator-owned TTL; a
     // bootstrap credential still cannot use incarnation-only operations.
@@ -787,7 +931,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         registered.snapshot.identity.clone(),
     );
     queue
-        .enqueue(RunDispatch::new(activation()))
+        .enqueue(standard_worker_dispatch(activation()))
         .await
         .expect("signed dispatch enqueue");
     let claimed = queue
@@ -1002,25 +1146,178 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
 
     let realization_lease = resumed.lease.clone();
-    // Terminal-cleanup transport cause/effect table: C1 current authenticated
-    // registry incarnation requests a future, registry-bounded cold assignment;
-    // C2 identity/owner/incarnation is foreign or stale; C3 expiry exceeds the
-    // registry or flags request renewal/reassignment; C4 the exact assigned
-    // lease polls/completes one aggregate-owned command; C5 an already-running
-    // Worker submits the exact removed v2 completion during a rolling upgrade.
-    // Effects: K1 returns the
-    // typed projection+lease without a Run/Work claim; K2/C2-C3 reject before
-    // Control; K3/C4 returns the canonical command and records its completion;
-    // K5/C5 normalizes at the same type boundary as cold storage and forwards
-    // the one current completion to Control.
-    // Dispatch rows have already quiesced before cleanup targets are frozen.
+    let session_client =
+        WorkerControlSessionClient::new(client.clone(), registered.snapshot.identity.clone());
+
+    // Environment-root transport cause/effect table. C1 is the authenticated
+    // current Worker incarnation; C2 is an exact/live versus foreign realization
+    // lease; C3 is the aggregate decision Authorized/AlreadyApplied/Unowned or
+    // retryable unavailable; C4 is receipt persistence success/unavailability.
+    // Effects: E1 only C1+C2 reaches the single binding authority; E2 preserves
+    // the closed authorization enum over HTTP; E3 rejects Unowned remotely;
+    // E4 preserves retryable classification; E5 persists one exact receipt and
+    // returns the exact Store-read Environment authority through the production
+    // Worker Session sink adapter, without reconstructing it client-side.
     //
-    // | Rule | identity | target authority | Effect |
-    // | K1 | current | exact, bounded, fresh | typed assignment |
+    // | Rule | identity/lease | aggregate | persistence | Effect |
+    // | B1 | exact | Authorized | n/a | E1 + Authorized |
+    // | B2 | exact | AlreadyApplied | n/a | E1 + exact binding |
+    // | B3 | exact | Unowned | n/a | reject before provider use |
+    // | B4 | exact | unavailable | n/a | retryable 503 |
+    // | B5 | foreign/stale | any | n/a | reject before binding authority |
+    // | B6 | exact | Authorized | success/unavailable | one receipt + exact authority / retryable |
+    let environment_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+        "signed-thread",
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        Some(realization_lease.clone()),
+    )
+    .for_environment("env-fingerprint");
+    assert_eq!(
+        awaken_session_contract::SessionEnvironmentBindingSink::authorize(
+            &session_client,
+            &environment_intent,
+        )
+        .await
+        .expect("B1 authorized root effect"),
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        "B1"
+    );
+
+    *environment_bindings.mode.lock().unwrap() =
+        EnvironmentAuthorizationMode::AlreadyApplied("sandbox-binding-v2".into());
+    assert_eq!(
+        awaken_session_contract::SessionEnvironmentBindingSink::authorize(
+            &session_client,
+            &environment_intent,
+        )
+        .await
+        .expect("B2 response-loss readback"),
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+            binding: "sandbox-binding-v2".into(),
+        },
+        "B2"
+    );
+
+    *environment_bindings.mode.lock().unwrap() = EnvironmentAuthorizationMode::Unowned;
+    let unowned = awaken_session_contract::SessionEnvironmentBindingSink::authorize(
+        &session_client,
+        &environment_intent,
+    )
+    .await
+    .expect_err("B3 remote Worker cannot use an unowned root");
+    assert_eq!(unowned.code, "session_environment_unowned", "B3");
+
+    *environment_bindings.mode.lock().unwrap() = EnvironmentAuthorizationMode::Unavailable;
+    let unavailable = awaken_session_contract::SessionEnvironmentBindingSink::authorize(
+        &session_client,
+        &environment_intent,
+    )
+    .await
+    .expect_err("B4 unavailable root authority remains retryable");
+    assert_eq!(
+        unavailable.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "B4"
+    );
+    assert_eq!(
+        unavailable.code, "session_environment_authorization_unavailable",
+        "B4"
+    );
+
+    *environment_bindings.mode.lock().unwrap() = EnvironmentAuthorizationMode::Authorized;
+    let calls_before_foreign = environment_bindings.intents.lock().unwrap().len();
+    let mut foreign_lease = realization_lease.clone();
+    foreign_lease.runtime_incarnation = "foreign-incarnation".into();
+    let foreign_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+        "signed-thread",
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        Some(foreign_lease),
+    )
+    .for_environment("env-fingerprint");
+    assert!(
+        awaken_session_contract::SessionEnvironmentBindingSink::authorize(
+            &session_client,
+            &foreign_intent,
+        )
+        .await
+        .is_err(),
+        "B5"
+    );
+    assert_eq!(
+        environment_bindings.intents.lock().unwrap().len(),
+        calls_before_foreign,
+        "B5 foreign lease never reaches the binding authority"
+    );
+
+    let environment_receipt = awaken_session_contract::SessionEnvironmentReceipt::from_intent(
+        &environment_intent,
+        "sandbox-binding-v2",
+    )
+    .expect("B6 exact receipt");
+    let persisted_environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "sandbox-binding-v2".into(),
+        effect_id: Some(environment_receipt.effect_id.clone()),
+        generation: Some(awaken_session_contract::SandboxGeneration::new(
+            "signed-thread",
+            100,
+            1_000,
+            "env-fingerprint",
+            "base-image-fingerprint",
+        )),
+        idle_since_unix_ms: None,
+    };
+    *environment_bindings.persisted_environment.lock().unwrap() = persisted_environment.clone();
+    let persisted = awaken_session_contract::SessionEnvironmentBindingSink::persist(
+        &session_client,
+        environment_receipt.clone(),
+    )
+    .await
+    .expect("B6 receipt persisted");
+    assert_eq!(persisted, persisted_environment, "B6/E5");
+    assert_eq!(
+        environment_bindings.receipts.lock().unwrap().as_slice(),
+        std::slice::from_ref(&environment_receipt),
+        "B6"
+    );
+    environment_bindings
+        .reject_persist
+        .store(true, Ordering::SeqCst);
+    let unavailable = awaken_session_contract::SessionEnvironmentBindingSink::persist(
+        &session_client,
+        environment_receipt.clone(),
+    )
+    .await
+    .expect_err("B6 retryable persistence failure");
+    assert_eq!(
+        unavailable.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "B6"
+    );
+    environment_bindings
+        .reject_persist
+        .store(false, Ordering::SeqCst);
+
+    // Terminal-cleanup v2 transport cause/effect table: C1 the current
+    // authenticated registry incarnation explicitly advertises runtime 1..2;
+    // C2 identity/owner/incarnation is foreign or stale; C3 claim expiry or
+    // phase flags exceed registry authority; C4 Control projects an exact
+    // preparation authorization bound to the polled effect; C5 Control projects
+    // one exact disposal after preparation is durable; C6 a caller probes the
+    // removed one-stage completion route. Generic realization renewal is already
+    // covered by T10-T16; terminal cleanup owns no second renewal protocol.
+    // Effects: K1 claim and poll return exact root snapshots; K2/K3
+    // reject before Control; K4 preparation
+    // authorization and receipt bytes cross unchanged; K5 disposal effect and
+    // receipt bytes cross unchanged; K6 the old route is absent and invokes no
+    // Control method. Dispatch rows have already quiesced before targets freeze.
+    //
+    // | Rule | identity/capability | action | Effect |
+    // | K1 | current + explicit v2 | claim/poll | exact assignment/action |
     // | K2 | stale/foreign | any | reject before Control |
-    // | K3 | current | over-expiry or reassignment flag | reject before Control |
-    // | K4 | current | exact assigned lease | poll + exact completion |
-    // | K5 | current | exact lease + exact old v2 | normalize + exact completion |
+    // | K3 | current + excessive/reassignment target | claim | reject before Control |
+    // | K4 | current + explicit v2 | prepare authorize/record | exact bytes |
+    // | K5 | current + explicit v2 | dispose authorize/record | exact bytes |
+    // | K6 | current | old complete route | 404 + zero Control calls |
     let cleanup_target = awaken_session_contract::SessionRealizationTarget {
         owner: registered.snapshot.identity.worker_id.clone(),
         runtime_incarnation: registered.snapshot.identity.lease_owner(),
@@ -1039,7 +1336,6 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         1,
         "K1"
     );
-
     let mut stale_identity = registered.snapshot.identity.clone();
     stale_identity.incarnation_id = "stale-boot".into();
     let mut stale_target = cleanup_target.clone();
@@ -1092,9 +1388,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let cleanup_command = cleanup_operation
         .command_for("signed-thread", "signed-thread")
         .expect("K4 canonical command");
-    *session_control.cleanup_commands.lock().unwrap() = Some(vec![cleanup_command.clone()]);
-    let cleanup = client
-        .terminal_cleanup_commands(
+    *session_control.cleanup_action.lock().unwrap() = Some(
+        awaken_session_contract::SessionTerminalCleanupAction::Prepare {
+            commands: vec![cleanup_command.clone()],
+        },
+    );
+    let cleanup_work = client
+        .terminal_cleanup_work(
             &registered.snapshot.identity,
             "signed-thread",
             &realization_lease,
@@ -1102,45 +1402,152 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("K4 cleanup poll")
         .expect("K4 terminal fence");
-    assert_eq!(cleanup, vec![cleanup_command.clone()], "K4");
-    let completion =
-        awaken_session_contract::SessionCleanupCompletion::new(&cleanup_command, Vec::new());
-    client
-        .record_terminal_cleanup_completion(
-            &registered.snapshot.identity,
-            &realization_lease,
-            completion.clone(),
+    assert_eq!(cleanup_work.assignment.session_id, "signed-thread", "K4");
+    assert_eq!(cleanup_work.assignment.lease, realization_lease, "K4");
+    assert_eq!(
+        cleanup_work.action,
+        awaken_session_contract::SessionTerminalCleanupAction::Prepare {
+            commands: vec![cleanup_command.clone()],
+        },
+        "K4"
+    );
+    let preparation_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        cleanup_command.clone(),
+        realization_lease.clone(),
+    );
+    let inherited_provider_disposal =
+        awaken_provisioning_contract::SandboxDisposalPreparation::new(
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "checkpoint-source-preparation",
+                realization_lease.owner.clone(),
+                realization_lease.runtime_incarnation.clone(),
+                realization_lease.epoch.saturating_sub(1),
+                realization_lease.expires_at_unix_ms.saturating_sub(1),
+            )
+            .unwrap(),
+            "checkpoint-source-preparation-fingerprint",
         )
+        .unwrap();
+    let preparation_authorization =
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            preparation_effect.clone(),
+            "workspace".into(),
+            Some(inherited_provider_disposal.clone()),
+        )
+        .expect("K4 closed authorization");
+    *session_control.preparation_authorization.lock().unwrap() =
+        Some(preparation_authorization.clone());
+    let transported_authorization = client
+        .authorize_terminal_cleanup_effect(&registered.snapshot.identity, &preparation_effect)
         .await
-        .expect("K4 completion");
+        .expect("K4 preparation authorization");
+    assert_eq!(
+        transported_authorization, preparation_authorization,
+        "K4 authorization bytes"
+    );
     assert_eq!(
         session_control
-            .cleanup_completions
+            .authorized_preparations
             .lock()
             .unwrap()
             .as_slice(),
-        std::slice::from_ref(&completion),
-        "K4"
+        std::slice::from_ref(&preparation_effect),
+        "K4 effect bytes"
     );
-    let removed_fingerprint = "removed-worker-bundle";
-    let v2_fingerprint = awaken_session_contract::stable_fingerprint(&(
-        "session-terminal-cleanup-thread-receipt-v2",
-        cleanup_command.session_id.as_str(),
-        cleanup_command.thread_id.as_str(),
-        cleanup_command.effect_id.as_str(),
-        Vec::<(&str, &str)>::new(),
-        vec![removed_fingerprint],
-    ));
-    let mut legacy_completion = serde_json::to_value(&completion).unwrap();
-    legacy_completion["artifact_bundle_receipts"] = serde_json::json!([{
-        "purpose": "patch_bundle",
-        "patch_sha256": "sha256:removed",
-        "patch_artifact_id": "file-patch",
-        "manifest_artifact_id": "file-manifest",
-        "checksum_artifact_id": "file-checksum",
-        "receipt_fingerprint": removed_fingerprint,
-    }]);
-    legacy_completion["receipt_fingerprint"] = serde_json::json!(v2_fingerprint);
+    let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
+        &preparation_effect,
+        preparation_effect.sandbox_effect_fence().unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    client
+        .record_terminal_cleanup_preparation(
+            &registered.snapshot.identity,
+            &realization_lease,
+            preparation.clone(),
+        )
+        .await
+        .expect("K4 preparation receipt");
+    assert_eq!(
+        session_control
+            .cleanup_preparations
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&preparation),
+        "K4 preparation bytes"
+    );
+
+    let disposal_effect_id = inherited_provider_disposal.operation_id().unwrap();
+    let disposal_command: awaken_session_contract::SessionCleanupDisposalCommand =
+        serde_json::from_value(serde_json::json!({
+            "session_id": "signed-thread",
+            "effect_id": disposal_effect_id,
+            "preparation_fingerprint": "complete-terminal-preparation",
+            "provider_disposal": inherited_provider_disposal,
+        }))
+        .expect("K5 disposal command fixture");
+    *session_control.cleanup_action.lock().unwrap() = Some(
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose {
+            command: disposal_command.clone(),
+        },
+    );
+    let disposal_work = client
+        .terminal_cleanup_work(
+            &registered.snapshot.identity,
+            "signed-thread",
+            &realization_lease,
+        )
+        .await
+        .expect("K5 disposal poll")
+        .expect("K5 disposal work");
+    assert_eq!(
+        disposal_work.action,
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose {
+            command: disposal_command.clone(),
+        },
+        "K5 disposal command bytes"
+    );
+    let disposal_effect = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
+        disposal_command.clone(),
+        realization_lease.clone(),
+    );
+    assert_eq!(
+        client
+            .authorize_terminal_cleanup_disposal(&registered.snapshot.identity, &disposal_effect,)
+            .await
+            .expect("K5 disposal authorization"),
+        "workspace",
+        "K5 Workspace"
+    );
+    assert_eq!(
+        session_control
+            .authorized_disposals
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&disposal_effect),
+        "K5 effect bytes"
+    );
+    let disposal_receipt =
+        awaken_session_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
+    client
+        .record_terminal_cleanup_disposal(
+            &registered.snapshot.identity,
+            &realization_lease,
+            disposal_receipt.clone(),
+        )
+        .await
+        .expect("K5 disposal receipt");
+    assert_eq!(
+        session_control.cleanup_disposals.lock().unwrap().as_slice(),
+        std::slice::from_ref(&disposal_receipt),
+        "K5 receipt bytes"
+    );
+
+    let calls_before_old_route = session_control
+        .terminal_control_calls
+        .load(Ordering::SeqCst);
     let path = "/v1/worker/session/cleanup/complete";
     let response = upstream
         .authorize(
@@ -1154,22 +1561,24 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .json(&serde_json::json!({
             "identity": &registered.snapshot.identity,
             "lease": &realization_lease,
-            "completion": legacy_completion,
+            "completion": { "removed": true },
         }))
         .send()
         .await
-        .expect("K5 signed legacy completion transport");
-    assert!(response.status().is_success(), "K5");
-    {
-        let recorded = session_control.cleanup_completions.lock().unwrap();
-        assert_eq!(recorded.len(), 2, "K5");
-        assert!(recorded.iter().all(|value| value == &completion), "K5");
-    }
+        .expect("K6 removed completion route request");
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND, "K6");
+    assert_eq!(
+        session_control
+            .terminal_control_calls
+            .load(Ordering::SeqCst),
+        calls_before_old_route,
+        "K6 zero Control calls"
+    );
     let mut foreign_cleanup_lease = realization_lease.clone();
     foreign_cleanup_lease.owner = "foreign-worker".into();
     assert!(
         client
-            .terminal_cleanup_commands(
+            .terminal_cleanup_work(
                 &registered.snapshot.identity,
                 "signed-thread",
                 &foreign_cleanup_lease,
@@ -1229,6 +1638,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let publication_projection = awaken_session_contract::SessionRepositoryPublicationProjection {
         workspace_id: "workspace".into(),
         command: publication_command.clone(),
+        current_lease: realization_lease.clone(),
     };
     *session_control
         .repository_publication_projection
@@ -1520,7 +1930,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     child_activation.thread_id = ThreadId("signed-child-thread".into());
     queue
         .enqueue(
-            RunDispatch::new(child_activation)
+            standard_worker_dispatch(child_activation)
                 .for_session(ThreadId("signed-thread".into()))
                 .with_session_activity_epoch(17),
         )
@@ -1752,7 +2162,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     next_activation.run_id = RunId("signed-run-next".into());
     next_activation.thread_id = ThreadId("signed-thread-next".into());
     queue
-        .enqueue(RunDispatch::new(next_activation))
+        .enqueue(standard_worker_dispatch(next_activation))
         .await
         .expect("post-settlement claim fixture");
     let claimed = queue
@@ -1864,6 +2274,179 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("T21 exact deregistration");
     assert_eq!(session_work.releases.load(Ordering::SeqCst), 2, "T21");
+}
+
+/// Terminal-cleanup capability cause/effect table: C1 a current registered
+/// Worker presents the historical omitted/default `VersionRange::ANY`; C2 each
+/// v2 claim, poll, preparation authorize/record, disposal authorize/record, or
+/// Repository publication edge carries a structurally valid request. Effect E1
+/// is HTTP 400 before any Session Control call. Rule V1=C1+C2=>E1 for every
+/// listed edge. Constraint: `ANY` is compatibility decode data, never explicit
+/// authority for a destructive protocol, even though its numeric range contains
+/// version 2.
+#[tokio::test]
+async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
+    let identity = WorkerIdentity::new("any-worker", "any-incarnation", 1);
+    let manifest = WorkerManifest::default();
+    let directory = Arc::new(TestWorkerDirectory::default());
+    *directory.0.lock().unwrap() = Some(RegisteredWorker {
+        snapshot: WorkerSnapshot {
+            identity: identity.clone(),
+            state: WorkerState::Ready,
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+            expires_at_ms: u64::MAX,
+        },
+        heartbeat_sequence: 0,
+        observation_sequence: 0,
+        registered_at_ms: 0,
+        heartbeat_at_ms: 0,
+        drain_deadline_ms: None,
+    });
+    let session_control = Arc::new(RecordingSessionControl::default());
+    let service = WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new()))
+        .with_worker_directory(directory, 30_000)
+        .with_session_control(session_control.clone());
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        epoch: 1,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let command = awaken_session_contract::SessionCleanupCommand::new(
+        "any-session",
+        "any-session",
+        "any-root",
+    );
+    let preparation_effect =
+        awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+    let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
+        &preparation_effect,
+        preparation_effect.sandbox_effect_fence().unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    let provider_preparation = awaken_provisioning_contract::SandboxDisposalPreparation::new(
+        awaken_provisioning_contract::SandboxEffectFence::new(
+            "any-provider-preparation",
+            identity.worker_id.clone(),
+            identity.lease_owner(),
+            0,
+            u64::MAX - 1,
+        )
+        .unwrap(),
+        "any-provider-fingerprint",
+    )
+    .unwrap();
+    let disposal_command: awaken_session_contract::SessionCleanupDisposalCommand =
+        serde_json::from_value(serde_json::json!({
+            "session_id": "any-session",
+            "effect_id": provider_preparation.operation_id().unwrap(),
+            "preparation_fingerprint": "any-complete-preparation",
+            "provider_disposal": provider_preparation,
+        }))
+        .unwrap();
+    let disposal_effect = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
+        disposal_command.clone(),
+        lease.clone(),
+    );
+    let disposal_receipt =
+        awaken_session_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
+    let publication_receipt: awaken_session_contract::SessionRepositoryPublicationReceipt =
+        serde_json::from_value(serde_json::json!({
+            "command_fingerprint": "command",
+            "effect_receipt": {
+                "repository_id": "repository",
+                "source_remote_url": "https://example.test/repository.git",
+                "branch": "awf/work",
+                "commit": "0123456789abcdef0123456789abcdef01234567"
+            },
+            "receipt_fingerprint": "receipt"
+        }))
+        .unwrap();
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let rules = [
+        (
+            "claim",
+            "/v1/worker/session/cleanup/claim-next",
+            serde_json::json!({ "identity": &identity, "target": target }),
+        ),
+        (
+            "poll",
+            "/v1/worker/session/cleanup/poll",
+            serde_json::json!({ "identity": &identity, "session_id": "any-session", "lease": &lease }),
+        ),
+        (
+            "preparation-authorize",
+            "/v1/worker/session/cleanup/preparation/authorize",
+            serde_json::json!({ "identity": &identity, "effect": &preparation_effect }),
+        ),
+        (
+            "preparation-record",
+            "/v1/worker/session/cleanup/preparation/record",
+            serde_json::json!({ "identity": &identity, "lease": &lease, "preparation": preparation }),
+        ),
+        (
+            "disposal-authorize",
+            "/v1/worker/session/cleanup/disposal/authorize",
+            serde_json::json!({ "identity": &identity, "effect": disposal_effect }),
+        ),
+        (
+            "disposal-record",
+            "/v1/worker/session/cleanup/disposal/record",
+            serde_json::json!({ "identity": &identity, "lease": &lease, "receipt": disposal_receipt }),
+        ),
+        (
+            "publication-poll",
+            "/v1/worker/session/cleanup/repository-publication/poll",
+            serde_json::json!({ "identity": &identity, "session_id": "any-session", "lease": &lease }),
+        ),
+        (
+            "publication-record",
+            "/v1/worker/session/cleanup/repository-publication/complete",
+            serde_json::json!({
+                "identity": &identity,
+                "session_id": "any-session",
+                "lease": &lease,
+                "receipt": publication_receipt,
+            }),
+        ),
+    ];
+    for (rule, path, body) in rules {
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}{path}"))
+            .header("x-awaken-worker-id", &identity.worker_id)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{rule}"
+        );
+    }
+    assert_eq!(
+        session_control
+            .terminal_control_calls
+            .load(Ordering::SeqCst),
+        0,
+        "V1/E1"
+    );
 }
 
 /// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id

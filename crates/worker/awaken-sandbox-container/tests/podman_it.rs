@@ -13,8 +13,8 @@ use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::podman::PodmanRuntime;
 use awaken_sandbox_container::{
-    ContainerPlan, ContainerProvider, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
-    command_of,
+    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerPlan, ContainerProvider,
+    ContainerRuntime, ContainerState, NetworkMode, RootfsPlan, command_of,
 };
 
 const AGENT_PORT: u16 = 8080;
@@ -68,6 +68,7 @@ fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::Open,
+        egress_identity: Default::default(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits {
             memory_bytes: Some(256 * 1024 * 1024),
@@ -311,14 +312,27 @@ async fn podman_reports_the_agent_exit_code() {
 }
 
 #[tokio::test]
-async fn podman_peer_adoption_renews_only_a_live_environment() {
+async fn podman_peer_rejects_unreconstructible_live_environment_without_replacement() {
+    /* Host-bind recovery cause/effect table. Causes: C1 a current V2 Podman
+     * handle names an exact live/absent container; C2 the creating Worker's
+     * process-local participants are gone; C3 the peer has the frozen spec.
+     * R1 live+C2+C3=>reject as incompatible while leaving the container
+     * Running; R2 absent+C2+C3=>reject as unavailable. Neither row recreates. */
     let Some(runtime_a) = runtime().await else {
         return;
     };
     let runtime_a = Arc::new(runtime_a);
     let provider_a = ContainerProvider::new(runtime_a, "docker.io/library/busybox:latest");
+    let scope = format!(
+        "pod-adopt-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock follows the Unix epoch")
+            .as_nanos()
+    );
     let spec = pc::SandboxSpec {
-        scope: "pod-adopt".into(),
+        scope,
         isolation: pc::IsolationClass::Container,
         environment: None,
         command: vec!["sleep".into(), "30".into()],
@@ -344,20 +358,37 @@ async fn podman_peer_adoption_renews_only_a_live_environment() {
     };
     let runtime_b = Arc::new(runtime_b);
     let provider_b = ContainerProvider::new(runtime_b.clone(), "docker.io/library/busybox:latest");
-    let adopted = provider_b.adopt(&handle).await.expect("peer adoption");
-    adopted
-        .renew_lease()
-        .await
-        .expect("renew the adopted live environment");
     let physical_id = &handle
         .container_payload()
         .expect("typed container handle")
         .container_id;
+    let error = match provider_b
+        .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+        .await
+    {
+        Ok(_) => panic!("R1 peer must not adopt unreconstructible Podman state"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("prior process-local"),
+        "R1: {error}"
+    );
     assert_eq!(
         runtime_b.inspect(physical_id).await.unwrap(),
-        ContainerState::Running
+        ContainerState::Running,
+        "R1 rejection preserves the live container"
     );
-    adopted.dispose().await.unwrap();
+    runtime_b
+        .remove(physical_id)
+        .await
+        .expect("test cleanup removes the exact container");
+    assert!(
+        provider_b
+            .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+            .await
+            .is_err(),
+        "R2"
+    );
 }
 
 #[tokio::test]

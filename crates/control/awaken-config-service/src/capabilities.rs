@@ -108,25 +108,7 @@ impl RuntimeCapability {
 struct CapabilityState {
     tools: Vec<ToolDescriptor>,
     plugins: Vec<PluginCapability>,
-    policies: Vec<PolicyCapability>,
     runtimes: Arc<dyn RuntimeCapabilitySource>,
-}
-
-/// One extension-owned policy schema projected by the config API.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PolicyCapability {
-    pub id: String,
-    pub config_schema: Value,
-}
-
-impl PolicyCapability {
-    #[must_use]
-    pub fn new(id: impl Into<String>, config_schema: Value) -> Self {
-        Self {
-            id: id.into(),
-            config_schema,
-        }
-    }
 }
 
 /// Read port for current runtime observations. Discovery remains owned by the
@@ -157,13 +139,11 @@ pub fn static_runtime_capabilities(
 pub fn capabilities_router(
     tools: Vec<ToolDescriptor>,
     plugins: Vec<PluginCapability>,
-    policies: Vec<PolicyCapability>,
     runtimes: Vec<RuntimeCapability>,
 ) -> Router {
     capabilities_router_with_source(
         tools,
         plugins,
-        policies,
         Arc::new(StaticRuntimeCapabilities(runtimes)),
     )
 }
@@ -171,7 +151,6 @@ pub fn capabilities_router(
 pub fn capabilities_router_with_source(
     tools: Vec<ToolDescriptor>,
     plugins: Vec<PluginCapability>,
-    policies: Vec<PolicyCapability>,
     runtimes: Arc<dyn RuntimeCapabilitySource>,
 ) -> Router {
     Router::new()
@@ -179,7 +158,6 @@ pub fn capabilities_router_with_source(
         .with_state(Arc::new(CapabilityState {
             tools,
             plugins,
-            policies,
             runtimes,
         }))
 }
@@ -208,11 +186,19 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
         "tools": tool_caps,
         "toolsets": managed_toolset_catalog(&state.tools),
         "plugins": plugin_catalog(&state.plugins),
-        "policies": policy_catalog(&state.policies),
         "runtimes": runtime_caps,
+        "resource_inputs": resource_input_capability(),
         "sandbox_execution_policy": sandbox_execution_policy_capability(),
         "dreams": dream_capability(),
     }))
+}
+
+/// Read-only authoring projection of the Provisioning layout authority. This
+/// endpoint owns no mutable fallback catalog.
+fn resource_input_capability() -> Value {
+    json!({
+        "default_mounts": awaken_provisioning_contract::resource_input_default_mounts(),
+    })
 }
 
 /// Managed Agents tool-family authoring metadata. Closed membership comes from
@@ -245,6 +231,7 @@ fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
                 "description": descriptor.map(|tool| tool.description.as_str()),
                 "input_schema": descriptor.map(|tool| &tool.parameters),
                 "available": descriptor.is_some(),
+                "controlled_modification": awaken_session_contract::is_controlled_modification_member(name),
                 "configurable_fields": configurable_fields,
             })
         })
@@ -308,22 +295,6 @@ pub fn sandbox_execution_policy_capability() -> Value {
         "collection_path": "/v1/awaken/sandbox-execution-policies",
         "version_path_template": "/v1/awaken/sandbox-execution-policies/{policy_id}/versions/{version}",
     })
-}
-
-/// The always-on policies whose `plugin_config` section shapes a run without being
-/// an installable plugin. The permission gate is the one: an agent's `permission`
-/// section (default behavior + ordered rules) drives the thread's authorization
-/// gate (see runtime-host `config::config_permission_ruleset`). Kept separate from
-/// `plugins` so the console renders a dedicated policy editor, not an enable toggle.
-fn policy_catalog(policies: &[PolicyCapability]) -> Vec<Value> {
-    policies
-        .iter()
-        .map(|policy| policy_cap(&policy.id, policy.config_schema.clone()))
-        .collect()
-}
-
-fn policy_cap(id: &str, config_schema: Value) -> Value {
-    json!({ "id": id, "config_section": id, "config_schema": config_schema })
 }
 
 /// Public projection of the exact plugin capability rows supplied by the runtime
@@ -501,6 +472,12 @@ mod tests {
             .unwrap();
         assert_eq!(bash["available"], true);
         assert_eq!(bash["description"], "Run a shell command.");
+        assert_eq!(bash["controlled_modification"], true);
+        let read = members
+            .iter()
+            .find(|member| member["name"] == "read")
+            .unwrap();
+        assert_eq!(read["controlled_modification"], false);
         let web_search = members
             .iter()
             .find(|member| member["name"] == "web_search")
@@ -539,25 +516,29 @@ mod tests {
         assert!(plugins.iter().all(|p| p["id"] != "state_machine"), "R2");
     }
 
-    #[test]
-    fn policy_catalog_projects_only_injected_policy_schemas() {
-        // Causes: C1 one injected policy; C2 no injected policies. Effects:
-        // E1 exact id/schema projection; E2 no application-owned fallback row.
-        // R1 C1 -> E1; R2 C2 -> E2.
-        let policies = policy_catalog(&[PolicyCapability::new(
-            "permission",
-            json!({"type": "object"}),
-        )]);
-        let perm = policies
-            .iter()
-            .find(|p| p["id"] == "permission")
-            .expect("permission policy is advertised");
-        assert!(
-            perm["config_schema"].is_object(),
-            "carries an object schema"
+    #[tokio::test]
+    async fn resource_input_capability_projects_the_provisioning_defaults_exactly() {
+        // Read-model cause/effect table: C1 the provisioning authority exposes
+        // all three closed input kinds -> E1 `/v1/capabilities` projects those
+        // exact values under `resource_inputs.default_mounts`; C2 no mutable
+        // config/store input exists -> E2 the projection cannot author a second
+        // default catalog. Rule R1=C1+C2 -> E1+E2.
+        let Json(projected) = get_capabilities(State(Arc::new(CapabilityState {
+            tools: Vec::new(),
+            plugins: Vec::new(),
+            runtimes: Arc::new(StaticRuntimeCapabilities(Vec::new())),
+        })))
+        .await;
+        let authoritative = awaken_provisioning_contract::resource_input_default_mounts();
+        assert_eq!(
+            projected["resource_inputs"]["default_mounts"],
+            serde_json::to_value(authoritative).unwrap(),
+            "R1"
         );
-        assert_eq!(perm["config_section"], "permission");
-        assert!(policy_catalog(&[]).is_empty(), "R2");
+        assert_eq!(
+            projected["resource_inputs"]["default_mounts"]["repository"],
+            "/workspace/repo"
+        );
     }
 
     #[test]

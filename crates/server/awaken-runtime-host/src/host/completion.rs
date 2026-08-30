@@ -874,6 +874,86 @@ mod completion_tests {
         }
     }
 
+    fn environment_with_isolation(
+        isolation: awaken_provisioning_contract::IsolationClass,
+    ) -> awaken_session_contract::EnvironmentSnapshot {
+        let mut environment = environment();
+        let isolation = match isolation {
+            awaken_provisioning_contract::IsolationClass::Workdir => "workdir",
+            awaken_provisioning_contract::IsolationClass::Namespace => "namespace",
+            awaken_provisioning_contract::IsolationClass::Container => "container",
+        };
+        environment.sandbox = serde_json::from_value(serde_json::json!({
+            "isolation": isolation,
+        }))
+        .expect("valid isolation-only SandboxOverride fixture");
+        environment.packages = Default::default();
+        environment.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+        environment
+    }
+
+    fn projected_acp_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
+        let mut models = host_models();
+        models.model_binding = ResolvedModelCandidate::try_provider_with_acp(
+            ModelBinding::new("provider", "model", "acp:claude"),
+            "provider@1",
+            "route@1",
+            "workspace",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://example.test".into(),
+                upstream_model: "model".into(),
+                processing_placement: None,
+            },
+            awaken_runtime_contract::resolved::AcpExecutionProfile {
+                capability_fingerprint: "sha256:test-capability".into(),
+                capability_adapter_version: "test".into(),
+                session_configuration: Default::default(),
+            },
+        )
+        .expect("coherent projected ACP candidate");
+        models
+    }
+
+    fn repository_manifest() -> awaken_session_contract::SessionResourceManifest {
+        use awaken_resource_contract::{
+            BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
+            ResourceAccess,
+        };
+        use awaken_session_contract::{
+            ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
+        };
+
+        SessionResourceManifest::new(
+            "workspace-a",
+            ResolvedSessionResources::try_new(
+                vec![ResolvedInput {
+                    binding_id: BindingId::new("repo-binding"),
+                    source: ResolvedInputSource::Repository {
+                        repository_id: RepositoryId::from("repo-a"),
+                        config: RepositoryConfigVersion {
+                            repository_id: "repo-a".into(),
+                            version: ConfigVersion::INITIAL,
+                            remote_url: "https://example.invalid/repo.git".into(),
+                            credential_binding: Some("credential-a".into()),
+                            initial_branch: None,
+                            initial_commit: None,
+                            clone_policy: ClonePolicy::default(),
+                        },
+                        credential: None,
+                    },
+                    mount_path: "/workspace/repo".into(),
+                    access: ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .expect("valid frozen Repository manifest"),
+        )
+    }
+
     fn resume_command(run_id: &str, correlation_id: &str, answer: &str) -> ResumeCommand {
         ResumeCommand {
             operation_id: None,
@@ -960,7 +1040,8 @@ mod completion_tests {
         // keeps the local Environment requirement.
         //
         // Decision table:
-        // R1 C1+C5 -> exact Environment enforcement, cooperative Hand paths.
+        // R1 C1+C5 -> exact Environment enforcement, including the Environment's
+        // Namespace-or-stronger path contract.
         // R2 C2+C5 -> R1 plus transparent/path-fidelity.
         // R3 C3+C5 -> trusted Workdir semantics; no artificial Namespace demand.
         // R4 C4+C5 -> default (no local Environment) vector.
@@ -981,31 +1062,11 @@ mod completion_tests {
             "R1 memory request"
         );
         assert!(
-            !native.sandbox.tool_transparent && !native.sandbox.path_fidelity,
-            "R1 hand"
+            native.sandbox.tool_transparent && native.sandbox.path_fidelity,
+            "R1 Container paths"
         );
 
-        let mut projected_acp = host_models();
-        projected_acp.model_binding = ResolvedModelCandidate::try_provider_with_acp(
-            ModelBinding::new("provider", "model", "acp:claude"),
-            "provider@1",
-            "route@1",
-            "workspace",
-            None,
-            awaken_runtime_contract::InferenceEndpoint {
-                adapter_kind: "anthropic".into(),
-                api_dialect: "anthropic_messages".into(),
-                base_url: "https://example.test".into(),
-                upstream_model: "model".into(),
-                processing_placement: None,
-            },
-            awaken_runtime_contract::resolved::AcpExecutionProfile {
-                capability_fingerprint: "sha256:test-capability".into(),
-                capability_adapter_version: "test".into(),
-                session_configuration: Default::default(),
-            },
-        )
-        .expect("coherent projected ACP candidate");
+        let projected_acp = projected_acp_models();
         let acp = remote_worker_placement(&projected_acp, Some(&frozen), None, true);
         assert!(
             acp.sandbox.tool_transparent && acp.sandbox.path_fidelity,
@@ -1058,6 +1119,92 @@ mod completion_tests {
         let image = remote_worker_placement(&host_models(), Some(&prepared), None, true);
         assert!(image.sandbox.custom_rootfs, "R5 rootfs");
         assert!(!image.sandbox.package_provisioning, "R5 packages");
+    }
+
+    #[test]
+    fn session_path_causes_compile_into_worker_admission_once() {
+        use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
+
+        // Cause/effect graph: C1 Environment asks for Workdir/Namespace; C2 the
+        // frozen SessionResourceManifest has/has-not a typed Repository input;
+        // C3 execution is cooperative Native/projected ACP; C4 the Worker
+        // advertises path_fidelity=false/true while every unrelated capability
+        // remains satisfied. E1 placement emits one SandboxRequirements vector;
+        // E2 the exact Worker predicate accepts/rejects it. Repository presence
+        // comes only from the frozen typed manifest, never from mount-path text.
+        //
+        // | Rule | Environment | Repository | Execution | Fidelity required |
+        // |---|---|---|---|---|
+        // | P1 | Workdir | no  | Native        | no  |
+        // | P2 | Workdir | no  | projected ACP | yes |
+        // | P3 | Workdir | yes | Native        | yes |
+        // | P4 | Workdir | yes | projected ACP | yes |
+        // | P5 | Namespace | no  | Native        | yes |
+        // | P6 | Namespace | no  | projected ACP | yes |
+        // | P7 | Namespace | yes | Native        | yes |
+        // | P8 | Namespace | yes | projected ACP | yes |
+        // For every P-row, C4=true accepts; C4=false accepts only P1 and rejects
+        // P2-P8. This is the same `SandboxCapabilities::satisfies_requirements`
+        // predicate consumed by Worker `can_claim`; no second admission table.
+        for isolation in [IsolationClass::Workdir, IsolationClass::Namespace] {
+            for has_repository in [false, true] {
+                for projected_acp in [false, true] {
+                    let environment = environment_with_isolation(isolation);
+                    let models = if projected_acp {
+                        projected_acp_models()
+                    } else {
+                        host_models()
+                    };
+                    let repository = has_repository.then(repository_manifest);
+                    let placement = remote_worker_placement(
+                        &models,
+                        Some(&environment),
+                        repository.as_ref(),
+                        true,
+                    );
+                    let fidelity_required =
+                        isolation >= IsolationClass::Namespace || has_repository || projected_acp;
+                    let expected_isolation = if fidelity_required {
+                        isolation.max(IsolationClass::Namespace)
+                    } else {
+                        isolation
+                    };
+                    assert_eq!(
+                        placement.sandbox.isolation, expected_isolation,
+                        "P isolation: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
+                    assert_eq!(
+                        placement.sandbox.tool_transparent, fidelity_required,
+                        "P transparency: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
+                    assert_eq!(
+                        placement.sandbox.path_fidelity, fidelity_required,
+                        "P fidelity: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
+
+                    for path_fidelity in [false, true] {
+                        let worker = SandboxCapabilities {
+                            isolation: IsolationClass::Namespace,
+                            tool_transparent: true,
+                            path_fidelity,
+                            enforced_readonly: true,
+                            network_isolation: true,
+                            enforced_network_allowlist: true,
+                            secret_egress_substitution: true,
+                            resource_limits: true,
+                            custom_rootfs: true,
+                            package_provisioning: true,
+                            control_services: Default::default(),
+                        };
+                        assert_eq!(
+                            worker.satisfies_requirements(&placement.sandbox),
+                            path_fidelity || !fidelity_required,
+                            "Worker claim: {isolation:?}/{has_repository}/{projected_acp}/{path_fidelity}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1124,7 +1271,14 @@ mod completion_tests {
         use awaken_agent_contract::agent::{run::Id as AgentRunId, thread::Id as ThreadId};
         use awaken_runtime_contract::RunActivation;
 
-        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF);
+        // Cause/effect rule: C0 the ordinary Dispatch runtime composition is
+        // present and C1 its frozen model is explicitly unconfigured. E1 context
+        // creation succeeds through C0; E2 dispatch rejects C1 before enqueue.
+        let host = Arc::new(SharedHost::new(
+            Arc::new(NoModelConfiguredExecutor),
+            UNCONFIGURED_MODEL_REF,
+        ));
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let ctx = host
             .ctx_for("unconfigured-model", None)
             .await
@@ -1700,45 +1854,12 @@ mod completion_tests {
 
     #[test]
     fn resource_placement_requires_resource_and_repository_credential_capabilities() {
-        use awaken_resource_contract::{
-            BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
-            ResourceAccess,
-        };
-        use awaken_session_contract::{
-            ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
-        };
-
         // Cause/effect graph: C1=resource manifest exists; C2=repository has a
         // credential; C3=input is read-only. Effects: E1=resource realization
         // capability; E2=repository credential capability; E3=enforced read-only
         // Sandbox capability. One row with C1+C2+C3 covers all conjunctive effects;
         // the following empty-manifest test owns the !C2/!C3 revocation row.
-        let resources = SessionResourceManifest::new(
-            "workspace-a",
-            ResolvedSessionResources::try_new(
-                vec![ResolvedInput {
-                    binding_id: BindingId::new("repo-binding"),
-                    source: ResolvedInputSource::Repository {
-                        repository_id: RepositoryId::from("repo-a"),
-                        config: RepositoryConfigVersion {
-                            repository_id: "repo-a".into(),
-                            version: ConfigVersion::INITIAL,
-                            remote_url: "https://example.invalid/repo.git".into(),
-                            credential_binding: Some("credential-a".into()),
-                            initial_branch: None,
-                            initial_commit: None,
-                            clone_policy: ClonePolicy::default(),
-                        },
-                        credential: None,
-                    },
-                    mount_path: "/workspace/repo".into(),
-                    access: ResourceAccess::ReadOnly,
-                    instructions: None,
-                }],
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let resources = repository_manifest();
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(
             placement

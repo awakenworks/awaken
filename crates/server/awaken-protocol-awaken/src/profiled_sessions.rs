@@ -255,7 +255,7 @@ mod tests {
             repositories: vec![ProfiledSessionRepository {
                 binding_id: Some("repository-input-a".into()),
                 remote_url: "https://github.com/acme/repository".into(),
-                mount_path: "repository".into(),
+                mount_path: "/workspace/repository".into(),
                 credential: Some(CredentialRef {
                     id: "credential-source-a".into(),
                     revision: 7,

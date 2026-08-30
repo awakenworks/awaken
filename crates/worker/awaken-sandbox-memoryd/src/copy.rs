@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use awaken_provisioning_contract::MemoryMaterializationHead;
 use awaken_resource_contract::{MemErr, MemoryRepository, memory_sha256_hex as sha256_hex};
 
 use crate::FuseError;
@@ -31,18 +32,12 @@ pub fn fuse_available() -> bool {
     on_path("fusermount") || on_path("fusermount3")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CopyHead {
-    id: String,
-    sha256: String,
-}
-
 /// Exact store heads observed while a copy realization was materialized. This is
 /// transient mount state, not another resource/configuration model: it exists only
 /// so teardown can reconcile agent edits without clobbering concurrent writers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CopySnapshot {
-    heads: BTreeMap<String, CopyHead>,
+    heads: BTreeMap<String, MemoryMaterializationHead>,
 }
 
 impl CopySnapshot {
@@ -56,6 +51,37 @@ impl CopySnapshot {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.heads.is_empty()
+    }
+
+    /// Secret-free CAS bases persisted with the current Sandbox handle. The
+    /// path-ordered result has one canonical representation across providers.
+    #[must_use]
+    pub fn materialization_heads(&self) -> Vec<MemoryMaterializationHead> {
+        self.heads.values().cloned().collect()
+    }
+
+    /// Rebuild the transient reconciliation cursor from the exact bases stored
+    /// in a durable Sandbox handle. Missing, duplicate, or malformed identities
+    /// fail closed instead of taking a fresh snapshot of current durable heads.
+    pub fn from_materialization_heads(
+        heads: &[MemoryMaterializationHead],
+    ) -> Result<Self, FuseError> {
+        let mut snapshot = Self::default();
+        for head in heads {
+            if head.path.trim().is_empty()
+                || head.id.trim().is_empty()
+                || head.content_sha256.trim().is_empty()
+                || snapshot
+                    .heads
+                    .insert(head.path.clone(), head.clone())
+                    .is_some()
+            {
+                return Err(FuseError::Internal(
+                    "invalid or duplicate Memory materialization head".into(),
+                ));
+            }
+        }
+        Ok(snapshot)
     }
 }
 
@@ -90,28 +116,13 @@ pub async fn materialize(
         }
         std::fs::write(&dest, memory.content.unwrap_or_default())
             .map_err(|e| FuseError::Internal(e.to_string()))?;
+        let path = memory.path;
         snapshot.heads.insert(
-            memory.path,
-            CopyHead {
+            path.clone(),
+            MemoryMaterializationHead {
+                path,
                 id: memory.id,
-                sha256: memory.content_sha256,
-            },
-        );
-    }
-    Ok(snapshot)
-}
-
-/// Capture only the durable heads, without writing a projection. Recovery uses
-/// this after reading the surviving sandbox copy so the subsequent harvest keeps
-/// the same compare-and-swap and concurrent-writer behavior as a live guard.
-pub async fn snapshot(fs: &dyn MemoryRepository, store: &str) -> Result<CopySnapshot, FuseError> {
-    let mut snapshot = CopySnapshot::default();
-    for memory in fs.snapshot_heads(store).await? {
-        snapshot.heads.insert(
-            memory.path,
-            CopyHead {
-                id: memory.id,
-                sha256: memory.content_sha256,
+                content_sha256: memory.content_sha256,
             },
         );
     }
@@ -144,16 +155,20 @@ pub async fn harvest(
         };
         match snapshot.heads.get(path).cloned() {
             Some(base) => {
-                if sha256_hex(&content) == base.sha256 {
+                if sha256_hex(&content) == base.content_sha256 {
                     continue;
                 }
-                match fs.update(store, &base.id, &content, &base.sha256).await {
+                match fs
+                    .update(store, &base.id, &content, &base.content_sha256)
+                    .await
+                {
                     Ok(updated) => {
                         snapshot.heads.insert(
                             path.clone(),
-                            CopyHead {
+                            MemoryMaterializationHead {
+                                path: path.clone(),
                                 id: updated.id,
-                                sha256: updated.content_sha256,
+                                content_sha256: updated.content_sha256,
                             },
                         );
                         report.changed += 1;
@@ -171,9 +186,10 @@ pub async fn harvest(
                 Ok(created) => {
                     snapshot.heads.insert(
                         path.clone(),
-                        CopyHead {
+                        MemoryMaterializationHead {
+                            path: path.clone(),
                             id: created.id,
-                            sha256: created.content_sha256,
+                            content_sha256: created.content_sha256,
                         },
                     );
                     report.changed += 1;
@@ -185,9 +201,10 @@ pub async fn harvest(
                     {
                         snapshot.heads.insert(
                             path.clone(),
-                            CopyHead {
+                            MemoryMaterializationHead {
+                                path: path.clone(),
                                 id: current.id,
-                                sha256: current.content_sha256,
+                                content_sha256: current.content_sha256,
                             },
                         );
                     } else {
@@ -212,7 +229,7 @@ pub async fn harvest(
         .collect();
     for (path, base) in removed {
         match fs
-            .delete_if_match(store, &path, &base.id, &base.sha256)
+            .delete_if_match(store, &path, &base.id, &base.content_sha256)
             .await
         {
             Ok(deleted) => {
@@ -397,7 +414,9 @@ mod tests {
             "S1"
         );
 
-        let recovered = rt.block_on(snapshot(&fs, "s")).expect("S2");
+        let recovered =
+            CopySnapshot::from_materialization_heads(&materialized.materialization_heads())
+                .expect("S2");
         assert_eq!(recovered.len(), 2, "S2");
         std::fs::remove_dir_all(dir).ok();
     }

@@ -2,6 +2,7 @@
 // identity while the model receives an operator-selected alias and description.
 import { configureSyntheticModel } from "../support/models.mjs";
 import { BACKEND, requireOk } from "../support/control-plane.mjs";
+import { typedAgentTools } from "../../test-support/agent-tools.mjs";
 
 const AGENT_ID = `tool-presentation-proof-${Date.now()}`;
 const MODEL_ID = "tool-presentation-proof-model";
@@ -31,7 +32,7 @@ export async function run({ page, goto, checkpoint, expect, click, type }) {
     const response = await page.request.get(`${BACKEND}/v1/config/agents/${AGENT_ID}`);
     await requireOk(response, "Tool presentation Agent readback");
     const config = await response.json();
-    expect(config.tools).toEqual(["read"]);
+    expect(config.tools).toEqual(typedAgentTools(["read"]));
     expect(config.mcp_servers ?? []).toEqual([]);
     expect(config.tool_overrides).toEqual(expect.arrayContaining([
       expect.objectContaining({ target: "read", alias: "read_file", description: "Read a file from the sandbox." }),

@@ -3,15 +3,17 @@
 use std::path::{Path, PathBuf};
 
 use awaken_provisioning_contract as pc;
+use awaken_sandbox_fs::publish_directory_noreplace;
 
 use crate::{IsolatedRoot, SandboxError, jailed_at};
 
 /// Clone a git repository into `<root>/<logical>` **host-side** (ADR-0038). The
 /// git process is the only credential holder: one command-scoped credential
 /// helper supplies Basic auth while `clone` receives and persists only the clean
-/// URL. Fail-closed: a bad `logical` or non-zero git exit removes only the
-/// newly-created validated destination, so neither a partial target nor its Git
-/// config survives.
+/// URL. The complete tree is built and verified in a sibling staging directory,
+/// then published with one atomic no-replace rename; the Agent-visible
+/// destination therefore never exposes a checkout-in-progress and an object
+/// racing into that name is never overwritten.
 pub(crate) fn provision_repo_at(
     root: &IsolatedRoot,
     logical: &str,
@@ -21,22 +23,31 @@ pub(crate) fn provision_repo_at(
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<(), SandboxError> {
     let dest = jailed_at(root, logical)?;
-    match std::fs::symlink_metadata(&dest) {
-        Ok(_) if realized_repository_matches(&dest, url, initial_branch, initial_commit) => {
-            return Ok(());
+    let destination_state =
+        repository_destination_state(&dest, url, initial_branch, initial_commit)?;
+    match destination_state {
+        RepositoryDestinationState::Exact => return Ok(()),
+        RepositoryDestinationState::CompleteDifferent => {
+            return Err(different_repository_error(&dest));
         }
-        Ok(_) => {
+        RepositoryDestinationState::Incomplete => {
             return Err(SandboxError(format!(
-                "repository destination `{}` already exists with a different realization",
+                "repository destination `{}` is occupied by an incomplete or non-Repository tree",
                 dest.display()
             )));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(SandboxError(error.to_string())),
+        RepositoryDestinationState::Absent => {}
     }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| SandboxError(error.to_string()))?;
-    }
+
+    let parent = dest.parent().ok_or_else(|| {
+        SandboxError(format!(
+            "repository destination `{}` has no parent",
+            dest.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| SandboxError(error.to_string()))?;
+    let stage_guard = repository_stage(parent)?;
+    let stage = stage_guard.path().to_path_buf();
     let mut args = vec!["clone".to_string(), "--no-checkout".to_string()];
     if let Some(branch) = initial_branch {
         args.push("--branch".into());
@@ -44,32 +55,158 @@ pub(crate) fn provision_repo_at(
     }
     args.push("--".into());
     args.push(url.to_string());
-    args.push(dest.to_string_lossy().into_owned());
+    args.push(stage.to_string_lossy().into_owned());
     let realization = (|| {
         credentialed_git_run(url, &args, credential)?;
         if let Some(commit) = initial_commit {
-            run_git(Some(&dest), &["checkout", "--detach", commit])?;
+            run_git(Some(&stage), &["checkout", "--detach", commit])?;
         } else {
             // Populate the selected/default branch only after the credentialed
             // process has exited. Repository filters and checkout behavior never
             // inherit the operation credential.
-            run_git(Some(&dest), &["reset", "--hard", "HEAD"])?;
+            run_git(Some(&stage), &["reset", "--hard", "HEAD"])?;
+        }
+        if !realized_repository_matches(&stage, url, initial_branch, initial_commit) {
+            return Err(SandboxError(
+                "staged repository does not match the exact realization plan".into(),
+            ));
         }
         Ok(())
     })();
     if let Err(error) = realization {
-        match std::fs::remove_dir_all(&dest) {
-            Ok(()) => return Err(error),
-            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => return Err(error),
-            Err(cleanup) => {
-                return Err(SandboxError(format!(
-                    "{error}; failed to remove partial repository `{}`: {cleanup}",
-                    dest.display()
-                )));
-            }
-        }
+        return Err(cleanup_error(error, stage_guard));
     }
-    Ok(())
+
+    // Re-evaluate after the potentially long network operation. A concurrent
+    // exact publication wins; a complete different tree is never overwritten.
+    let destination_state =
+        match repository_destination_state(&dest, url, initial_branch, initial_commit) {
+            Ok(state) => state,
+            Err(error) => return Err(cleanup_error(error, stage_guard)),
+        };
+    match destination_state {
+        RepositoryDestinationState::Exact => {
+            return stage_guard.close().map_err(|error| {
+                SandboxError(format!(
+                    "remove current-attempt Repository stage `{}`: {error}",
+                    stage.display()
+                ))
+            });
+        }
+        RepositoryDestinationState::CompleteDifferent => {
+            let error = different_repository_error(&dest);
+            return Err(cleanup_error(error, stage_guard));
+        }
+        RepositoryDestinationState::Incomplete => {
+            let error = SandboxError(format!(
+                "repository destination `{}` became occupied before atomic publication",
+                dest.display()
+            ));
+            return Err(cleanup_error(error, stage_guard));
+        }
+        RepositoryDestinationState::Absent => {}
+    }
+
+    if let Err(error) = publish_directory_noreplace(&stage, &dest) {
+        let error = SandboxError(format!(
+            "atomically publish staged repository `{}` to absent destination `{}`: {error}",
+            stage.display(),
+            dest.display()
+        ));
+        if repository_destination_state(&dest, url, initial_branch, initial_commit)
+            .is_ok_and(|state| state == RepositoryDestinationState::Exact)
+        {
+            return stage_guard.close().map_err(|cleanup| {
+                SandboxError(format!(
+                    "{error}; exact concurrent Repository won but current stage `{}` could not be removed: {cleanup}",
+                    stage.display()
+                ))
+            });
+        }
+        return Err(cleanup_error(error, stage_guard));
+    }
+    // The kernel moved exactly the name owned by this TempDir. Disarm its old
+    // path cleanup before verifying the new final name; post-verification failure
+    // is fail-closed and never grants authority to remove the published tree.
+    let _published_stage = stage_guard.keep();
+    if realized_repository_matches(&dest, url, initial_branch, initial_commit) {
+        Ok(())
+    } else {
+        Err(SandboxError(format!(
+            "atomically published Repository `{}` failed exact post-publication verification",
+            dest.display()
+        )))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepositoryDestinationState {
+    Absent,
+    Exact,
+    CompleteDifferent,
+    Incomplete,
+}
+
+fn repository_destination_state(
+    destination: &Path,
+    url: &str,
+    initial_branch: Option<&str>,
+    initial_commit: Option<&str>,
+) -> Result<RepositoryDestinationState, SandboxError> {
+    let metadata = match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RepositoryDestinationState::Absent);
+        }
+        Err(error) => return Err(SandboxError(error.to_string())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(RepositoryDestinationState::Incomplete);
+    }
+    if realized_repository_matches(destination, url, initial_branch, initial_commit) {
+        Ok(RepositoryDestinationState::Exact)
+    } else if complete_repository(destination) {
+        Ok(RepositoryDestinationState::CompleteDifferent)
+    } else {
+        Ok(RepositoryDestinationState::Incomplete)
+    }
+}
+
+fn complete_repository(destination: &Path) -> bool {
+    git_stdout(Some(destination), &["rev-parse", "--is-inside-work-tree"])
+        .is_ok_and(|value| value.trim() == "true")
+        && git_stdout(Some(destination), &["remote", "get-url", "origin"]).is_ok()
+        && git_stdout(
+            Some(destination),
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+        )
+        .is_ok()
+}
+
+fn repository_stage(parent: &Path) -> Result<tempfile::TempDir, SandboxError> {
+    tempfile::Builder::new()
+        .prefix(".awaken-repository-")
+        .suffix(".stage")
+        .tempdir_in(parent)
+        .map_err(|error| SandboxError(error.to_string()))
+}
+
+fn cleanup_error(error: SandboxError, stage: tempfile::TempDir) -> SandboxError {
+    let path = stage.path().to_path_buf();
+    match stage.close() {
+        Ok(()) => error,
+        Err(cleanup) => SandboxError(format!(
+            "{error}; failed to remove owned repository stage `{}`: {cleanup}",
+            path.display()
+        )),
+    }
+}
+
+fn different_repository_error(destination: &Path) -> SandboxError {
+    SandboxError(format!(
+        "repository destination `{}` already contains a complete different realization",
+        destination.display()
+    ))
 }
 
 fn realized_repository_matches(
@@ -78,8 +215,26 @@ fn realized_repository_matches(
     initial_branch: Option<&str>,
     initial_commit: Option<&str>,
 ) -> bool {
+    if !std::fs::symlink_metadata(destination)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        return false;
+    }
+    if !std::fs::symlink_metadata(destination.join(".git"))
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        return false;
+    }
     if !git_stdout(Some(destination), &["remote", "get-url", "origin"])
         .is_ok_and(|actual| actual.trim() == url)
+    {
+        return false;
+    }
+    if git_stdout(
+        Some(destination),
+        &["rev-parse", "--verify", "HEAD^{commit}"],
+    )
+    .is_err()
     {
         return false;
     }
@@ -759,6 +914,66 @@ mod tests {
 
     use super::*;
 
+    /// Local/Namespace Repository crash-cut cause/effect graph and decision
+    /// table. Causes: C1 final is absent/exact/complete-different/incomplete;
+    /// C2 a current-attempt stage is exact/failed; C3 a name appears after the
+    /// preflight but before publish. Effects: E1 publish only absent with the
+    /// kernel's no-replace primitive; E2 exact is an idempotent no-op; E3 every
+    /// non-exact occupied final is preserved and rejected; E4 an ordinary
+    /// failure removes only the current attempt's random stage; E5 a process
+    /// crash can leave only that random stage for sandbox terminal cleanup.
+    /// Rules: R1 absent+exact-stage=>E1; R2 exact=>E2; R3/R4
+    /// complete-different|incomplete=>E3; R5 C3=>E3; R6 failed-stage=>E4.
+    /// This test owns R4/R5; provider replay tests own R1-R3, and the checkout
+    /// failure test owns R6. R5 is the collision that a check-then-rename misses.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn repository_publication_never_replaces_an_occupied_final_name() {
+        let temporary = tempfile::tempdir().expect("temporary sandbox parent");
+        let jail = temporary.path().join("jail");
+        let workspace = jail.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let root = IsolatedRoot::new(&jail);
+        let incomplete = workspace.join("incomplete");
+        std::fs::create_dir(&incomplete).expect("occupied incomplete destination");
+        std::fs::write(incomplete.join("PRESERVED"), "user bytes").expect("incomplete marker");
+
+        provision_repo_at(
+            &root,
+            "workspace/incomplete",
+            "https://network-must-not-run.invalid/repository",
+            None,
+            None,
+            None,
+        )
+        .expect_err("R4 incomplete final rejects before Git");
+        assert_eq!(
+            std::fs::read_to_string(incomplete.join("PRESERVED")).unwrap(),
+            "user bytes",
+            "R4 final bytes are never removed"
+        );
+
+        let stage = workspace.join(".awaken-repository-current-attempt.stage");
+        let raced_final = workspace.join("raced-final");
+        std::fs::create_dir(&stage).expect("current attempt stage");
+        std::fs::write(stage.join("STAGED"), "stage bytes").expect("stage marker");
+        std::fs::create_dir(&raced_final).expect("racing final");
+        std::fs::write(raced_final.join("PRESERVED"), "racing bytes").expect("racing marker");
+
+        publish_directory_noreplace(&stage, &raced_final)
+            .expect_err("R5 kernel rejects an occupied name");
+        assert_eq!(
+            std::fs::read_to_string(stage.join("STAGED")).unwrap(),
+            "stage bytes",
+            "R5 current stage remains available to its owner"
+        );
+        assert_eq!(
+            std::fs::read_to_string(raced_final.join("PRESERVED")).unwrap(),
+            "racing bytes",
+            "R5 racing final is not replaced"
+        );
+    }
+
     fn read_http_request(stream: &mut std::net::TcpStream) -> (String, Vec<String>) {
         let mut request_line = String::new();
         let mut headers = Vec::new();
@@ -1427,6 +1642,17 @@ mod tests {
             "C2 no partial target"
         );
         assert!(
+            std::fs::read_dir(root.root().join("workspace"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    !name.starts_with(".awaken-repository-") || !name.ends_with(".stage")
+                }),
+            "R6/C2 ordinary failure removes only its current-attempt stage"
+        );
+        assert!(
             server.saw_authorization.load(Ordering::SeqCst),
             "C1+C2 authenticated"
         );
@@ -1471,7 +1697,7 @@ mod tests {
         let root = IsolatedRoot::new(tmp.path());
         let plan = awaken_provisioning_contract::RepositoryRealizationPlan {
             repository_id: "repo".into(),
-            mount_path: "repo".into(),
+            mount_path: "/workspace/repo".into(),
             source_remote_url: "https://invalid.example/repo".into(),
             transport_url: "https://invalid.example/repo".into(),
             initial_branch: None,
@@ -1657,7 +1883,7 @@ mod tests {
         let root = IsolatedRoot::new(tmp.path());
         let plan = awaken_provisioning_contract::RepositoryRealizationPlan {
             repository_id: "repo-1".into(),
-            mount_path: "repo".into(),
+            mount_path: "/workspace/repo".into(),
             source_remote_url: remote.to_string_lossy().into_owned(),
             transport_url: remote.to_string_lossy().into_owned(),
             initial_branch: None,

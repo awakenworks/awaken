@@ -615,6 +615,140 @@ async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
     assert!(repo.pending_mutations().await.unwrap().is_empty());
 }
 
+/// Effect-fenced write-back cause/effect table. C1 the frozen source revision
+/// is current; C2 the stable physical/reference write-back id and refreshed
+/// bytes match; C3 the source CAS response is delivered/lost; C4 a retry
+/// changes the stable id or bytes. W1 C1+C2+delivered publishes one successor.
+/// W2 C1+C2+lost leaves the committed WAL for recovery, and the exact retry
+/// recognizes that successor. W3/W4 C4 rejects without another source or
+/// material. The ordinary mutation recovery remains the sole owner of
+/// post-publication material retirement.
+///
+/// | Rule | current | write-back id | bytes | apply response | Effect |
+/// |---|---|---|---|---|---|
+/// | W1 | frozen r1 | exact | exact | delivered | publish r2 once |
+/// | W2 | frozen r1 | exact | exact | lost | exact retry returns r2 |
+/// | W3 | published r2 | different | any | - | conflict/no write |
+/// | W4 | published r2 | exact | different | - | conflict/no write |
+#[tokio::test]
+async fn effect_writeback_replays_a_lost_source_cas_response_exactly() {
+    let store = InMemorySecretStore::new();
+    let seed_repo = InMemoryCredentialRepo::new();
+    let delivered_before = enter_credential(
+        CredentialCreateParams {
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("native-cli".into()),
+            env_key: None,
+            secret: Some(RedactedString::new("before")),
+            oauth_command: None,
+        },
+        &store,
+        &seed_repo,
+    )
+    .await
+    .unwrap();
+    let delivered = write_back_credential_material_for_effect(
+        &delivered_before.id,
+        delivered_before.version,
+        "physical-reference-writeback-delivered",
+        RedactedString::new("after-delivered"),
+        &store,
+        &seed_repo,
+    )
+    .await
+    .expect("W1 delivered apply");
+    assert_eq!(delivered.version, delivered_before.version + 1, "W1");
+    assert!(
+        seed_repo.pending_mutations().await.unwrap().is_empty(),
+        "W1"
+    );
+
+    let before = enter_credential(
+        CredentialCreateParams {
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("native-cli".into()),
+            env_key: None,
+            secret: Some(RedactedString::new("before-lost-response")),
+            oauth_command: None,
+        },
+        &store,
+        &seed_repo,
+    )
+    .await
+    .unwrap();
+    let repo = RejectingRepo::default();
+    repo.inner.put(before.clone()).await.unwrap();
+
+    let first = write_back_credential_material_for_effect(
+        &before.id,
+        before.version,
+        "physical-reference-writeback-1",
+        RedactedString::new("after"),
+        &store,
+        &repo,
+    )
+    .await;
+    assert!(
+        matches!(first, Err(CredentialError::Storage(message)) if message == "injected row failure"),
+        "W2 ambiguous apply"
+    );
+    let published = repo.get(&before.id).await.unwrap();
+    assert_eq!(published.version, before.version + 1, "W2 committed source");
+    assert_eq!(repo.pending_mutations().await.unwrap().len(), 1, "W2 WAL");
+
+    let replay = write_back_credential_material_for_effect(
+        &before.id,
+        before.version,
+        "physical-reference-writeback-1",
+        RedactedString::new("after"),
+        &store,
+        &repo,
+    )
+    .await
+    .expect("W2 exact response-loss replay");
+    assert_eq!(replay, published, "W2 one successor");
+    assert!(
+        matches!(
+            write_back_credential_material_for_effect(
+                &before.id,
+                before.version,
+                "other-physical-or-reference-writeback",
+                RedactedString::new("after"),
+                &store,
+                &repo,
+            )
+            .await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "W3"
+    );
+    assert!(
+        matches!(
+            write_back_credential_material_for_effect(
+                &before.id,
+                before.version,
+                "physical-reference-writeback-1",
+                RedactedString::new("different"),
+                &store,
+                &repo,
+            )
+            .await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "W4"
+    );
+    assert_eq!(repo.get(&before.id).await.unwrap(), published, "W3/W4");
+
+    assert_eq!(
+        recover_credential_mutations(&store, &repo).await.unwrap(),
+        1
+    );
+    assert!(repo.pending_mutations().await.unwrap().is_empty());
+    assert_eq!(store.inventory().await.unwrap().len(), 2, "W1-W4");
+}
+
 /// Rotation material-publication cause/effect graph: C1 the exact active
 /// revision is current; C2 the replacement write returns success; C3 the same
 /// SecretStore can open the exact replacement before CAS. C1+C2+C3 publishes

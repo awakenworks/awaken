@@ -382,7 +382,9 @@ impl SharedHost {
                         as Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>
                 });
         let artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_run_ingress::ArtifactPublicationFence,
+                >,
         > = {
             #[cfg(test)]
             if let Some(application) = &file_application {
@@ -591,6 +593,17 @@ impl SharedHost {
         self
     }
 
+    /// Install the same authenticated Control client as the pre-effect Session
+    /// Environment root authority on a database-less Worker.
+    #[must_use]
+    pub fn with_environment_binding_sink(
+        mut self,
+        sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+    ) -> Self {
+        self.environment_binding_sink = std::sync::RwLock::new(Some(sink));
+        self
+    }
+
     /// Platform-managed local workspace used when no authenticated/path scope
     /// exists. Process startup may override it with a provisioned coordinate.
     #[must_use]
@@ -654,7 +667,9 @@ impl SharedHost {
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
         content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
         artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_run_ingress::ArtifactPublicationFence,
+                >,
         >,
     ) -> Self {
         self.file_content_source = content_source;
@@ -669,7 +684,9 @@ impl SharedHost {
     pub fn with_artifact_publisher(
         mut self,
         publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+            dyn awaken_resource_contract::ArtifactPublisher<
+                    awaken_run_ingress::ArtifactPublicationFence,
+                >,
         >,
     ) -> Self {
         // This is the database-less Worker startup edge. Retaining the
@@ -857,14 +874,14 @@ impl SharedHost {
     /// Install the Resource transport's opaque Memory capability encoder.
     /// The execution host does not own or inspect the wire representation.
     #[must_use]
-    pub fn with_memory_reference_encoder(
-        mut self,
-        encoder: Arc<
-            dyn awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                    awaken_run_ingress::RunClaim,
-                >,
-        >,
-    ) -> Self {
+    pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
+    where
+        E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_run_ingress::RunClaim,
+            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                awaken_session_contract::SessionTerminalMemoryIntent,
+            > + 'static,
+    {
         self.memory_reference_encoder = Some(encoder);
         self
     }
@@ -1246,7 +1263,7 @@ impl SharedHost {
         }
         self.session_provider
             .prewarm(
-                &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+                &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
                 target,
             )
             .await
@@ -1257,14 +1274,14 @@ impl SharedHost {
         &self,
     ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
         awaken_provisioning_contract::SandboxCapacityShapeId::from_spec(
-            &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+            &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
         )
         .expect("default Environment capacity spec is mount-less")
     }
 
     pub async fn discard_default_environment_capacity(&self) {
         self.session_provider
-            .discard_capacity(&crate::provisioning::agent_run_sandbox_spec(
+            .discard_capacity(&crate::provisioning::default_session_sandbox_spec(
                 "environment-warmup",
             ))
             .await;
@@ -1580,11 +1597,15 @@ impl SharedHost {
 
 fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
     let path = store_dir.map(|dir| dir.join("platform-workspace-id"));
-    if let Some(path) = &path
-        && let Ok(existing) = std::fs::read_to_string(path)
-        && !existing.trim().is_empty()
-    {
-        return existing.trim().to_string();
+    if let Some(path) = &path {
+        match read_local_workspace(path) {
+            Ok(Some(existing)) => return existing,
+            Ok(None) => {}
+            Err(error) => panic!(
+                "read platform workspace identity `{}`: {error}",
+                path.display()
+            ),
+        }
     }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1595,20 +1616,50 @@ fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create platform workspace directory");
         }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
+        match awaken_sandbox_fs::publish_file_noreplace(&path, generated.as_bytes()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return read_local_workspace(&path)
+                    .expect("read concurrently published platform workspace identity")
+                    .expect("concurrent platform workspace publisher wrote an identity");
+            }
+            Err(error) => panic!(
+                "persist platform workspace identity `{}`: {error}",
+                path.display()
+            ),
         }
-        std::io::Write::write_all(
-            &mut options.open(path).expect("create platform workspace id"),
-            generated.as_bytes(),
-        )
-        .expect("persist platform workspace id");
     }
     generated
+}
+
+fn read_local_workspace(path: &std::path::Path) -> std::io::Result<Option<String>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    #[cfg(unix)]
+    let aliased = {
+        use std::os::unix::fs::MetadataExt as _;
+        metadata.nlink() != 1
+    };
+    #[cfg(not(unix))]
+    let aliased = false;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || aliased {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("`{}` is not a regular identity file", path.display()),
+        ));
+    }
+    let existing = std::fs::read_to_string(path)?;
+    let existing = existing.trim();
+    if existing.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("`{}` contains an empty identity", path.display()),
+        ));
+    }
+    Ok(Some(existing.to_owned()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1636,6 +1687,64 @@ fn local_memory_extraction_repository(
 #[cfg(test)]
 mod startup_tests {
     use super::*;
+
+    #[test]
+    fn durable_workspace_identity_publication_is_atomic_and_fail_closed() {
+        // Cause/effect table: C1 identity absent/valid/empty/non-regular; C2 one
+        // or two startup processes publish concurrently. R1 absent+one writes a
+        // complete durable identity; R2 absent+two returns the same winning
+        // identity to both and never truncates it; R3 valid replays byte-for-byte;
+        // R4 empty or non-regular fails closed without replacement. The
+        // policy-free no-replace syscall remains owned by awaken-sandbox-fs.
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::sync::Arc::new(directory.path().to_path_buf());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let spawn = |root: std::sync::Arc<std::path::PathBuf>,
+                     barrier: std::sync::Arc<std::sync::Barrier>| {
+            std::thread::spawn(move || {
+                barrier.wait();
+                resolve_local_workspace(Some(root.as_path()))
+            })
+        };
+        let one = spawn(root.clone(), barrier.clone());
+        let two = spawn(root.clone(), barrier);
+        let one = one.join().unwrap();
+        let two = two.join().unwrap();
+        assert_eq!(one, two, "R2");
+        assert_eq!(resolve_local_workspace(Some(root.as_path())), one, "R3");
+
+        let invalid = tempfile::tempdir().unwrap();
+        std::fs::write(invalid.path().join("platform-workspace-id"), b"").unwrap();
+        assert!(
+            std::panic::catch_unwind(|| resolve_local_workspace(Some(invalid.path()))).is_err(),
+            "R4"
+        );
+
+        #[cfg(unix)]
+        {
+            let linked = tempfile::tempdir().unwrap();
+            let target = linked.path().join("foreign");
+            std::fs::write(&target, b"foreign-workspace").unwrap();
+            std::os::unix::fs::symlink(&target, linked.path().join("platform-workspace-id"))
+                .unwrap();
+            assert!(
+                std::panic::catch_unwind(|| resolve_local_workspace(Some(linked.path()))).is_err(),
+                "R4"
+            );
+            assert_eq!(std::fs::read(target).unwrap(), b"foreign-workspace", "R4");
+
+            let hardlinked = tempfile::tempdir().unwrap();
+            let target = hardlinked.path().join("foreign");
+            std::fs::write(&target, b"foreign-workspace").unwrap();
+            std::fs::hard_link(&target, hardlinked.path().join("platform-workspace-id")).unwrap();
+            assert!(
+                std::panic::catch_unwind(|| { resolve_local_workspace(Some(hardlinked.path())) })
+                    .is_err(),
+                "R4"
+            );
+            assert_eq!(std::fs::read(target).unwrap(), b"foreign-workspace", "R4");
+        }
+    }
 
     #[test]
     fn explicit_extraction_repository_is_the_initial_authority() {

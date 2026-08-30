@@ -4,6 +4,7 @@
 //   AWAKEN_HTTP_URL=http://127.0.0.1:38091 node web/scripts/smoke.mjs
 
 import { createServer } from "node:http";
+import { typedAgentTools } from "../test-support/agent-tools.mjs";
 
 const BASE = process.env.AWAKEN_HTTP_URL ?? "http://127.0.0.1:38080";
 let failures = 0;
@@ -127,7 +128,19 @@ const cfgAgent = {
   name: "Smoke Agent",
   model: { id: "claude" },
   system: "You are a smoke-test agent.",
-  tools: ["read"],
+  // Tool-binding decision table: C1 Agent read is selected and C2 one `docs`
+  // MCP server is declared. C1+C2 must produce E1 exactly one typed Agent
+  // ToolSet and E2 exactly one matching MCP ToolSet; a missing/duplicate MCP
+  // policy fails the production Managed binding validator.
+  tools: [
+    ...typedAgentTools(["read"]),
+    {
+      type: "mcp_toolset",
+      mcp_server_name: "docs",
+      configs: [],
+      default_config: { enabled: true, permission_policy: { type: "always_ask" } },
+    },
+  ],
   mcp_servers: [{
     type: "url",
     name: "docs",
@@ -146,8 +159,21 @@ const cfgAgent = {
 };
 await step("author config agent", "PUT", "/v1/config/agents/smoke-agent", cfgAgent, (s, p) => s === 200 && p.id === "smoke-agent");
 await step("validate config agent", "POST", "/v1/config/agents/smoke-agent/validate", cfgAgent, (s, p) => s === 200 && p.valid === true);
-// The stored object round-trips in the managed shape: model {id}, system, published flag.
-await step("get config agent (managed shape)", "GET", "/v1/config/agents/smoke-agent", undefined, (s, p) => s === 200 && p.type === "agent" && p.model?.id === "claude" && p.system === "You are a smoke-test agent." && p.published === false);
+// The stored object round-trips in the managed shape. The counts preserve the
+// C1/C2 decision rule above instead of accepting a second policy for either source.
+await step("get config agent (managed shape)", "GET", "/v1/config/agents/smoke-agent", undefined, (s, p) => {
+  const agentToolsets = p?.tools?.filter((tool) => tool.type === "agent_toolset_20260401") ?? [];
+  const docsToolsets = p?.tools?.filter((tool) =>
+    tool.type === "mcp_toolset" && tool.mcp_server_name === "docs") ?? [];
+  return s === 200 &&
+    p.type === "agent" &&
+    p.model?.id === "claude" &&
+    p.system === "You are a smoke-test agent." &&
+    p.published === false &&
+    agentToolsets.length === 1 &&
+    agentToolsets[0].configs?.some((config) => config.name === "read" && config.enabled === true) &&
+    docsToolsets.length === 1;
+});
 // Tool presentation overrides round-trip in the managed shape (ADR-0053).
 await step("tool_overrides round-trip", "GET", "/v1/config/agents/smoke-agent", undefined, (s, p) =>
   s === 200 &&
@@ -164,31 +190,34 @@ await step("capabilities (flat)", "GET", "/v1/capabilities", undefined, (s, p) =
   p.plugins.some((pl) => pl.id === "state_machine" && pl.config_schema && typeof pl.config_schema === "object"));
 // Uniform addressing: same snapshot under the workspace path prefix (ADR-0048).
 await step("capabilities (workspace-path)", "GET", "/v1/workspaces/default/capabilities", undefined, (s, p) => s === 200 && p.plugins.length > 0);
-// The permission policy is advertised as a policy (not a plugin), with its schema —
-// the PermissionEditor consumes this to author the `permission` section.
-await step("capabilities exposes the permission policy", "GET", "/v1/capabilities", undefined, (s, p) =>
-  s === 200 && Array.isArray(p.policies) &&
-  p.policies.some((pl) => pl.id === "permission" && pl.config_schema && typeof pl.config_schema === "object"));
+// Typed Toolset membership is the UI's only permission-authoring catalog.
+await step("capabilities exposes typed Agent toolsets only", "GET", "/v1/capabilities", undefined, (s, p) =>
+  s === 200 && Array.isArray(p.toolsets) &&
+  p.toolsets.some((toolset) => toolset.type === "agent_toolset_20260401" &&
+    toolset.members?.some((member) => member.name === "write")) &&
+  !p.policies?.some((policy) => policy.id === "permission"));
 
-// ---- Permission policy authoring round-trips (surfaces/agent-editor PermissionEditor) ----
+// ---- Controlled typed permission authoring round-trips ----
 const permAgent = {
   id: "perm-agent",
   name: "Perm Agent",
   model: { id: "claude" },
   system: "You gate your tools.",
-  tools: [],
+  tools: typedAgentTools(["bash", "read", "write", "edit"], ["bash", "write", "edit"]),
   mcp_servers: [],
   skills: [],
   max_steps: 8,
   plugins: [],
-  plugin_config: { permission: { default_behavior: "deny", rules: [{ pattern: "Bash(*rm*)", behavior: "deny" }] } },
+  plugin_config: {},
   context_policy: { kind: "keep_all" },
 };
-await step("author agent with permission policy", "PUT", "/v1/config/agents/perm-agent", permAgent, (s, p) => s === 200 && p.id === "perm-agent");
-await step("permission section round-trips", "GET", "/v1/config/agents/perm-agent", undefined, (s, p) =>
-  s === 200 && p.plugin_config?.permission?.default_behavior === "deny" &&
-  p.plugin_config?.permission?.rules?.[0]?.pattern === "Bash(*rm*)");
-await step("publish permission agent (compiles the section)", "POST", "/v1/config/agents/perm-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
+await step("author agent with controlled typed policy", "PUT", "/v1/config/agents/perm-agent", permAgent, (s, p) => s === 200 && p.id === "perm-agent");
+await step("controlled typed policy round-trips", "GET", "/v1/config/agents/perm-agent", undefined, (s, p) =>
+  s === 200 && !p.plugin_config?.permission && p.tools?.some((toolset) =>
+    toolset.type === "agent_toolset_20260401" &&
+    ["bash", "write", "edit"].every((name) => toolset.configs?.some((config) =>
+      config.name === name && config.permission_policy?.type === "always_ask"))));
+await step("publish controlled agent", "POST", "/v1/config/agents/perm-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
 // Gating truth: the Observe faces are genuinely unmounted, so GatedPage's probe
 // gets a 404 and shows the placeholder (not a fabricated flag).
 await step("gated Observe face 404s (audit-log)", "GET", "/v1/audit-log", undefined, (s) => s === 404 || s === 405);

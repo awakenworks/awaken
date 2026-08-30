@@ -384,34 +384,6 @@ pub(crate) fn spawn_heartbeat(
                             Instant::now().saturating_duration_since(last_proof),
                         ),
                     );
-                    // Cold terminal cleanup recovery remains coupled to the
-                    // registry heartbeat: claiming an orphaned assignment is a
-                    // Worker-authority operation and does not need a hot-path
-                    // polling cadence.
-                    let now = wall_clock_ms();
-                    let cleanup_target = awaken_session_contract::SessionRealizationTarget {
-                        owner: lifecycle.identity.worker_id.clone(),
-                        runtime_incarnation: lifecycle.identity.lease_owner(),
-                        lease_expires_at_unix_ms: now
-                            .saturating_add(SESSION_REALIZATION_LEASE_TTL_MS),
-                        reassign_existing_lease: false,
-                    };
-                    match tokio::time::timeout(
-                        timing.request_timeout(),
-                        lifecycle
-                            .host
-                            .recover_terminal_cleanup_assignments(cleanup_target),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => eprintln!(
-                            "cold Session terminal cleanup recovery remained pending; Worker heartbeat continues: {error}"
-                        ),
-                        Err(_) => eprintln!(
-                            "cold Session terminal cleanup recovery exceeded its bounded request window; durable assignments remain retryable and Worker heartbeat continues"
-                        ),
-                    }
                 }
                 Ok(Ok(receipt)) => {
                     awaken_observability::record_worker_authority_heartbeat(
@@ -485,46 +457,115 @@ pub(crate) fn spawn_heartbeat(
     })
 }
 
-/// Reconcile due resident Session realization leases independently from the
-/// Worker registry heartbeat. This lane performs no terminal discovery: the
-/// heartbeat-paced global claim-next command is the sole cleanup selector, so
-/// an idle fleet creates no per-Session Control traffic. Ordinary terminal
-/// settlement remains on the initiating command path; this supervisor owns only
-/// recovery of cold/orphaned cleanup assignments.
+/// Keep due-only lease renewal and cold terminal recovery under one
+/// process-owned supervisor without making either cadence cancel the other's
+/// future. The cold claim-next lane is the sole recovery scheduler and awaits
+/// each Artifact, Memory, Repository, or provider effect to its durable
+/// boundary. Ordinary terminal settlement remains on the initiating command
+/// path; renewal runs beside recovery because one Session's physical cleanup
+/// cannot consume another Session's finite realization lease.
+async fn supervise_session_realization_reconciliation<Renewal, RenewalFuture, Cold, ColdFuture>(
+    renewal_period: std::time::Duration,
+    cold_period: std::time::Duration,
+    mut renewal: Renewal,
+    mut cold: Cold,
+) where
+    Renewal: FnMut() -> RenewalFuture,
+    RenewalFuture: std::future::Future<Output = ()>,
+    Cold: FnMut() -> ColdFuture,
+    ColdFuture: std::future::Future<Output = ()>,
+{
+    let renewals = async move {
+        let mut interval = tokio::time::interval(renewal_period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            renewal().await;
+        }
+    };
+    let cold_recovery = async move {
+        let mut interval =
+            tokio::time::interval_at(tokio::time::Instant::now() + cold_period, cold_period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            // Await the complete durable recovery effect. A missed poll is
+            // skipped instead of cancelling this future or overlapping it with
+            // another claim-next drive.
+            cold().await;
+        }
+    };
+    tokio::join!(renewals, cold_recovery);
+}
+
+/// Renew resident Session leases promptly while an independent cold lane
+/// recovers terminal roots. Control authenticates the current Worker registry
+/// lease on every cold claim; the heartbeat task remains the sole
+/// registry-liveness owner. The cold Host/contract cleanup driver is
+/// single-flight, while unrelated lease renewal stays schedulable during its
+/// durable I/O.
 pub(crate) fn spawn_session_realization_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let timing = AuthorityLeaseTiming::from_ttl_ms(SESSION_REALIZATION_LEASE_TTL_MS);
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            let now = wall_clock_ms();
-            // Cause/effect decision table: C1 this sweep owns only due Session
-            // lease renewals; C2 the Host bounds independent calls; C3 the
-            // Worker heartbeat/terminal claim is a separate task and authority
-            // lane; C4 one Control renewal is slow. Effects: E1 await the
-            // bounded sweep without starting an overlapping sweep; E2 never
-            // cancel every other Session at one arbitrary batch deadline; E3
-            // heartbeat proof remains independently schedulable; E4 non-due
-            // Sessions make no Control call. Durable fences own failure/recovery.
-            //
-            // | Rule | bounded Host | slow call | Effect |
-            // |---|---|---|---|
-            // | R1 | yes | no | E1 + E3 + E4 |
-            // | R2 | yes | yes | E1 + E2 + E3 + E4 |
-            match lifecycle
-                .host
-                .renew_due_session_realizations(now, timing)
-                .await
-            {
-                Ok(_) => {}
-                Err(error) => eprintln!(
-                    "Session realization reconciliation failed closed; projections retain their existing deadlines: {error}"
-                ),
-            }
-        }
+        let renewal_lifecycle = lifecycle.clone();
+        let cold_lifecycle = lifecycle;
+        supervise_session_realization_reconciliation(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(10),
+            move || {
+                let lifecycle = renewal_lifecycle.clone();
+                async move {
+                    let now = wall_clock_ms();
+                    // Cause/effect decision table: C1 this cadence owns only
+                    // lease renewal; C2 the Host bounds independent due
+                    // Sessions; C3 each Control call has an authority-derived
+                    // deadline; C4 cold recovery may still be running on the
+                    // independent recovery lane. Effects: E1 no overlapping
+                    // renewal sweep; E2 no batch-wide cancellation; E3 cleanup
+                    // cannot consume another Session's proof window; E4 a
+                    // non-due Session causes no Control call.
+                    //
+                    // | Rule | due | slow renewal | recovery running | Effect |
+                    // | R1 | yes | no | any | E1 + E2 + E3 |
+                    // | R2 | yes | yes | any | E1 + E2 + E3 |
+                    // | R3 | no | any | any | E4 |
+                    if let Err(error) = lifecycle
+                        .host
+                        .renew_due_session_realizations(now, timing)
+                        .await
+                    {
+                        eprintln!(
+                            "Session realization renewal failed closed; affected projections retain only their existing authority: {error}"
+                        );
+                    }
+                }
+            },
+            move || {
+                let lifecycle = cold_lifecycle.clone();
+                async move {
+                    let now = wall_clock_ms();
+                    let cleanup_target = awaken_session_contract::SessionRealizationTarget {
+                        owner: lifecycle.identity.worker_id.clone(),
+                        runtime_incarnation: lifecycle.identity.lease_owner(),
+                        lease_expires_at_unix_ms: now
+                            .saturating_add(SESSION_REALIZATION_LEASE_TTL_MS),
+                        reassign_existing_lease: false,
+                    };
+                    if let Err(error) = lifecycle
+                        .host
+                        .recover_terminal_cleanup_assignments(cleanup_target)
+                        .await
+                    {
+                        eprintln!(
+                            "cold Session terminal cleanup recovery remained pending; Worker reconciliation continues: {error}"
+                        );
+                    }
+                }
+            },
+        )
+        .await;
     })
 }
 
@@ -570,4 +611,100 @@ pub(crate) fn grace_window(graceful: bool, configured_secs: Option<u64>) -> std:
         return std::time::Duration::ZERO;
     }
     std::time::Duration::from_secs(configured_secs.unwrap_or(20))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::supervise_session_realization_reconciliation;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn effectful_reconciliation_outlives_poll_budget_and_remains_single_flight() {
+        let cold_started = Arc::new(tokio::sync::Notify::new());
+        let cold_release = Arc::new(tokio::sync::Notify::new());
+        let cold_restarted = Arc::new(tokio::sync::Notify::new());
+        let renewal_progress = Arc::new(tokio::sync::Notify::new());
+        let renewal_calls = Arc::new(AtomicUsize::new(0));
+        let cold_calls = Arc::new(AtomicUsize::new(0));
+        let cold_completed = Arc::new(AtomicBool::new(false));
+
+        // Cause/effect graph: C1 a cold recovery effect is still in flight
+        // after several short scheduler ticks; C2 lease renewal becomes due
+        // while C1 is pending; C3 another cold tick becomes due before C1
+        // completes; C4 C1 eventually reaches its durable boundary. Effects:
+        // E1 C1 is not cancelled by a poll deadline; E2 C2 continues through
+        // the same process supervisor; E3 C3 cannot start an overlapping
+        // claim-next drive; E4 the next recovery starts only after C4.
+        // Decision table: R1=C1+C2+!C4=>E1+E2;
+        // R2=C1+C3+!C4=>E1+E3; R3=C1+C3+C4=>E4. Ordinary errors are covered by
+        // the production closures, which log the explicit Host result before
+        // the next tick. Renewal and recovery own no local queue or new state;
+        // only their independent cadence is under test.
+        let task = tokio::spawn(supervise_session_realization_reconciliation(
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(1),
+            {
+                let progress = renewal_progress.clone();
+                let calls = renewal_calls.clone();
+                move || {
+                    let progress = progress.clone();
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        progress.notify_waiters();
+                    }
+                }
+            },
+            {
+                let started = cold_started.clone();
+                let release = cold_release.clone();
+                let restarted = cold_restarted.clone();
+                let calls = cold_calls.clone();
+                let completed = cold_completed.clone();
+                let first = Arc::new(AtomicBool::new(true));
+                move || {
+                    let started = started.clone();
+                    let release = release.clone();
+                    let restarted = restarted.clone();
+                    let calls = calls.clone();
+                    let completed = completed.clone();
+                    let first = first.swap(false, Ordering::SeqCst);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if first {
+                            started.notify_one();
+                            release.notified().await;
+                            completed.store(true, Ordering::SeqCst);
+                        } else {
+                            restarted.notify_one();
+                        }
+                    }
+                }
+            },
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), cold_started.notified())
+            .await
+            .expect("R1 cold recovery effect starts");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while renewal_calls.load(Ordering::SeqCst) < 3 {
+                renewal_progress.notified().await;
+            }
+        })
+        .await
+        .expect("R1/E2 resident leases keep renewing during recovery I/O");
+        assert!(!cold_completed.load(Ordering::SeqCst), "R1/E1");
+        assert!(renewal_calls.load(Ordering::SeqCst) >= 3, "R1/E2");
+        assert_eq!(cold_calls.load(Ordering::SeqCst), 1, "R2/E3");
+
+        cold_release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), cold_restarted.notified())
+            .await
+            .expect("R3/E4 next recovery follows the durable cold boundary");
+        assert!(cold_completed.load(Ordering::SeqCst), "R3/E4");
+        assert!(cold_calls.load(Ordering::SeqCst) >= 2, "R3/E4");
+        task.abort();
+    }
 }

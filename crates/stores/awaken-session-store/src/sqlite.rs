@@ -749,24 +749,31 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .await
     }
 
-    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
-        self.with_connection(|conn| {
+    async fn reconcilable_sessions_page(
+        &self,
+        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
+    ) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+        let after = after.map(|cursor| cursor.session_id().to_string());
+        self.with_connection(move |conn| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
+            let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
+                .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
             let mut scan = SessionRecoveryScan::default();
             {
                 let mut statement = tx
                     .prepare(
                         "SELECT session.scope_id, session.session_id, session.aggregate_json, \
-                            session.revision, work.observed_revision \
-                     FROM managed_session_reconciliation_work work \
-                     JOIN managed_session session ON session.session_id = work.session_id \
-                     ORDER BY session.session_id LIMIT ?1",
+                                session.revision, work.observed_revision \
+                         FROM managed_session_reconciliation_work work \
+                         JOIN managed_session session ON session.session_id = work.session_id \
+                         WHERE (?1 IS NULL OR session.session_id > ?1) \
+                         ORDER BY session.session_id LIMIT ?2",
                     )
                     .map_err(storage)?;
                 let rows = statement
-                    .query_map(params![RECOVERY_BATCH_SIZE], |row| {
+                    .query_map(params![after, RECOVERY_BATCH_SIZE + 1], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -777,10 +784,18 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                             row.get::<_, i64>(4)?,
                         ))
                     })
+                    .map_err(storage)?
+                    .collect::<Result<Vec<_>, rusqlite::Error>>()
                     .map_err(storage)?;
-                for row in rows {
-                    let (workspace_id, session_id, row, observed_revision) =
-                        row.map_err(storage)?;
+                let has_more = rows.len() > page_size;
+                let mut rows = rows;
+                rows.truncate(page_size);
+                if has_more {
+                    scan.next_cursor = rows.last().map(|(_, session_id, _, _)| {
+                        awaken_session_contract::SessionRecoveryCursor::after_session_id(session_id)
+                    });
+                }
+                for (workspace_id, session_id, row, observed_revision) in rows {
                     if observed_revision != row.revision {
                         return Err(corrupt(format!(
                             "Session reconciliation revision drift for {session_id}"

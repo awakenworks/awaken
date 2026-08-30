@@ -16,7 +16,7 @@ pub awaken_webhook_managed::WebhookInventoryReport::missing_material: alloc::vec
 pub awaken_webhook_managed::WebhookInventoryReport::orphaned_deleted: alloc::vec::Vec<awaken_credential_vault::SecretRef>
 pub struct awaken_webhook_managed::WebhookOutboxNotifier
 impl awaken_webhook_managed::WebhookOutboxNotifier
-pub fn awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, &awaken_service_lifecycle::ServiceLifecycle) -> Self
+pub fn awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>, &awaken_service_lifecycle::ServiceLifecycle) -> Self
 impl awaken_session_contract::lifecycle::LifecycleFactNotifier for awaken_webhook_managed::WebhookOutboxNotifier
 pub fn awaken_webhook_managed::WebhookOutboxNotifier::notify(&self)
 pub fn awaken_webhook_managed::config_plane_lifecycle_delivery(alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, core::option::Option<alloc::string::String>) -> alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>

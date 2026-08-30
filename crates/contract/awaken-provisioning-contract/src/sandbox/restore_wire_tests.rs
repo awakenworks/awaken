@@ -102,9 +102,7 @@ fn sandbox_control_incarnation_is_typed_and_legacy_handle_compatible() {
         }
     });
     let decoded: SandboxHandle = serde_json::from_value(legacy).expect("I1/E1");
-    let SandboxHandlePayload::ContainerV1(payload) = &decoded.payload else {
-        panic!("I1 container payload")
-    };
+    let payload = decoded.container_payload().expect("I1 container payload");
     assert!(payload.sandbox_control_incarnation.is_none(), "I1/E1");
     assert!(payload.control_services.is_empty(), "I1/E1");
     assert!(
@@ -252,33 +250,65 @@ fn future_evidence_is_lossless_closed_and_fail_forward() {
 }
 
 /*
- * Nested rollout decision table. C1 legacy Kubernetes locator; C2 future
- * HostBind locator plus Some evidence; C3 the actual old nested enum reader.
- * Effects: E1 C1 stays readable, E2 new reader losslessly accepts C2, E3 C3
- * rejects C2 rather than silently dropping the physical locator. Rules:
- * R8=C1=>E1, R9=C2=>E2, R10=C2+C3=>E3.
+ * Nested rollout decision table. C1 legacy Kubernetes locator; C2 current
+ * KubernetesContinuationV2 locator with Pod and optional claim identity; C3
+ * future HostBind locator plus Some evidence; C4 the actual old nested enum
+ * reader. Effects: E1 C1 stays readable, E2 the new reader losslessly accepts
+ * C2, E3 the new reader losslessly accepts C3, E4 C4 rejects C2/C3 rather
+ * than silently dropping either physical locator. Rules: R8=C1=>E1,
+ * R9=C2=>E2, R10=C3=>E3, R11=(C2|C3)+C4=>E4.
  */
 #[test]
 fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
+    let current_kubernetes = future_container(serde_json::json!({
+        "kind": "kubernetes_continuation_v2",
+        "pod_uid": "pod-uid-a",
+        "claim_uid": "claim-uid-a"
+    }));
+    let decoded_kubernetes: SandboxHandle =
+        serde_json::from_value(current_kubernetes.clone()).expect("R9/E2 decode");
+    match decoded_kubernetes
+        .container_payload()
+        .unwrap()
+        .runtime_handle
+        .as_ref()
+        .expect("R9/E2 runtime locator")
+    {
+        ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, claim_uid } => {
+            assert_eq!(pod_uid, "pod-uid-a", "R9/E2 Pod identity");
+            assert_eq!(claim_uid.as_deref(), Some("claim-uid-a"), "R9/E2 claim");
+        }
+        ContainerContinuationHandle::KubernetesContinuation { .. }
+        | ContainerContinuationHandle::HostBindRestoration(_) => panic!("R9/E2 wrong kind"),
+    }
+    assert_eq!(
+        serde_json::to_value(&decoded_kubernetes).unwrap(),
+        current_kubernetes,
+        "R9/E2"
+    );
+
     let future = future_container(serde_json::json!({
         "kind": "host_bind_restoration",
         "staging_root": "/provider/staging/a"
     }));
-    let decoded: SandboxHandle = serde_json::from_value(future.clone()).expect("R9/E2 decode");
-    assert!(decoded.restoration().is_some(), "R9/E2 evidence");
+    let decoded: SandboxHandle = serde_json::from_value(future.clone()).expect("R10/E3 decode");
+    assert!(decoded.restoration().is_some(), "R10/E3 evidence");
     let runtime_handle = decoded
         .container_payload()
         .unwrap()
         .runtime_handle
         .as_ref()
-        .expect("R9/E2 runtime locator");
+        .expect("R10/E3 runtime locator");
     match runtime_handle {
         ContainerContinuationHandle::HostBindRestoration(locator) => {
-            assert_eq!(locator.staging_root(), "/provider/staging/a", "R9/E2")
+            assert_eq!(locator.staging_root(), "/provider/staging/a", "R10/E3")
         }
-        ContainerContinuationHandle::KubernetesContinuation { .. } => panic!("R9/E2 wrong kind"),
+        ContainerContinuationHandle::KubernetesContinuation { .. }
+        | ContainerContinuationHandle::KubernetesContinuationV2 { .. } => {
+            panic!("R10/E3 wrong kind")
+        }
     }
-    assert_eq!(serde_json::to_value(decoded).unwrap(), future, "R9/E2");
+    assert_eq!(serde_json::to_value(decoded).unwrap(), future, "R10/E3");
 
     let mut legacy_kubernetes = future.clone();
     legacy_kubernetes
@@ -291,6 +321,16 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
     });
     serde_json::from_value::<LegacySandboxHandle>(legacy_kubernetes).expect("R8/E1");
 
+    let mut legacy_kubernetes_v2 = current_kubernetes;
+    legacy_kubernetes_v2
+        .as_object_mut()
+        .unwrap()
+        .remove("restoration");
+    assert!(
+        serde_json::from_value::<LegacySandboxHandle>(legacy_kubernetes_v2).is_err(),
+        "R11/E4 current Kubernetes locator"
+    );
+
     let mut legacy_host_bind = future;
     legacy_host_bind
         .as_object_mut()
@@ -298,6 +338,6 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
         .remove("restoration");
     assert!(
         serde_json::from_value::<LegacySandboxHandle>(legacy_host_bind).is_err(),
-        "R10/E3"
+        "R11/E4 HostBind locator"
     );
 }

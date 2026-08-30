@@ -473,7 +473,7 @@ async fn launch_hand(
 
     let command = pc::Command {
         argv: vec![hand_bin, "hand".into(), "--stdio".into()],
-        cwd: "/workspace".into(),
+        cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
         stdio: pc::Stdio::Piped,
     };
@@ -539,6 +539,13 @@ impl HandMode {
 }
 
 impl SessionHandExecutor {
+    /// Exact in-sandbox execution binary selected by deployment configuration.
+    /// Internal container effects must reuse this path so custom images have
+    /// one capability contract instead of a second hard-coded binary location.
+    pub(super) fn binary_path(&self) -> &str {
+        &self.hand_bin
+    }
+
     #[cfg(test)]
     pub(super) async fn has_tracked_binding(&self) -> bool {
         matches!(
@@ -571,28 +578,26 @@ impl SessionHandExecutor {
         )
     }
 
-    pub(super) async fn container(
+    pub(super) fn container(
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         skills: Arc<ContainerSkillCache>,
         factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
         idle_after: Duration,
         residency: crate::deployment_config::ContainerHandResidency,
-    ) -> Result<Self, pc::SandboxError> {
+    ) -> Self {
         let launcher = Arc::new(SessionAgentLauncher::Container {
             sandbox: sandbox.clone(),
         });
         let hand_bin = hand_bin.into();
-        let executor = Self::new(
+        Self::new(
             launcher,
             factory,
             hand_bin,
             idle_after,
             residency,
             Some((sandbox, skills)),
-        );
-        executor.await_ready_binding().await?;
-        Ok(executor)
+        )
     }
 
     fn new(
@@ -915,7 +920,7 @@ impl ToolExecutor for SessionHandExecutor {
         } else {
             result
         };
-        if matches!(call.tool_id.as_str(), "bash" | "write" | "edit")
+        if awaken_session_contract::is_controlled_modification_member(call.tool_id.as_str())
             && let Some((sandbox, skills)) = &self.container_skills
             && let Err(error) = skills.refresh(sandbox.as_ref()).await
         {

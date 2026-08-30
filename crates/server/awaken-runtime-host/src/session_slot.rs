@@ -229,29 +229,11 @@ impl SessionRuntimeSlot {
     }
 }
 
-/// Process-local projection of the Control-frozen baseline. This is realization
-/// input only; the durable Session aggregate remains the authority.
-#[derive(Clone)]
-pub(crate) struct FrozenBaselineRuntimeProjection {
-    pub fingerprint: awaken_session_contract::SessionBaselineFingerprint,
-    /// Exact published Agent identity that owns this Session. Runtime effects
-    /// that must materialize before the first Run (for example sandbox stdio
-    /// MCP) use it to resolve the same immutable publication.
-    pub agent_id: String,
-    /// Exact immutable Agent revision frozen by Session admission. `None` is
-    /// retained only for legacy/direct Sessions that still resolve current.
-    pub agent_revision: Option<u64>,
-    /// Exact secret-free model replacement resolved and frozen by Control.
-    /// Runtime may project this value into an immutable Agent publication, but
-    /// must never resolve a new route from the public model id.
-    pub model_override: Option<awaken_session_contract::SessionModelOverride>,
-    /// Session-owned system-prompt selection retained with the model override
-    /// so every compatibility projection calls the same pure lowering rule.
-    pub system_prompt: awaken_session_contract::SessionSystemPromptSelection,
-    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-    pub env: Vec<awaken_provisioning_contract::EnvVar>,
-    pub prompts: Vec<String>,
-}
+/// Process-local reference to the exact Control-frozen baseline. Keeping the
+/// domain value intact avoids a second partial publication/layout projection:
+/// context, provider selection, cold replay, and cleanup all consume the same
+/// immutable coordinates.
+pub(crate) type FrozenBaselineRuntimeProjection = awaken_session_contract::SessionBaseline;
 
 /// The sole process-local projection of the frozen Environment snapshot.
 /// Native and ACP provisioning both consume this value; no late network or
@@ -263,6 +245,7 @@ pub(crate) struct FrozenEnvironmentRuntimeProjection {
     pub packages: awaken_provisioning_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
     pub provisioning: awaken_session_contract::SandboxProvisioning,
+    pub idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
 }
 
 #[derive(Default)]
@@ -293,6 +276,23 @@ pub(crate) struct SessionRuntimeSlot {
     /// mount realization, Native tools, and ACP export all consume this value;
     /// none may independently choose another delivery path.
     pub content_delivery: Option<ManagedContentDelivery>,
+    /// Exact aggregate Environment phase installed only by a terminal cleanup
+    /// assignment. The cleanup command uses this frozen fact to distinguish a
+    /// genuinely unmaterialized/hibernated Session from Resident, Suspending,
+    /// or Restoring state; absence is never interpreted as permission to reap
+    /// or acknowledge a root cleanup.
+    pub terminal_environment_state: Option<awaken_session_contract::SessionEnvironmentState>,
+    /// Process-local parent of a terminal cleanup target. This is routing
+    /// metadata only: the aggregate's frozen command set remains the sole work
+    /// and receipt authority. It lets an accepted root receipt (or a later
+    /// aggregate Completed read after response loss) retire child projections
+    /// without maintaining a second cleanup registry.
+    pub terminal_cleanup_root: Option<String>,
+    /// Exact unavailable aggregate binding/generation authorized for one
+    /// RebuildFromCommittedTruth replacement. This is a process-local command
+    /// projection; the Session aggregate receipt remains the only transition
+    /// authority and clears it after durable publication.
+    pub environment_rebuild_source: Option<(String, Option<String>)>,
     pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the
@@ -361,6 +361,27 @@ pub(crate) struct SessionRuntimeSlot {
     pub skill_prompt: Option<String>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_contract::SessionResourceManifest>,
+    /// Exact aggregate-owned physical replacement currently being replayed.
+    /// This is a rebuildable command projection, not completion state: the
+    /// durable Resource aggregate remains the only active/pending authority.
+    pub resource_transition: Option<awaken_session_contract::SessionResourceTransition>,
+    /// Fingerprint of the exact transition + optional Run claim whose immutable
+    /// inputs were compiled into `resources`, `memory_bindings`, and `skills`.
+    /// This avoids duplicate File/Vault/catalog reads between deferred staging
+    /// and the same process's later physical Environment convergence.
+    pub staged_resource_effect_key: Option<String>,
+    /// How the resident Environment entered this process. Fresh substrates and
+    /// adopted providers require different idempotent mount completion, but the
+    /// aggregate transition remains their single desired-state authority.
+    pub environment_resource_reconciliation: EnvironmentResourceReconciliation,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum EnvironmentResourceReconciliation {
+    #[default]
+    None,
+    Fresh,
+    Adopted,
 }
 
 #[derive(Clone, Default)]

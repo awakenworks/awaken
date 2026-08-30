@@ -1,0 +1,16 @@
+[package]
+name = "awaken-sandbox-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "sandbox-filesystem"
+
+[dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[lints]
+workspace = true

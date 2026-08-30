@@ -29,7 +29,7 @@ fn verify_container_projection(expected: &Container, observed: &Container) -> bo
         && expected.resources == observed.resources
 }
 
-fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<(), RuntimeError> {
+pub(super) fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<(), RuntimeError> {
     let expected_spec = expected
         .spec
         .as_ref()
@@ -85,7 +85,7 @@ fn verify_pod_projection(expected: &Pod, observed: &Pod) -> Result<(), RuntimeEr
     realization::verify_realization(expected, observed)
 }
 
-fn verify_claim_projection(
+pub(super) fn verify_claim_projection(
     expected: &PersistentVolumeClaim,
     observed: &PersistentVolumeClaim,
 ) -> Result<(), RuntimeError> {
@@ -308,7 +308,10 @@ pub(super) async fn dispose(
         realization::stamp_realization(&mut desired)?;
         verify_claim_projection(&desired, &claim)?;
         let uid = continuation::claim_uid(&claim)?;
-        continuation::delete_claim(&runtime.persistent_volume_claims(), &name, &uid).await?;
+        let claims = runtime.persistent_volume_claims();
+        if let Some(pending) = continuation::initiate_claim_deletion(&claims, &name, &uid).await? {
+            continuation::await_claim_deletion(&claims, &pending).await?;
+        }
     }
     Ok(())
 }

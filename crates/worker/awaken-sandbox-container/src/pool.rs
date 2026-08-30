@@ -3,9 +3,11 @@
 //! reuse. A pool keeps up to `size` **empty live environments** ready per container
 //! shape; a matching Session binds one and execs its own Native/ACP processes.
 //!
-//! Safety: only **mount-less** specs are pooled ([`pc::SandboxCapacityShapeId::from_spec`]
-//! returns `None`
-//! otherwise) — a per-session mount bakes session-specific bytes into the container
+//! Safety: only **mount-less Ephemeral** specs are pooled by the single
+//! [`poolable_shape`] admission below. A retained
+//! Session requires receipt-fenced stable physical identity; `bind_scope` changes
+//! only the in-process logical id and is not an ownership transfer. A per-session
+//! mount also bakes session-specific bytes into the container
 //! at create, so a pre-warmed container could not serve a different session. Each
 //! physical warm container is fresh (never ran a prior session) and serves exactly
 //! one session, so there is no cross-session/tenant contamination — the *pool* is
@@ -21,9 +23,9 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
 use crate::{
-    AgentContainerProvider, AgentContainerSession, ContainerEnvironment,
-    ContainerEnvironmentCapacity, ContainerEnvironmentProvider, ContainerProvider,
-    ContainerRuntime, ContainerSandbox, EnvironmentOwnedProcess, RuntimeAgentProcess, command_of,
+    ContainerEffectFence, ContainerEnvironment, ContainerEnvironmentCapacity,
+    ContainerEnvironmentProvider, ContainerProvider, ContainerRealizationIntent, ContainerRuntime,
+    ContainerSandbox,
 };
 
 /// A process-global sequence for warm container scopes, so names are unique across
@@ -31,6 +33,15 @@ use crate::{
 /// the same shape). Paired with the pid, warm names are also unique across processes,
 /// so a fresh run never collides with a prior run's leaked warm container.
 static WARM_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The one warm-capacity admission rule. `SandboxCapacityShapeId` remains the
+/// neutral placement identity; only this owner decides whether physical
+/// capacity may be transferred by rebinding a logical scope.
+fn poolable_shape(spec: &pc::SandboxSpec) -> Option<pc::SandboxCapacityShapeId> {
+    (spec.filesystem_continuity == pc::FilesystemContinuity::Ephemeral)
+        .then(|| pc::SandboxCapacityShapeId::from_spec(spec))
+        .flatten()
+}
 
 /// A globally-unique scope (container name) for a warm container.
 fn next_warm_scope() -> String {
@@ -81,9 +92,9 @@ impl Drop for InFlightCreate {
     }
 }
 
-/// A warm pool wrapping a concrete [`ContainerProvider`]. Implements
-/// [`AgentContainerProvider`], so it drops into the host's container channel source
-/// exactly where a bare provider would (`build_docker_source`/`build_k8s_source`).
+/// A warm-capacity adapter around the canonical [`ContainerEnvironmentProvider`].
+/// It owns only never-used physical capacity; a checked-out Session Environment
+/// remains owned by the caller through the same provider contract as a cold create.
 pub struct WarmContainerPool<R: ContainerRuntime> {
     inner: Arc<ContainerProvider<R>>,
     size: usize,
@@ -103,8 +114,8 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
 
 impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// Wrap `inner`, keeping up to `size` warm containers ready per shape. `size == 0`
-    /// is a pass-through (every `open_agent` creates fresh) — the safe default a
-    /// deployment opts out of the warm cost with.
+    /// is a pass-through (every Environment checkout creates fresh) — the safe
+    /// default when a deployment opts out of the warm cost.
     #[must_use]
     pub fn new(inner: Arc<ContainerProvider<R>>, size: usize) -> Self {
         Self::with_limits(inner, size, usize::MAX, Duration::MAX)
@@ -167,7 +178,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         if target == 0 {
             return Ok(self.ready_len(spec));
         }
-        let Some(key) = pc::SandboxCapacityShapeId::from_spec(spec) else {
+        let Some(key) = poolable_shape(spec) else {
             return Ok(0);
         };
         let gate = self
@@ -264,7 +275,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// How many warm containers are ready for `spec`'s shape (0 when not poolable).
     #[must_use]
     pub fn ready_len(&self, spec: &pc::SandboxSpec) -> usize {
-        pc::SandboxCapacityShapeId::from_spec(spec)
+        poolable_shape(spec)
             .and_then(|k| {
                 self.warm
                     .lock()
@@ -278,7 +289,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// Remove one exact unused shape without closing the pool. A subsequent
     /// current demand can recreate it through the same prewarm path.
     pub async fn discard(&self, spec: &pc::SandboxSpec) {
-        let Some(key) = pc::SandboxCapacityShapeId::from_spec(spec) else {
+        let Some(key) = poolable_shape(spec) else {
             return;
         };
         let ready = self
@@ -423,36 +434,6 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentCapacity for WarmContain
 }
 
 #[async_trait]
-impl<R: ContainerRuntime + 'static> AgentContainerProvider for WarmContainerPool<R> {
-    async fn open_agent(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<AgentContainerSession, pc::SandboxError> {
-        let environment = self.create_environment(spec).await?;
-        let argv = command_of(spec);
-        if argv.is_empty() {
-            return Err(pc::SandboxError::new("agent command argv is empty"));
-        }
-        let RuntimeAgentProcess { process, channel } = environment
-            .spawn_agent_process(pc::Command {
-                argv,
-                cwd: String::new(),
-                env: Vec::new(),
-                stdio: pc::Stdio::Piped,
-            })
-            .await?;
-        Ok(AgentContainerSession {
-            channel,
-            process: Box::new(EnvironmentOwnedProcess {
-                inner: process,
-                environment: environment.clone(),
-            }),
-            handle: environment.handle(),
-        })
-    }
-}
-
-#[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContainerPool<R> {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         self.inner.sandbox_capabilities()
@@ -474,7 +455,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        let Some(key) = pc::SandboxCapacityShapeId::from_spec(spec) else {
+        let Some(key) = poolable_shape(spec) else {
             return self.inner.create_environment(spec).await;
         };
         let warm = {
@@ -495,6 +476,46 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         Ok(Arc::new(environment))
     }
 
+    async fn create_environment_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect_fence: Option<&ContainerEffectFence>,
+        intent: ContainerRealizationIntent,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        // Cause/effect rule: a durable fence or Rebuild intent requires exact
+        // provider realization identity. A warm candidate has neither and
+        // `bind_scope` cannot rewrite its physical labels/name/UID, so this path
+        // always delegates without touching ready capacity. Unfenced Ephemeral
+        // Create remains the one safe checkout row.
+        if effect_fence.is_some()
+            || matches!(&intent, ContainerRealizationIntent::Rebuild { .. })
+            || poolable_shape(spec).is_none()
+        {
+            return self
+                .inner
+                .create_environment_for_effect(spec, effect_fence, intent)
+                .await;
+        }
+        self.create_environment(spec).await
+    }
+
+    async fn observe_environment(
+        &self,
+        adoption: crate::ContainerEnvironmentAdoption<'_>,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        self.inner.observe_environment(adoption).await
+    }
+
+    async fn observe_environment_for_effect(
+        &self,
+        adoption: crate::ContainerEnvironmentAdoption<'_>,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        self.inner
+            .observe_environment_for_effect(adoption, effect_fence)
+            .await
+    }
+
     async fn adopt_environment(
         &self,
         adoption: crate::ContainerEnvironmentAdoption<'_>,
@@ -502,14 +523,54 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         self.inner.adopt_environment(adoption).await
     }
 
+    async fn adopt_environment_for_effect(
+        &self,
+        adoption: crate::ContainerEnvironmentAdoption<'_>,
+        effect_fence: Option<&ContainerEffectFence>,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        self.inner
+            .adopt_environment_for_effect(adoption, effect_fence)
+            .await
+    }
+
+    async fn prepare_terminal_environment_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&ContainerEffectFence>,
+        terminal_effect_fence: &ContainerEffectFence,
+    ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+        // Terminal cleanup is never a capacity checkout: preserve the frozen
+        // handle and aggregate-owned fence by delegating to the exact provider
+        // that owns observation, participant reconstruction, and removal.
+        self.inner
+            .prepare_terminal_environment_for_effect(
+                spec,
+                handle,
+                expected_effect_fence,
+                terminal_effect_fence,
+            )
+            .await
+    }
+
     async fn acquire_restore_environment(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
     ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        // A restored Session target is never interchangeable with unused warm
-        // capacity. Delegate to the canonical provider's exact substrate path.
+        // Exact restore delegation table: acquisition, byte restoration, and
+        // disposal all bypass warm capacity and preserve the same immutable
+        // request. The inner provider remains the sole physical target owner.
         self.inner.acquire_restore_environment(spec, request).await
+    }
+
+    async fn restore_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+        self.inner.restore_environment(spec, request, store).await
     }
 
     async fn dispose_restored_environment(
@@ -525,8 +586,19 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
 mod tests {
     use super::*;
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RealizationPhase {
+        scope: String,
+        adoption: String,
+        effect_operation: Option<String>,
+        attempt: String,
+        has_physical_fingerprint: bool,
+    }
+
     struct RecordingRuntime {
         creates: AtomicUsize,
+        fenced_creates: AtomicUsize,
+        realization_phases: Mutex<Vec<RealizationPhase>>,
         removes: AtomicUsize,
         ready: AtomicBool,
         block_create: AtomicBool,
@@ -538,6 +610,8 @@ mod tests {
         fn ready() -> Self {
             Self {
                 creates: AtomicUsize::new(0),
+                fenced_creates: AtomicUsize::new(0),
+                realization_phases: Mutex::new(Vec::new()),
                 removes: AtomicUsize::new(0),
                 ready: AtomicBool::new(true),
                 block_create: AtomicBool::new(false),
@@ -575,6 +649,50 @@ mod tests {
                     .forget();
             }
             Ok(format!("container-{id}"))
+        }
+
+        async fn preflight_create_for_effect(
+            &self,
+            context: &crate::ContainerRealizationContext<'_>,
+            _plan: &crate::ContainerPlan,
+            realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+        ) -> Result<(), crate::RuntimeError> {
+            // This fake explicitly represents a runtime whose fenced
+            // admission succeeds; R3 then measures whether the pool delegates
+            // to its one effect-aware create path without consuming capacity.
+            self.realization_phases
+                .lock()
+                .unwrap()
+                .push(RealizationPhase {
+                    scope: context.scope.to_owned(),
+                    adoption: context.adoption_fingerprint.to_string(),
+                    effect_operation: context.effect_fence.map(|fence| fence.operation_id.clone()),
+                    attempt: context.attempt.as_str().to_owned(),
+                    has_physical_fingerprint: realization_fingerprint.is_some(),
+                });
+            Ok(())
+        }
+
+        async fn create_for_effect(
+            &self,
+            context: &crate::ContainerRealizationContext<'_>,
+            plan: &crate::ContainerPlan,
+            _realization_fingerprint: &pc::SandboxRealizationFingerprint,
+        ) -> Result<String, crate::RuntimeError> {
+            self.realization_phases
+                .lock()
+                .unwrap()
+                .push(RealizationPhase {
+                    scope: context.scope.to_owned(),
+                    adoption: context.adoption_fingerprint.to_string(),
+                    effect_operation: context.effect_fence.map(|fence| fence.operation_id.clone()),
+                    attempt: context.attempt.as_str().to_owned(),
+                    has_physical_fingerprint: true,
+                });
+            if context.effect_fence.is_some() {
+                self.fenced_creates.fetch_add(1, Ordering::SeqCst);
+            }
+            self.create(context.scope, plan).await
         }
 
         async fn open_channel(
@@ -682,10 +800,77 @@ mod tests {
             outputs_path: "/mnt/session/outputs".into(),
             requests: Default::default(),
             limits: Default::default(),
-            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
-            lease_ttl_secs: None,
+            filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Ephemeral,
             control_services: Default::default(),
+            lease_ttl_secs: None,
         }
+    }
+
+    fn retained_spec(scope: &str) -> pc::SandboxSpec {
+        let mut spec = spec(scope, &[]);
+        spec.filesystem_continuity = pc::FilesystemContinuity::Retained;
+        spec
+    }
+
+    #[tokio::test]
+    async fn retained_and_fenced_realizations_never_consume_warm_capacity() {
+        // Cause/effect table: C1 continuity Ephemeral/Retained; C2 mountless;
+        // C3 effect fence absent/present; C4 physical fingerprint is unavailable
+        // before package resolution, then available after resolution and required
+        // at create. R1 only Ephemeral+mountless+unfenced
+        // Create may prewarm/checkout; R2 Retained capacity remains zero and
+        // cold-creates; R3 any fenced create delegates exactly once and leaves
+        // the ready candidate untouched; R4 both preflights and create observe
+        // one stable scope/adoption/fence/intent-attempt context while the typed
+        // physical argument progresses None -> Some -> required.
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let pool = recording_pool(runtime.clone(), 1);
+        let ephemeral = spec("ephemeral", &[]);
+        assert_eq!(pool.prewarm(&ephemeral, 1).await.unwrap(), 1, "R1");
+
+        let retained = retained_spec("retained");
+        assert_eq!(pool.prewarm(&retained, 1).await.unwrap(), 0, "R2");
+        let retained_environment = pool.create_environment(&retained).await.unwrap();
+        assert_eq!(pool.ready_len(&retained), 0, "R2");
+        assert_eq!(pool.ready_len(&ephemeral), 1, "R2 preserves capacity");
+        retained_environment.dispose().await.unwrap();
+
+        let fence =
+            crate::ContainerEffectFence::new("operation-1", "owner-1", "runtime-1", 1, u64::MAX)
+                .unwrap();
+        let fenced = pool
+            .create_environment_for_effect(
+                &ephemeral,
+                Some(&fence),
+                crate::ContainerRealizationIntent::Create,
+            )
+            .await
+            .unwrap();
+        assert_eq!(runtime.fenced_creates.load(Ordering::SeqCst), 1, "R3");
+        assert_eq!(pool.ready_len(&ephemeral), 1, "R3");
+        {
+            let phases = runtime.realization_phases.lock().unwrap();
+            let fenced_phases = &phases[phases.len() - 3..];
+            assert_eq!(
+                fenced_phases
+                    .iter()
+                    .map(|phase| phase.has_physical_fingerprint)
+                    .collect::<Vec<_>>(),
+                vec![false, true, true],
+                "R4 physical phase"
+            );
+            assert!(
+                fenced_phases.windows(2).all(|pair| {
+                    pair[0].scope == pair[1].scope
+                        && pair[0].adoption == pair[1].adoption
+                        && pair[0].effect_operation == pair[1].effect_operation
+                        && pair[0].attempt == pair[1].attempt
+                }),
+                "R4 stable context"
+            );
+        }
+        fenced.dispose().await.unwrap();
+        pool.shutdown().await;
     }
 
     /// Cause/effect design:

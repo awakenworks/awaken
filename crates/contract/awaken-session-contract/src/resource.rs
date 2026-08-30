@@ -164,6 +164,60 @@ pub struct ResolvedSkillBinding {
     pub bundle_sha256: String,
 }
 
+/// Provider-neutral presence facts shared by Worker admission and Runtime
+/// placement. The Session resource aggregate remains the source of retained
+/// inputs; this value only prevents adapters from independently classifying the
+/// same File/Memory/Repository/Skill set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionResourceCompatibilityFacts {
+    has_resources: bool,
+    has_repository: bool,
+    has_readonly_input: bool,
+    has_credentialed_repository: bool,
+}
+
+impl SessionResourceCompatibilityFacts {
+    #[must_use]
+    pub const fn has_resources(self) -> bool {
+        self.has_resources
+    }
+
+    #[must_use]
+    pub const fn has_repository(self) -> bool {
+        self.has_repository
+    }
+
+    #[must_use]
+    pub const fn has_readonly_input(self) -> bool {
+        self.has_readonly_input
+    }
+
+    #[must_use]
+    pub const fn has_credentialed_repository(self) -> bool {
+        self.has_credentialed_repository
+    }
+}
+
+pub(crate) fn session_resource_compatibility_facts(
+    inputs: &[ResolvedInput],
+    skills: &[ResolvedSkillBinding],
+) -> SessionResourceCompatibilityFacts {
+    let mut facts = SessionResourceCompatibilityFacts {
+        has_resources: !skills.is_empty(),
+        ..SessionResourceCompatibilityFacts::default()
+    };
+    for input in inputs {
+        facts.has_resources = true;
+        facts.has_readonly_input |=
+            input.access == awaken_resource_contract::ResourceAccess::ReadOnly;
+        if let ResolvedInputSource::Repository { config, .. } = &input.source {
+            facts.has_repository = true;
+            facts.has_credentialed_repository |= config.credential_binding.is_some();
+        }
+    }
+    facts
+}
+
 /// Durable, secret-free result of the Session control plane's one resolution.
 /// Inputs and Skill capabilities remain distinct collections because Skills are
 /// executable capabilities, not mounted user inputs. An empty list is the one
@@ -197,7 +251,7 @@ impl<'de> Deserialize<'de> for ResolvedSessionResources {
         D: Deserializer<'de>,
     {
         let wire = ResolvedSessionResourcesWire::deserialize(deserializer)?;
-        Self::try_new(wire.inputs, wire.skills).map_err(de::Error::custom)
+        Self::try_from_durable_wire(wire.inputs, wire.skills).map_err(de::Error::custom)
     }
 }
 
@@ -245,15 +299,104 @@ impl SessionResourceManifest {
     }
 }
 
+/// One authoritative physical Resource transition.
+///
+/// The Session aggregate supplies both generations atomically. Runtime adapters
+/// must never reconstruct `previous` from a process-local manifest: that cache
+/// can be absent or can already contain `desired` after a crash between a
+/// durable Environment-path reservation and the corresponding File/Git effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionResourceTransition {
+    previous: SessionResourceManifest,
+    desired: SessionResourceManifest,
+}
+
+#[derive(Deserialize)]
+struct SessionResourceTransitionWire {
+    previous: SessionResourceManifest,
+    desired: SessionResourceManifest,
+}
+
+impl<'de> Deserialize<'de> for SessionResourceTransition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SessionResourceTransitionWire::deserialize(deserializer)?;
+        Self::new(wire.previous, wire.desired).map_err(de::Error::custom)
+    }
+}
+
+impl SessionResourceTransition {
+    pub fn new(
+        previous: SessionResourceManifest,
+        desired: SessionResourceManifest,
+    ) -> Result<Self, SessionInputError> {
+        if previous.workspace_id != desired.workspace_id {
+            return Err(SessionInputError::InvalidTransition(
+                "Resource transition generations belong to different Workspaces".into(),
+            ));
+        }
+        Ok(Self { previous, desired })
+    }
+
+    /// Stable identity of the complete forward or rollback operation. Both
+    /// generations participate, so A→B, its replay, and B→A cannot alias a
+    /// reservation receipt merely because one endpoint revision is reused.
+    #[must_use]
+    pub fn operation_fingerprint(&self) -> String {
+        crate::stable_fingerprint(&(
+            "session-resource-transition-v1",
+            &self.previous,
+            &self.desired,
+        ))
+    }
+
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        Self {
+            previous: self.desired.clone(),
+            desired: self.previous.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn previous(&self) -> &SessionResourceManifest {
+        &self.previous
+    }
+
+    #[must_use]
+    pub fn desired(&self) -> &SessionResourceManifest {
+        &self.desired
+    }
+}
+
 impl ResolvedSessionResources {
-    /// Construct one complete effective manifest. Mount paths normalize here,
-    /// and every whole-set identity invariant is checked before the value can
-    /// cross an application or persistence boundary.
+    /// Construct one complete effective manifest. File and Memory paths
+    /// normalize here; Repository paths are validated from their authored raw
+    /// bytes and are never rewritten. Every whole-set identity and Repository
+    /// tree invariant is checked before the value can cross an application or
+    /// persistence boundary.
     pub fn try_new(
         mut inputs: Vec<ResolvedInput>,
         skills: Vec<ResolvedSkillBinding>,
     ) -> Result<Self, SessionInputError> {
-        validate_resolved_inputs(&mut inputs)?;
+        validate_resolved_inputs(&mut inputs, RepositoryPathPolicy::Current)?;
+        validate_resolved_skills(&skills)?;
+        Ok(Self { inputs, skills })
+    }
+
+    /// Decode the one historical Repository location that predates the
+    /// `/workspace` contract. This is deliberately private and reachable only
+    /// from durable serde replay: new commands and public Rust construction use
+    /// [`Self::try_new`] and therefore cannot admit it. The bytes remain exact
+    /// so replay never changes a persisted fingerprint; Runtime admission still
+    /// rejects the legacy layout before any provider or resource effect.
+    fn try_from_durable_wire(
+        mut inputs: Vec<ResolvedInput>,
+        skills: Vec<ResolvedSkillBinding>,
+    ) -> Result<Self, SessionInputError> {
+        validate_resolved_inputs(&mut inputs, RepositoryPathPolicy::DurableReplay)?;
         validate_resolved_skills(&skills)?;
         Ok(Self { inputs, skills })
     }
@@ -268,8 +411,41 @@ impl ResolvedSessionResources {
         &self.skills
     }
 
+    /// Classify this complete generation through the one neutral Resource fact
+    /// projector shared by Run placement and terminal-cleanup admission.
+    #[must_use]
+    pub fn compatibility_facts(&self) -> SessionResourceCompatibilityFacts {
+        session_resource_compatibility_facts(&self.inputs, &self.skills)
+    }
+
     pub fn into_parts(self) -> (Vec<ResolvedInput>, Vec<ResolvedSkillBinding>) {
         (self.inputs, self.skills)
+    }
+
+    /// Project the frozen inputs back to the neutral binding vocabulary used by
+    /// the pure Sandbox-layout preflight. Configuration versions and credential
+    /// pins cannot affect layout and therefore remain exclusively in the
+    /// resolved manifest.
+    #[must_use]
+    pub fn sandbox_layout_bindings(&self) -> Vec<InputBinding> {
+        self.inputs
+            .iter()
+            .map(|input| InputBinding {
+                binding_id: input.binding_id.clone(),
+                target: match &input.source {
+                    ResolvedInputSource::File { file_id } => InputResourceId::File(file_id.clone()),
+                    ResolvedInputSource::MemoryStore {
+                        memory_store_id, ..
+                    } => InputResourceId::MemoryStore(memory_store_id.clone()),
+                    ResolvedInputSource::Repository { repository_id, .. } => {
+                        InputResourceId::Repository(repository_id.clone())
+                    }
+                },
+                mount_path: input.mount_path.clone(),
+                access: input.access,
+                instructions: input.instructions.clone(),
+            })
+            .collect()
     }
 
     /// Whether two complete manifests differ only in File bindings.
@@ -310,41 +486,21 @@ impl ResolvedSessionResources {
         Ok(self)
     }
 
-    /// Validate identity and mount invariants before an adapter performs any
-    /// resource-specific side effect such as sealing a credential or creating a
-    /// catalog definition.
-    pub fn validate_new_binding(
-        &self,
-        binding_id: &BindingId,
-        mount_path: &str,
-    ) -> Result<(), SessionInputError> {
-        let id = binding_id.as_str();
+    /// Add one already-resolved input while preserving unique binding ids and
+    /// normalized, collision-free mount paths.
+    pub fn attach(&self, input: ResolvedInput) -> Result<Self, SessionInputError> {
+        let id = input.binding_id.as_str();
         if id.trim().is_empty()
             || self
                 .inputs
                 .iter()
-                .any(|input| input.binding_id == *binding_id)
+                .any(|current| current.binding_id == input.binding_id)
         {
             return Err(SessionInputError::InvalidBindingId(id.into()));
         }
-        let mount_path = normalized_mount(mount_path)?;
-        if self
-            .inputs
-            .iter()
-            .any(|input| input.mount_path == mount_path)
-        {
-            return Err(SessionInputError::MountCollision(mount_path));
-        }
-        Ok(())
-    }
-
-    /// Add one already-resolved input while preserving unique binding ids and
-    /// normalized, collision-free mount paths.
-    pub fn attach(&self, input: ResolvedInput) -> Result<Self, SessionInputError> {
-        self.validate_new_binding(&input.binding_id, &input.mount_path)?;
         let mut next = self.clone();
         next.inputs.push(input);
-        validate_resolved_inputs(&mut next.inputs)?;
+        validate_resolved_inputs(&mut next.inputs, RepositoryPathPolicy::Current)?;
         Ok(next)
     }
 
@@ -357,7 +513,7 @@ impl ResolvedSessionResources {
             .find(|current| current.binding_id == input.binding_id)
             .ok_or_else(|| SessionInputError::UnknownBinding(input.binding_id.to_string()))?;
         *current = input;
-        validate_resolved_inputs(&mut next.inputs)?;
+        validate_resolved_inputs(&mut next.inputs, RepositoryPathPolicy::Current)?;
         Ok(next)
     }
 
@@ -417,6 +573,8 @@ pub enum SessionInputError {
     InvalidCredentialPin(String),
     #[error("invalid resolved Skill pin: {0}")]
     InvalidSkillPin(String),
+    #[error("invalid Session Resource transition: {0}")]
+    InvalidTransition(String),
     #[error(transparent)]
     Registry(#[from] awaken_resource_contract::ResourceRegistryError),
 }
@@ -439,38 +597,116 @@ fn normalized_mount(path: &str) -> Result<String, SessionInputError> {
     Ok(format!("/{}", components.join("/")))
 }
 
+fn validate_current_repository_mounts(repository_paths: &[&str]) -> Result<(), SessionInputError> {
+    awaken_provisioning_contract::validate_repository_mount_paths(repository_paths, &[])
+        .map_err(|error| SessionInputError::UnsafeMountPath(error.to_string()))
+}
+
+const LEGACY_REPOSITORY_MOUNT_PATH: &str = "/repo";
+
+fn validate_replayed_repository_mounts(repository_paths: &[&str]) -> Result<(), SessionInputError> {
+    let mut legacy_seen = false;
+    let mut current = Vec::with_capacity(repository_paths.len());
+    for path in repository_paths {
+        if *path == LEGACY_REPOSITORY_MOUNT_PATH {
+            if legacy_seen {
+                return Err(SessionInputError::UnsafeMountPath(format!(
+                    "repository mount path {path:?} overlaps another resource tree"
+                )));
+            }
+            legacy_seen = true;
+        } else {
+            current.push(*path);
+        }
+    }
+    // `/repo` is disjoint from every current path because the current grammar
+    // admits only children of `/workspace`. The canonical validator therefore
+    // remains the sole owner for every current path and their tree overlaps.
+    validate_current_repository_mounts(&current)
+}
+
 fn validate_bindings(bindings: &mut [InputBinding]) -> Result<(), SessionInputError> {
     let mut ids = HashSet::new();
-    let mut paths = HashSet::new();
-    for binding in bindings {
+    let mut file_paths = HashSet::new();
+    let mut memory_paths = HashSet::new();
+    let mut repository_paths = Vec::new();
+    for binding in bindings.iter_mut() {
         let id = binding.binding_id.as_str();
         if id.trim().is_empty() || !ids.insert(id.to_string()) {
             return Err(SessionInputError::InvalidBindingId(id.into()));
         }
-        binding.mount_path = normalized_mount(&binding.mount_path)?;
-        if !paths.insert(binding.mount_path.clone()) {
+        // Only equal logical paths inside one typed projection class can be
+        // decided here. File, Memory, and Repository use different final path
+        // projections; the provider-effective Runtime layout owns every
+        // cross-class and projected ancestor/descendant collision.
+        let paths = match &binding.target {
+            InputResourceId::File(_) => {
+                binding.mount_path = normalized_mount(&binding.mount_path)?;
+                Some(&mut file_paths)
+            }
+            InputResourceId::MemoryStore(_) => {
+                binding.mount_path = normalized_mount(&binding.mount_path)?;
+                Some(&mut memory_paths)
+            }
+            InputResourceId::Repository(_) => None,
+        };
+        if paths.is_some_and(|paths| !paths.insert(binding.mount_path.clone())) {
             return Err(SessionInputError::MountCollision(
                 binding.mount_path.clone(),
             ));
         }
     }
-    Ok(())
+    repository_paths.extend(bindings.iter().filter_map(|binding| {
+        matches!(&binding.target, InputResourceId::Repository(_))
+            .then_some(binding.mount_path.as_str())
+    }));
+    validate_current_repository_mounts(&repository_paths)
 }
 
-fn validate_resolved_inputs(inputs: &mut [ResolvedInput]) -> Result<(), SessionInputError> {
+#[derive(Clone, Copy)]
+enum RepositoryPathPolicy {
+    Current,
+    DurableReplay,
+}
+
+fn validate_resolved_inputs(
+    inputs: &mut [ResolvedInput],
+    repository_policy: RepositoryPathPolicy,
+) -> Result<(), SessionInputError> {
     let mut ids = HashSet::new();
-    let mut paths = HashSet::new();
-    for input in inputs {
+    let mut file_paths = HashSet::new();
+    let mut memory_paths = HashSet::new();
+    let mut repository_paths = Vec::new();
+    for input in inputs.iter_mut() {
         let id = input.binding_id.as_str();
         if id.trim().is_empty() || !ids.insert(id.to_string()) {
             return Err(SessionInputError::InvalidBindingId(id.into()));
         }
-        input.mount_path = normalized_mount(&input.mount_path)?;
-        if !paths.insert(input.mount_path.clone()) {
+        let paths = match &input.source {
+            ResolvedInputSource::File { .. } => {
+                input.mount_path = normalized_mount(&input.mount_path)?;
+                Some(&mut file_paths)
+            }
+            ResolvedInputSource::MemoryStore { .. } => {
+                input.mount_path = normalized_mount(&input.mount_path)?;
+                Some(&mut memory_paths)
+            }
+            ResolvedInputSource::Repository { .. } => None,
+        };
+        if paths.is_some_and(|paths| !paths.insert(input.mount_path.clone())) {
             return Err(SessionInputError::MountCollision(input.mount_path.clone()));
         }
     }
-    Ok(())
+    repository_paths.extend(inputs.iter().filter_map(|input| {
+        matches!(&input.source, ResolvedInputSource::Repository { .. })
+            .then_some(input.mount_path.as_str())
+    }));
+    match repository_policy {
+        RepositoryPathPolicy::Current => validate_current_repository_mounts(&repository_paths),
+        RepositoryPathPolicy::DurableReplay => {
+            validate_replayed_repository_mounts(&repository_paths)
+        }
+    }
 }
 
 fn validate_resolved_skills(skills: &[ResolvedSkillBinding]) -> Result<(), SessionInputError> {
@@ -838,7 +1074,13 @@ mod tests {
     }
 
     #[test]
-    fn typed_attachment_requires_explicit_replacement() {
+    fn typed_attachment_replacement_never_infers_cross_projection_collisions() {
+        // Typed logical-path decision table: C1 Memory and File share one raw
+        // spelling but project below different Runtime roots -> E1 coexist;
+        // C2 the caller explicitly replaces the Memory binding with the File ->
+        // E2 preserve that explicit replacement. Same-class duplicates remain
+        // rejected by `validate_bindings`; cross-class final aliases are owned
+        // by the provider-effective Sandbox-layout gate.
         let defaults = vec![binding(
             "memory",
             InputResourceId::MemoryStore(MemoryStoreId::from("memory-1")),
@@ -851,16 +1093,15 @@ mod tests {
             "mnt/context",
             awaken_resource_contract::ResourceAccess::ReadWrite,
         );
-        assert!(matches!(
-            SessionInputResolver::effective_bindings(
-                &defaults,
-                &[SessionInputAttachment {
-                    binding: file.clone(),
-                    replaces: None,
-                }]
-            ),
-            Err(SessionInputError::MountCollision(_))
-        ));
+        let coexisting = SessionInputResolver::effective_bindings(
+            &defaults,
+            &[SessionInputAttachment {
+                binding: file.clone(),
+                replaces: None,
+            }],
+        )
+        .expect("C1/E1");
+        assert_eq!(coexisting.len(), 2, "C1/E1");
 
         let effective = SessionInputResolver::resolve_inputs(
             "workspace-a",
@@ -871,8 +1112,8 @@ mod tests {
                 replaces: Some(BindingId::from("memory")),
             }],
         )
-        .unwrap();
-        assert_eq!(effective.inputs.len(), 1);
+        .expect("C2/E2");
+        assert_eq!(effective.inputs.len(), 1, "C2/E2");
         assert_eq!(effective.inputs[0].mount_path, "/mnt/context");
         assert_eq!(
             effective.inputs[0].access,
@@ -913,6 +1154,119 @@ mod tests {
                 "unexpected `{forbidden}` in {wire}"
             );
         }
+    }
+
+    /// Repository path lifecycle cause/effect graph: C1 current ingress or
+    /// `try_new` carries one canonical `/workspace` child; C2 it carries a
+    /// relative path, another root, or a canonicalization alias; C3 durable
+    /// serde replay carries the one historical `/repo` spelling; C4 either
+    /// current constructor has overlapping Repository trees. Effects: E1 admit
+    /// C1 without rewriting; E2 reject C2 at the current boundary and reject an
+    /// alias at the durable boundary; E3 decode C3 byte-for-byte through the
+    /// private storage-only compatibility path; E4 reject C4 as a whole set.
+    /// File/Memory authored paths are excluded because their final projections
+    /// live under separate Runtime-owned roots.
+    ///
+    /// | Rule | Boundary | Repository bytes | Other tree | Effect |
+    /// |---|---|---|---|---|
+    /// | R1 | current | `/workspace/repo` | disjoint | E1 |
+    /// | R2 | current/durable | alias or unsafe | - | E2 |
+    /// | R3 | durable only | `/repo` | disjoint | E3 |
+    /// | R4 | current | canonical | overlaps | E4 |
+    #[test]
+    fn new_repository_paths_fail_closed_without_rewriting_historical_values() {
+        let registry = Registry::default();
+        let repository = |mount_path: &str| {
+            binding(
+                "repo",
+                InputResourceId::Repository(RepositoryId::from("repo-1")),
+                mount_path,
+                awaken_resource_contract::ResourceAccess::ReadWrite,
+            )
+        };
+
+        let canonical = SessionInputResolver::resolve_inputs(
+            "workspace-a",
+            Some(&registry),
+            &[repository("/workspace/repo")],
+            &[],
+        )
+        .expect("C1/E1");
+        for mount_path in [
+            "/repo",
+            "repo",
+            "/workspace//repo",
+            "/workspace/repo/",
+            "/workspace/repo\\child",
+            "/workspace/repo\nchild",
+            "/workspace/.skills/repo",
+        ] {
+            let error = SessionInputResolver::resolve_inputs(
+                "workspace-a",
+                Some(&registry),
+                &[repository(mount_path)],
+                &[],
+            )
+            .expect_err("C2/E2");
+            assert!(matches!(error, SessionInputError::UnsafeMountPath(_)));
+        }
+        assert_eq!(
+            registry.repository_resolves.load(Ordering::Relaxed),
+            1,
+            "C2 rejects before catalog resolution"
+        );
+        let overlapping_repository = binding(
+            "nested-repo",
+            InputResourceId::Repository(RepositoryId::from("repo-1")),
+            "/workspace/repo/README.md",
+            awaken_resource_contract::ResourceAccess::ReadWrite,
+        );
+        assert!(matches!(
+            SessionInputResolver::resolve_inputs(
+                "workspace-a",
+                Some(&registry),
+                &[repository("/workspace/repo"), overlapping_repository],
+                &[],
+            ),
+            Err(SessionInputError::UnsafeMountPath(_))
+        ));
+        assert_eq!(
+            registry.repository_resolves.load(Ordering::Relaxed),
+            1,
+            "C4/E4 rejects before Repository resolution"
+        );
+
+        for mount_path in ["/repo", "/workspace//repo"] {
+            let mut current = canonical.inputs().to_vec();
+            current[0].mount_path = mount_path.into();
+            assert!(
+                ResolvedSessionResources::try_new(current, canonical.skills().to_vec()).is_err(),
+                "R2/E2 public construction must reject {mount_path:?}"
+            );
+        }
+
+        let mut overlap = canonical.inputs().to_vec();
+        let mut nested = overlap[0].clone();
+        nested.binding_id = BindingId::from("nested-repo");
+        nested.mount_path = "/workspace/repo/child".into();
+        overlap.push(nested);
+        assert!(
+            ResolvedSessionResources::try_new(overlap, canonical.skills().to_vec()).is_err(),
+            "R4/E4 direct construction validates the complete Repository set"
+        );
+
+        let mut alias_wire = serde_json::to_value(&canonical).unwrap();
+        alias_wire["inputs"][0]["mount_path"] = serde_json::json!("/workspace//repo");
+        assert!(
+            serde_json::from_value::<ResolvedSessionResources>(alias_wire).is_err(),
+            "R2/E2 durable aliases are rejected rather than rewritten"
+        );
+
+        let mut legacy_wire = serde_json::to_value(&canonical).unwrap();
+        legacy_wire["inputs"][0]["mount_path"] = serde_json::json!("/repo");
+        let reloaded: ResolvedSessionResources =
+            serde_json::from_value(legacy_wire).expect("R3 storage-only legacy decode");
+        assert_eq!(reloaded.inputs()[0].mount_path, "/repo", "R3/E3");
     }
 
     #[test]
@@ -964,14 +1318,20 @@ mod tests {
             awaken_resource_contract::ResourceAccess::ReadOnly
         );
 
-        for target in [
-            InputResourceId::MemoryStore(MemoryStoreId::from("memory-1")),
-            InputResourceId::Repository(RepositoryId::from("repo-1")),
+        for (target, mount_path) in [
+            (
+                InputResourceId::MemoryStore(MemoryStoreId::from("memory-1")),
+                "/mnt/configured",
+            ),
+            (
+                InputResourceId::Repository(RepositoryId::from("repo-1")),
+                "/workspace/configured",
+            ),
         ] {
             let configured = binding(
                 "configured",
                 target,
-                "/mnt/configured",
+                mount_path,
                 awaken_resource_contract::ResourceAccess::ReadOnly,
             );
             assert!(matches!(
@@ -993,6 +1353,70 @@ mod tests {
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }
+    }
+
+    /// Resource capability cause/effect graph: C1 the retained generation is
+    /// empty; C2 it has only a Skill; C3 it has a read-only File; C4 it has a
+    /// Repository whose frozen config selects a credential binding. E1 one
+    /// canonical projector reports whether any Resource plane is needed; E2
+    /// Repository, read-only, and credential axes remain independent. Host Run
+    /// placement and terminal-cleanup admission consume these same facts.
+    ///
+    /// | Rule | inputs/skills | resources | repo | read-only | repo credential |
+    /// |---|---|---|---|---|---|
+    /// | F1 | empty | F | F | F | F |
+    /// | F2 | Skill | T | F | F | F |
+    /// | F3 | read-only File | T | F | T | F |
+    /// | F4 | credentialed Repository | T | T | F | T |
+    #[test]
+    fn resource_compatibility_facts_have_one_typed_projector() {
+        let empty = ResolvedSessionResources::default().compatibility_facts();
+        assert_eq!(empty, SessionResourceCompatibilityFacts::default(), "F1");
+
+        let skill_only = ResolvedSessionResources::try_new(
+            Vec::new(),
+            vec![ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "review".into(),
+                version: 1,
+                bundle_sha256: "sha-review-1".into(),
+            }],
+        )
+        .expect("F2 Skill manifest")
+        .compatibility_facts();
+        assert!(skill_only.has_resources(), "F2/resources");
+        assert!(!skill_only.has_repository(), "F2/repository");
+        assert!(!skill_only.has_readonly_input(), "F2/read-only");
+        assert!(!skill_only.has_credentialed_repository(), "F2/credential");
+
+        let file = ResolvedSessionResources::try_new(
+            vec![resolved_file("file", "file-1", "/mnt/file")],
+            Vec::new(),
+        )
+        .expect("F3 File manifest")
+        .compatibility_facts();
+        assert!(file.has_resources(), "F3/resources");
+        assert!(!file.has_repository(), "F3/repository");
+        assert!(file.has_readonly_input(), "F3/read-only");
+        assert!(!file.has_credentialed_repository(), "F3/credential");
+
+        let repository = SessionInputResolver::resolve_inputs(
+            "workspace-a",
+            Some(&Registry::default()),
+            &[binding(
+                "repository",
+                InputResourceId::Repository(RepositoryId::from("repo-1")),
+                "/workspace/repository",
+                awaken_resource_contract::ResourceAccess::ReadWrite,
+            )],
+            &[],
+        )
+        .expect("F4 Repository manifest")
+        .compatibility_facts();
+        assert!(repository.has_resources(), "F4/resources");
+        assert!(repository.has_repository(), "F4/repository");
+        assert!(!repository.has_readonly_input(), "F4/read-only");
+        assert!(repository.has_credentialed_repository(), "F4/credential");
     }
 
     #[test]

@@ -208,27 +208,32 @@ pub fn remote_worker_placement(
             .into_iter()
             .filter(|mode| *mode != awaken_runtime_contract::tool::ToolRecoveryMode::NeverReplay)
             .collect();
+    let resource_facts = resources
+        .map(|manifest| manifest.resources.compatibility_facts())
+        .unwrap_or_default();
+    let has_repository = resource_facts.has_repository();
+    let has_readonly_input = resource_facts.has_readonly_input();
+    let has_credentialed_repository = resource_facts.has_credentialed_repository();
     let requires_local_environment = requires_local_environment(models);
-    let requires_opaque_process = std::iter::once(&models.model_binding)
-        .chain(models.model_candidates.iter())
-        .any(|candidate| {
-            matches!(
-                awaken_runtime_contract::resolved::Backend::from_ref(
-                    &candidate.binding().backend_ref
-                ),
-                awaken_runtime_contract::resolved::Backend::Acp(_)
-            ) && !matches!(
-                candidate.provisioning(),
-                awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
-            )
-        });
+    let requires_opaque_process = crate::provisioning::model_candidates_require_opaque_process(
+        std::iter::once(&models.model_binding).chain(models.model_candidates.iter()),
+    );
     if requires_local_environment {
         placement.sandbox = environment.map_or_else(
-            || awaken_provisioning_contract::SandboxRequirements {
-                ..Default::default()
+            || {
+                crate::provisioning::session_sandbox_projection(
+                    &crate::provisioning::default_session_sandbox_spec("worker-placement"),
+                    has_repository,
+                    requires_opaque_process,
+                )
+                .1
             },
             |environment| {
-                crate::provisioning::sandbox_requirements(environment, requires_opaque_process)
+                crate::provisioning::sandbox_requirements(
+                    environment,
+                    has_repository,
+                    requires_opaque_process,
+                )
             },
         );
         if let Some(environment) = environment {
@@ -247,23 +252,12 @@ pub fn remote_worker_placement(
                 .insert(capability.to_string());
         }
     }
-    if let Some(resources) = resources {
-        placement.sandbox.enforced_readonly |= resources
-            .resources
-            .inputs()
-            .iter()
-            .any(|input| input.access == awaken_resource_contract::ResourceAccess::ReadOnly);
+    if resources.is_some() {
+        placement.sandbox.enforced_readonly |= has_readonly_input;
         placement
             .required_capabilities
             .insert(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY.to_string());
-        let credentialed_repository = resources.resources.inputs().iter().any(|input| {
-            matches!(
-                &input.source,
-                awaken_session_contract::ResolvedInputSource::Repository { config, .. }
-                    if config.credential_binding.is_some()
-            )
-        });
-        if credentialed_repository {
+        if has_credentialed_repository {
             placement
                 .required_capabilities
                 .insert(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());

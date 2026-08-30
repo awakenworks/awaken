@@ -21,7 +21,10 @@ enum RunIngressScope {
     ThreadExtension,
 }
 
-struct RunDeliveryRequest<'a> {
+/// Complete input for one ordinary Host-owned Run delivery. This private value
+/// is distinct from `SessionRunDelivery`, whose session activity receipt belongs
+/// to the durable Session admission boundary.
+struct HostRunDelivery<'a> {
     agent: Option<&'a str>,
     thread: &'a str,
     input: Vec<Message>,
@@ -31,6 +34,45 @@ struct RunDeliveryRequest<'a> {
     ingress_scope: RunIngressScope,
 }
 
+impl<'a> HostRunDelivery<'a> {
+    fn command(agent: Option<&'a str>, thread: &'a str, input: Vec<Message>) -> Self {
+        Self {
+            agent,
+            thread,
+            input,
+            supersede: false,
+            sink: None,
+            data_subject_id: None,
+            ingress_scope: RunIngressScope::HostCommand,
+        }
+    }
+
+    #[cfg(test)]
+    fn thread_extension(agent: Option<&'a str>, thread: &'a str, input: Vec<Message>) -> Self {
+        Self {
+            ingress_scope: RunIngressScope::ThreadExtension,
+            ..Self::command(agent, thread, input)
+        }
+    }
+
+    fn superseding(mut self) -> Self {
+        self.supersede = true;
+        self
+    }
+
+    fn with_stream_sink(mut self, sink: Arc<dyn StreamSink>) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    fn with_data_subject_id(
+        mut self,
+        data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
+    ) -> Self {
+        self.data_subject_id = data_subject_id;
+        self
+    }
+}
 impl SharedHost {
     pub(crate) async fn session_budget_resume_tickets(
         &self,
@@ -413,16 +455,8 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(RunDeliveryRequest {
-            agent,
-            thread,
-            input,
-            supersede: false,
-            sink: None,
-            data_subject_id: None,
-            ingress_scope: RunIngressScope::HostCommand,
-        })
-        .await
+        self.deliver_run(HostRunDelivery::command(agent, thread, input))
+            .await
     }
 
     /// Run one request with its neutral, request-grained content owner.
@@ -433,15 +467,9 @@ impl SharedHost {
         input: Vec<Message>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(RunDeliveryRequest {
-            agent,
-            thread,
-            input,
-            supersede: false,
-            sink: None,
-            data_subject_id,
-            ingress_scope: RunIngressScope::HostCommand,
-        })
+        self.deliver_run(
+            HostRunDelivery::command(agent, thread, input).with_data_subject_id(data_subject_id),
+        )
         .await
     }
 
@@ -455,16 +483,8 @@ impl SharedHost {
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(RunDeliveryRequest {
-            agent,
-            thread,
-            input,
-            supersede: false,
-            sink: Some(sink),
-            data_subject_id: None,
-            ingress_scope: RunIngressScope::HostCommand,
-        })
-        .await
+        self.deliver_run(HostRunDelivery::command(agent, thread, input).with_stream_sink(sink))
+            .await
     }
 
     /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
@@ -476,15 +496,11 @@ impl SharedHost {
         sink: Arc<dyn StreamSink>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(RunDeliveryRequest {
-            agent,
-            thread,
-            input,
-            supersede: false,
-            sink: Some(sink),
-            data_subject_id,
-            ingress_scope: RunIngressScope::HostCommand,
-        })
+        self.deliver_run(
+            HostRunDelivery::command(agent, thread, input)
+                .with_stream_sink(sink)
+                .with_data_subject_id(data_subject_id),
+        )
         .await
     }
 
@@ -499,16 +515,8 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(RunDeliveryRequest {
-            agent,
-            thread,
-            input,
-            supersede: true,
-            sink: None,
-            data_subject_id: None,
-            ingress_scope: RunIngressScope::HostCommand,
-        })
-        .await
+        self.deliver_run(HostRunDelivery::command(agent, thread, input).superseding())
+            .await
     }
 
     /// Test-only projection seam for Host behavior whose precondition is an
@@ -522,23 +530,15 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        self.deliver_run(RunDeliveryRequest {
-            agent,
-            thread,
-            input,
-            supersede: false,
-            sink: None,
-            data_subject_id: None,
-            ingress_scope: RunIngressScope::ThreadExtension,
-        })
-        .await
+        self.deliver_run(HostRunDelivery::thread_extension(agent, thread, input))
+            .await
     }
 
     async fn deliver_run(
         &self,
-        request: RunDeliveryRequest<'_>,
+        delivery: HostRunDelivery<'_>,
     ) -> Result<CommittedStepReceipt, HostError> {
-        let RunDeliveryRequest {
+        let HostRunDelivery {
             agent,
             thread,
             input,
@@ -546,7 +546,7 @@ impl SharedHost {
             sink,
             data_subject_id,
             ingress_scope,
-        } = request;
+        } = delivery;
         if ingress_scope == RunIngressScope::HostCommand
             && self
                 .session_slots
@@ -685,6 +685,7 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, HostError> {
+        self.require_durable_delivery()?;
         let ctx = self.ctx_for(thread, None).await?;
         ctx.delivery
             .is_durable()
@@ -694,6 +695,20 @@ impl SharedHost {
             })
     }
 
+    /// Admit every durable operational verb through the deployment's one typed
+    /// capability before it can materialize a Session or query the dispatch
+    /// store. The queue remains delivery truth; this guard only selects whether
+    /// the deployment exposes that authority.
+    fn require_durable_delivery(&self) -> Result<(), HostError> {
+        if self.deployment.durable {
+            Ok(())
+        } else {
+            Err(HostError::bad_request(
+                "durable ingress not enabled (set typed durable ingress)",
+            ))
+        }
+    }
+
     /// Read this Thread's committed dispatch rows from the one process dispatch
     /// authority. Operational monitoring observes queue truth only: it must not
     /// materialize a Session context or reopen its frozen Agent publication.
@@ -701,11 +716,7 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Vec<awaken_run_ingress::DispatchSummary>, HostError> {
-        if !self.deployment.durable {
-            return Err(HostError::bad_request(
-                "durable ingress not enabled (set typed durable ingress)",
-            ));
-        }
+        self.require_durable_delivery()?;
         let thread_id = ThreadId(thread.to_owned());
         self.dispatch_store()?
             .list_dispatches()

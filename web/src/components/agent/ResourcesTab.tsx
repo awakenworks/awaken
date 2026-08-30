@@ -13,21 +13,28 @@ import type {
   InputResourceKind,
   MemoryStore,
   Page,
+  ResourceInputDefaultMounts,
   ResourceAccess,
 } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
+import {
+  createDefaultResourceBinding,
+  switchResourceBindingKind,
+} from "../../lib/resource-input-defaults";
 
 // One editable row = a binding plus a client-only label (a file's filename, shown after
 // upload since the binding stores only the opaque blob id).
 type Row = InputBinding & { label?: string };
 
-const DEFAULT_MOUNT: Record<InputResourceKind, string> = {
-  memory_store: "/mnt/memory",
-  file: "/mnt/files/data.txt",
-  repository: "/mnt/repo",
-};
-
-export default function ResourcesTab({ inputs, onChange }: { inputs: InputBinding[]; onChange: (inputs: InputBinding[]) => void }) {
+export default function ResourcesTab({
+  inputs,
+  defaultMounts,
+  onChange,
+}: {
+  inputs: InputBinding[];
+  defaultMounts?: ResourceInputDefaultMounts;
+  onChange: (inputs: InputBinding[]) => void;
+}) {
   const app = useApp();
   const navigate = useNavigate();
   const toast = useToast();
@@ -44,19 +51,15 @@ export default function ResourcesTab({ inputs, onChange }: { inputs: InputBindin
   const setRow = (i: number, patch: Partial<Row>) =>
     onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)).map(({ label: _label, ...binding }) => binding));
   const removeRow = (i: number) => onChange(rows.filter((_, j) => j !== i));
-  const addRow = (kind: InputResourceKind) =>
-    onChange([
-      ...rows,
-      {
-        binding_id: `input-${crypto.randomUUID()}`,
-        target: {
-          kind,
-          id: kind === "memory_store" ? (storeList[0]?.id ?? "") : "",
-        },
-        mount_path: DEFAULT_MOUNT[kind],
-        access: kind === "memory_store" ? "read_write" : "read_only",
-      },
-    ]);
+  const addRow = (kind: InputResourceKind) => {
+    const candidate = createDefaultResourceBinding(
+      defaultMounts,
+      kind,
+      `input-${crypto.randomUUID()}`,
+      kind === "memory_store" ? (storeList[0]?.id ?? "") : "",
+    );
+    if (candidate) onChange([...rows, candidate]);
+  };
 
   // A file binding stores a blob id, so uploading is a two-step: pick a file → POST it to
   // the Files API → stamp the returned id (and its filename, for display) onto the row.
@@ -93,6 +96,16 @@ export default function ResourcesTab({ inputs, onChange }: { inputs: InputBindin
         </span>
       </div>
 
+      {!defaultMounts && (
+        <div className="banner warn">
+          <span>⚠</span>
+          <span>{app.t(
+            "Resource mount defaults are unavailable. Adding resources and changing kinds are disabled.",
+            "资源挂载默认值不可用；已禁用新增资源和切换类型。",
+          )}</span>
+        </div>
+      )}
+
       {rows.length === 0 && (
         <EmptyState
           title={app.t("No resources bound yet.", "尚未绑定资源。")}
@@ -106,9 +119,18 @@ export default function ResourcesTab({ inputs, onChange }: { inputs: InputBindin
           <SelectField
             label={app.t("Kind", "类型")}
             value={r.target.kind}
+            disabled={!defaultMounts}
             onChange={(e) => {
               const kind = e.target.value as InputResourceKind;
-              setRow(i, { target: { kind, id: "" }, mount_path: DEFAULT_MOUNT[kind], label: undefined });
+              const candidate = switchResourceBindingKind(r, defaultMounts, kind);
+              if (candidate) {
+                setRow(i, {
+                  target: candidate.target,
+                  mount_path: candidate.mount_path,
+                  access: candidate.access,
+                  label: undefined,
+                });
+              }
             }}
           >
             <option value="memory_store">memory_store</option>
@@ -164,12 +186,12 @@ export default function ResourcesTab({ inputs, onChange }: { inputs: InputBindin
 
       <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
         <Button
-          disabled={stores.isLoading || storeList.length === 0}
+          disabled={!defaultMounts || stores.isLoading || storeList.length === 0}
           title={storeList.length === 0 ? app.t("Create a Memory Store first", "请先创建记忆库") : undefined}
           onClick={() => addRow("memory_store")}
         >+ {app.t("bind a store", "绑定记忆库")}</Button>
-        <Button onClick={() => addRow("file")}>+ {app.t("attach a file", "附加文件")}</Button>
-        <Button onClick={() => addRow("repository")}>+ {app.t("connect a repo", "连接仓库")}</Button>
+        <Button disabled={!defaultMounts} onClick={() => addRow("file")}>+ {app.t("attach a file", "附加文件")}</Button>
+        <Button disabled={!defaultMounts} onClick={() => addRow("repository")}>+ {app.t("connect a repo", "连接仓库")}</Button>
         {!stores.isLoading && storeList.length === 0 && !stores.error && (
           <Button variant="ghost" onClick={() => navigate(`/w/${app.workspaceId}/memory`)}>
             {app.t("Create a Memory Store →", "创建记忆库 →")}

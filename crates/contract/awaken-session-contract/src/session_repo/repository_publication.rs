@@ -64,6 +64,19 @@ impl PersistedSession {
             }
             SessionDisposition::Active => {}
         }
+        if self
+            .environment
+            .terminal_repository_publication_binding()
+            .is_none()
+        {
+            return Err(
+                crate::SessionCleanupError::InvalidRepositoryPublicationIntent(
+                    "Repository publication requires an existing live Session Environment source"
+                        .into(),
+                )
+                .into(),
+            );
+        }
         if !publication_input_is_exactly_active(self.resources.active.inputs(), &intent.input) {
             return Err(
                 crate::SessionCleanupError::InvalidRepositoryPublicationIntent(
@@ -118,6 +131,15 @@ mod tests {
         );
     }
 
+    fn install_live_publication_source(session: &mut PersistedSession) {
+        session.environment = crate::SessionEnvironmentState::Resident {
+            binding: "resident-publication-source".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+    }
+
     #[test]
     fn archive_with_repository_publication_is_one_atomic_aggregate_transition() {
         // Cause/effect graph: C1 disposition admits archive; C2 publication
@@ -136,8 +158,10 @@ mod tests {
         // | A5 | Active | valid | legacy no-publication fence | one | E3 |
         // | A6 | Active | valid | NotRequested | zero | E3 |
         // | A7 | Active/corrupt | valid | NotRequested | duplicate | E3 |
+        // | A8 | Active + Unmaterialized | valid | NotRequested | one | E3 |
         let intent = repository_publication_intent();
         let mut active = session("publish-archive", SessionRevision(1));
+        install_live_publication_source(&mut active);
         install_publication_input(&mut active, &intent);
         assert_eq!(
             active.archive_with_repository_publication("2026-08-28T00:00:00Z", intent.clone()),
@@ -174,11 +198,32 @@ mod tests {
             .terminal_cleanup
             .command_for("publish-archive", "publish-archive")
             .unwrap();
-        let root_receipt = crate::SessionCleanupCompletion::new(&root, Vec::new())
-            .verify(&root)
-            .unwrap();
+        let receipt_fingerprint = crate::stable_fingerprint(&(
+            "session-terminal-cleanup-thread-receipt-v1",
+            root.session_id.as_str(),
+            root.thread_id.as_str(),
+            root.effect_id.as_str(),
+            Vec::<(&str, &str)>::new(),
+        ));
+        let completion = serde_json::json!({
+            "session_id": root.session_id,
+            "thread_id": root.thread_id,
+            "effect_id": root.effect_id,
+            "artifact_receipts": [],
+            "receipt_fingerprint": receipt_fingerprint,
+        });
+        let mut aggregate_wire = serde_json::to_value(&active).unwrap();
+        aggregate_wire["terminal_cleanup"]["cleanup"]
+            .as_object_mut()
+            .expect("publication cleanup wire is an object")
+            .entry("completions")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .expect("legacy completions wire is an object")
+            .insert(root.thread_id.clone(), completion);
+        active = serde_json::from_value(aggregate_wire).unwrap();
         active
-            .complete_terminal_cleanup(&[root_receipt], "released")
+            .normalize_legacy_terminal_cleanup("released")
             .unwrap();
         assert!(active.resources.active.inputs().is_empty(), "A2 setup");
         let archived = active.clone();
@@ -208,6 +253,7 @@ mod tests {
         );
 
         let mut invalid = session("invalid-archive", SessionRevision(1));
+        install_live_publication_source(&mut invalid);
         install_publication_input(&mut invalid, &intent);
         let before = invalid.clone();
         let mut invalid_expectation = intent.clone();
@@ -224,6 +270,7 @@ mod tests {
         assert_eq!(invalid, before, "A3/E3");
 
         let mut deleting = session("deleting-archive", SessionRevision(1));
+        install_live_publication_source(&mut deleting);
         install_publication_input(&mut deleting, &intent);
         deleting.disposition = SessionDisposition::Deleting;
         let before = deleting.clone();
@@ -237,6 +284,7 @@ mod tests {
         assert_eq!(deleting, before, "A4/E3");
 
         let mut legacy_fenced = session("legacy-fenced", SessionRevision(1));
+        install_live_publication_source(&mut legacy_fenced);
         install_publication_input(&mut legacy_fenced, &intent);
         assert!(legacy_fenced.ensure_terminal_cleanup_fence());
         let before = legacy_fenced.clone();
@@ -250,6 +298,7 @@ mod tests {
         assert_eq!(legacy_fenced, before, "A5/E3");
 
         let mut absent = session("absent-input", SessionRevision(1));
+        install_live_publication_source(&mut absent);
         let before = absent.clone();
         assert!(
             matches!(
@@ -277,5 +326,19 @@ mod tests {
             ),
             "A7 duplicate corrupt matches"
         );
+
+        let mut unmaterialized = session("unmaterialized-publication", SessionRevision(1));
+        install_publication_input(&mut unmaterialized, &intent);
+        let before = unmaterialized.clone();
+        assert!(
+            matches!(
+                unmaterialized.archive_with_repository_publication("ignored", intent),
+                Err(SessionArchiveWithRepositoryPublicationError::Cleanup(
+                    crate::SessionCleanupError::InvalidRepositoryPublicationIntent(_)
+                ))
+            ),
+            "A8/E3 terminal publication cannot invent a never-materialized worktree"
+        );
+        assert_eq!(unmaterialized, before, "A8/E3");
     }
 }

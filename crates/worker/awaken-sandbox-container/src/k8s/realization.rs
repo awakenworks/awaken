@@ -3,22 +3,17 @@ use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{DeleteParams, PostParams, Preconditions};
+use kube::api::PostParams;
 use kube::{Api, Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::error::{api_conflict, api_not_found, backend};
+use super::error::{api_conflict, backend};
 use crate::RuntimeError;
 
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 const POD_READY_POLL: Duration = Duration::from_millis(250);
-// Retained Session Pods intentionally keep Kubernetes' default 30-second
-// termination grace. The observation fence must extend beyond that grace plus
-// apiserver/kubelet propagation; using the same value creates a guaranteed
-// boundary race even when deletion is healthy.
-const POD_DELETE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Stamp the exact desired Kubernetes object before its first API write. A retry
 /// may reuse an existing object only when this immutable realization fingerprint
@@ -37,15 +32,28 @@ where
     Ok(())
 }
 
+pub(super) fn realization_digest_matches<K>(desired: &K, existing: &K) -> Result<bool, RuntimeError>
+where
+    K: Resource<DynamicType = ()>,
+{
+    let name = desired.name_any();
+    let expected = desired
+        .annotations()
+        .get(REALIZATION_DIGEST_ANNOTATION)
+        .ok_or_else(|| {
+            backend(format!(
+                "desired {} `{name}` has no realization digest",
+                K::kind(&())
+            ))
+        })?;
+    Ok(existing.annotations().get(REALIZATION_DIGEST_ANNOTATION) == Some(expected))
+}
+
 pub(crate) fn verify_realization<K>(desired: &K, observed: &K) -> Result<(), RuntimeError>
 where
     K: Resource<DynamicType = ()>,
 {
-    let expected = desired
-        .annotations()
-        .get(REALIZATION_DIGEST_ANNOTATION)
-        .ok_or_else(|| backend("desired Kubernetes object has no realization digest"))?;
-    if observed.annotations().get(REALIZATION_DIGEST_ANNOTATION) != Some(expected)
+    if !realization_digest_matches(desired, observed)?
         || observed.meta().deletion_timestamp.is_some()
     {
         return Err(backend(format!(
@@ -58,20 +66,20 @@ where
 
 /// Bind one exact restore identity to a Kubernetes physical object before its
 /// immutable realization digest is calculated. Replays can therefore reuse a
-/// 409 object only when both its specification and restore triple match.
+/// 409 object only when both its specification and restore tuple match.
 pub(crate) fn stamp_restoration<K>(object: &mut K, evidence: &pc::SandboxRestorationEvidence)
 where
     K: Resource<DynamicType = ()>,
 {
-    let annotations = object
+    object
         .meta_mut()
         .annotations
-        .get_or_insert_with(Default::default);
-    annotations.extend(
-        crate::restoration_metadata(evidence)
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value.to_string())),
-    );
+        .get_or_insert_with(Default::default)
+        .extend(
+            crate::restoration_metadata(evidence)
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
+        );
 }
 
 pub(crate) fn stamp_restoration_plan<K>(object: &mut K, plan_fingerprint: &str)
@@ -177,17 +185,7 @@ where
         Err(error) if api_conflict(&error) => {
             let name = desired.name_any();
             let existing = api.get(&name).await.map_err(backend)?;
-            let expected = desired
-                .annotations()
-                .get(REALIZATION_DIGEST_ANNOTATION)
-                .ok_or_else(|| {
-                    backend(format!(
-                        "desired {} `{name}` has no realization digest",
-                        K::kind(&())
-                    ))
-                })?;
-            let actual = existing.annotations().get(REALIZATION_DIGEST_ANNOTATION);
-            if actual != Some(expected) {
+            if !realization_digest_matches(desired, &existing)? {
                 return Err(backend(format!(
                     "existing {} `{name}` belongs to a different realization",
                     K::kind(&())
@@ -212,6 +210,20 @@ where
 /// projection. The ordinary realization digest remains the first 409 fence;
 /// callers with API-defaulted objects add one canonical projection verifier so
 /// copying that annotation onto a different spec can never authorize reuse.
+pub(crate) async fn create_or_verify_exact<K, F>(
+    api: &Api<K>,
+    desired: &K,
+    verify: F,
+) -> Result<K, RuntimeError>
+where
+    K: Clone + Debug + DeserializeOwned + Resource<DynamicType = ()> + Serialize,
+    F: FnOnce(&K, &K) -> Result<(), RuntimeError>,
+{
+    let object = create_or_verify(api, desired).await?;
+    verify(desired, &object)?;
+    Ok(object)
+}
+
 pub(crate) async fn create_or_verify_with_status_exact<K, F>(
     api: &Api<K>,
     desired: &K,
@@ -272,59 +284,6 @@ pub(super) async fn transfer_runtime_owner(
         ));
     }
     Ok(replaced)
-}
-
-/// Reap a terminal Pod left behind by eviction or node loss before realizing a
-/// new attempt under the same deterministic runtime id. A live or provisioning
-/// Pod is never replaced: its realization digest still decides whether the
-/// caller may adopt it. The UID/resourceVersion preconditions prevent a stale
-/// observer from deleting a concurrently-created incarnation with the same
-/// name.
-pub(super) async fn reap_terminal_pod(api: &Api<Pod>, name: &str) -> Result<(), RuntimeError> {
-    let existing = match api.get(name).await {
-        Ok(pod) => pod,
-        Err(error) if api_not_found(&error) => return Ok(()),
-        Err(error) => return Err(backend(error)),
-    };
-    let Some(preconditions) = terminal_pod_preconditions(&existing) else {
-        return Ok(());
-    };
-    match api
-        .delete(name, &DeleteParams::default().preconditions(preconditions))
-        .await
-    {
-        Ok(_) => await_pod_deleted(api, name).await,
-        Err(error) if api_not_found(&error) => Ok(()),
-        Err(error) => Err(backend(error)),
-    }
-}
-
-fn terminal_pod_preconditions(pod: &Pod) -> Option<Preconditions> {
-    let terminal_phase = pod
-        .status
-        .as_ref()
-        .and_then(|status| status.phase.as_deref())
-        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"));
-    // The input projector and other service sidecars may keep the Pod phase
-    // `Running` after the workload-owning agent has terminated. For this adapter
-    // the agent is the lifecycle root, so its terminated state is equally terminal.
-    let terminal_agent = pod
-        .status
-        .as_ref()
-        .and_then(|status| status.container_statuses.as_ref())
-        .and_then(|statuses| statuses.iter().find(|status| status.name == "agent"))
-        .and_then(|status| status.state.as_ref())
-        .is_some_and(|state| state.terminated.is_some());
-    let terminal = terminal_phase || terminal_agent;
-    if !terminal || pod.metadata.deletion_timestamp.is_some() {
-        return None;
-    }
-    let uid = pod.metadata.uid.clone()?;
-    let resource_version = pod.metadata.resource_version.clone()?;
-    Some(Preconditions {
-        uid: Some(uid),
-        resource_version: Some(resource_version),
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -453,23 +412,6 @@ pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), Ru
     }
 }
 
-pub(super) async fn await_pod_deleted(api: &Api<Pod>, name: &str) -> Result<(), RuntimeError> {
-    let deadline = tokio::time::Instant::now() + POD_DELETE_TIMEOUT;
-    loop {
-        match api.get(name).await {
-            Err(error) if api_not_found(&error) => return Ok(()),
-            Err(error) => return Err(backend(error)),
-            Ok(_) if tokio::time::Instant::now() >= deadline => {
-                return Err(backend(format!(
-                    "Pod `{name}` was not deleted within {}s",
-                    POD_DELETE_TIMEOUT.as_secs()
-                )));
-            }
-            Ok(_) => tokio::time::sleep(POD_READY_POLL).await,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use k8s_openapi::api::core::v1::{
@@ -533,64 +475,6 @@ mod tests {
             }),
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn deletion_observation_outlives_kubernetes_default_grace() {
-        assert!(
-            POD_DELETE_TIMEOUT > Duration::from_secs(30),
-            "the API observation fence must not expire at the same instant as Kubernetes' default grace"
-        );
-    }
-
-    /* Kubernetes restore-evidence table. C1=no tuple; C2=all exact fields;
-     * C3=partial tuple; C4=one mismatched field. E1=ordinary object/None;
-     * E2=lossless exact evidence; E3=fail closed. Rules: K1 C1=>E1;
-     * K2 C2=>E2; K3 C3|C4=>E3. The same helper owns Pod and PVC checks. */
-    #[test]
-    fn restoration_annotations_are_atomic_exact_evidence_for_pods_and_pvcs() {
-        let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
-            "effect-a",
-            "generation-a",
-            "checkpoint-a",
-            "digest-a",
-            "spec-a",
-            "exclusions-a",
-        )
-        .unwrap();
-        let mut object = pod("Pending", false, None);
-        object.metadata.name = Some("restore-pod".into());
-        assert_eq!(restoration_evidence(&object).unwrap(), None, "K1/E1");
-        stamp_restoration(&mut object, &evidence);
-        assert_eq!(
-            restoration_evidence(&object).unwrap(),
-            Some(evidence.clone()),
-            "K2/E2"
-        );
-        verify_restoration(&object, &evidence).expect("K2/E2");
-
-        object
-            .metadata
-            .annotations
-            .as_mut()
-            .unwrap()
-            .remove(crate::RESTORE_CHECKPOINT_DIGEST_LABEL);
-        assert!(restoration_evidence(&object).is_err(), "K3/E3 partial");
-
-        stamp_restoration(&mut object, &evidence);
-        let mismatched = pc::SandboxRestorationEvidence::from_exact_parts(
-            evidence.effect_id(),
-            "generation-different",
-            evidence.checkpoint_id(),
-            evidence.checkpoint_digest(),
-            evidence.sandbox_spec_fingerprint(),
-            evidence.checkpoint_exclusions_fingerprint(),
-        )
-        .unwrap();
-        assert!(
-            verify_restoration(&object, &mismatched).is_err(),
-            "K3/E3 mismatch"
-        );
     }
 
     #[test]
@@ -763,70 +647,5 @@ mod tests {
         changed.metadata.annotations = None;
         stamp_pod_realization(&mut changed).unwrap();
         assert_ne!(first.annotations(), changed.annotations(), "E2");
-    }
-
-    #[test]
-    fn only_terminal_pods_are_safe_to_replace_with_identity_preconditions() {
-        /* Recovery decision table. R1 Pending/Running with a live agent => preserve; R2 a Pod
-         * already being deleted => preserve; R3 Failed/Succeeded with complete
-         * UID/resourceVersion, or Running with a terminated lifecycle-root agent,
-         * => replace under that exact fence; R4 terminal but missing either identity
-         * coordinate => preserve. This covers the
-         * DiskPressure eviction that previously left deterministic names stuck
-         * behind `different realization` forever without permitting an unfenced
-         * same-name deletion. */
-        for phase in ["Pending", "Running"] {
-            let mut existing = pod(phase, phase == "Running", None);
-            existing.metadata.uid = Some("live-uid".into());
-            assert_eq!(terminal_pod_preconditions(&existing), None, "R1 {phase}");
-        }
-
-        let mut deleting = pod("Failed", false, None);
-        deleting.metadata.deletion_timestamp =
-            Some(serde_json::from_str("\"2026-08-03T00:45:35Z\"").expect("valid timestamp"));
-        assert_eq!(terminal_pod_preconditions(&deleting), None, "R2");
-
-        for phase in ["Failed", "Succeeded"] {
-            let mut terminal = pod(phase, false, None);
-            terminal.metadata.uid = Some(format!("{phase}-uid"));
-            terminal.metadata.resource_version = Some("21413".into());
-            assert_eq!(
-                terminal_pod_preconditions(&terminal),
-                Some(Preconditions {
-                    uid: Some(format!("{phase}-uid")),
-                    resource_version: Some("21413".into()),
-                }),
-                "R3 {phase}"
-            );
-        }
-
-        let mut sidecar_held_running = pod("Running", false, None);
-        sidecar_held_running.metadata.uid = Some("terminated-agent-uid".into());
-        sidecar_held_running.metadata.resource_version = Some("21414".into());
-        sidecar_held_running
-            .status
-            .as_mut()
-            .unwrap()
-            .container_statuses = Some(vec![sidecar("agent", false, None, Some(0))]);
-        assert_eq!(
-            terminal_pod_preconditions(&sidecar_held_running),
-            Some(Preconditions {
-                uid: Some("terminated-agent-uid".into()),
-                resource_version: Some("21414".into()),
-            }),
-            "R3 a live sidecar cannot keep a terminated agent realization adoptable"
-        );
-
-        for missing in ["uid", "resourceVersion"] {
-            let mut terminal = pod("Failed", false, None);
-            terminal.metadata.uid = (missing != "uid").then(|| "observed-uid".into());
-            terminal.metadata.resource_version =
-                (missing != "resourceVersion").then(|| "21413".into());
-            assert_eq!(
-                terminal_pod_preconditions(&terminal),
-                None,
-                "R4 missing {missing} must preserve the Pod instead of issuing an unfenced delete"
-            );
-        }
     }
 }

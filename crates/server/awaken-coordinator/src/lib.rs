@@ -1131,6 +1131,19 @@ fn mount_with_managed_over_and_models(
         worker_directory,
         ai_sdk_browser_cors,
     } = routing;
+    // Bind the exact Coordinator Worker registry into the Session root-CAS
+    // authority before any claim transport is exposed. HTTP still authenticates
+    // each request, but it cannot become a second eligibility source or let an
+    // in-process caller bypass the current registry incarnation.
+    let worker_observations: Arc<dyn awaken_worker_contract::WorkerObservationSource> =
+        worker_directory.clone();
+    session_application
+        .set_worker_observation_source(worker_observations)
+        .map_err(|error| {
+            WorkerTransportBuildError::Dispatch(format!(
+                "bind Session Worker observation source: {error}"
+            ))
+        })?;
     let weak_session_application = Arc::downgrade(&session_application);
     host.install_committed_progress_wakeup(Arc::new(move || {
         if let Some(application) = weak_session_application.upgrade() {
@@ -1331,6 +1344,11 @@ fn mount_with_managed_over_and_models(
             policy: worker_placement_policy
                 .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             sessions: session_application.clone(),
+            session_environment_bindings: Arc::new(
+                awaken_session_application::RepositoryEnvironmentBindingSink::new(
+                    session_application.session_repository_handle(),
+                ),
+            ),
             coordination: session_application.clone(),
             session_work: session_application.clone(),
             authenticator: worker_authenticator.clone(),
@@ -1357,7 +1375,8 @@ fn mount_with_managed_over_and_models(
                 dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
                 worker_authenticator.clone(),
                 worker_directory.clone(),
-            ),
+            )
+            .with_session_control(session_application.clone()),
         ));
     let memory = awaken_resource_worker_http::worker_memory_router(Arc::new(
         awaken_resource_worker_http::WorkerMemoryService::new(
@@ -1366,7 +1385,8 @@ fn mount_with_managed_over_and_models(
             dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
             worker_authenticator.clone(),
             worker_directory.clone(),
-        ),
+        )
+        .with_session_control(session_application.clone()),
     ));
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
         resource_registry,

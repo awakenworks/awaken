@@ -56,8 +56,7 @@ pub use operational::{
 };
 pub use run_dispatch::{
     DispatchAdmissionShape, DispatchIdentityScope, ExecutionScopeRef, PlacementRequirements,
-    RunDispatch, SessionResourceEnvelope, SessionResourceInstallDecision, SessionRuntimeEnvelope,
-    session_resource_install_decision,
+    RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
 };
 pub use worker_transport::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
@@ -67,3 +66,36 @@ pub use worker_transport::{
     SettleRequest, StreamEventRequest, StreamObservationRequest, WorkerHeartbeatReceipt,
     WorkerIdentityRequest, WorkerRegistrationReceipt,
 };
+
+/// The one closed fencing vocabulary for Runtime-authored Resource effects.
+/// Ordinary Run work retains its dispatch claim; terminal recovery carries the
+/// aggregate-derived cleanup command and realization lease; checkpoint source
+/// release carries the existing Environment operation whose root state already
+/// owns the durable checkpoint. Resources remains generic over this value and
+/// owns no execution authority of its own.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "type",
+    content = "fence",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+// This is the single short-lived, closed transport union for mutually
+// exclusive Resource operations. Boxing only the terminal arm would change
+// the public Rust contract while preserving the same wire authority.
+#[allow(clippy::large_enum_variant)]
+pub enum ResourceOperationFence {
+    Run(RunClaim),
+    CheckpointRelease(awaken_session_contract::SessionEnvironmentOperation),
+    Terminal(awaken_session_contract::SessionTerminalCleanupEffect),
+}
+
+impl From<RunClaim> for ResourceOperationFence {
+    fn from(claim: RunClaim) -> Self {
+        Self::Run(claim)
+    }
+}
+
+/// Source-compatible name retained for Artifact publishers. It is an alias,
+/// not a second fencing enum or wire grammar.
+pub type ArtifactPublicationFence = ResourceOperationFence;

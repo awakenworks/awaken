@@ -51,8 +51,8 @@ pub awaken_coordinator::application_access::IssuedApplicationToken::operations: 
 pub awaken_coordinator::application_access::IssuedApplicationToken::protocols: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: alloc::string::String
 pub const awaken_coordinator::application_access::APPLICATION_ACCESS_MAX_TTL_SECONDS: u64
-pub async fn awaken_coordinator::application_access::issue_application_access(&awaken_coordinator::application_access_store::ApplicationAccessStore, &dyn awaken_session_contract::session_repo::ManagedSessionRepository, &str, awaken_coordinator::application_access::CreateApplicationToken) -> core::result::Result<awaken_coordinator::application_access::IssuedApplicationToken, awaken_coordinator::application_access::ApplicationAccessIssuanceError>
-pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
+pub async fn awaken_coordinator::application_access::issue_application_access(&awaken_coordinator::application_access_store::ApplicationAccessStore, &dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository, &str, awaken_coordinator::application_access::CreateApplicationToken) -> core::result::Result<awaken_coordinator::application_access::IssuedApplicationToken, awaken_coordinator::application_access::ApplicationAccessIssuanceError>
+pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
 pub mod awaken_coordinator::application_access_store
 pub enum awaken_coordinator::application_access_store::ApplicationAccessRepositoryError
 pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::Corrupt(alloc::string::String)
@@ -122,21 +122,21 @@ pub struct awaken_coordinator::worker_observation_boundary::HttpWorkerObservatio
 impl awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource
 pub fn awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource::with_token_source(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>) -> core::result::Result<Self, alloc::string::String>
-impl awaken_worker_contract::WorkerObservationSource for awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource
-pub fn awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_worker_contract::registry::WorkerObservationSource for awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource
+pub fn awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_worker_contract::registry::RegisteredWorker>, awaken_worker_contract::registry::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub const awaken_coordinator::worker_observation_boundary::WORKER_OBSERVATIONS_PATH: &str
 pub const awaken_coordinator::worker_observation_boundary::WORKER_OBSERVE_PERMISSION: &str
-pub fn awaken_coordinator::worker_observation_boundary::router(alloc::sync::Arc<dyn awaken_worker_contract::WorkerObservationSource>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
-pub fn awaken_coordinator::worker_observation_boundary::router_with_authenticator(alloc::sync::Arc<dyn awaken_worker_contract::WorkerObservationSource>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
+pub fn awaken_coordinator::worker_observation_boundary::router(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerObservationSource>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
+pub fn awaken_coordinator::worker_observation_boundary::router_with_authenticator(alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerObservationSource>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
 pub mod awaken_coordinator::worker_placement
 pub struct awaken_coordinator::worker_placement::ReplaceablePlacementPolicy
 impl awaken_coordinator::worker_placement::ReplaceablePlacementPolicy
 pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::active_id(&self) -> alloc::string::String
-pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::new(alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> alloc::sync::Arc<Self>
-pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::replace(&self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>
-impl awaken_worker_contract::PlacementPolicy for awaken_coordinator::worker_placement::ReplaceablePlacementPolicy
+pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::new(alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>) -> alloc::sync::Arc<Self>
+pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::replace(&self, alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>) -> alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>
+impl awaken_worker_contract::placement::PlacementPolicy for awaken_coordinator::worker_placement::ReplaceablePlacementPolicy
 pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::id(&self) -> &str
-pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::rank(&self, &awaken_worker_contract::PlacementContext, &[awaken_worker_contract::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::RankedWorker>, awaken_worker_contract::PlacementError>
+pub fn awaken_coordinator::worker_placement::ReplaceablePlacementPolicy::rank(&self, &awaken_worker_contract::placement::PlacementContext, &[awaken_worker_contract::registry::WorkerSnapshot]) -> core::result::Result<alloc::vec::Vec<awaken_worker_contract::placement::RankedWorker>, awaken_worker_contract::placement::PlacementError>
 pub fn awaken_coordinator::worker_placement::shared_worker_placement_policy() -> alloc::sync::Arc<awaken_coordinator::worker_placement::ReplaceablePlacementPolicy>
 pub mod awaken_coordinator::workspace_path
 pub fn awaken_coordinator::workspace_path::with_platform_workspace(axum::routing::Router, alloc::string::String) -> axum::routing::Router
@@ -156,9 +156,11 @@ pub awaken_coordinator::WorkerTransportBuildError::MissingCheckpointAuthority
 pub awaken_coordinator::WorkerTransportBuildError::MissingFileApplication
 pub struct awaken_coordinator::ClaimFencedArtifactPublisher
 impl awaken_coordinator::ClaimFencedArtifactPublisher
-pub fn awaken_coordinator::ClaimFencedArtifactPublisher::new(alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>) -> Self
-impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_coordinator::ClaimFencedArtifactPublisher
-pub fn awaken_coordinator::ClaimFencedArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_coordinator::ClaimFencedArtifactPublisher::install_session_control(&self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>) -> core::result::Result<(), &'static str>
+pub fn awaken_coordinator::ClaimFencedArtifactPublisher::new(alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::ArtifactPublicationFence>>, alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>) -> Self
+impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::ResourceOperationFence> for awaken_coordinator::ClaimFencedArtifactPublisher
+pub fn awaken_coordinator::ClaimFencedArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::ArtifactPublicationFence>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_coordinator::ClaimFencedArtifactPublisher::recover<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactRecovery<awaken_run_ingress_contract::ArtifactPublicationFence>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_coordinator::CoordinatorComponent
 pub awaken_coordinator::CoordinatorComponent::application_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::managed_router: axum::routing::Router
@@ -186,11 +188,11 @@ pub awaken_coordinator::CoordinatorDependencies::resource_registry: alloc::sync:
 pub awaken_coordinator::CoordinatorDependencies::service_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>
 pub awaken_coordinator::CoordinatorDependencies::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
 pub awaken_coordinator::CoordinatorDependencies::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>
-pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
+pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
-pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
 pub awaken_coordinator::CoordinatorDependencies::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
-pub awaken_coordinator::CoordinatorDependencies::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
+pub awaken_coordinator::CoordinatorDependencies::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
 pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub struct awaken_coordinator::CoordinatorPersistence
 pub awaken_coordinator::CoordinatorPersistence::postgres_pool: core::option::Option<sqlx_postgres::PgPool>
@@ -209,9 +211,9 @@ pub awaken_coordinator::ManagedRoutingExtensions::memory_stores: alloc::sync::Ar
 pub awaken_coordinator::ManagedRoutingExtensions::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
-pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
-pub awaken_coordinator::ManagedRoutingExtensions::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub struct awaken_coordinator::ReferenceIndexedMemoryExtractions
 impl awaken_coordinator::ReferenceIndexedMemoryExtractions
@@ -237,4 +239,4 @@ pub fn awaken_coordinator::postgres_local_commit(alloc::sync::Arc<awaken_store_p
 pub async fn awaken_coordinator::prepare_local_acp(awaken_acp_application::LocalAcpPreparation) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>
 pub fn awaken_coordinator::register_application_access_retention(&awaken_service_lifecycle::ServiceLifecycle, alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>)
 pub async fn awaken_coordinator::restore_deployment_application(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>, awaken_coordinator::CoordinatorBuildError>
-pub type awaken_coordinator::WorkerDirectoryHandle = alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub type awaken_coordinator::WorkerDirectoryHandle = alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>

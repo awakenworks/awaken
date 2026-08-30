@@ -1,137 +1,22 @@
 //! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
+mod pending;
+mod run_coordination;
+
+pub use pending::Pending;
+pub use run_coordination::{
+    DelegatedRun, DelegatedRunSnapshot, SessionBudgetResumeDelivery,
+    SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
+};
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
-
-/// The tool a run awaits: its id, model-visible name/input, and whether it is
-/// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
-/// confirmation (`agent.tool_use{ask}`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Pending {
-    pub tool_use_id: String,
-    pub name: String,
-    pub input: serde_json::Value,
-    pub client_executed: bool,
-}
-
-impl Pending {
-    /// Classify the externally answerable value directly from the one committed
-    /// [`awaken_agent_contract::agent::awaiting::ResumeTicket`]. Host execution,
-    /// Session application, and protocol recovery must all use this decoder so
-    /// warm and cold reads cannot disagree with the committed projection.
-    pub fn from_resume_ticket(
-        ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
-    ) -> Option<Self> {
-        Self::from_await_target(ticket.target())
-    }
-
-    /// Rebuild the same externally answerable projection from a historical
-    /// committed Awaiting fact after its active resume ticket has been consumed.
-    /// Both live and cold paths share this decoder so they cannot classify the
-    /// closed target differently.
-    pub fn from_await_target(
-        target: &awaken_agent_contract::agent::awaiting::AwaitTarget,
-    ) -> Option<Self> {
-        use awaken_agent_contract::agent::awaiting::{AwaitTarget, ToolAwaitReason};
-
-        match target {
-            AwaitTarget::ToolCall {
-                reason: reason @ (ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution),
-                call_id,
-                tool,
-            } => Some(Self {
-                tool_use_id: call_id.clone(),
-                name: tool.tool_id.clone(),
-                input: tool.arguments.clone(),
-                client_executed: *reason == ToolAwaitReason::ClientExecution,
-            }),
-            AwaitTarget::RemoteInput { call_id, .. } => Some(Self {
-                tool_use_id: call_id.clone(),
-                name: "agent_input".to_string(),
-                input: serde_json::json!({ "reason": target.reason().as_stream_str() }),
-                client_executed: true,
-            }),
-            AwaitTarget::ToolCall {
-                reason: ToolAwaitReason::ScheduledAction | ToolAwaitReason::Delegation,
-                ..
-            }
-            | AwaitTarget::Pause(_) => None,
-        }
-    }
-}
-
-/// Stable child-Run relationship projected at a session boundary. Runtime owns
-/// the relationship; Managed and other adapters only render it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DelegatedRun {
-    pub run_id: RunId,
-    pub parent_call_id: String,
-    pub agent_id: String,
-    pub status: DelegationStatus,
-}
-
-/// Stable view of the runtime-owned delegation authority after the parent Run
-/// has crossed a terminal fence and reached quiescence.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DelegatedRunSnapshot {
-    pub delegated_runs: Vec<DelegatedRun>,
-    /// Ordinary logical child Threads admitted under this Session's dispatch
-    /// affinity. These remain distinct from synchronous delegated Runs.
-    pub coordinated_thread_ids: Vec<awaken_agent_contract::agent::thread::Id>,
-    /// Monotonic committed-state position from which `delegated_runs` was rebuilt.
-    pub watermark: u64,
-    /// Backend-wide commit high-water read only after terminal quiescence. This
-    /// is the immutable first-listability anchor for the Session terminal wire
-    /// projection; it is intentionally distinct from `commands.len()`.
-    pub runtime_commit_cursor: u64,
-}
-
-/// Session-approved delivery that resumes one exact committed budget pause.
-/// The activity epoch is newly admitted for this continuation; durable dispatch
-/// implementations atomically rotate their existing row to this coordinate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionBudgetResumeDelivery {
-    pub session_id: String,
-    pub thread_id: awaken_agent_contract::agent::thread::Id,
-    pub run_id: RunId,
-    pub correlation_id: String,
-    /// The claimed Run's next committed-operation ordinal while this exact
-    /// pause is current. It is read from committed recovery truth, remains
-    /// stable while Awaiting, and advances when the same Run pauses again.
-    pub pause_generation: u64,
-    /// Existing durable Session activity coordinate carried by a dispatch row.
-    /// The application transfers it to `session_activity_epoch` atomically;
-    /// foreground Runs without a row carry `None`.
-    pub prior_session_activity_epoch: Option<u64>,
-    pub session_activity_epoch: u64,
-}
-
-/// One committed budget pause paired with its authoritative generation.
-///
-/// The generation is derived from the Run recovery snapshot rather than a
-/// separate counter or pause registry. This makes repeated BudgetReached
-/// pauses in the same Run distinct while keeping exact update replay stable.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionBudgetResumeTicket {
-    pub ticket: awaken_agent_contract::agent::awaiting::ResumeTicket,
-    pub pause_generation: u64,
-    pub prior_session_activity_epoch: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionBudgetResumeDisposition {
-    /// The durable dispatch row accepted the resume and new epoch.
-    Dispatched,
-    /// The exact ticket was already consumed by an earlier delivery/replay.
-    Stale,
-}
 
 /// The result of running one settled Step (a new Run, or a resume).
 ///
@@ -360,6 +245,31 @@ pub struct SessionInit {
     pub environment: crate::EnvironmentSnapshot,
 }
 
+/// Pure, prospective Sandbox layout compiled before a Session root or Resource
+/// manifest is persisted.
+///
+/// Resource bindings deliberately remain in their neutral typed form here. The
+/// Runtime implementation owns the one File/Memory/Repository path projection
+/// and evaluates it together with provider-owned mounts and environment paths;
+/// protocol adapters must not approximate that final layout themselves.
+#[derive(Debug, Clone)]
+pub struct SessionSandboxLayout {
+    /// Owning workspace used by the Runtime's sole exact publication/provider
+    /// resolver. Keeping it inside this prospective value prevents callers from
+    /// selecting a provider with a parallel ambient workspace argument.
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub agent_revision: Option<u64>,
+    pub runtime_placement: crate::SessionRuntimePlacement,
+    pub model_override: Option<crate::SessionModelOverride>,
+    /// Exact backend frozen by the prospective baseline, when already known.
+    pub runtime: Option<String>,
+    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    pub env: Vec<awaken_provisioning_contract::EnvVar>,
+    pub environment: crate::EnvironmentSnapshot,
+    pub resources: Vec<awaken_resource_contract::InputBinding>,
+}
+
 /// A queued live-inbox message on the Session's in-flight Run. `id` is the
 /// runtime's queue identity — targetable until the engine consumes the entry.
 /// Neutral: the adapter projects it onto the wire snapshot at the route.
@@ -533,6 +443,29 @@ pub trait SessionThreadLiveSubscription: Send {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
+    /// Validate the exact provider-effective Sandbox layout without publishing
+    /// process-local state or performing provider, cache, Skill, File, Vault,
+    /// Repository, or Git I/O. Session creation and Resource mutation call this
+    /// before their durable/effect boundaries; Runtime repeats it at the final
+    /// realization edge as defense in depth.
+    fn validate_session_sandbox_layout(
+        &self,
+        _thread: &str,
+        layout: &crate::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        if layout.resources.iter().any(|binding| {
+            matches!(
+                binding.target,
+                awaken_resource_contract::InputResourceId::Repository(_)
+            )
+        }) {
+            return Err(RunError::unavailable(
+                "runtime does not implement Repository Sandbox-layout validation",
+            ));
+        }
+        Ok(())
+    }
+
     /// Install one complete Control-frozen Session projection. Dispatch and
     /// realization are explicit modes of this single port; callers must never
     /// lower publication, baseline, request context, Environment, or lease
@@ -894,18 +827,32 @@ pub trait SessionRuntime: Send + Sync {
         ))
     }
 
-    /// Dispose the source only after the aggregate committed ReadyToDispose.
-    async fn dispose_checkpoint_source(
+    /// Complete every live source-durability effect without deleting the
+    /// source. The aggregate must durably admit the returned receipt before it
+    /// invokes physical disposal.
+    async fn prepare_checkpoint_source_disposal(
         &self,
         _thread: &str,
-        _operation: &crate::SessionEnvironmentOperation,
-        _source_effect_id: &str,
+        _preparation: &crate::SourceReleasePreparationEffect,
         _generation: &crate::SandboxGeneration,
         _source_binding: &str,
+    ) -> Result<crate::SourceReleasePreparedReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_environment_checkpoint_unsupported",
+            "Runtime does not implement checkpoint source release preparation",
+        ))
+    }
+
+    /// Physically dispose the source only after the aggregate has durably
+    /// committed the exact source-release preparation receipt.
+    async fn dispose_prepared_checkpoint_source(
+        &self,
+        _thread: &str,
+        _disposal: &crate::SourceReleaseDisposal,
     ) -> Result<crate::SourceDisposedReceipt, RunError> {
         Err(RunError::unavailable_classified(
             "session_environment_checkpoint_unsupported",
-            "Runtime does not implement checkpoint source disposal",
+            "Runtime does not implement prepared checkpoint source disposal",
         ))
     }
 
@@ -952,15 +899,14 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Apply the complete, already-resolved input manifest. Live add/update/delete
-    /// and restart restoration converge here; runtime never re-resolves Agent
-    /// defaults or current resource configuration.
+    /// Apply one complete, aggregate-authored Resource transition. Live
+    /// add/update/delete, rollback, and restart restoration converge here;
+    /// Runtime never guesses the prior generation from a process-local cache or
+    /// re-resolves Agent defaults/current Resource configuration.
     async fn apply_session_inputs(
         &self,
         _thread: &str,
-        _workspace_id: &str,
-        _resource_revision: u64,
-        _inputs: &crate::ResolvedSessionResources,
+        _transition: &crate::SessionResourceTransition,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -1115,34 +1061,90 @@ pub trait SessionRuntime: Send + Sync {
         Ok(None)
     }
 
-    /// Execute the exact root Repository publication command and return its
-    /// secret-free receipt or permanent rejection. The caller verifies and
-    /// durably records that outcome before ordinary root cleanup may dispose the
-    /// shared environment.
-    /// Hosts must opt in explicitly; a compatibility no-op cannot acknowledge a
-    /// requested publication.
-    async fn execute_terminal_repository_publication(
+    /// Execute terminal Repository publication under the same realization
+    /// generation that owns the cleanup command set and return either its
+    /// secret-free receipt or one permanent compare-and-swap rejection. The
+    /// caller verifies and durably records that outcome before ordinary root
+    /// cleanup may dispose the shared environment. Runtimes must override this
+    /// edge and carry the lease to the Repository transport boundary; falling
+    /// back would erase the terminal ownership proof.
+    async fn execute_terminal_repository_publication_for_lease(
         &self,
         _command: crate::SessionRepositoryPublicationCommand,
+        _lease: &crate::SessionRealizationLease,
     ) -> Result<crate::SessionRepositoryPublicationEffect, RunError> {
         Err(RunError::unavailable_classified(
-            "session_repository_publication_runtime_unsupported",
-            "runtime does not implement terminal Repository publication",
+            "session_repository_publication_effect_runtime_unsupported",
+            "runtime does not implement realization-fenced terminal Repository publication",
         ))
     }
 
-    /// Execute the exact durable cleanup command and return untrusted completion
-    /// data for that same command. The application verifies that data before the
-    /// durable operation can advance. Recovery calls this entry again with the
-    /// same effect id. Hosts must opt in explicitly: silently reporting success
-    /// would allow a no-op runtime to authorize physical Session deletion.
-    async fn execute_terminal_cleanup(
+    /// Make every source-dependent effect durable under the exact aggregate
+    /// preparation fence without deleting the physical realization.
+    async fn prepare_terminal_cleanup_for_effect(
         &self,
-        _command: crate::SessionCleanupCommand,
-    ) -> Result<crate::SessionCleanupCompletion, RunError> {
+        _effect: crate::SessionTerminalCleanupEffect,
+        _authorization: crate::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<crate::SessionCleanupPreparation, RunError> {
         Err(RunError::unavailable_classified(
-            "session_cleanup_runtime_unsupported",
-            "runtime does not implement Session cleanup",
+            "session_terminal_cleanup_preparation_runtime_unsupported",
+            "runtime does not implement realization-fenced Session cleanup preparation",
+        ))
+    }
+
+    /// Retire only a prepared child projection after Control durably accepts
+    /// its exact preparation. The shared root Environment must remain until the
+    /// aggregate-wide physical disposal is complete.
+    async fn acknowledge_terminal_cleanup_preparation(
+        &self,
+        _effect: &crate::SessionTerminalCleanupEffect,
+    ) {
+    }
+
+    /// Execute the one aggregate-wide physical disposal after every
+    /// preparation is durable. The typed effect carries the exact prepared
+    /// predecessor plus the current live successor lease.
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        _effect: crate::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<crate::SessionCleanupDisposalReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_terminal_cleanup_disposal_runtime_unsupported",
+            "runtime does not implement realization-fenced Session cleanup disposal",
+        ))
+    }
+
+    /// Retire only the process-local teardown projection after Control has
+    /// durably accepted the exact disposal receipt. No provider or Resource
+    /// effect is permitted at this edge.
+    async fn acknowledge_terminal_cleanup_disposal(
+        &self,
+        _effect: &crate::SessionTerminalCleanupDisposalEffect,
+    ) {
+    }
+
+    /// Retire a process-local terminal projection after Control reports that
+    /// the aggregate has no remaining cleanup work. This closes final receipt
+    /// response loss without replaying provider I/O or inventing another
+    /// completion registry.
+    async fn acknowledge_completed_terminal_cleanup(
+        &self,
+        _session_id: &str,
+        _lease: &crate::SessionRealizationLease,
+    ) {
+    }
+
+    /// Install the frozen facts carried by one terminal assignment without
+    /// realizing Resources, adopting an Environment, or writing an ordinary
+    /// Environment receipt. Cleanup effects remain gated by the exact action
+    /// and lease passed to the preparation/disposal ports above.
+    async fn install_terminal_cleanup_assignment(
+        &self,
+        _assignment: &crate::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable_classified(
+            "session_terminal_projection_runtime_unsupported",
+            "runtime does not implement frozen terminal Session projection installation",
         ))
     }
 
@@ -1268,17 +1270,23 @@ pub trait SessionRuntime: Send + Sync {
 /// The binding must commit before the runtime exposes that environment to work.
 #[async_trait]
 pub trait SessionEnvironmentBindingSink: Send + Sync {
-    /// Whether this sink owns a durable aggregate for `session_id`. Internal
-    /// runtime threads (graders, forks) deliberately have no Managed Session
-    /// aggregate and must not be forced through this persistence boundary.
-    async fn owns(&self, _session_id: &str) -> Result<bool, RunError> {
-        Ok(true)
+    /// Atomically determine whether the durable aggregate owns this effect and
+    /// whether the exact effect already committed. Internal runtime threads
+    /// deliberately return `Unowned`; callers must not split this check into a
+    /// separate existence read and a later authorization decision.
+    async fn authorize(
+        &self,
+        _intent: &crate::SessionEnvironmentEffectIntent,
+    ) -> Result<crate::SessionEnvironmentEffectAuthorization, RunError> {
+        Err(RunError::classified(
+            "session_environment_effect_authorization_unsupported",
+            "Session Environment effects require an explicit durable authorization implementation",
+        ))
     }
 
-    /// Commit `receipt` and return the exact Environment state read from the
-    /// durable aggregate after that commit. Runtime publication consumes this
-    /// evidence directly; it must not reconstruct a generation from local time
-    /// or from the physical provider handle.
+    /// Commit one authorized receipt and return the exact Store-read
+    /// Environment authority. Runtime owner installation must consume this
+    /// value rather than reconstructing generation state from local time.
     async fn persist(
         &self,
         receipt: crate::SessionEnvironmentReceipt,
@@ -1561,10 +1569,10 @@ mod tests {
     #[tokio::test]
     async fn default_terminal_repository_publication_is_fail_closed() {
         // Port-default cause/effect table: C1 a Runtime has not explicitly
-        // implemented the Repository publication effect; C2 a command is
-        // presented. E1 is a classified retryable failure and no synthetic
-        // receipt. Rule P1: C1+C2 => E1. There is deliberately no success rule
-        // for a compatibility/default Runtime.
+        // implemented the Repository publication effect; C2 an exact command
+        // and realization lease are presented. E1 is a classified retryable
+        // failure and no synthetic receipt. Rule P1: C1+C2 => E1. There is no
+        // command-only port and deliberately no compatibility success rule.
         let command: crate::SessionRepositoryPublicationCommand =
             serde_json::from_value(serde_json::json!({
                 "session_id": "session",
@@ -1583,13 +1591,19 @@ mod tests {
                 }
             }))
             .unwrap();
+        let lease = crate::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
         let error = MinimalRuntime
-            .execute_terminal_repository_publication(command)
+            .execute_terminal_repository_publication_for_lease(command, &lease)
             .await
             .expect_err("P1/E1");
         assert_eq!(error.kind, RunErrorKind::Unavailable, "P1/E1");
         assert_eq!(
-            error.code, "session_repository_publication_runtime_unsupported",
+            error.code, "session_repository_publication_effect_runtime_unsupported",
             "P1/E1"
         );
     }

@@ -960,7 +960,7 @@ impl SharedHost {
         let advisor_model = self
             .resolve_session_publication(session_id, None, delivered)
             .ok()
-            .and_then(|(_, _, publication)| publication)
+            .and_then(|(_, _, publication, _)| publication)
             .and_then(|snapshot| {
                 snapshot
                     .resolved_spec

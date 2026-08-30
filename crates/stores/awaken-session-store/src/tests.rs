@@ -218,6 +218,55 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
 }
 
 #[tokio::test]
+async fn reconciliation_keyset_pages_cover_more_than_one_fixed_batch_exactly_once() {
+    /* Reconciliation page cause/effect decision table. C1 the durable index
+     * contains fewer than, exactly, or more than RECOVERY_BATCH_SIZE
+     * decode-valid rows; C2 the caller supplies no cursor or the exact cursor
+     * returned by page one; C3 every row still needs reconciliation. Effects:
+     * E1 each page returns at most the fixed batch size; E2 a full page with a
+     * successor returns its exclusive keyset cursor; E3 following that cursor
+     * returns every later row exactly once; E4 the terminal page has no cursor.
+     * R1 <batch+None=>E1+E4 is covered by the ordinary recovery tests;
+     * R2 batch+1+None=>E1+E2; R3 R2 cursor=>E1+E3+E4. Cursor pagination changes
+     * no durable row, quarantine rule, queue, or reconciliation predicate. */
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = SqliteManagedSessionRepository::open(
+        &dir.path().join("recovery-pages.db").to_string_lossy(),
+    )
+    .unwrap();
+    let total = usize::try_from(RECOVERY_BATCH_SIZE).unwrap() + 1;
+    let expected = (0..total)
+        .map(|index| format!("paged-{index:03}"))
+        .collect::<Vec<_>>();
+    for session_id in &expected {
+        create_fixture(&sqlite, "workspace", sample(session_id), Vec::new()).await;
+    }
+
+    let first = sqlite.reconcilable_sessions_page(None).await.unwrap();
+    assert_eq!(
+        first.sessions.len(),
+        usize::try_from(RECOVERY_BATCH_SIZE).unwrap(),
+        "R2/E1 fixed first page"
+    );
+    let cursor = first.next_cursor.clone().expect("R2/E2 next page");
+    assert_eq!(cursor.session_id(), expected[total - 2], "R2/E2");
+
+    let second = sqlite
+        .reconcilable_sessions_page(Some(&cursor))
+        .await
+        .unwrap();
+    assert_eq!(second.sessions.len(), 1, "R3/E1");
+    assert!(second.next_cursor.is_none(), "R3/E4 terminal page");
+    let observed = first
+        .sessions
+        .into_iter()
+        .chain(second.sessions)
+        .map(|scoped| scoped.session.session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(observed, expected, "R3/E3 no duplicate or missing row");
+}
+
+#[tokio::test]
 async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
     // Durable-receipt corruption table. C1 create receipt exists without any
     // identity; C2 create receipt points at an undecodable live aggregate; C3 a
@@ -1216,13 +1265,58 @@ fn make_deletable(session: &mut PersistedSession) {
         .terminal_cleanup
         .command_for(&session_id, &session_id)
         .unwrap();
-    let receipt = awaken_session_contract::SessionCleanupCompletion::new(&command, Vec::new())
-        .verify(&command)
-        .unwrap();
+    install_legacy_completion_wire(session, &command);
     session
-        .terminal_cleanup
-        .complete(&session_id, &[receipt])
+        .normalize_legacy_terminal_cleanup("test fixture released")
         .unwrap();
+}
+
+/// Build only historical persisted bytes; no current Runtime completion API is
+/// retained for storage fixtures. Cause/effect: an exact frozen command plus a
+/// canonical v1 receipt decodes as legacy evidence; a different command or
+/// fingerprint is rejected by the aggregate normalizer. Decision rule L1 uses
+/// this helper to seed old wire, while all current completion transitions use
+/// the two-stage preparation/disposal authority.
+fn install_legacy_completion_wire(
+    session: &mut PersistedSession,
+    command: &awaken_session_contract::SessionCleanupCommand,
+) {
+    let receipt_fingerprint = awaken_session_contract::stable_fingerprint(&(
+        "session-terminal-cleanup-thread-receipt-v1",
+        command.session_id.as_str(),
+        command.thread_id.as_str(),
+        command.effect_id.as_str(),
+        Vec::<(&str, &str)>::new(),
+    ));
+    let completion = serde_json::json!({
+        "session_id": command.session_id,
+        "thread_id": command.thread_id,
+        "effect_id": command.effect_id,
+        "artifact_receipts": [],
+        "receipt_fingerprint": receipt_fingerprint,
+    });
+    let mut encoded = serde_json::to_value(&*session).unwrap();
+    let cleanup = encoded
+        .get_mut("terminal_cleanup")
+        .expect("PersistedSession wire contains terminal_cleanup");
+    let cleanup = if cleanup.get("state").and_then(serde_json::Value::as_str)
+        == Some("repository_publication")
+    {
+        cleanup
+            .get_mut("cleanup")
+            .expect("publication wire contains its cleanup")
+    } else {
+        cleanup
+    };
+    cleanup
+        .as_object_mut()
+        .expect("cleanup wire is an object")
+        .entry("completions")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .expect("legacy completions wire is an object")
+        .insert(command.thread_id.clone(), completion);
+    *session = serde_json::from_value(encoded).unwrap();
 }
 
 fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
@@ -1236,14 +1330,15 @@ fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
         .terminal_cleanup
         .command_for(session_id, session_id)
         .expect("cleanup compatibility command");
-    session
-        .terminal_cleanup
-        .record_completion(
-            session_id,
-            awaken_session_contract::SessionCleanupCompletion::new(&command, Vec::new()),
-        )
-        .expect("record cleanup compatibility completion");
-    session
+    install_legacy_completion_wire(&mut session, &command);
+    let revision = i64::try_from(session.revision.0).expect("test revision fits SQL index");
+    let encoded: serde_json::Value =
+        serde_json::from_str(&aggregate_str(&session).unwrap()).unwrap();
+    decode(EncodedSessionRow {
+        aggregate_json: encoded.to_string(),
+        revision,
+    })
+    .expect("historical one-stage cleanup completion wire remains readable")
 }
 
 fn removed_bundle_v2_aggregate(session: &PersistedSession) -> serde_json::Value {
@@ -1682,16 +1777,11 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
             .terminal_cleanup
             .command_for("sesn_cleanup", "child-cleanup")
             .expect("child cleanup intent survives restart");
-        let receipt = awaken_session_contract::SessionCleanupCompletion::new(&intent, Vec::new());
-        let child_receipt =
-            awaken_session_contract::SessionCleanupCompletion::new(&child_intent, Vec::new());
-        let receipt = receipt.verify(&intent).unwrap();
-        let child_receipt = child_receipt.verify(&child_intent).unwrap();
+        install_legacy_completion_wire(&mut recovered, &intent);
+        install_legacy_completion_wire(&mut recovered, &child_intent);
         recovered
-            .terminal_cleanup
-            .complete("sesn_cleanup", &[receipt, child_receipt])
+            .normalize_legacy_terminal_cleanup("test fixture released")
             .unwrap();
-        recovered.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
         replace_fixture(
             &repo,
             "ws_a",
@@ -1784,14 +1874,14 @@ async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
     assert!(!persisted.contains("artifact_bundle_receipts"), "S2/E3");
     assert!(persisted.contains("\"completions\""), "S2/E3 Requested");
 
-    let receipts = recovered
-        .terminal_cleanup
-        .recorded_receipts(session_id)
-        .expect("S2/E2 current receipt");
+    assert_eq!(
+        recovered.has_complete_legacy_terminal_cleanup_evidence(),
+        Ok(true),
+        "S2/E2 current receipt set"
+    );
     assert!(
         recovered
-            .terminal_cleanup
-            .complete(session_id, &receipts)
+            .normalize_legacy_terminal_cleanup("S3 historical cleanup normalized")
             .expect("S3/E4 complete"),
         "S3/E4",
     );
@@ -2192,14 +2282,14 @@ async fn postgres_round_trips_and_upserts() {
         !persisted.contains("artifact_bundle_receipts") && persisted.contains("\"completions\""),
         "S2/E3 PostgreSQL Requested v1 rewrite",
     );
-    let receipts = recovered
-        .terminal_cleanup
-        .recorded_receipts(legacy_id)
-        .expect("S2/E2 PostgreSQL receipt");
+    assert_eq!(
+        recovered.has_complete_legacy_terminal_cleanup_evidence(),
+        Ok(true),
+        "S2/E2 PostgreSQL receipt set"
+    );
     assert!(
         recovered
-            .terminal_cleanup
-            .complete(legacy_id, &receipts)
+            .normalize_legacy_terminal_cleanup("S3 historical cleanup normalized")
             .expect("S3/E4 PostgreSQL complete"),
         "S3/E4 PostgreSQL",
     );

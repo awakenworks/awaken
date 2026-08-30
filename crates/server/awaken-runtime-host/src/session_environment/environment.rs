@@ -67,17 +67,14 @@ impl SessionEnvironment {
         capabilities: pc::SandboxCapabilities,
     ) -> Result<Self, pc::SandboxError> {
         let skills = Arc::new(ContainerSkillCache::default());
-        let hand = Arc::new(
-            SessionHandExecutor::container(
-                sandbox.clone(),
-                skills.clone(),
-                hand_factory,
-                hand_bin,
-                hand_idle_after,
-                hand_residency,
-            )
-            .await?,
-        );
+        let hand = Arc::new(SessionHandExecutor::container(
+            sandbox.clone(),
+            skills.clone(),
+            hand_factory,
+            hand_bin,
+            hand_idle_after,
+            hand_residency,
+        ));
         Ok(Self::Container {
             sandbox,
             hand,

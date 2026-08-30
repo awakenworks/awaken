@@ -28,6 +28,25 @@ pub const fn environment_requires_external_owner(frozen: SessionRuntimePlacement
     }
 }
 
+/// Reject a frozen topology whose idle policy would require Coordinator-local
+/// continuation effects against a Worker-owned Environment. External Workers
+/// have one realization/terminal-cleanup claim path, but no claim-fenced
+/// nonterminal quiesce, checkpoint, disposal, or restore transport.
+fn validate_environment_continuation_topology(
+    runtime_placement: SessionRuntimePlacement,
+    idle_retention: &awaken_session_contract::EnvironmentIdleRetentionPolicy,
+) -> Result<(), RunError> {
+    if environment_requires_external_owner(runtime_placement)
+        && idle_retention.mode
+            == awaken_session_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease
+    {
+        return Err(RunError::bad_request(
+            "checkpoint_and_release idle retention is unsupported for external Worker placement",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(kani)]
 mod environment_owner_kani_proof {
     use super::{
@@ -128,6 +147,11 @@ pub struct SessionApplication {
     /// application, and write-once so a second outbox consumer cannot replace
     /// the canonical supervisor after traffic starts.
     lifecycle_notifier: OnceLock<Arc<dyn LifecycleFactNotifier>>,
+    /// Canonical registered-Worker observation used immediately before an
+    /// external terminal-cleanup lease CAS. The HTTP adapter authenticates the
+    /// request, while this application-owned read prevents direct callers or a
+    /// stale adapter snapshot from assigning an incompatible Worker.
+    worker_observations: OnceLock<Arc<dyn awaken_worker_contract::WorkerObservationSource>>,
     local_realization_owner: String,
     runtime_incarnation: String,
     mutation_sequence: AtomicU64,
@@ -196,6 +220,7 @@ impl SessionApplication {
             sessions_repo,
             executable_projection_refresh: None,
             lifecycle_notifier: OnceLock::new(),
+            worker_observations: OnceLock::new(),
             local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
@@ -244,6 +269,53 @@ impl SessionApplication {
     #[must_use]
     pub(crate) fn runtime(&self) -> &dyn SessionRuntime {
         self.runtime.as_ref()
+    }
+
+    /// Invoke the Runtime's pure provider-effective Sandbox-layout gate. This
+    /// method performs no durable mutation or external realization and is the
+    /// one application seam used before create, live Resource, and final root
+    /// persistence boundaries.
+    pub fn validate_session_sandbox_layout(
+        &self,
+        session_id: &str,
+        layout: &awaken_session_contract::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        validate_environment_continuation_topology(
+            layout.runtime_placement,
+            &layout.environment.idle_retention,
+        )?;
+        self.runtime
+            .validate_session_sandbox_layout(session_id, layout)
+    }
+
+    /// Revalidate a proposed complete Resource manifest against the immutable
+    /// baseline already owned by a Session. The caller may pass provisional
+    /// typed bindings before Repository/Vault configuration because layout does
+    /// not depend on catalog versions or credential pins.
+    pub fn validate_persisted_session_resource_layout(
+        &self,
+        workspace_id: &str,
+        session: &PersistedSession,
+        resources: Vec<awaken_resource_contract::InputBinding>,
+    ) -> Result<(), RunError> {
+        let baseline = session
+            .frozen_baseline()
+            .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
+        self.validate_session_sandbox_layout(
+            &session.session_id,
+            &awaken_session_contract::SessionSandboxLayout {
+                workspace_id: workspace_id.to_string(),
+                agent_id: baseline.agent_id.clone(),
+                agent_revision: baseline.agent_revision,
+                runtime_placement: baseline.runtime_placement,
+                model_override: baseline.model_override.clone(),
+                runtime: baseline.runtime.clone(),
+                mounts: baseline.mounts.clone(),
+                env: baseline.env.clone(),
+                environment: baseline.environment.clone(),
+                resources,
+            },
+        )
     }
 
     #[must_use]
@@ -440,6 +512,24 @@ impl SessionApplication {
         self.lifecycle_notifier
             .set(notifier)
             .map_err(|_| "Session lifecycle notifier is already installed")
+    }
+
+    /// Bind the one Coordinator-owned registered-Worker observation source.
+    /// Duplicate composition is rejected instead of letting HTTP and the root
+    /// CAS consult different registries.
+    pub fn set_worker_observation_source(
+        &self,
+        source: Arc<dyn awaken_worker_contract::WorkerObservationSource>,
+    ) -> Result<(), &'static str> {
+        self.worker_observations
+            .set(source)
+            .map_err(|_| "Worker observation source is already installed")
+    }
+
+    pub(crate) fn worker_observation_source(
+        &self,
+    ) -> Option<&dyn awaken_worker_contract::WorkerObservationSource> {
+        self.worker_observations.get().map(Arc::as_ref)
     }
 
     /// Bind the one executable-projection reconciliation operation used by
@@ -747,7 +837,7 @@ async fn reconcile_work_dispatches(
     environments: &dyn SessionEnvironmentSource,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
-    let sessions = match sessions.reconcilable_sessions().await {
+    let sessions = match scan_all_reconcilable_sessions(sessions).await {
         Ok(sessions) => sessions,
         Err(error) => {
             report.failures.push(WorkDispatchFailure {
@@ -886,106 +976,89 @@ impl RepositoryEnvironmentBindingSink {
     pub fn new(repo: Arc<dyn ManagedSessionRepository>) -> Self {
         Self { repo }
     }
-}
 
-fn environment_binding_denied(message: impl Into<String>) -> RunError {
-    RunError::classified("session_environment_binding_denied", message)
-}
-
-fn environment_binding_now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
-}
-
-fn validate_environment_binding_realization(
-    session: &awaken_session_contract::PersistedSession,
-    receipt: &awaken_session_contract::SessionEnvironmentReceipt,
-) -> Result<(), RunError> {
-    let realization_is_current = match (session.realization.as_ref(), receipt.realization.as_ref())
-    {
-        (Some(current), Some(asserted)) => awaken_session_contract::realization_lease_authorizes(
-            current,
-            asserted,
-            environment_binding_now_unix_ms(),
-        ),
-        (None, None) => true,
-        _ => false,
-    };
-    if realization_is_current {
-        return Ok(());
+    fn now_unix_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default()
     }
-    tracing::warn!(
-        session_id = receipt.session_id.as_str(),
-        current_owner = session
-            .realization
-            .as_ref()
-            .map(|lease| lease.owner.as_str()),
-        current_incarnation = session
-            .realization
-            .as_ref()
-            .map(|lease| lease.runtime_incarnation.as_str()),
-        current_epoch = session.realization.as_ref().map(|lease| lease.epoch),
-        asserted_owner = receipt
-            .realization
-            .as_ref()
-            .map(|lease| lease.owner.as_str()),
-        asserted_incarnation = receipt
-            .realization
-            .as_ref()
-            .map(|lease| lease.runtime_incarnation.as_str()),
-        asserted_epoch = receipt.realization.as_ref().map(|lease| lease.epoch),
-        "rejected stale Session environment receipt"
-    );
-    Err(RunError::classified(
-        "session_realization_stale",
-        "Session environment binding was fenced by another realization owner",
-    ))
-}
 
-fn validate_environment_binding_authority(
-    session: &awaken_session_contract::PersistedSession,
-    receipt: &awaken_session_contract::SessionEnvironmentReceipt,
-) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
-    if session.is_terminal() {
-        return Err(environment_binding_denied(
-            "terminal Session cannot publish an environment binding",
-        ));
-    }
-    validate_environment_binding_realization(session, receipt)?;
-    match &session.environment {
-        awaken_session_contract::SessionEnvironmentState::Resident {
-            binding,
-            effect_id: Some(effect_id),
-            generation: Some(_),
-            ..
-        } if binding == &receipt.binding && effect_id == &receipt.effect_id => {
-            Ok(session.environment.clone())
+    fn receipt_error(error: awaken_session_contract::SessionEnvironmentReceiptError) -> RunError {
+        match error.recovery_action() {
+            awaken_session_contract::SessionEnvironmentReceiptRecoveryAction::Retry => {
+                let code = if matches!(
+                    error,
+                    awaken_session_contract::SessionEnvironmentReceiptError::RealizationStale
+                ) {
+                    "session_realization_stale"
+                } else {
+                    "session_environment_receipt_stale"
+                };
+                RunError::unavailable_classified(code, error.to_string())
+            }
+            awaken_session_contract::SessionEnvironmentReceiptRecoveryAction::Reject => {
+                RunError::classified("session_environment_receipt_rejected", error.to_string())
+            }
         }
-        _ => Err(environment_binding_denied(
-            "durable Session environment does not match the exact binding receipt",
-        )),
+    }
+
+    fn committed_authority(
+        session: &awaken_session_contract::PersistedSession,
+        receipt: &awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
+        if session.is_terminal() {
+            return Err(RunError::classified(
+                "session_environment_receipt_rejected",
+                "terminal Session cannot publish an Environment binding",
+            ));
+        }
+        match &session.environment {
+            awaken_session_contract::SessionEnvironmentState::Resident {
+                binding,
+                effect_id: Some(effect_id),
+                generation: Some(_),
+                ..
+            } if binding == &receipt.binding && effect_id == &receipt.effect_id => {
+                Ok(session.environment.clone())
+            }
+            _ => Err(RunError::classified(
+                "session_environment_receipt_rejected",
+                "durable Environment does not match the exact binding receipt",
+            )),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
-    async fn owns(&self, session_id: &str) -> Result<bool, RunError> {
-        match self.repo.owner(session_id).await {
-            Ok(_) => Ok(true),
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => Ok(false),
-            Err(error) => Err(RunError::internal(error.to_string())),
-        }
+    async fn authorize(
+        &self,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+    ) -> Result<awaken_session_contract::SessionEnvironmentEffectAuthorization, RunError> {
+        intent.verify().map_err(Self::receipt_error)?;
+        let session_id = intent.session_id();
+        let owner = match self.repo.owner(session_id).await {
+            Ok(owner) => owner,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                return Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned);
+            }
+            Err(error) => return Err(session_repository_error(error)),
+        };
+        let session = self
+            .repo
+            .get(session_id)
+            .await
+            .map_err(session_repository_error)?;
+        session
+            .authorize_environment_effect(&owner, intent, Self::now_unix_ms())
+            .map_err(Self::receipt_error)
     }
 
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<awaken_session_contract::SessionEnvironmentState, RunError> {
-        receipt
-            .verify()
-            .map_err(|error| environment_binding_denied(error.to_string()))?;
         let session_id = receipt.session_id.as_str();
         const CAS_ATTEMPTS: usize = 3;
         for attempt in 0..CAS_ATTEMPTS {
@@ -993,31 +1066,30 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 .repo
                 .owner(session_id)
                 .await
-                .map_err(|error| RunError::internal(error.to_string()))?;
+                .map_err(session_repository_error)?;
             let mut session = self
                 .repo
                 .get(session_id)
                 .await
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            if !session.is_terminal() {
-                validate_environment_binding_realization(&session, &receipt)?;
-            }
+                .map_err(session_repository_error)?;
+            let now_unix_ms = Self::now_unix_ms();
+            // The aggregate is the only receipt admission authority. It checks
+            // phase, source binding, immutable Environment compatibility, and
+            // the exact durable pending Resource transition before this adapter
+            // may attempt the root CAS.
             let changed = session
-                .transition_environment_binding(&receipt)
-                .map_err(|error| environment_binding_denied(error.to_string()))?;
+                .try_apply_environment_receipt(&owner, &receipt, now_unix_ms)
+                .map_err(Self::receipt_error)?;
             if !changed {
-                // This exact Store read is already the committed authority. The
-                // validator applies lease/binding/generation fences so a replay
-                // cannot bypass any part of the aggregate transition.
-                return validate_environment_binding_authority(&session, &receipt);
+                return Self::committed_authority(&session, &receipt);
             }
             if session.environment.generation().is_none() {
                 let baseline = session.frozen_baseline().ok_or_else(|| {
-                    environment_binding_denied(
-                        "Session environment binding requires a frozen baseline",
+                    RunError::classified(
+                        "session_environment_receipt_rejected",
+                        "Environment binding requires a frozen Session baseline",
                     )
                 })?;
-                let now_unix_ms = environment_binding_now_unix_ms();
                 let retention_ms = baseline
                     .environment
                     .idle_retention
@@ -1046,7 +1118,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     ),
                 );
             }
-            validate_environment_binding_authority(&session, &receipt)?;
+            Self::committed_authority(&session, &receipt)?;
             let expected_revision = session.revision;
             let payload = awaken_session_contract::SessionMutationPayload::Replace(session);
             let payload_hash = payload.stable_hash();
@@ -1066,7 +1138,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 .repo
                 .commit_mutation(&owner, mutation)
                 .await
-                .map_err(|error| RunError::internal(error.to_string()))?
+                .map_err(session_repository_error)?
             {
                 awaken_session_contract::SessionMutationResult::Applied { .. }
                 | awaken_session_contract::SessionMutationResult::Replayed { .. } => {
@@ -1074,13 +1146,14 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                         .repo
                         .get(session_id)
                         .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                    return validate_environment_binding_authority(&committed, &receipt);
+                        .map_err(session_repository_error)?;
+                    return Self::committed_authority(&committed, &receipt);
                 }
                 awaken_session_contract::SessionMutationResult::Conflict { .. }
                     if attempt + 1 < CAS_ATTEMPTS => {}
                 awaken_session_contract::SessionMutationResult::Conflict { .. } => {
-                    return Err(RunError::internal(
+                    return Err(RunError::unavailable_classified(
+                        "session_environment_binding_cas_contended",
                         "Session environment binding CAS exhausted",
                     ));
                 }
@@ -1091,7 +1164,8 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 }
             }
         }
-        Err(RunError::internal(
+        Err(RunError::unavailable_classified(
+            "session_environment_binding_cas_contended",
             "Session environment binding CAS exhausted",
         ))
     }

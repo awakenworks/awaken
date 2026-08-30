@@ -22,6 +22,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::worker_authority::unix_now_ms;
+
 const FILE_CONTENT_PATH: &str = "/v1/worker/resources/files/content";
 const FILE_CONTENT_METADATA_HEADER: &str = "x-awaken-file-content-metadata";
 
@@ -394,13 +396,6 @@ async fn application_session_file_is_frozen(
                     if file_id.as_str() == request.file_id
             )
         })
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

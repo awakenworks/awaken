@@ -25,7 +25,7 @@ struct ExactRepositoryRegistry {
 struct ExactTerminalPublicationControl {
     workspace_id: String,
     command: awaken_session_contract::SessionRepositoryPublicationCommand,
-    lease: awaken_session_contract::SessionRealizationLease,
+    lease: Arc<Mutex<awaken_session_contract::SessionRealizationLease>>,
 }
 
 #[async_trait::async_trait]
@@ -86,18 +86,26 @@ impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublica
     async fn terminal_repository_publication_command(
         &self,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        asserted_lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
-        if session_id != self.command.session_id || lease != &self.lease {
+        let current_lease = self.lease.lock().unwrap().clone();
+        if session_id != self.command.session_id
+            || !awaken_session_contract::realization_lease_authorizes(
+                &current_lease,
+                asserted_lease,
+                support::unix_now_ms(),
+            )
+        {
             return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         Ok(Some(
             awaken_session_contract::SessionRepositoryPublicationProjection {
                 workspace_id: self.workspace_id.clone(),
                 command: self.command.clone(),
+                current_lease,
             },
         ))
     }
@@ -313,6 +321,60 @@ impl RepositoryTransportAuthorizer for CancellingAuthorizer {
                     "repository-capability",
                 )?,
                 expires_at_unix_ms: None,
+            },
+        )
+    }
+}
+
+struct RenewingTerminalAuthorizer {
+    current_lease: Arc<Mutex<awaken_session_contract::SessionRealizationLease>>,
+    renewal: awaken_session_contract::SessionRealizationLease,
+    capability_expiry_unix_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl RepositoryTransportAuthorizer for RenewingTerminalAuthorizer {
+    async fn authorize(
+        &self,
+        request: RepositoryTransportAuthorization,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        let RepositoryTransportAuthority::TerminalPublication { lease, .. } = request.authority
+        else {
+            return Err(
+                awaken_resource_contract::RepositoryBindingVerifierError::new(
+                    "renewing fixture requires terminal publication authority",
+                ),
+            );
+        };
+        let mut current_lease = self.current_lease.lock().unwrap();
+        if lease != *current_lease
+            || !awaken_session_contract::realization_lease_generation_authorizes(
+                &self.renewal,
+                &lease,
+            )
+        {
+            return Err(
+                awaken_resource_contract::RepositoryBindingVerifierError::new(
+                    "renewing fixture received another terminal generation",
+                ),
+            );
+        }
+        *current_lease = self.renewal.clone();
+        drop(current_lease);
+        Ok(
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                remote_url: "https://gateway.invalid/git/repository-exact".into(),
+                capability: awaken_resource_contract::RepositoryGatewayCapability::new(
+                    "renewed-operation-capability",
+                )?,
+                expires_at_unix_ms: Some(
+                    awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new(
+                        self.capability_expiry_unix_ms,
+                    )?,
+                ),
             },
         )
     }
@@ -625,8 +687,10 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
 /// | P6 | current | exact | exact command, foreign request Workspace | any | deny before authorizer; Session owner is authoritative |
 /// | P7 | current | exact | exact | no Session Control | unavailable, never RunClaim fallback |
 /// | P8 | current | exact/live | exact | Gateway expiry expired | HTTP 403; no stale capability leaves the terminal boundary |
-/// | P9 | current | exact/live | exact | Gateway expiry beyond lease | HTTP 403; issuer cannot widen terminal authority |
-/// | P10 | current | exact/live | exact | legacy expiry omitted | preserve the existing one-shot terminal wire |
+/// | P9 | current | asserted expired, same-generation root live | exact | operation-scoped Gateway expiry 25s beyond the 20s root lease | admit one slow publication capability; the issuer, not the heartbeat, owns its one-shot expiry |
+/// | P10 | current | exact/live | exact | Gateway expiry omitted | HTTP 403; the new terminal entry requires issuer-owned live expiry |
+/// | P11 | current | asserted expired, current root expired | exact | any | 409 from Control; no authorizer |
+/// | P12 | current | asserted expired, root renews B -> C during authorizer | exact | operation-scoped Gateway expiry | admit after stable Workspace/command and monotonic same-generation recheck; do not require whole-projection equality |
 #[tokio::test]
 async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
     type PublicationFence = (
@@ -640,12 +704,12 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 7,
-        expires_at_unix_ms: support::unix_now_ms().saturating_add(30_000),
+        expires_at_unix_ms: support::unix_now_ms().saturating_add(20_000),
     };
     let control = Arc::new(ExactTerminalPublicationControl {
         workspace_id: "workspace-repository".into(),
         command: command.clone(),
-        lease: lease.clone(),
+        lease: Arc::new(Mutex::new(lease.clone())),
     });
     let direct = Arc::new(
         WorkerRepositoryBindingService::new(
@@ -722,10 +786,11 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
         );
     }
 
+    let slow_publication_expiry = lease.expires_at_unix_ms.saturating_add(25_000);
     for (rule, expiry, accepted) in [
         ("P8", Some(1), false),
-        ("P9", Some(u64::MAX), false),
-        ("P10", None, true),
+        ("P9", Some(slow_publication_expiry), true),
+        ("P10", None, false),
     ] {
         let expiry_service = Arc::new(
             WorkerRepositoryBindingService::new(
@@ -797,6 +862,144 @@ async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
         .await
         .expect_err("P4 stale lease");
     assert!(error.to_string().contains("409"), "P4: {error}");
+
+    let mut expired_assertion = lease.clone();
+    expired_assertion.expires_at_unix_ms = 1;
+    let expired_assertion_fence = (command.clone(), expired_assertion.clone());
+    let slow_publication_service = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryRegistry { active: true }),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(control.clone())
+        .with_transport_authorizer(Arc::new(FixedExpiryAuthorizer(Some(
+            slow_publication_expiry,
+        )))),
+    );
+    let slow_publication_address =
+        support::serve(worker_repository_binding_router(slow_publication_service)).await;
+    let slow_publication_verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{slow_publication_address}"))
+            .with_worker_identity(identity.clone()),
+    );
+    let transport =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &slow_publication_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&expired_assertion_fence),
+        )
+        .await
+        .expect("P9 expired assertion is authorized by the live same-generation root");
+    assert!(
+        matches!(
+            transport,
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                expires_at_unix_ms: Some(expiry),
+                ..
+            } if expiry.unix_ms() > lease.expires_at_unix_ms
+        ),
+        "P9 operation capability covers the simulated >20s publication window"
+    );
+    assert!(
+        slow_publication_expiry.saturating_sub(lease.expires_at_unix_ms) > 20_000,
+        "P9 simulates a publication that outlives the 20s root heartbeat"
+    );
+
+    let expired_control = Arc::new(ExactTerminalPublicationControl {
+        workspace_id: "workspace-repository".into(),
+        command: command.clone(),
+        lease: Arc::new(Mutex::new(expired_assertion.clone())),
+    });
+    let rejected_authorizer = Arc::new(GatewayAuthorizer::default());
+    let expired_service = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryRegistry { active: true }),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(expired_control)
+        .with_transport_authorizer(rejected_authorizer.clone()),
+    );
+    let expired_address = support::serve(worker_repository_binding_router(expired_service)).await;
+    let expired_verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{expired_address}"))
+            .with_worker_identity(identity.clone()),
+    );
+    let error =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &expired_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&expired_assertion_fence),
+        )
+        .await
+        .expect_err("P11 expired current root");
+    assert!(error.to_string().contains("409"), "P11: {error}");
+    assert_eq!(rejected_authorizer.0.lock().unwrap().len(), 0, "P11");
+
+    let renewal = awaken_session_contract::SessionRealizationLease {
+        expires_at_unix_ms: lease.expires_at_unix_ms.saturating_add(10_000),
+        ..lease.clone()
+    };
+    let renewing_current = Arc::new(Mutex::new(lease.clone()));
+    let renewal_capability_expiry = renewal.expires_at_unix_ms.saturating_add(25_000);
+    let renewing_control = Arc::new(ExactTerminalPublicationControl {
+        workspace_id: "workspace-repository".into(),
+        command: command.clone(),
+        lease: renewing_current.clone(),
+    });
+    let renewing_service = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryRegistry { active: true }),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(renewing_control)
+        .with_transport_authorizer(Arc::new(RenewingTerminalAuthorizer {
+            current_lease: renewing_current.clone(),
+            renewal: renewal.clone(),
+            capability_expiry_unix_ms: renewal_capability_expiry,
+        })),
+    );
+    let renewing_address = support::serve(worker_repository_binding_router(renewing_service)).await;
+    let renewing_verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{renewing_address}"))
+            .with_worker_identity(identity.clone()),
+    );
+    let transport =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &renewing_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&expired_assertion_fence),
+        )
+        .await
+        .expect("P12 same-generation renewal during authorization");
+    assert_eq!(*renewing_current.lock().unwrap(), renewal, "P12");
+    assert!(
+        matches!(
+            transport,
+            awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                expires_at_unix_ms: Some(expiry),
+                ..
+            } if expiry.unix_ms() == renewal_capability_expiry
+        ),
+        "P12"
+    );
 
     let mut changed = command.clone();
     changed.effect_id.push_str("-changed");

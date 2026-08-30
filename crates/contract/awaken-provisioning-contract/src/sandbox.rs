@@ -1,1116 +1,36 @@
-//! The provisioning ports: [`SandboxProvider`] realizes a [`SandboxSpec`] into a
+//! The provisioning ports: [`SandboxProvider`] realizes a [`crate::SandboxSpec`] into a
 //! live [`Sandbox`]; [`Sandbox`] launches processes and moves files. Concrete
 //! backends (lexical / bubblewrap / container) implement these in their own
 //! crates and are selected by [`SandboxCapabilities`].
 
-use std::path::Path;
-
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-
-use crate::spec::{Command, SandboxSpec};
-use crate::vocab::{Artifact, MountAccess, MountRequirement, Realization, RealizedMount};
-
 mod control_incarnation;
-pub use control_incarnation::{KubernetesPodUid, SandboxControlIncarnation};
+mod foundation;
 mod repository_publication;
+mod restore_contract;
+mod restore_wire;
+mod runtime;
+
+pub use control_incarnation::{KubernetesPodUid, SandboxControlIncarnation};
+pub use foundation::*;
 pub use repository_publication::{
     RepositoryPublicationError, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
     RepositoryPublicationRejection,
 };
-
-/// Provisioning failure. String-carried at the boundary (like the runtime's other
-/// neutral errors); a backend maps its own error into this.
-#[derive(Debug, thiserror::Error)]
-#[error("sandbox error: {0}")]
-pub struct SandboxError(pub String);
-
-impl SandboxError {
-    pub fn new(msg: impl Into<String>) -> Self {
-        Self(msg.into())
-    }
-}
-
-/// A content-addressed byte source a provider consults to resolve a `File`/`Resource`
-/// mount's bytes by id. Dependency-inverted so the worker-tier sandbox providers stay
-/// free of any durable store: the composition root injects an adapter over the
-/// resources-tier content store (A-G17 — the isolated exec tier links no store).
-#[async_trait]
-pub trait BlobSource: Send + Sync {
-    /// The bytes for content id `id`, or `None` if absent (errors are folded to
-    /// `None`; a required mount that resolves to nothing fails closed downstream).
-    async fn get(&self, id: &str) -> Option<Vec<u8>>;
-}
-
-/// Last-mile credential broker shared by secret files and process-secret
-/// requirements. The two operations are intentionally distinct: a durable file
-/// reference may support refresh/write-back, while a process reference is normally
-/// short-lived, claim-fenced, one-shot, and never valid as a file identifier. Secret
-/// bytes never enter a [`SandboxSpec`].
-#[async_trait]
-pub trait SecretBroker: Send + Sync {
-    /// Materialize the current credential file bytes for `reference`.
-    async fn materialize(&self, reference: &str) -> Result<Vec<u8>, SandboxError>;
-
-    /// Consume a process-scoped requirement immediately before launch. An
-    /// implementation must validate the reference as a process capability; it must
-    /// not silently reinterpret an arbitrary durable file/credential id.
-    async fn materialize_process(&self, reference: &str) -> Result<Vec<u8>, SandboxError>;
-
-    /// Atomically persist a CLI-refreshed credential file under `reference`.
-    async fn write_back(&self, reference: &str, bytes: Vec<u8>) -> Result<(), SandboxError>;
-}
-
-/// Realizes a [`MountSource::MemoryStore`](crate::vocab::MountSource::MemoryStore)
-/// into a sandbox at a provider-resolved host path — the path-addressed counterpart
-/// of [`BlobSource`] (a store is a keyed filesystem, not one blob). The FUSE / copy
-/// impl lives in the worker tier (`awaken-sandbox-memoryd`); the composition root
-/// injects it, so the providers stay free of the store and FUSE deps (A-G17). A
-/// provider with no mounter fails a `MemoryStore` mount loud rather than fake it.
-#[async_trait]
-pub trait MemoryMounter: Send + Sync {
-    /// Expose `store_id` at `host_path` with `access`, returning a live handle whose
-    /// [`realization`](MemoryMount::realization) the provider records. The handle is
-    /// held for the sandbox's life; dropping it (via [`teardown`](MemoryMount::teardown))
-    /// unmounts a FUSE mount or harvests a writable copy back to the store.
-    async fn mount(
-        &self,
-        store_id: &str,
-        host_path: &Path,
-        access: MountAccess,
-    ) -> Result<Box<dyn MemoryMount>, SandboxError>;
-
-    /// Reconcile the current files read from an adopted copy-backed sandbox.
-    /// A hard process crash loses the original in-process [`MemoryMount`] guard,
-    /// while the long-lived sandbox and its files remain. Providers call this only
-    /// at the recovered Session's terminal edge; implementations retain the same
-    /// conflict-safe durable-head rules as ordinary copy teardown.
-    async fn reconcile_recovered_copy(
-        &self,
-        _store_id: &str,
-        _files: &[(String, Vec<u8>)],
-        _access: MountAccess,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
-            "recovered Memory copy reconciliation is unsupported",
-        ))
-    }
-}
-
-/// A live memory-store mount, held for the sandbox's lifetime.
-#[async_trait]
-pub trait MemoryMount: Send + Sync {
-    /// How the store was exposed (`Fuse` where the kernel supports it, else `Copy`).
-    fn realization(&self) -> Realization;
-
-    /// Tear down: unmount the FUSE, or (for a writable copy) harvest edits back to
-    /// the durable store. Idempotent and best-effort — a teardown fault is logged,
-    /// not surfaced, since the sandbox is already being disposed.
-    async fn teardown(self: Box<Self>);
-}
-
-/// Secret-free, per-Sandbox projection of one already-resolved Repository config.
-/// It pins configuration semantics only. Branch is a clone preference; commit is
-/// an exact immutable checkout. Principal, role, API key, policy, Workspace
-/// hierarchy, and credential bytes are deliberately absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepositoryRealizationPlan {
-    pub repository_id: String,
-    pub mount_path: String,
-    /// Frozen upstream/source identity from the resolved Repository config.
-    /// This is the canonical URL recorded in publication receipts.
-    pub source_remote_url: String,
-    /// Already-authorized effect endpoint. Direct transports equal
-    /// `source_remote_url`; mediated transports use the Gateway endpoint.
-    pub transport_url: String,
-    pub initial_branch: Option<String>,
-    pub initial_commit: Option<String>,
-    pub access: MountAccess,
-}
-
-/// Ephemeral Basic-auth value translated from an already-admitted credential at
-/// the Repository boundary. It is deliberately non-serializable and absent from
-/// [`RepositoryRealizationPlan`]; only the target adapter may expose its fields.
-#[derive(Debug, Clone)]
-pub struct RepositoryHttpBasicCredential {
-    username: awaken_agent_contract::RedactedString,
-    password: awaken_agent_contract::RedactedString,
-    source: RepositoryHttpBasicCredentialSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RepositoryHttpBasicCredentialSource {
-    Upstream,
-    GatewayCapability,
-}
-
-impl RepositoryHttpBasicCredential {
-    #[must_use]
-    pub fn new(
-        username: impl Into<awaken_agent_contract::RedactedString>,
-        password: impl Into<awaken_agent_contract::RedactedString>,
-    ) -> Self {
-        Self {
-            username: username.into(),
-            password: password.into(),
-            source: RepositoryHttpBasicCredentialSource::Upstream,
-        }
-    }
-
-    /// A short-lived platform Gateway capability, not an upstream Repository
-    /// credential. The distinction lets the target adapter admit an in-cluster
-    /// Gateway endpoint without weakening HTTPS for upstream secrets.
-    #[must_use]
-    pub fn gateway_capability(
-        capability: impl Into<awaken_agent_contract::RedactedString>,
-    ) -> Self {
-        Self {
-            username: "git".to_owned().into(),
-            password: capability.into(),
-            source: RepositoryHttpBasicCredentialSource::GatewayCapability,
-        }
-    }
-
-    #[must_use]
-    pub fn is_gateway_capability(&self) -> bool {
-        self.source == RepositoryHttpBasicCredentialSource::GatewayCapability
-    }
-
-    #[must_use]
-    pub fn expose_username(&self) -> &str {
-        self.username.expose_secret()
-    }
-
-    #[must_use]
-    pub fn expose_password(&self) -> &str {
-        self.password.expose_secret()
-    }
-}
-
-/// Environment-side adapter for a mutable Repository input. Authorization and
-/// configuration resolution happen before this port is called; implementations
-/// only construct/use a working tree. A credential value is injected ephemerally
-/// for the transport operation and must never be persisted in the plan, origin URL,
-/// or sandbox.
-#[async_trait]
-pub trait RepositoryRealizer: Send + Sync {
-    /// Clone the current remote content into this realizer's Sandbox.
-    async fn realize_repository(
-        &self,
-        plan: &RepositoryRealizationPlan,
-        credential: Option<&RepositoryHttpBasicCredential>,
-    ) -> Result<(), SandboxError>;
-
-    /// Publish one exact Agent-authored branch/commit coordinate. The caller
-    /// decides whether publishing is allowed/required; this adapter owns only Git
-    /// transport mechanics. First publication and exact replay return the same
-    /// deterministic, secret-free receipt.
-    async fn publish_repository(
-        &self,
-        plan: &RepositoryRealizationPlan,
-        expectation: &RepositoryPublicationExpectation,
-        credential: Option<&RepositoryHttpBasicCredential>,
-    ) -> Result<RepositoryPublicationReceipt, RepositoryPublicationError>;
-}
-
-/// A serializable, **durable** reference to a realized sandbox. Persist it the
-/// moment a sandbox is created; a live `Box<dyn Sandbox>` cannot survive a host
-/// restart, but the handle can be stored and later passed to
-/// [`SandboxProvider::adopt`] to reconnect to a still-running remote sandbox
-/// (k8s pod / container on another host). For a local sandbox it is just the
-/// directory id. The closed, versioned payload enum makes every durable locator
-/// explicit and rejects unknown or cross-provider shapes during deserialization.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SandboxHandle {
-    pub sandbox_id: String,
-    /// Exact restore effect which owns this physical binding.
-    ///
-    /// This is provider evidence carried by the canonical durable locator, not
-    /// a second lifecycle state. Legacy/create/adopt handles omit it. A
-    /// checkpoint-capable provider attaches it while acquiring the one exact
-    /// target. The field proves physical identity only; the checkpoint
-    /// decorator returns [`SandboxRestoreResult`] after it has materialized and
-    /// verified its own bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    restoration: Option<SandboxRestorationEvidence>,
-    payload: SandboxHandlePayload,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "schema", rename_all = "snake_case", deny_unknown_fields)]
-enum SandboxHandlePayload {
-    Unmanaged { provider_kind: String },
-    LocalV1(LocalSandboxHandleV1),
-    BubblewrapV1(NamespaceSandboxHandleV1),
-    SeatbeltV1(NamespaceSandboxHandleV1),
-    ContainerV1(ContainerSandboxHandleV1),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LocalSandboxHandleV1 {
-    pub outputs_path: String,
-    pub base_env: Vec<crate::EnvVar>,
-    pub continuation_excluded_paths: Vec<String>,
-    /// Workdir egress posture is part of the durable projection. Older handles
-    /// default to the historical permissive posture; a restored handle is also
-    /// fenced by its complete SandboxSpec fingerprint.
-    #[serde(default)]
-    pub deny_tool_egress: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NamespaceSandboxHandleV1 {
-    pub outputs_path: String,
-    pub base_env: Vec<crate::EnvVar>,
-    pub network: crate::NetworkPolicy,
-    /// Exact provider control topology realized when this handle was created.
-    /// It is recovery evidence, not a replacement demand authority.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub control_services:
-        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NamespaceProviderKind {
-    Bubblewrap,
-    Seatbelt,
-}
-
-impl NamespaceProviderKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Bubblewrap => "bwrap",
-            Self::Seatbelt => "seatbelt",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContainerSandboxHandleV1 {
-    pub container_id: String,
-    pub outputs_path: String,
-    pub base_env: Vec<crate::EnvVar>,
-    pub live_input_projection: bool,
-    /// Sandbox-absolute paths excluded from a later mutable-layer checkpoint.
-    /// The creating provider freezes this evidence so adoption never has to
-    /// rediscover independently governed mounts from ambient infrastructure.
-    #[serde(default)]
-    pub continuation_excluded_paths: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime_handle: Option<ContainerContinuationHandle>,
-    /// Exact provider runtime incarnation which owned any published Sandbox
-    /// control service. Older handles omit it; adoption of a newly demanded
-    /// service then fails closed instead of trusting an ambient same-name
-    /// runtime object.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_control_incarnation: Option<SandboxControlIncarnation>,
-    /// Exact provider control topology realized alongside the incarnation.
-    /// Empty legacy handles remain ordinary; adoption never infers a demand.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub control_services:
-        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
-}
-
-mod restore_contract;
-mod restore_wire;
 pub use restore_contract::{
     SandboxRestoreRequest, SandboxRestoreResult, SandboxRestoreTarget,
     SandboxRestoreTargetDisposition, checkpoint_exclusions_fingerprint,
     sandbox_spec_security_fingerprint, validate_checkpoint_exclusions_for_spec,
 };
 pub use restore_wire::{HostBindRestorationHandle, SandboxRestorationEvidence};
-
-/// Runtime-owned incarnation evidence carried through Worker adoption.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ContainerContinuationHandle {
-    KubernetesContinuation { claim_uid: String },
-    HostBindRestoration(HostBindRestorationHandle),
-}
-
-impl ContainerContinuationHandle {
-    #[must_use]
-    pub const fn is_host_bind_restoration(&self) -> bool {
-        matches!(self, Self::HostBindRestoration(_))
-    }
-}
-
-impl SandboxHandle {
-    /// Construct a deliberately non-resumable handle for ephemeral providers and
-    /// test doubles. Durable built-in providers use one of the typed constructors.
-    pub fn new(provider_kind: impl Into<String>, sandbox_id: impl Into<String>) -> Self {
-        Self {
-            sandbox_id: sandbox_id.into(),
-            restoration: None,
-            payload: SandboxHandlePayload::Unmanaged {
-                provider_kind: provider_kind.into(),
-            },
-        }
-    }
-
-    #[must_use]
-    pub fn local(sandbox_id: impl Into<String>, payload: LocalSandboxHandleV1) -> Self {
-        Self {
-            sandbox_id: sandbox_id.into(),
-            restoration: None,
-            payload: SandboxHandlePayload::LocalV1(payload),
-        }
-    }
-
-    #[must_use]
-    pub fn namespace(
-        provider: NamespaceProviderKind,
-        sandbox_id: impl Into<String>,
-        payload: NamespaceSandboxHandleV1,
-    ) -> Self {
-        Self {
-            sandbox_id: sandbox_id.into(),
-            restoration: None,
-            payload: match provider {
-                NamespaceProviderKind::Bubblewrap => SandboxHandlePayload::BubblewrapV1(payload),
-                NamespaceProviderKind::Seatbelt => SandboxHandlePayload::SeatbeltV1(payload),
-            },
-        }
-    }
-
-    #[must_use]
-    pub fn container(sandbox_id: impl Into<String>, payload: ContainerSandboxHandleV1) -> Self {
-        Self {
-            sandbox_id: sandbox_id.into(),
-            restoration: None,
-            payload: SandboxHandlePayload::ContainerV1(payload),
-        }
-    }
-
-    #[must_use]
-    pub const fn restoration(&self) -> Option<&SandboxRestorationEvidence> {
-        self.restoration.as_ref()
-    }
-
-    pub fn local_payload(&self) -> Result<&LocalSandboxHandleV1, SandboxError> {
-        match &self.payload {
-            SandboxHandlePayload::LocalV1(payload) => Ok(payload),
-            _ => Err(self.payload_mismatch("local")),
-        }
-    }
-
-    pub fn namespace_payload(
-        &self,
-        expected_provider: NamespaceProviderKind,
-    ) -> Result<&NamespaceSandboxHandleV1, SandboxError> {
-        match (expected_provider, &self.payload) {
-            (NamespaceProviderKind::Bubblewrap, SandboxHandlePayload::BubblewrapV1(payload))
-            | (NamespaceProviderKind::Seatbelt, SandboxHandlePayload::SeatbeltV1(payload)) => {
-                Ok(payload)
-            }
-            _ => Err(self.payload_mismatch(expected_provider.as_str())),
-        }
-    }
-
-    pub fn container_payload(&self) -> Result<&ContainerSandboxHandleV1, SandboxError> {
-        match &self.payload {
-            SandboxHandlePayload::ContainerV1(payload) => Ok(payload),
-            _ => Err(self.payload_mismatch("container")),
-        }
-    }
-
-    #[must_use]
-    pub fn provider_kind(&self) -> &str {
-        match &self.payload {
-            SandboxHandlePayload::Unmanaged { provider_kind } => provider_kind,
-            SandboxHandlePayload::LocalV1(_) => "local",
-            SandboxHandlePayload::BubblewrapV1(_) => "bwrap",
-            SandboxHandlePayload::SeatbeltV1(_) => "seatbelt",
-            SandboxHandlePayload::ContainerV1(_) => "container",
-        }
-    }
-
-    fn payload_mismatch(&self, expected_provider: &str) -> SandboxError {
-        SandboxError::new(format!(
-            "{expected_provider} provider cannot adopt {:?} handle payload",
-            self.provider_kind()
-        ))
-    }
-}
+pub use runtime::*;
 
 #[cfg(test)]
 mod restore_wire_tests;
 
-/// The lifecycle state of a sandbox, queryable idempotently (survives reconnect).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SandboxStatus {
-    /// Being realized (image pull, mounts binding).
-    Provisioning,
-    /// Realized and usable — processes may be spawned.
-    Ready,
-    /// Torn down, reaped, or lease-expired; no longer usable.
-    Terminated,
-}
-
-/// Isolation strength, ordered `Workdir < Namespace < Container`. A provider
-/// admits a spec only when its class is `>=` the requested one.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IsolationClass {
-    /// Working-directory selection only; no OS isolation (dev/CI/trusted).
-    #[default]
-    Workdir,
-    /// OS-namespace isolation (bubblewrap / sandbox-exec).
-    Namespace,
-    /// Full container/VM isolation.
-    Container,
-}
-
-/// Minimum enforceable Sandbox properties required before a workload may be
-/// placed on a Worker. This is the one requirement vocabulary shared by
-/// provider admission and distributed Worker placement; it deliberately omits
-/// live handles, paths, mounts, credentials, and provider implementation names.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxRequirements {
-    #[serde(default)]
-    pub isolation: IsolationClass,
-    #[serde(default)]
-    pub tool_transparent: bool,
-    #[serde(default)]
-    pub path_fidelity: bool,
-    #[serde(default)]
-    pub enforced_readonly: bool,
-    #[serde(default)]
-    pub network_isolation: bool,
-    #[serde(default)]
-    pub enforced_network_allowlist: bool,
-    #[serde(default)]
-    pub resource_limits: bool,
-    #[serde(default)]
-    pub custom_rootfs: bool,
-    #[serde(default)]
-    pub package_provisioning: bool,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub control_services:
-        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
-}
-
-impl SandboxRequirements {
-    /// Derive placement requirements from the exact neutral realization spec.
-    /// `opaque_process` is true for ACP and for Native Hand execution because
-    /// both must remain correct without cooperative lexical path rewriting.
-    #[must_use]
-    pub fn from_spec(spec: &SandboxSpec, opaque_process: bool) -> Self {
-        use crate::vocab::NetworkPolicy;
-
-        let custom_rootfs = spec.environment.is_some();
-        Self {
-            isolation: if opaque_process {
-                spec.isolation.max(IsolationClass::Namespace)
-            } else {
-                spec.isolation
-            },
-            tool_transparent: opaque_process,
-            path_fidelity: opaque_process,
-            enforced_readonly: spec
-                .mounts
-                .iter()
-                .any(|mount| mount.access == MountAccess::ReadOnly),
-            network_isolation: spec.network.is_restricted(),
-            enforced_network_allowlist: matches!(spec.network, NetworkPolicy::Allowlist { .. }),
-            resource_limits: spec.limits.is_set(),
-            custom_rootfs,
-            package_provisioning: !spec.packages.is_empty(),
-            control_services: spec.control_services.clone(),
-        }
-    }
-}
-
-/// What a backend can actually enforce — the host probes this to pick a provider
-/// and to fail closed when a spec asks for more than a backend can give.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxCapabilities {
-    pub isolation: IsolationClass,
-    /// **The load-bearing flag.** True when isolation is OS-enforced on an
-    /// arbitrary launched process (so it holds for Claude Code / any CLI); false
-    /// for a cooperating-tool-only jail (lexical), which must never host an opaque
-    /// agent process.
-    pub tool_transparent: bool,
-    /// Sandbox-absolute paths are real to launched processes (vs. lexical rewrite).
-    pub path_fidelity: bool,
-    /// Read-only mounts are OS-enforced.
-    pub enforced_readonly: bool,
-    /// Egress can be isolated/controlled.
-    pub network_isolation: bool,
-    /// Host allowlists are enforced for arbitrary workload traffic at a
-    /// no-bypass network boundary. A process proxy environment variable is not
-    /// sufficient evidence because the workload can remove or ignore it.
-    #[serde(default)]
-    pub enforced_network_allowlist: bool,
-    /// `EnvVisibility::EgressOnly` secrets can be honored.
-    pub secret_egress_substitution: bool,
-    /// Resource limits are enforced.
-    pub resource_limits: bool,
-    /// Provides its own userland/rootfs (vs. borrowing the host's binaries).
-    pub custom_rootfs: bool,
-    /// Can materialize exact package requirements before workload launch and
-    /// preserve them across adoption of the same sandbox handle.
-    #[serde(default)]
-    pub package_provisioning: bool,
-    /// Closed control services this concrete provider can actually publish.
-    /// The empty default keeps older Workers fail-closed for new demands.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub control_services:
-        std::collections::BTreeSet<awaken_sandbox_control::SandboxControlServiceKind>,
-}
-
-impl SandboxCapabilities {
-    /// One monotonic compatibility predicate used by local provider selection
-    /// and remote Worker admission. Ranking policy runs only after this succeeds.
-    #[must_use]
-    pub fn satisfies_requirements(&self, required: &SandboxRequirements) -> bool {
-        capability_requirements_satisfied(
-            self.isolation,
-            required.isolation,
-            self.network_isolation,
-            required.network_isolation,
-            self.resource_limits,
-            required.resource_limits,
-        ) && (!required.tool_transparent || self.tool_transparent)
-            && (!required.path_fidelity || self.path_fidelity)
-            && (!required.enforced_readonly || self.enforced_readonly)
-            && (!required.enforced_network_allowlist || self.enforced_network_allowlist)
-            && (!required.custom_rootfs || self.custom_rootfs)
-            && (!required.package_provisioning || self.package_provisioning)
-            && required.control_services.is_subset(&self.control_services)
-    }
-
-    /// Whether this provider can keep a real secret outside an arbitrary
-    /// workload while forcing traffic through the substitution boundary.
-    /// Neither substitution nor an allowlist alone is custody evidence.
-    #[must_use]
-    pub const fn supports_secret_egress_without_bypass(&self) -> bool {
-        self.secret_egress_substitution && self.enforced_network_allowlist
-    }
-
-    /// Fail-closed backend selection (ADR-0021 §8): does this backend meet
-    /// **everything** `spec` requires? A router filters candidate providers by this
-    /// before applying any load/region/affinity policy, so a spec is never placed on
-    /// a backend that cannot honor it.
-    ///
-    /// Matches the two load-bearing axes the vocabulary makes selectable: isolation
-    /// class (the provider must *meet or exceed* the requested minimum) and network
-    /// isolation (required for anything stricter than
-    /// [`NetworkPolicy::Unrestricted`](crate::vocab::NetworkPolicy::Unrestricted)).
-    #[must_use]
-    pub fn satisfies(&self, spec: &crate::spec::SandboxSpec) -> bool {
-        self.satisfies_requirements(&SandboxRequirements::from_spec(spec, false))
-    }
-}
-
-/// Representation-free admission kernel shared by production provider selection
-/// and the bounded proof harnesses. Every load-bearing requirement is conjunctive:
-/// adding a requirement can only remove candidates, never make a weaker backend
-/// admissible.
-#[must_use]
-pub const fn capability_requirements_satisfied(
-    actual_isolation: IsolationClass,
-    required_isolation: IsolationClass,
-    has_network_isolation: bool,
-    requires_network_isolation: bool,
-    has_resource_limits: bool,
-    requires_resource_limits: bool,
-) -> bool {
-    isolation_rank(actual_isolation) >= isolation_rank(required_isolation)
-        && (!requires_network_isolation || has_network_isolation)
-        && (!requires_resource_limits || has_resource_limits)
-}
-
-const fn isolation_rank(class: IsolationClass) -> u8 {
-    match class {
-        IsolationClass::Workdir => 0,
-        IsolationClass::Namespace => 1,
-        IsolationClass::Container => 2,
-    }
-}
-
-/// Whether placing below the requested floor is explicitly authorized. This is
-/// kept separate from readiness/ranking so a fail-closed policy can never silently
-/// turn into a downgrade while candidate ordering changes.
-#[must_use]
-pub const fn degradation_is_authorized(
-    actual: IsolationClass,
-    required: IsolationClass,
-    on_unmet: OnUnmet,
-) -> bool {
-    isolation_rank(actual) >= isolation_rank(required)
-        || matches!(on_unmet, OnUnmet::DegradeWithConsent)
-}
-
-/// Why no backend could be selected for a spec.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum SelectionError {
-    /// No configured backend both satisfies the spec and passed its readiness probe.
-    #[error("no configured backend can satisfy the requested isolation/network/limits")]
-    NoCapableBackend,
-}
-
-/// Fail-closed provider selection: the first candidate whose capabilities
-/// [`satisfies`](SandboxCapabilities::satisfies) the spec **and** whose
-/// [`probe_ready`](SandboxProvider::probe_ready) check passes. It never downgrades to
-/// a weaker tier — if nothing qualifies it returns [`SelectionError::NoCapableBackend`]
-/// (the host maps this to a `Gated` outcome), so a spec is never silently placed on an
-/// under-isolating or unavailable backend. This is the deliberate divergence from a
-/// "degrade to a portable scope" policy: in a managed/multi-tenant plane a silent
-/// isolation downgrade is a security regression, not a convenience.
-pub async fn select_provider<'a>(
-    candidates: &'a [Box<dyn SandboxProvider>],
-    spec: &SandboxSpec,
-) -> Result<&'a dyn SandboxProvider, SelectionError> {
-    for provider in candidates {
-        if provider.capabilities().satisfies(spec) && provider.probe_ready().await.is_ok() {
-            return Ok(provider.as_ref());
-        }
-    }
-    Err(SelectionError::NoCapableBackend)
-}
-
-/// What to do when no configured backend meets the isolation floor (ADR-0056 §5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnUnmet {
-    /// Never place below the floor — a silent isolation downgrade is a security
-    /// regression, so an unmet floor fails closed (the never-downgrade default).
-    FailClosed,
-    /// Place on the strongest available weaker tier, but ONLY as a *recorded*
-    /// degradation: the caller must emit the audit event + metric + run marker
-    /// ([`PolicySelection::degraded_to`]). Degradation becomes representable and
-    /// logged, never invisible.
-    DegradeWithConsent,
-}
-
-/// The isolation floor as a policy input, so one selection mechanism serves two trust
-/// models (ADR-0056 §5): local single-user (`require = Workdir`, soft) and multi-tenant
-/// hosting (`require = Namespace|Container`, `on_unmet = FailClosed`). The floor is a
-/// parameter, not a hardcoded default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IsolationPolicy {
-    /// The minimum isolation to place on; a weaker backend is used only under
-    /// [`OnUnmet::DegradeWithConsent`].
-    pub require: IsolationClass,
-    /// The preferred isolation when several qualify — the exact-`prefer` tier wins a
-    /// tie, else the strongest floor-meeting tier is chosen.
-    pub prefer: IsolationClass,
-    /// How to handle a spec no backend can place at or above `require`.
-    pub on_unmet: OnUnmet,
-}
-
-/// The outcome of a policy-driven selection: the chosen provider, and — when the floor
-/// could not be met and [`OnUnmet::DegradeWithConsent`] allowed it — the weaker
-/// isolation class actually placed on. `degraded_to = Some(..)` obliges the caller to
-/// emit the degradation audit event + metric + run marker (never silent).
-pub struct PolicySelection<'a> {
-    pub provider: &'a dyn SandboxProvider,
-    pub degraded_to: Option<IsolationClass>,
-}
-
-/// Metadata handed to the one injected checkpoint object adapter. It contains
-/// no storage URL, credential, or encryption material.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CheckpointObjectMetadata {
-    /// Workspace ownership scope used by hosted adapters to resolve the tenant
-    /// through their existing placement authority. It is not a storage key.
-    pub workspace_id: String,
-    pub session_id: String,
-    pub generation_id: String,
-    pub suspend_effect_id: String,
-    pub created_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
-}
-
-/// Result of an atomic object write. The adapter must expose the digest of the
-/// exact durable plaintext so providers can verify reads after process loss.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoredCheckpointObject {
-    pub id: String,
-    pub digest: String,
-    pub size_bytes: u64,
-}
-
-/// Region/deployment-owned checkpoint byte custody. A filesystem adapter is
-/// suitable for standalone deployments; hosted composition injects encrypted
-/// object storage. This is a byte port, not a lifecycle state store.
-#[async_trait]
-pub trait SandboxCheckpointStore: Send + Sync {
-    async fn put(
-        &self,
-        metadata: &CheckpointObjectMetadata,
-        bytes: Vec<u8>,
-    ) -> Result<StoredCheckpointObject, SandboxError>;
-
-    async fn get(&self, id: &str) -> Result<Vec<u8>, SandboxError>;
-
-    async fn delete(&self, id: &str) -> Result<(), SandboxError>;
-}
-
-/// Exact, provider-neutral request for one idempotent filesystem checkpoint.
-///
-/// Session lifecycle types deliberately do not cross this port. The Runtime
-/// adapter projects its operation/generation into these immutable facts and
-/// later wraps the returned artifact in a Session-owned receipt.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SandboxCheckpointRequest {
-    pub workspace_id: String,
-    pub session_id: String,
-    pub generation_id: String,
-    pub environment_fingerprint: String,
-    pub base_image_fingerprint: String,
-    pub effect_id: String,
-    pub format: String,
-    pub created_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
-    pub max_bytes: u64,
-}
-
-/// Opaque, secret-free evidence for one verified durable checkpoint object.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SandboxCheckpointRef {
-    pub id: String,
-    pub format: String,
-    pub digest: String,
-    pub size_bytes: u64,
-    pub created_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
-    pub environment_fingerprint: String,
-    pub base_image_fingerprint: String,
-    #[serde(default)]
-    pub excluded_mounts: Vec<String>,
-    pub suspend_effect_id: String,
-}
-
-impl SandboxCheckpointRef {
-    #[must_use]
-    pub const fn expired_at(&self, now_unix_ms: u64) -> bool {
-        now_unix_ms >= self.expires_at_unix_ms
-    }
-}
-
-// A backend honors the spec's non-isolation requirements (network) — the isolation
-// floor is decided by the policy, so it is checked separately here.
-fn non_isolation_ok(caps: &SandboxCapabilities, spec: &SandboxSpec) -> bool {
-    let network_ok =
-        matches!(spec.network, crate::vocab::NetworkPolicy::Unrestricted) || caps.network_isolation;
-    // Resource caps are load-bearing like isolation: a spec asking for cgroup limits
-    // must not be placed on a tier that cannot enforce them, even under a degrade.
-    let limits_ok = !spec.limits.is_set() || caps.resource_limits;
-    network_ok && limits_ok
-}
-
-/// Fail-closed provider selection with an explicit **policy floor** (ADR-0056 §5). It
-/// first places on the strongest ready backend that meets `policy.require` (the exact
-/// `prefer` class winning a tie). If none meets the floor, `on_unmet` decides: `FailClosed`
-/// returns [`SelectionError::NoCapableBackend`] (the never-downgrade guarantee);
-/// `DegradeWithConsent` places on the strongest ready backend *below* the floor and
-/// reports `degraded_to` so the caller records the degradation. A spec is never silently
-/// placed below its floor.
-pub async fn select_provider_with_policy<'a>(
-    candidates: &'a [Box<dyn SandboxProvider>],
-    spec: &SandboxSpec,
-    policy: &IsolationPolicy,
-) -> Result<PolicySelection<'a>, SelectionError> {
-    // Ready backends meeting the floor (isolation >= require) and the spec's network.
-    let mut at_or_above: Vec<&dyn SandboxProvider> = Vec::new();
-    // Ready backends below the floor but network-sound — the degrade candidates.
-    let mut below: Vec<&dyn SandboxProvider> = Vec::new();
-    for provider in candidates {
-        let caps = provider.capabilities();
-        if !non_isolation_ok(&caps, spec) || provider.probe_ready().await.is_err() {
-            continue;
-        }
-        if caps.isolation >= policy.require {
-            at_or_above.push(provider.as_ref());
-        } else if degradation_is_authorized(caps.isolation, policy.require, policy.on_unmet) {
-            below.push(provider.as_ref());
-        }
-    }
-
-    if !at_or_above.is_empty() {
-        // Prefer the exact `prefer` tier, else the strongest available.
-        let chosen = at_or_above
-            .iter()
-            .find(|p| p.capabilities().isolation == policy.prefer)
-            .copied()
-            .unwrap_or_else(|| {
-                *at_or_above
-                    .iter()
-                    .max_by_key(|p| p.capabilities().isolation)
-                    .expect("non-empty")
-            });
-        return Ok(PolicySelection {
-            provider: chosen,
-            degraded_to: None,
-        });
-    }
-
-    match policy.on_unmet {
-        OnUnmet::FailClosed => Err(SelectionError::NoCapableBackend),
-        OnUnmet::DegradeWithConsent => below
-            .iter()
-            .max_by_key(|p| p.capabilities().isolation)
-            .map(|p| PolicySelection {
-                provider: *p,
-                degraded_to: Some(p.capabilities().isolation),
-            })
-            .ok_or(SelectionError::NoCapableBackend),
-    }
-}
-
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    fn isolation(tag: u8) -> IsolationClass {
-        match tag % 3 {
-            0 => IsolationClass::Workdir,
-            1 => IsolationClass::Namespace,
-            _ => IsolationClass::Container,
-        }
-    }
-
-    #[kani::proof]
-    fn sandbox_admission_never_weakens_the_isolation_floor() {
-        let actual = isolation(kani::any());
-        let required = isolation(kani::any());
-        let admitted = capability_requirements_satisfied(
-            actual,
-            required,
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            kani::any(),
-        );
-        if admitted {
-            assert!(isolation_rank(actual) >= isolation_rank(required));
-        }
-    }
-
-    #[kani::proof]
-    fn sandbox_admission_requires_every_requested_capability() {
-        let has_network = kani::any();
-        let needs_network = kani::any();
-        let has_limits = kani::any();
-        let needs_limits = kani::any();
-        let admitted = capability_requirements_satisfied(
-            isolation(kani::any()),
-            IsolationClass::Workdir,
-            has_network,
-            needs_network,
-            has_limits,
-            needs_limits,
-        );
-        if admitted {
-            assert!(!needs_network || has_network);
-            assert!(!needs_limits || has_limits);
-        }
-    }
-
-    #[kani::proof]
-    fn fail_closed_sandbox_policy_never_authorizes_a_downgrade() {
-        let actual = isolation(kani::any());
-        let required = isolation(kani::any());
-        if degradation_is_authorized(actual, required, OnUnmet::FailClosed) {
-            assert!(isolation_rank(actual) >= isolation_rank(required));
-        }
-    }
-}
-
-/// Realizes environments. The local impl lives in `awaken-sandbox-local`; a
-/// remote/container impl lives in a distributed repo and plugs in here.
-#[async_trait]
-pub trait SandboxProvider: Send + Sync {
-    /// What this backend can enforce (probed at startup for selection).
-    fn capabilities(&self) -> SandboxCapabilities;
-
-    /// Portable filesystem checkpoint formats this concrete provider fully
-    /// implements. Worker composition projects these into the existing
-    /// `WorkerManifest.checkpoint_formats` authority; no second capability field
-    /// is maintained on `SandboxCapabilities`.
-    fn checkpoint_formats(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// A cheap liveness probe run at selection time: `Ok` iff this backend is
-    /// actually usable *right now* — bwrap/unprivileged-userns available, a container
-    /// daemon reachable, etc. The default assumes readiness; the namespace/container
-    /// providers override it with a real check so `select_provider` fails closed
-    /// (never a silent unisolated run) rather than deferring the failure to `create`.
-    async fn probe_ready(&self) -> Result<(), SandboxError> {
-        Ok(())
-    }
-
-    /// Realize a validated spec into a live sandbox (bind mounts, apply ro/env/
-    /// network/limits). Callers should validate first via `prepare_environment`.
-    async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError>;
-
-    /// Reconnect to an already-realized sandbox from a persisted [`SandboxHandle`]
-    /// — the recovery path after a host restart, and the takeover path across
-    /// hosts. For a local backend this re-opens the directory; for a remote one it
-    /// rebuilds a client against the still-running pod/container.
-    async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError>;
-
-    /// Acquire the one physical target for a restore effect without reading or
-    /// interpreting checkpoint bytes. This is an explicit composition seam,
-    /// not a capability advertisement: bare providers never call it from
-    /// ordinary create/adopt paths.
-    async fn acquire_restore(
-        &self,
-        _spec: &SandboxSpec,
-        _request: &SandboxRestoreRequest,
-    ) -> Result<SandboxRestoreTarget<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not implement exact restore target acquisition",
-        ))
-    }
-
-    /// Create a distinct environment from one verified filesystem checkpoint.
-    /// The default fails closed so out-of-tree providers cannot accidentally
-    /// advertise continuation without implementing it.
-    async fn restore(
-        &self,
-        _spec: &SandboxSpec,
-        _request: &SandboxRestoreRequest,
-        _store: &dyn SandboxCheckpointStore,
-    ) -> Result<SandboxRestoreResult<Box<dyn Sandbox>>, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not implement checkpoint restore",
-        ))
-    }
-
-    /// Remove only the unpublished physical target named by one durable
-    /// `Restoring` tuple. Terminal cleanup calls this before deleting the source
-    /// checkpoint. Absence is an idempotent success for implementing providers;
-    /// the default fails closed because it cannot prove the target set.
-    async fn dispose_restored(
-        &self,
-        _spec: &SandboxSpec,
-        _request: &SandboxRestoreRequest,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not implement exact restored-target disposal",
-        ))
-    }
-}
-
-/// A live sandbox environment. **Execute** (`spawn`), **mount/inject** (`attach`),
-/// **retrieve** (`artifacts`/`read_artifact`), and — for sandboxes that outlive the
-/// owning host — **reconnect** (`handle`/`process`), **observe** (`status`), and
-/// **keep alive** (`renew_lease`). `spawn` is primary and tool-transparent: the
-/// runtime's `RawTool` model is a separate crate's adapter over `spawn`, not a
-/// method here.
-#[async_trait]
-pub trait Sandbox: Send + Sync {
-    /// The environment id (= the spec scope).
-    fn id(&self) -> &str;
-
-    /// A durable, serializable reference for reconnecting later (persist this).
-    fn handle(&self) -> SandboxHandle;
-
-    /// Persist the complete mutable filesystem before disposal. Implementations
-    /// must omit independently governed mounts and credential material, enforce
-    /// `max_bytes`, and return only after the object adapter reports durability.
-    async fn checkpoint(
-        &self,
-        _request: &SandboxCheckpointRequest,
-        _store: &dyn SandboxCheckpointStore,
-    ) -> Result<SandboxCheckpointRef, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox does not implement filesystem checkpointing",
-        ))
-    }
-
-    /// **EXECUTE** — launch any process under OS-enforced isolation. Isolation is
-    /// transparent to what the process does inside.
-    async fn spawn(&self, command: Command) -> Result<Box<dyn ProcessHandle>, SandboxError>;
-
-    /// **INJECT** — attach a mount after creation (mirrors adding a session
-    /// resource). Fails closed when the backend cannot honor the access mode.
-    async fn attach(&self, req: MountRequirement) -> Result<RealizedMount, SandboxError>;
-
-    /// **RETRIEVE (list)** — artifacts the agent wrote under the outputs path.
-    /// The backend decides how (directory scan / copy-out / volume read).
-    async fn artifacts(&self) -> Result<Vec<Artifact>, SandboxError>;
-
-    /// **RETRIEVE (read)** — the bytes of one artifact by id.
-    async fn read_artifact(&self, id: &str) -> Result<Vec<u8>, SandboxError>;
-
-    /// The mounts realized so far — logical refs + content hashes (G3), for audit
-    /// and replay.
-    fn realized(&self) -> &[RealizedMount];
-
-    /// Reconnect to a process launched earlier in this sandbox, by its id — the
-    /// recovery path after a dropped connection or host restart (pair with
-    /// [`ProcessHandle::poll`] to learn its outcome idempotently).
-    async fn process(&self, process_id: &str) -> Result<Box<dyn ProcessHandle>, SandboxError>;
-
-    /// The sandbox's current lifecycle state — an idempotent query, safe to call
-    /// from any host after a reconnect.
-    async fn status(&self) -> Result<SandboxStatus, SandboxError>;
-
-    /// Renew the lease (the dead-man's switch). The owner calls this within the
-    /// spec's `lease_ttl_secs`; if the owner vanishes and the lease expires, the
-    /// backend reaps the sandbox. A local backend implements this as a no-op.
-    async fn renew_lease(&self) -> Result<(), SandboxError>;
-
-    /// Tear down the environment. Idempotent; `Durable` mounts persist.
-    async fn dispose(&self) -> Result<(), SandboxError>;
-}
-
-/// A handle to a process launched by [`Sandbox::spawn`]. Lifecycle only — piped
-/// stdio (for a protocol bridge such as ACP) is exposed by the provider's own
-/// handle type, so the neutral contract needn't bind an async-IO abstraction.
-#[async_trait]
-pub trait ProcessHandle: Send + Sync {
-    /// Provider-assigned process id.
-    fn id(&self) -> &str;
-
-    /// Await exit. Over a lossy transport this connection may drop mid-run; treat a
-    /// transport error as "unknown" and re-establish via [`Sandbox::process`] +
-    /// [`ProcessHandle::poll`] rather than assuming failure.
-    async fn wait(&self) -> Result<ExitStatus, SandboxError>;
-
-    /// Non-blocking, idempotent status: `None` while still running, `Some(status)`
-    /// once exited. Safe to call repeatedly from any host after a reconnect — this
-    /// is how you resolve an indeterminate outcome without re-running the process.
-    async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError>;
-
-    /// Deliver a signal (terminate/kill/interrupt). This operation is idempotent:
-    /// if the owned process exits before or during delivery, implementations return
-    /// success after confirming that exit. Tearing down the sandbox reaps the whole
-    /// process group regardless.
-    async fn signal(&self, signal: Signal) -> Result<(), SandboxError>;
-}
-
-/// How a launched process ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExitStatus {
-    /// Exit code, when it exited normally.
-    pub code: Option<i32>,
-    /// True when terminated by a signal.
-    pub signaled: bool,
-}
-
-/// A signal to deliver to a launched process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Signal {
-    /// Graceful terminate (SIGTERM).
-    Term,
-    /// Force kill (SIGKILL).
-    Kill,
-    /// Interrupt (SIGINT).
-    Int,
-}
-
+#[cfg(test)]
+use crate::vocab::{Artifact, MountAccess, MountRequirement, RealizedMount};
+#[cfg(test)]
+use async_trait::async_trait;
 #[cfg(test)]
 mod tests {
     //! A trivial fake exercises the full lifecycle — create → persist handle →
@@ -1118,6 +38,7 @@ mod tests {
     //! which also proves the ports stay object-safe (`Box<dyn …>`).
 
     use super::*;
+    use crate::SandboxRealizationFingerprint;
     use crate::spec::{Command, SandboxSpec};
     use crate::vocab::NetworkPolicy;
     use std::sync::Arc;
@@ -1839,6 +760,828 @@ mod tests {
         assert_eq!(
             pp.adopt(&SandboxHandle::new("k", "id")).await.unwrap().id(),
             "id"
+        );
+    }
+
+    #[test]
+    fn repository_mount_path_is_exact_or_rejected_without_relocation() {
+        // Repository-path cause/effect decision table:
+        // C1 canonical `/workspace/<child>` -> E1 accept the exact bytes;
+        // C2 another absolute root or a relative path -> E2 reject, never remap;
+        // C3 alias/traversal/empty/control syntax -> E3 reject before credentials/Git;
+        // C4 a runtime-owned root or descendant -> E4 reject before a Runtime
+        // projection can clear/overwrite the Repository; C5 an ordinary hidden
+        // repository such as `.github` -> E5 accept (no blanket dot-path ban).
+        // Constraint: validation is pure and may not mutate durable mount_path.
+        let plan = RepositoryRealizationPlan {
+            repository_id: "repository-a".into(),
+            mount_path: "/workspace/repository-a".into(),
+            source_remote_url: "https://example.invalid/repository-a.git".into(),
+            transport_url: "https://gateway.invalid/git/repository-a".into(),
+            initial_branch: None,
+            initial_commit: None,
+            access: MountAccess::ReadWrite,
+        };
+        plan.validate_mount_path().expect("C1/E1");
+        assert_eq!(plan.mount_path, "/workspace/repository-a", "C1 exact");
+        let hidden_repository = RepositoryRealizationPlan {
+            mount_path: "/workspace/.github".into(),
+            ..plan.clone()
+        };
+        hidden_repository.validate_mount_path().expect("C5/E5");
+
+        for mount_path in [
+            "/repo",
+            "repo",
+            "/workspace",
+            "/workspace/",
+            "/workspace//repo",
+            "/workspace/./repo",
+            "/workspace/repo/../escape",
+            "/workspace/repo\\child",
+            "/workspace/repo\nchild",
+            "/workspace/repo\rchild",
+            "/workspace/repo\tchild",
+            "/workspace/repo\u{1b}child",
+            "/workspace/.mnt",
+            "/workspace/.mnt/repository",
+            "/workspace/.skills/repository",
+            "/workspace/.acp-config/repository",
+            "/workspace/.config/repository",
+            "/workspace/.cache/repository",
+            "/workspace/.codex/repository",
+            "/workspace/.awaken/repository",
+        ] {
+            let invalid = RepositoryRealizationPlan {
+                mount_path: mount_path.into(),
+                ..plan.clone()
+            };
+            assert!(
+                invalid.validate_mount_path().is_err(),
+                "C2-C4/E2-E4 accepted {mount_path:?}"
+            );
+            assert_eq!(invalid.mount_path, mount_path, "no normalization/remap");
+        }
+    }
+
+    #[test]
+    fn resource_input_default_mounts_cover_the_closed_input_kind_set() {
+        // Default-mount cause/effect decision table:
+        // | Rule | typed input kind | Effect |
+        // | D1 | MemoryStore | `/mnt/memory` |
+        // | D2 | File | `/mnt/files/data` |
+        // | D3 | Repository | `WorkspaceLayout::child("repo")` |
+        // Constraint: the returned value object is the sole default authority;
+        // consumers may project it but may not restate one of these paths.
+        let defaults = resource_input_default_mounts();
+        let cases = [
+            (
+                "D1",
+                awaken_resource_contract::InputResourceId::MemoryStore(
+                    awaken_resource_contract::MemoryStoreId::from("memory"),
+                ),
+                "/mnt/memory".to_string(),
+            ),
+            (
+                "D2",
+                awaken_resource_contract::InputResourceId::File(
+                    awaken_resource_contract::FileId::from("file"),
+                ),
+                "/mnt/files/data".to_string(),
+            ),
+            (
+                "D3",
+                awaken_resource_contract::InputResourceId::Repository(
+                    awaken_resource_contract::RepositoryId::from("repository"),
+                ),
+                WorkspaceLayout::child("repo"),
+            ),
+        ];
+        for (rule, target, expected) in cases {
+            assert_eq!(defaults.mount_path(&target), expected, "{rule}");
+        }
+        assert_eq!(defaults.repository, WorkspaceLayout::child("repo"), "D3");
+    }
+
+    #[test]
+    fn repository_mount_trees_never_overlap_another_resource() {
+        // Tree-ownership cause/effect rules: C1 disjoint Repository/File trees
+        // -> E1 accept; C2 Repository-Repository ancestor relation -> E2 reject;
+        // C3 Repository-other ancestor relation in either direction -> E3 reject.
+        // Constraint: segment boundaries matter (`repo` and `repository` are
+        // disjoint) and the preflight performs no realization effect.
+        validate_repository_mount_paths(
+            &["/workspace/repo", "/workspace/repository"],
+            &["/workspace/input.txt"],
+        )
+        .expect("C1/E1");
+        assert!(
+            validate_repository_mount_paths(&["/workspace/repo", "/workspace/repo/nested"], &[],)
+                .is_err(),
+            "C2/E2"
+        );
+        for other in ["/workspace/repo/file", "/workspace"] {
+            assert!(
+                validate_repository_mount_paths(&["/workspace/repo"], &[other]).is_err(),
+                "C3/E3: {other}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_layout_projects_output_paths_without_a_second_root_literal() {
+        // Layout cause/effect table: C1=the exact outputs root; C2=a canonical
+        // descendant; C3=a prefix lookalike. E1=empty relative path;
+        // E2=the exact descendant suffix; E3=no projection. R1 C1->E1;
+        // R2 C2->E2; R3 C3->E3. Consumers must not restate the root.
+        assert_eq!(
+            WorkspaceLayout::outputs_relative(WorkspaceLayout::OUTPUTS_ROOT),
+            Some(""),
+            "R1/E1"
+        );
+        assert_eq!(
+            WorkspaceLayout::outputs_relative("/mnt/session/outputs/nested/report.txt"),
+            Some("nested/report.txt"),
+            "R2/E2"
+        );
+        assert_eq!(
+            WorkspaceLayout::outputs_relative("/mnt/session/outputs-other/report.txt"),
+            None,
+            "R3/E3"
+        );
+    }
+
+    #[test]
+    fn final_sandbox_layout_rejects_repository_effect_conflicts() {
+        // Final-layout cause/effect table:
+        // R1 disjoint Repository, mount, outputs and default HOME -> admit;
+        // R2 mount/extra-mount is inside Repository -> reject;
+        // R3 outputs or an explicit runtime home is inside Repository -> reject;
+        // R4 duplicate effective mount owners -> reject even without Repository.
+        // R5 aliases, traversal, cross-platform separators, control characters,
+        // or relative runtime directories -> reject before overlap comparison.
+        // All rules are pure and run before prewarm/provider/Git effects.
+        let repository = ["/workspace/repo"];
+        let mut layout = spec();
+        validate_repository_sandbox_layout(&repository, &layout).expect("R1");
+
+        layout.mounts.push(MountRequirement {
+            mount_id: "nested".into(),
+            source: crate::vocab::MountSource::InlineBytes {
+                contents: Vec::new(),
+                content_hash: None,
+            },
+            mount_path: "/workspace/repo/input".into(),
+            access: MountAccess::ReadOnly,
+            lifetime: crate::vocab::MountLifetime::PerRun,
+            required: true,
+        });
+        assert!(
+            validate_repository_sandbox_layout(&repository, &layout).is_err(),
+            "R2"
+        );
+        layout.mounts.clear();
+
+        for (name, path) in [
+            ("outputs", "/workspace/repo/outputs"),
+            ("HOME", "/workspace/repo/home"),
+        ] {
+            layout.outputs_path = "/mnt/session/outputs".into();
+            layout.env.clear();
+            if name == "outputs" {
+                layout.outputs_path = path.into();
+            } else {
+                layout.env.push(crate::vocab::EnvVar {
+                    name: name.into(),
+                    value: crate::vocab::EnvValue::Inline { value: path.into() },
+                    visibility: crate::vocab::EnvVisibility::Process,
+                });
+            }
+            assert!(
+                validate_repository_sandbox_layout(&repository, &layout).is_err(),
+                "R3 {name}"
+            );
+        }
+
+        layout.outputs_path = "/mnt/session/outputs".into();
+        layout.env.clear();
+        let duplicate = MountRequirement {
+            mount_id: "one".into(),
+            source: crate::vocab::MountSource::InlineBytes {
+                contents: Vec::new(),
+                content_hash: None,
+            },
+            mount_path: "/workspace/input".into(),
+            access: MountAccess::ReadOnly,
+            lifetime: crate::vocab::MountLifetime::PerRun,
+            required: true,
+        };
+        layout.mounts = vec![
+            duplicate.clone(),
+            MountRequirement {
+                mount_id: "two".into(),
+                ..duplicate
+            },
+        ];
+        assert!(
+            validate_repository_sandbox_layout(&[], &layout).is_err(),
+            "R4"
+        );
+
+        for invalid_mount in [
+            "workspace//input",
+            "workspace/input/",
+            "workspace/./input",
+            "workspace/../input",
+            "workspace\\input",
+            "workspace/input\nchild",
+        ] {
+            layout.mounts = vec![MountRequirement {
+                mount_id: "invalid".into(),
+                source: crate::vocab::MountSource::InlineBytes {
+                    contents: Vec::new(),
+                    content_hash: None,
+                },
+                mount_path: invalid_mount.into(),
+                access: MountAccess::ReadOnly,
+                lifetime: crate::vocab::MountLifetime::PerRun,
+                required: true,
+            }];
+            assert!(
+                validate_repository_sandbox_layout(&[], &layout).is_err(),
+                "R5 mount {invalid_mount:?}"
+            );
+        }
+        layout.mounts.clear();
+        for invalid_outputs in [
+            "mnt/session/outputs",
+            "/mnt/session//outputs",
+            "/mnt/session/outputs/",
+            "/mnt/session/../outputs",
+            "/mnt/session\\outputs",
+            "/mnt/session/outputs\nchild",
+        ] {
+            layout.outputs_path = invalid_outputs.into();
+            assert!(
+                validate_repository_sandbox_layout(&[], &layout).is_err(),
+                "R5 outputs {invalid_outputs:?}"
+            );
+        }
+        layout.outputs_path = "/mnt/session/outputs".into();
+        for invalid_directory in ["workspace/home", "/workspace/home/", "/workspace/home\tbad"] {
+            layout.env = vec![crate::vocab::EnvVar {
+                name: "HOME".into(),
+                value: crate::vocab::EnvValue::Inline {
+                    value: invalid_directory.into(),
+                },
+                visibility: crate::vocab::EnvVisibility::Process,
+            }];
+            assert!(
+                validate_repository_sandbox_layout(&[], &layout).is_err(),
+                "R5 HOME {invalid_directory:?}"
+            );
+        }
+        layout.env = vec![crate::vocab::EnvVar {
+            name: "XDG_CONFIG_HOME".into(),
+            value: crate::vocab::EnvValue::Inline {
+                value: WorkspaceLayout::ROOT.into(),
+            },
+            visibility: crate::vocab::EnvVisibility::Process,
+        }];
+        assert!(
+            validate_repository_sandbox_layout(&repository, &layout).is_err(),
+            "R3 XDG root owns the Repository tree"
+        );
+        layout.env = vec![crate::vocab::EnvVar {
+            name: "CODEX_HOME".into(),
+            value: crate::vocab::EnvValue::Secret {
+                reference: "opaque-runtime-directory".into(),
+            },
+            visibility: crate::vocab::EnvVisibility::Process,
+        }];
+        assert!(
+            validate_repository_sandbox_layout(&repository, &layout).is_err(),
+            "R5 opaque runtime directory cannot be compared across providers"
+        );
+    }
+
+    #[test]
+    fn v2_handles_round_trip_complete_owned_path_evidence() {
+        // Durable-layout decision table: H1 current Local/Namespace/Container
+        // V2 payload => exact owned paths survive wire round-trip; H2 legacy V1
+        // => still decodes and exposes no invented evidence. Runtime may adopt
+        // H2 only when no Repository requires an overlap proof.
+        let local_v1 = LocalSandboxHandleV1 {
+            outputs_path: "/outputs".into(),
+            base_env: Vec::new(),
+            continuation_excluded_paths: Vec::new(),
+            deny_tool_egress: false,
+        };
+        let namespace_v1 = NamespaceSandboxHandleV1 {
+            outputs_path: "/outputs".into(),
+            base_env: Vec::new(),
+            network: crate::NetworkPolicy::None,
+            control_services: Default::default(),
+        };
+        let container_v1 = ContainerSandboxHandleV1 {
+            container_id: "container-1".into(),
+            outputs_path: "/outputs".into(),
+            base_env: Vec::new(),
+            live_input_projection: false,
+            continuation_excluded_paths: Vec::new(),
+            runtime_handle: None,
+            sandbox_control_incarnation: None,
+            control_services: Default::default(),
+        };
+        let realization_fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
+        let filesystem_fence =
+            SandboxEffectFence::new("handle-round-trip", "test-owner", "runtime-1", 1, u64::MAX)
+                .unwrap();
+        let cases = [
+            SandboxHandle::local_v2(
+                "local",
+                LocalSandboxHandleV2 {
+                    previous: local_v1.clone(),
+                    realization_fingerprint: realization_fingerprint.clone(),
+                    effect_fence: filesystem_fence.clone(),
+                    physical_incarnation: "local-incarnation".into(),
+                    owned_paths: vec!["/workspace/local-repo".into()],
+                },
+            ),
+            SandboxHandle::namespace_v2(
+                NamespaceProviderKind::Bubblewrap,
+                "namespace",
+                NamespaceSandboxHandleV2 {
+                    previous: namespace_v1,
+                    realization_fingerprint: realization_fingerprint.clone(),
+                    effect_fence: filesystem_fence,
+                    physical_incarnation: "namespace-incarnation".into(),
+                    owned_paths: vec!["/workspace/namespace-repo".into()],
+                },
+            ),
+            SandboxHandle::container_v2(
+                "container",
+                ContainerSandboxHandleV2 {
+                    previous: container_v1,
+                    adoption_fingerprint: realization_fingerprint.clone(),
+                    realization_fingerprint,
+                    owned_paths: vec!["/workspace/container-repo".into()],
+                },
+            ),
+        ];
+        let mut missing_fingerprint = serde_json::to_value(&cases[0]).unwrap();
+        missing_fingerprint["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("realization_fingerprint");
+        assert!(
+            serde_json::from_value::<SandboxHandle>(missing_fingerprint).is_err(),
+            "H1 current V2 never accepts missing immutable realization evidence"
+        );
+        let mut missing_adoption = serde_json::to_value(&cases[2]).unwrap();
+        missing_adoption["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("adoption_fingerprint");
+        assert!(
+            serde_json::from_value::<SandboxHandle>(missing_adoption).is_err(),
+            "H1 current container V2 never accepts missing adoption evidence"
+        );
+        for handle in cases {
+            let expected = handle.owned_paths().expect("H1 V2 evidence").to_vec();
+            let decoded: SandboxHandle =
+                serde_json::from_str(&serde_json::to_string(&handle).unwrap()).unwrap();
+            assert_eq!(decoded.owned_paths(), Some(expected.as_slice()), "H1");
+        }
+
+        let legacy = SandboxHandle::local("legacy", local_v1);
+        let decoded: SandboxHandle =
+            serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        assert!(decoded.local_payload().is_ok(), "H2 V1 decode");
+        assert_eq!(decoded.owned_paths(), None, "H2 no fabricated evidence");
+    }
+
+    #[test]
+    fn effect_identity_ignores_only_expiry() {
+        // Cause/effect table: C1 operation/owner/runtime/epoch are all equal;
+        // C2 expiry is equal/renewed; C3 one immutable identity field differs.
+        // R1 C1 is the same effect for either C2 value; R2 any C3 difference is
+        // another effect. This accessor is the neutral owner used by Host and
+        // provider marker validation; it grants no lease-liveness authority.
+        let original = SandboxEffectFence::new("effect", "owner", "runtime", 7, 10).unwrap();
+        let renewed = SandboxEffectFence::new("effect", "owner", "runtime", 7, 20).unwrap();
+        let other = SandboxEffectFence::new("other", "owner", "runtime", 7, 20).unwrap();
+        assert!(original.same_effect_identity(&renewed), "R1");
+        assert!(!original.same_effect_identity(&other), "R2");
+    }
+
+    #[test]
+    fn memory_materialization_slice_canonicalization_is_total() {
+        // Cause/effect decision table: C1 every item is internally valid;
+        // C2 mount/store identities are distinct or duplicated; C3 input order
+        // is canonical or reversed. M1 C1+distinct sorts the existing slice by
+        // mount then store without changing its length; M2 C1+duplicate
+        // rejects; M3 !C1 rejects before durable handle attachment. No rule
+        // needs Vec capacity or changes collection membership, so the slice is
+        // the sole minimal mutation boundary.
+        let evidence = |store: &str, mount: &str| {
+            MemoryMaterializationEvidence::new(store, mount, Vec::new()).unwrap()
+        };
+        let mut reversed = [
+            evidence("memory-z", "/workspace/z"),
+            evidence("memory-a", "/workspace/a"),
+        ];
+        MemoryMaterializationEvidence::canonicalize_all(&mut reversed).expect("M1");
+        assert_eq!(reversed[0].mount_path, "/workspace/a", "M1 order");
+        assert_eq!(reversed.len(), 2, "M1 membership");
+
+        let mut duplicate = [
+            evidence("memory", "/workspace/memory"),
+            evidence("memory", "/workspace/memory"),
+        ];
+        assert!(
+            MemoryMaterializationEvidence::canonicalize_all(&mut duplicate).is_err(),
+            "M2"
+        );
+
+        let mut invalid = [evidence("memory", "/workspace/memory")];
+        invalid[0].store_id.clear();
+        assert!(
+            MemoryMaterializationEvidence::canonicalize_all(&mut invalid).is_err(),
+            "M3"
+        );
+    }
+
+    #[test]
+    fn resource_reservation_requires_one_v2_substrate_and_monotonic_paths() {
+        // Cause/effect decision table: C1 source/target are V2, C2 provider/id/
+        // immutable locator+fingerprint+effect fence match, C3 every old owned path remains,
+        // C4 original copy-backed Memory heads match exactly. R1 C1+C2+C3+C4
+        // admits an exact replay or superset; R2 !C1 rejects legacy
+        // V1->V1/V2 evidence minting; R3 !C2 rejects another substrate/spec;
+        // R4 !C3 rejects path loss; R5 !C4 rejects a changed terminal CAS base.
+        // No rule mutates either durable handle.
+        let previous = LocalSandboxHandleV1 {
+            outputs_path: "/outputs".into(),
+            base_env: Vec::new(),
+            continuation_excluded_paths: Vec::new(),
+            deny_tool_egress: false,
+        };
+        let fingerprint = SandboxRealizationFingerprint::from_spec(&spec());
+        let fence =
+            SandboxEffectFence::new("reservation", "test-owner", "runtime-1", 1, u64::MAX).unwrap();
+        let current = SandboxHandle::local_v2(
+            "sandbox",
+            LocalSandboxHandleV2 {
+                previous: previous.clone(),
+                realization_fingerprint: fingerprint.clone(),
+                effect_fence: fence.clone(),
+                physical_incarnation: "incarnation-1".into(),
+                owned_paths: vec!["/workspace/a".into()],
+            },
+        );
+        let superset = SandboxHandle::local_v2(
+            "sandbox",
+            LocalSandboxHandleV2 {
+                previous: previous.clone(),
+                realization_fingerprint: fingerprint.clone(),
+                effect_fence: fence.clone(),
+                physical_incarnation: "incarnation-1".into(),
+                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
+            },
+        );
+        assert!(current.owned_paths_are_monotonic_to(&current), "R1 replay");
+        assert!(
+            current.owned_paths_are_monotonic_to(&superset),
+            "R1 superset"
+        );
+        let original_memory = MemoryMaterializationEvidence::new(
+            "memory",
+            "/workspace/memory",
+            vec![MemoryMaterializationHead {
+                path: "notes.txt".into(),
+                id: "head-a".into(),
+                content_sha256: "sha-a".into(),
+            }],
+        )
+        .unwrap();
+        let current_with_memory = current
+            .clone()
+            .with_memory_materializations(vec![original_memory.clone()])
+            .unwrap();
+        let superset_with_memory = superset
+            .clone()
+            .with_memory_materializations(vec![original_memory])
+            .unwrap();
+        assert!(
+            current_with_memory.owned_paths_are_monotonic_to(&superset_with_memory),
+            "R1 matching Memory authority"
+        );
+        assert!(
+            !current.owned_paths_are_monotonic_to(&superset_with_memory),
+            "R5 missing Memory authority"
+        );
+        let changed_memory = superset
+            .clone()
+            .with_memory_materializations(vec![
+                MemoryMaterializationEvidence::new(
+                    "memory",
+                    "/workspace/memory",
+                    vec![MemoryMaterializationHead {
+                        path: "notes.txt".into(),
+                        id: "head-b".into(),
+                        content_sha256: "sha-b".into(),
+                    }],
+                )
+                .unwrap(),
+            ])
+            .unwrap();
+        assert!(
+            !current_with_memory.owned_paths_are_monotonic_to(&changed_memory),
+            "R5 changed Memory authority"
+        );
+
+        let legacy = SandboxHandle::local("sandbox", previous.clone());
+        assert!(!legacy.owned_paths_are_monotonic_to(&legacy), "R2 V1->V1");
+        assert!(!legacy.owned_paths_are_monotonic_to(&superset), "R2 V1->V2");
+
+        let mut different_spec = spec();
+        different_spec.scope = "different".into();
+        let different_spec = SandboxHandle::local_v2(
+            "sandbox",
+            LocalSandboxHandleV2 {
+                previous: previous.clone(),
+                realization_fingerprint: SandboxRealizationFingerprint::from_spec(&different_spec),
+                effect_fence: fence.clone(),
+                physical_incarnation: "incarnation-1".into(),
+                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
+            },
+        );
+        assert!(
+            !current.owned_paths_are_monotonic_to(&different_spec),
+            "R3 spec"
+        );
+        let different_id = SandboxHandle::local_v2(
+            "other",
+            LocalSandboxHandleV2 {
+                previous,
+                realization_fingerprint: fingerprint,
+                effect_fence: fence.clone(),
+                physical_incarnation: "incarnation-1".into(),
+                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
+            },
+        );
+        assert!(
+            !current.owned_paths_are_monotonic_to(&different_id),
+            "R3 id"
+        );
+
+        let different_effect = SandboxHandle::local_v2(
+            "sandbox",
+            LocalSandboxHandleV2 {
+                previous: current.local_payload().unwrap().clone(),
+                realization_fingerprint: current.realization_fingerprint().unwrap().clone(),
+                effect_fence: SandboxEffectFence::new(
+                    "other-reservation",
+                    "test-owner",
+                    "runtime-1",
+                    1,
+                    u64::MAX,
+                )
+                .unwrap(),
+                physical_incarnation: "incarnation-1".into(),
+                owned_paths: vec!["/workspace/a".into(), "/workspace/b".into()],
+            },
+        );
+        assert!(
+            !current.owned_paths_are_monotonic_to(&different_effect),
+            "R3 effect fence"
+        );
+
+        let missing = SandboxHandle::local_v2(
+            "sandbox",
+            LocalSandboxHandleV2 {
+                previous: current.local_payload().unwrap().clone(),
+                realization_fingerprint: current.realization_fingerprint().unwrap().clone(),
+                effect_fence: fence,
+                physical_incarnation: "incarnation-1".into(),
+                owned_paths: Vec::new(),
+            },
+        );
+        assert!(!current.owned_paths_are_monotonic_to(&missing), "R4");
+    }
+
+    #[test]
+    fn adoption_layout_unions_current_and_historical_owned_trees() {
+        // Adoption-layout rules: A1 current and historical trees both disjoint
+        // from Repository => admit; A2 the V2 evidence repeats the exact current
+        // Repository tree => admit as one owner; A3 historical child overlaps
+        // current Repo => reject; A4 a replacement Repo is nested under the
+        // historically realized Repo tree => reject. A3/A4 model crash windows
+        // where logical and physical layouts have not advanced atomically.
+        let mut current = spec();
+        current.mounts.push(MountRequirement {
+            mount_id: "current-extra".into(),
+            source: crate::vocab::MountSource::InlineBytes {
+                contents: Vec::new(),
+                content_hash: None,
+            },
+            mount_path: "/workspace/current-extra".into(),
+            access: MountAccess::ReadOnly,
+            lifetime: crate::vocab::MountLifetime::PerRun,
+            required: true,
+        });
+        validate_repository_sandbox_adoption_layout(
+            &["/workspace/repo"],
+            &current,
+            &["/workspace/historical-extra"],
+        )
+        .expect("A1");
+        validate_repository_sandbox_adoption_layout(
+            &["/workspace/repo"],
+            &current,
+            &["/workspace/repo"],
+        )
+        .expect("A2 exact current tree is not a competing owner");
+        assert!(
+            validate_repository_sandbox_adoption_layout(
+                &["/workspace/repo"],
+                &current,
+                &["/workspace/repo/cache"],
+            )
+            .is_err(),
+            "A3"
+        );
+        assert!(
+            validate_repository_sandbox_adoption_layout(
+                &["/workspace/repo/replacement"],
+                &current,
+                &["/workspace/repo"],
+            )
+            .is_err(),
+            "A4"
+        );
+    }
+
+    #[test]
+    fn sandbox_effect_fence_validation_and_expiry_table_is_total() {
+        // Cause/effect table: C1 operation/owner/runtime-incarnation are each
+        // nonblank/blank; C2 now is before/at/after expiry; C3 a successor is
+        // exact-lease with equal/longer/shorter expiry, higher epoch, or
+        // same-epoch foreign. R1 all nonblank
+        // fields construct one lossless neutral fence; R2 any blank identity is
+        // rejected; R3 before expiry is live and at/after expiry is stale; R4
+        // equal/longer same-lease and higher-epoch successors are authorized;
+        // R5 shorter-expiry, same-epoch foreign, and older-epoch successors are
+        // rejected. C4 the operation is exact/foreign; R6 the effect-scoped
+        // predicate admits only R4 successors whose operation is exact. This
+        // predicate is the sole provider successor authority.
+        let fence =
+            SandboxEffectFence::new("effect-1", "owner-1", "runtime-1", 7, 100).expect("R1");
+        assert_eq!(fence.epoch, 7, "R1");
+        assert!(!fence.expired_at(99), "R3 before");
+        assert!(fence.expired_at(100), "R3 at");
+        assert!(fence.expired_at(101), "R3 after");
+        for (operation, owner, runtime) in [
+            ("", "owner-1", "runtime-1"),
+            ("effect-1", " ", "runtime-1"),
+            ("effect-1", "owner-1", "\n"),
+        ] {
+            assert!(
+                SandboxEffectFence::new(operation, owner, runtime, 7, 100).is_err(),
+                "R2",
+            );
+        }
+        for (rule, successor, expected) in [
+            (
+                "R4 equal expiry",
+                SandboxEffectFence::new("next", "owner-1", "runtime-1", 7, 100).unwrap(),
+                true,
+            ),
+            (
+                "R4 longer expiry",
+                SandboxEffectFence::new("next", "owner-1", "runtime-1", 7, 101).unwrap(),
+                true,
+            ),
+            (
+                "R4 higher epoch",
+                SandboxEffectFence::new("next", "owner-2", "runtime-2", 8, 1).unwrap(),
+                true,
+            ),
+            (
+                "R5 shorter expiry",
+                SandboxEffectFence::new("next", "owner-1", "runtime-1", 7, 99).unwrap(),
+                false,
+            ),
+            (
+                "R5 foreign same epoch",
+                SandboxEffectFence::new("next", "owner-2", "runtime-2", 7, 101).unwrap(),
+                false,
+            ),
+            (
+                "R5 older epoch",
+                SandboxEffectFence::new("next", "owner-1", "runtime-1", 6, 101).unwrap(),
+                false,
+            ),
+        ] {
+            assert_eq!(fence.authorizes_successor(&successor), expected, "{rule}");
+        }
+        let exact_renewal =
+            SandboxEffectFence::new("effect-1", "owner-1", "runtime-1", 7, 101).unwrap();
+        let foreign_operation =
+            SandboxEffectFence::new("effect-2", "owner-1", "runtime-1", 7, 101).unwrap();
+        assert!(
+            fence.authorizes_effect_successor(&exact_renewal),
+            "R6 exact operation"
+        );
+        assert!(
+            !fence.authorizes_effect_successor(&foreign_operation),
+            "R6 foreign operation"
+        );
+    }
+
+    #[test]
+    fn secret_writeback_identity_is_physical_while_authorization_is_current() {
+        // Cause/effect graph: C1 the exact credential reference is same/different;
+        // C2 the immutable physical Sandbox incarnation is same/different; C3 the
+        // current aggregate authorization operation is predecessor/successor;
+        // C4 reference/incarnation/fence identity is valid/invalid. Effects: E1
+        // C1+C2 exact yields one stable writeback id across C3, so a terminal
+        // successor can recognize a continuation response-loss replay; E2 a
+        // different reference or physical incarnation yields a different id; E3
+        // malformed identity is rejected before a broker or credential mutation.
+        //
+        // | Rule | reference | physical | authorization | Effect |
+        // |---|---|---|---|---|
+        // | S1 | exact | exact | predecessor | stable id A |
+        // | S2 | exact | exact | successor | same id A / current fence B |
+        // | S3 | different | exact | successor | different id |
+        // | S4 | exact | different | successor | different id |
+        // | S5 | blank | any | any | reject E3 |
+        let predecessor = SandboxEffectFence::new(
+            "continuation-secret-preparation",
+            "worker-owner",
+            "runtime-incarnation",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let successor = SandboxEffectFence::new(
+            "terminal-secret-preparation",
+            "worker-owner",
+            "runtime-incarnation",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let first = SecretWritebackEffect::new("credential-source@3", "pod-uid-a", predecessor)
+            .expect("S1");
+        let replay =
+            SecretWritebackEffect::new("credential-source@3", "pod-uid-a", successor.clone())
+                .expect("S2");
+        assert_eq!(first.writeback_id(), replay.writeback_id(), "S1/S2 E1");
+        assert_eq!(
+            replay.authorization(),
+            &successor,
+            "S2 current authorization"
+        );
+        assert_ne!(
+            replay.writeback_id(),
+            SecretWritebackEffect::new(
+                "other-credential-source@3",
+                "pod-uid-a",
+                successor.clone(),
+            )
+            .unwrap()
+            .writeback_id(),
+            "S3/E2",
+        );
+        assert_ne!(
+            replay.writeback_id(),
+            SecretWritebackEffect::new("credential-source@3", "pod-uid-b", successor.clone(),)
+                .unwrap()
+                .writeback_id(),
+            "S4/E2",
+        );
+        assert!(
+            SecretWritebackEffect::new(" ", "pod-uid-a", successor.clone()).is_err(),
+            "S5 blank reference",
+        );
+        let invalid_authorization = SandboxEffectFence {
+            operation_id: " ".into(),
+            owner: successor.owner.clone(),
+            runtime_incarnation: successor.runtime_incarnation.clone(),
+            epoch: successor.epoch,
+            expires_at_unix_ms: successor.expires_at_unix_ms,
+        };
+        assert!(
+            SecretWritebackEffect::new("credential-source@3", "pod-uid-a", invalid_authorization,)
+                .is_err(),
+            "S5 invalid authorization identity",
+        );
+        assert!(
+            SecretWritebackEffect::new("credential-source@3", "\n", successor).is_err(),
+            "S5 blank physical incarnation",
         );
     }
 

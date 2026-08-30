@@ -8,7 +8,7 @@
 #   -----------------------------------+------------------+--------------------------------------------------
 #   G2 dispose lifecycle (delete/       | external managed | create->turn->delete->404 ; archive->terminated
 #      archive reaps the sandbox)       | protocol (SDK)   | (idempotent re-archive) ; 8x soak (no leak)
-#   G2 dispose (host + state)           | rust unit        | end_session_disposes_the_threads_sandbox ;
+#   G2 dispose (host + state)           | rust unit        | exact_terminal_cleanup_disposes_the_threads_sandbox ;
 #                                       |                  | delete/archive_session_disposes*
 #   G1 container adapter (docker)       | real docker      | lifecycle ; open_channel dial ; wire exchange
 #   G1 mounts / read-only / egress      | real docker      | File/Inline/CacheVolume binds ; :ro rejects ;
@@ -50,7 +50,7 @@ run()  { # run <label> <cmd...>
 if [ "$substrates_only" -eq 0 ]; then
   step "G2/G3 host + managed unit tests (dispose, fail-closed)"
   # cargo test takes a single substring filter, so run each crate's dispose tests apart.
-  run "host end_session unit" cargo test -q -p awaken-runtime-host --lib end_session_disposes
+  run "host terminal cleanup unit" cargo test -q -p awaken-runtime-host --lib exact_terminal_cleanup_disposes_the_threads_sandbox
   run "managed dispose unit" cargo test -q -p awaken-protocol-managed --lib _disposes
 else
   echo "DELEGATED: host + managed unit tests are owned by check-rust --full"

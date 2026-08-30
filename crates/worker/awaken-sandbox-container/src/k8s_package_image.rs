@@ -15,8 +15,8 @@ use kube::api::{DeleteParams, ListParams};
 use kube::{Api, Client};
 
 use crate::k8s::{
-    backend, create_or_verify_with_status_exact, install_rustls_crypto_provider,
-    sandbox_network_labels, stamp_realization,
+    backend, create_or_verify_exact, install_rustls_crypto_provider, sandbox_network_labels,
+    stamp_realization,
 };
 use crate::k8s_package_realization::{
     PACKAGE_BUILD_JOB_KIND, PACKAGE_IMAGE_CHECK_JOB_KIND, bind_package_job_to_config,
@@ -450,11 +450,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
 
     async fn ensure_package_config(&self, desired: &ConfigMap) -> Result<ConfigMap, RuntimeError> {
         let configs: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
-        Ok(
-            create_or_verify_with_status_exact(&configs, desired, verify_exact_package_config_map)
-                .await?
-                .object,
-        )
+        create_or_verify_exact(&configs, desired, verify_exact_package_config_map).await
     }
 
     fn bind_package_job(
@@ -476,7 +472,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             .ok_or_else(|| backend("package build Job has no name"))?;
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        create_or_verify_with_status_exact(&jobs, &job, verify_exact_package_job).await?;
+        create_or_verify_exact(&jobs, &job, verify_exact_package_job).await?;
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(PACKAGE_BUILD_TIMEOUT_SECS as u64 + 30);
         loop {
@@ -569,7 +565,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         let package = package_config.is_some();
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        create_or_verify_with_status_exact(&jobs, &job, |desired, observed| {
+        create_or_verify_exact(&jobs, &job, |desired, observed| {
             if package {
                 verify_exact_package_job(desired, observed)
             } else {
@@ -588,7 +584,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                     // Job and delete it between this caller's polls. Recreate that
                     // disposable observation instead of surfacing a false 404 to the
                     // Environment realization retry path.
-                    create_or_verify_with_status_exact(&jobs, &job, |desired, observed| {
+                    create_or_verify_exact(&jobs, &job, |desired, observed| {
                         if package {
                             verify_exact_package_job(desired, observed)
                         } else {

@@ -110,8 +110,8 @@ pub fn checkpoint_writable_roots_from_output_path(
             "sandbox output root must be an absolute bounded path",
         ));
     }
-    let mut roots = vec!["/workspace".to_owned()];
-    if !Path::new(output).starts_with("/workspace") && output != "/tmp" {
+    let mut roots = vec![pc::WorkspaceLayout::ROOT.to_owned()];
+    if !pc::WorkspaceLayout::contains(output) && output != "/tmp" {
         roots.push(output.to_owned());
     }
     roots.push("/tmp".to_owned());
@@ -122,12 +122,12 @@ pub fn checkpoint_writable_roots_from_output_path(
 /// an archive command. The third root, when present, is the exact output root.
 pub fn validate_checkpoint_writable_roots(roots: &[String]) -> Result<(), pc::SandboxError> {
     let valid_shape = match roots {
-        [workspace, tmp] => workspace == "/workspace" && tmp == "/tmp",
+        [workspace, tmp] => workspace == pc::WorkspaceLayout::ROOT && tmp == "/tmp",
         [workspace, output, tmp] => {
-            workspace == "/workspace"
+            workspace == pc::WorkspaceLayout::ROOT
                 && tmp == "/tmp"
                 && bounded_absolute(output)
-                && !Path::new(output).starts_with("/workspace")
+                && !pc::WorkspaceLayout::contains(output)
                 && output != "/tmp"
         }
         _ => false,
@@ -147,7 +147,7 @@ pub fn validate_checkpoint_writable_roots(roots: &[String]) -> Result<(), pc::Sa
 /// same hardening.
 #[must_use]
 pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
-    let mut dirs = vec!["/workspace".to_string()];
+    let mut dirs = vec![pc::WorkspaceLayout::ROOT.to_string()];
     // OCI creates the parent of a file bind as root:root. Keep the parent of every
     // host-materialized workspace file on a Session-private writable volume so the
     // non-root Agent can later attach, rename, or detach sibling resources without
@@ -160,7 +160,9 @@ pub fn writable_dirs(plan: &ContainerPlan) -> Vec<String> {
             .then(|| std::path::Path::new(&bind.mount_path).parent())
             .flatten()
             .and_then(std::path::Path::to_str)
-            .filter(|parent| parent.starts_with("/workspace/") && *parent != "/workspace");
+            .filter(|parent| {
+                pc::WorkspaceLayout::relative(parent).is_some_and(|relative| !relative.is_empty())
+            });
         if let Some(parent) = parent
             && !dirs.iter().any(|entry| entry == parent)
         {

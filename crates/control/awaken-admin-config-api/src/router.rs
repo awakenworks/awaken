@@ -1235,12 +1235,44 @@ async fn put_agent_inputs(
 ) -> Result<Json<AgentInputConfig>, Problem> {
     config.agent_id = agent_id;
     let rid = req_id(&headers);
+    validate_agent_input_mount_paths(&config)
+        .map_err(|error| agent_input_mount_problem(&error, &rid))?;
     let workspace = resource_workspace(scope).map_err(|_| resource_workspace_problem(&rid))?;
     state
         .resources
         .put_agent_inputs(&workspace, config.clone())
         .map_err(|error| agent_input_write_problem(error, &rid))?;
     Ok(Json(config))
+}
+
+fn validate_agent_input_mount_paths(
+    config: &AgentInputConfig,
+) -> Result<(), awaken_provisioning_contract::SandboxError> {
+    config
+        .inputs
+        .iter()
+        .filter(|input| {
+            matches!(
+                &input.target,
+                awaken_config_resolver::InputResourceId::Repository(_)
+            )
+        })
+        .try_for_each(|input| {
+            awaken_provisioning_contract::validate_repository_mount_path(&input.mount_path)
+        })
+}
+
+fn agent_input_mount_problem(
+    error: &awaken_provisioning_contract::SandboxError,
+    rid: &str,
+) -> Problem {
+    Problem(ApiError::new(
+        422,
+        "invalid_mount_path",
+        "Invalid Agent input mount path",
+        error.to_string(),
+        rid,
+    ))
 }
 
 async fn get_agent_inputs(

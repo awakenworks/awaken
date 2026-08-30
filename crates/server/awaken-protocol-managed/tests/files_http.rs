@@ -495,6 +495,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
             "report.txt",
             "hash",
         )),
+        artifact_idempotency_scope: None,
         deleted: false,
     };
     authorities
@@ -601,6 +602,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
             scope_id: None,
             logical_path: None,
             harvest_key: None,
+            artifact_idempotency_scope: None,
             deleted: false,
         })
         .await

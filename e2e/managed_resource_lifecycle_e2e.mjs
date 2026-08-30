@@ -9,13 +9,15 @@
 // Deterministic (echo model, no API key), so it runs in the keyless coverage arm.
 //
 // Cause graph:
-// typed create-time union -> exact Session manifest -> sandbox realization;
+// official create-time union without output-only Memory mount_path -> catalog-
+// derived exact Session manifest -> sandbox realization;
 // typed live File add/delete -> prepare/apply/commit -> durable projection;
 // non-File add or raw-token update -> admission reject -> no Runtime/state effect.
 //
 // Decision table:
 // | Rule | Operation | Shape | Expected behavior | Observable effect |
-// | R1 | create | Memory/Repository | accept | listed from frozen manifest |
+// | R1 | create | Memory identity/Repository | accept | listed with frozen server-derived Memory path |
+// | R1X | create | Memory with client mount_path | 400 | no Session root (ResourceInput contract owner) |
 // | R2 | live add | File | accept | exact mount appears |
 // | R3 | live add | Memory/Repository | 400 | manifest unchanged |
 // | R4 | update | authorization_token/unknown | 400 | manifest unchanged |
@@ -55,7 +57,6 @@ async function main() {
         {
           type: 'memory_store',
           memory_store_id: mem.id,
-          mount_path: '/mnt/memory/notes',
           instructions: 'notes',
         },
       ],
@@ -64,6 +65,11 @@ async function main() {
     assert.equal(seeded.resources?.length, 1, 'create-time memory_store is backfilled');
     assert.equal(seeded.resources[0].type, 'memory_store');
     assert.equal(seeded.resources[0].memory_store_id, mem.id);
+    assert.equal(
+      seeded.resources[0].mount_path,
+      '/mnt/memory/resource-lifecycle-memory',
+      'the catalog-owned MemoryStore name derives the frozen output path',
+    );
     assert.equal(seeded.resources[0].id, undefined, 'official memory resources have no synthetic id');
     assert.equal((await listResources(client, seeded.id)).length, 1, 'create-time resource is listed');
     pass('create-time resources are backfilled on the session and listed');

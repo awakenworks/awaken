@@ -154,7 +154,7 @@ pub fn pod_for_plan_with_control_forwarder(
     plan: &ContainerPlan,
     forwarder: &K8sSandboxControlForwarder,
 ) -> Pod {
-    build_pod_with_continuation(id, plan, &None, None, &[], None, Some(forwarder))
+    build_pod_with_continuation(id, plan, &None, None, &[], None, None, Some(forwarder))
 }
 
 pub(super) fn pod_incarnation(
@@ -421,6 +421,7 @@ mod tests {
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            egress_identity: Default::default(),
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
             filesystem_continuity: pc::FilesystemContinuity::Retained,

@@ -379,7 +379,50 @@ impl ManagedState {
         let owner_scope = workspace_id
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        self.check_bind(&owner_scope, &req).await?;
+        // Resource-path admission is the first domain operation after the edge
+        // authorization check. Parse and validate the complete explicit
+        // Repository set before refreshing catalogs or invoking model,
+        // Environment, MCP, Skill, File, Vault, Registry, Runtime, or Git ports.
+        const MAX_SESSION_MEMORY_STORES: usize = 8;
+        const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
+        let memory_resources = req.resources.iter().filter_map(|resource| match resource {
+            crate::types::resource::ResourceInput::MemoryStore { instructions, .. } => {
+                Some(instructions)
+            }
+            _ => None,
+        });
+        let mut memory_count = 0usize;
+        for instructions in memory_resources {
+            memory_count += 1;
+            if instructions.as_ref().is_some_and(|instructions| {
+                instructions.chars().count() > MAX_MEMORY_INSTRUCTIONS_CHARS
+            }) {
+                return Err(StateError::Run(RunError::bad_request(format!(
+                    "memory store instructions support at most {MAX_MEMORY_INSTRUCTIONS_CHARS} characters"
+                ))));
+            }
+        }
+        if memory_count > MAX_SESSION_MEMORY_STORES {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "a Session supports at most {MAX_SESSION_MEMORY_STORES} memory stores"
+            ))));
+        }
+        let resources = std::mem::take(&mut req.resources)
+            .iter()
+            .map(crate::types::resource::ResourceInput::to_parsed_input)
+            .collect::<Vec<_>>();
+        super::resource::preflight_repository_mount_paths(&resources)?;
+        if resources
+            .iter()
+            .filter(|resource| matches!(resource.target, ParsedInputTarget::File(_)))
+            .count()
+            > super::resource::MAX_SESSION_FILE_RESOURCES
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "a Session supports at most {} files",
+                super::resource::MAX_SESSION_FILE_RESOURCES
+            ))));
+        }
         self.application
             .refresh_executable_projections()
             .await
@@ -460,6 +503,12 @@ impl ManagedState {
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))));
         }
+        let agent_defaults = config_view
+            .as_ref()
+            .map(|view| view.resources.as_slice())
+            .unwrap_or_default();
+        let prepared_resources =
+            self.prepare_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)?;
         // Cause/effect decision table for Session model authority: R1 absent ->
         // inherit the Agent publication; R2 equal override -> reuse its route and
         // replace inference controls;
@@ -600,52 +649,6 @@ impl ManagedState {
             awaken_session_application::SessionApplication::normalize_mcp_candidate_targets(
                 initial_mcp_candidates(config_view.as_ref(), agent_mcp_override),
             )?;
-        // Parse the wire `resources[]` (ADR-0038) into staged mounts, and project each
-        // into a DTO entry so the created session echoes its create-time resources —
-        // list/get/delete then address these and any later-attached ones uniformly.
-        const MAX_SESSION_MEMORY_STORES: usize = 8;
-        const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
-        let memory_resources = req.resources.iter().filter_map(|resource| match resource {
-            crate::types::resource::ResourceInput::MemoryStore { instructions, .. } => {
-                Some(instructions)
-            }
-            _ => None,
-        });
-        let mut memory_count = 0usize;
-        for instructions in memory_resources {
-            memory_count += 1;
-            if instructions.as_ref().is_some_and(|instructions| {
-                instructions.chars().count() > MAX_MEMORY_INSTRUCTIONS_CHARS
-            }) {
-                return Err(StateError::Run(RunError::bad_request(format!(
-                    "memory store instructions support at most {MAX_MEMORY_INSTRUCTIONS_CHARS} characters"
-                ))));
-            }
-        }
-        if memory_count > MAX_SESSION_MEMORY_STORES {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "a Session supports at most {MAX_SESSION_MEMORY_STORES} memory stores"
-            ))));
-        }
-        let resources = std::mem::take(&mut req.resources)
-            .iter()
-            .map(crate::types::resource::ResourceInput::to_parsed_input)
-            .collect::<Vec<_>>();
-        if resources
-            .iter()
-            .filter(|resource| matches!(resource.target, ParsedInputTarget::File(_)))
-            .count()
-            > super::resource::MAX_SESSION_FILE_RESOURCES
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "a Session supports at most {} files",
-                super::resource::MAX_SESSION_FILE_RESOURCES
-            ))));
-        }
-        let agent_defaults = config_view
-            .as_ref()
-            .map(|view| view.resources.as_slice())
-            .unwrap_or_default();
         // Resolve the SDK-required Environment and networking policy once, for both
         // SessionInit and the echoed Session object. Managed never invokes the
         // native application's optional local-environment fallback.
@@ -660,6 +663,32 @@ impl ManagedState {
                 &mcp_targets,
             )
             .await?;
+        // Cause/effect layout gate: C1 the complete effective typed bindings,
+        // frozen Environment, and exact publication-selected provider produce a
+        // non-overlapping final Sandbox layout -> continue; C2 any projected
+        // File/Memory/Repository, baseline, output, HOME/XDG, or provider mount
+        // overlaps -> reject before Vault checks, Skill/File materialization,
+        // Repository configuration, root CAS, cache prewarm, or provider I/O.
+        self.application
+            .validate_session_sandbox_layout(
+                &id,
+                &awaken_session_contract::SessionSandboxLayout {
+                    workspace_id: owner_scope.clone(),
+                    agent_id: agent_id.clone(),
+                    agent_revision: config_view.as_ref().and_then(|profile| {
+                        (profile.source_revision > 0).then_some(profile.source_revision)
+                    }),
+                    runtime_placement: self.application.runtime_placement(),
+                    model_override: model_override.clone(),
+                    runtime: published_backend_ref.clone(),
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    environment: environment.clone(),
+                    resources: prepared_resources.effective_bindings().to_vec(),
+                },
+            )
+            .map_err(StateError::Run)?;
+        self.check_bind(&owner_scope, &req).await?;
         let mcp_drafts = self
             .application
             .normalize_mcp_drafts(
@@ -784,7 +813,7 @@ impl ManagedState {
         // Applied participant; R4 root Applied/Replayed -> creation owns the
         // participants and terminal reconciliation becomes the only retire path.
         let (attachments, repository_configurations) = self
-            .lower_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
+            .lower_prepared_session_input_attachments(&id, &owner_scope, &prepared_resources)
             .await?;
         // Sole protocol-neutral Session input resolution point. Environment
         // selection has already produced one exact snapshot above; the final

@@ -357,6 +357,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: { name: worker-runtime }
 rules:
+  # This overlay does not enable k8s_continuation_volume. If that capability is
+  # enabled here, its same reviewed change must grant persistentvolumeclaims
+  # create/get/delete; the runtime must not rely on ambient cluster-admin access.
   - apiGroups: [""]
     resources: ["pods", "configmaps"]
     verbs: ["create", "get", "list", "update", "delete", "deletecollection"]

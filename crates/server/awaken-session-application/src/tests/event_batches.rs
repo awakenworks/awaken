@@ -861,10 +861,10 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 .freeze_targets(session_id, [], 0, cursor)
                 .expect("freeze terminal visibility cursor");
         } else {
-            let mut legacy = serde_json::to_value(&session.terminal_cleanup).unwrap();
-            legacy["state"] = serde_json::Value::String("requested".into());
-            session.terminal_cleanup = serde_json::from_value(legacy)
-                .expect("legacy Requested cleanup without runtime cursor");
+            let mut legacy = serde_json::to_value(&session).unwrap();
+            legacy["terminal_cleanup"]["state"] = serde_json::Value::String("requested".into());
+            session = serde_json::from_value(legacy)
+                .expect("aggregate codec reads legacy Requested cleanup without runtime cursor");
         }
         create(repository.as_ref(), session).await;
     }
@@ -1003,15 +1003,17 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
         .expect("legacy delete starts from a valid terminal aggregate");
     session.disposition = awaken_session_contract::SessionDisposition::Deleting;
-    session.terminal_cleanup = serde_json::from_value(serde_json::json!({
+    let mut legacy = serde_json::to_value(&session).unwrap();
+    legacy["terminal_cleanup"] = serde_json::json!({
         "state": "completed",
         "effect_id": "legacy-delete-cleanup",
         "thread_ids": ["deleting-batch"],
         "delegation_watermark": 0,
         "runtime_commit_cursor": 31,
         "receipt_fingerprint": "legacy-delete-receipt"
-    }))
-    .expect("legacy completed terminal cleanup");
+    });
+    session = serde_json::from_value(legacy)
+        .expect("aggregate codec reads legacy completed terminal cleanup");
     create(repository.as_ref(), session).await;
     let runtime = Arc::new(EventBatchRuntime::default());
     let app = application_with_runtime(
@@ -1020,7 +1022,10 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    let first = app.reconcile_resource_activations().await;
+    // Each D1-D3 reconciliation owns a large generated future. Pin the three
+    // decision rules independently so the test driver does not retain one
+    // reconciler frame while SQLite decodes the next root snapshot.
+    let first = Box::pin(app.reconcile_resource_activations()).await;
     assert!(first.failures.is_empty(), "D1/E1");
     assert!(
         !repository
@@ -1033,7 +1038,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         "D1/E1 provenance survives the resource-first pass"
     );
 
-    let events = app.reconcile_event_batches().await;
+    let events = Box::pin(app.reconcile_event_batches()).await;
     assert!(events.failures.is_empty(), "D2/E2: {:?}", events.failures);
     let resolved = repository.get("deleting-batch").await.unwrap();
     assert!(resolved.event_batches[0].events[0].processed, "D2/E2");
@@ -1045,7 +1050,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         "D2/E2"
     );
 
-    let second = app.reconcile_resource_activations().await;
+    let second = Box::pin(app.reconcile_resource_activations()).await;
     assert!(second.failures.is_empty(), "D3/E3");
     assert!(matches!(
         repository.get("deleting-batch").await,

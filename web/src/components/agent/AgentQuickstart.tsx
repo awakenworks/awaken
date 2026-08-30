@@ -2,11 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   type AgentConfig,
+  type AgentToolsetMemberCap,
   type Environment,
   type Page,
   type RuntimeCap,
 } from "../../lib/api/types";
 import { api, BUILTIN_LOCAL_ENVIRONMENT_ID, ws } from "../../lib/api/client";
+import { selectedAgentToolIds, withSelectedAgentTools } from "../../lib/agent-toolsets";
 import { useApp } from "../../lib/app-state";
 import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
 import { Button, Card, Pill, TextAreaField, TextField } from "../ui";
@@ -90,6 +92,7 @@ export default function AgentQuickstart({
   allModels,
   runtimes,
   availableTools,
+  agentToolsetMembers,
   availablePlugins,
   canRun,
   idEditable,
@@ -104,6 +107,7 @@ export default function AgentQuickstart({
   allModels: string[];
   runtimes: RuntimeCap[];
   availableTools: string[];
+  agentToolsetMembers: AgentToolsetMemberCap[];
   availablePlugins: string[];
   canRun: boolean;
   idEditable: boolean;
@@ -128,6 +132,7 @@ export default function AgentQuickstart({
   const applyTemplate = (template: StarterTemplate) => {
     setSelectedTemplate(template.id);
     const tools = template.suggestedTools.filter((id) => availableTools.includes(id));
+    const selectedTools = selectedAgentToolIds(config.tools, agentToolsetMembers);
     const plugins = (template.suggestedPlugins ?? []).filter((id) => availablePlugins.includes(id));
     onPatch({
       id: starterAgentId(config.id, template.id),
@@ -135,13 +140,11 @@ export default function AgentQuickstart({
       description: app.t(template.description, template.descriptionZh),
       system: template.system,
       max_steps: template.maxSteps,
-      tools: [
-        ...config.tools.filter((tool) => typeof tool !== "string"),
-        ...Array.from(new Set([
-          ...config.tools.filter((tool): tool is string => typeof tool === "string"),
-          ...tools,
-        ])),
-      ],
+      tools: withSelectedAgentTools(
+        config.tools,
+        Array.from(new Set([...selectedTools, ...tools])),
+        agentToolsetMembers,
+      ),
       plugins: Array.from(new Set([...config.plugins, ...plugins])),
     });
     setTask(app.t(template.firstTask, template.firstTaskZh));

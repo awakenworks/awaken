@@ -5,7 +5,7 @@
 // ARCHIVE disposes + tombstones it (status `terminated`, idempotent re-archive).
 //
 // The dir-reaping itself is asserted by the Rust unit/integration tests
-// (host::tests::end_session_disposes_the_threads_sandbox and the managed state
+// (host::tests::exact_terminal_cleanup_disposes_the_threads_sandbox and the managed state
 // delete/archive tests); this e2e proves the SAME edges drive cleanly through the
 // real server binary over the wire — a first turn provisions the sandbox, the
 // terminal edge tears it down, and the server stays healthy across many cycles

@@ -23,7 +23,10 @@ use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_container::docker::DockerRuntime;
-use awaken_sandbox_container::{ContainerProvider, ContainerRuntime, ForwardProxy, command_of};
+use awaken_sandbox_container::{
+    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerProvider,
+    ContainerRuntime, ForwardProxy, command_of,
+};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
 
@@ -676,25 +679,38 @@ fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
     }
 }
 
-/// G2 / ADR-0056 SPOF elimination on a shared substrate, verified against a REAL
-/// daemon: a container OUTLIVES the provider (worker) that created it, so a PEER
-/// provider over the SAME daemon re-ADOPTS the same running container from its durable
-/// handle — no dispose, no re-create, so in-flight sandbox state survives a worker
-/// crash. The handle round-trips through JSON first (the opaque `Claimed.sandbox`
-/// form). A handle whose container is gone fails closed (adopt refuses a dead sandbox).
+/// Docker host-bind participants exist only in the creating Worker process. A
+/// durable handle can still prove which physical container remains, but a peer
+/// cannot claim that its staging/Memory cleanup participants were reconstructed.
+/// This real-daemon case therefore locks the fail-closed recovery boundary and
+/// proves that rejection neither replaces nor deletes the live physical object.
 #[tokio::test]
-async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
+async fn a_peer_provider_rejects_an_unreconstructible_live_container_without_replacing_it() {
+    /* Host-bind recovery cause/effect table. Causes: C1 a current V2 Docker
+     * handle names an exact live/absent container; C2 its creating Worker has
+     * exited, so process-local participants are unavailable; C3 a peer has the
+     * frozen SandboxSpec. R1 live+C2+C3=>reject as incompatible and leave the
+     * exact container Running; R2 absent+C2+C3=>reject as unavailable. No rule
+     * creates, replaces, or adopts an unproven host-bind participant set. */
     let Some((provider_a, rt)) = setup().await else {
         return;
     };
-    let _ = rt.remove("awaken-adopt-me").await;
+    let scope = format!(
+        "adopt-me-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock follows the Unix epoch")
+            .as_nanos()
+    );
 
     // Worker A creates a long-lived container and persists its handle as the opaque
     // durable string, then "crashes": the sandbox is dropped WITHOUT dispose, so the
     // container keeps running on the shared substrate.
+    let sandbox_spec = sleeper_spec(&scope);
     let handle: pc::SandboxHandle = {
         let sandbox = provider_a
-            .create(&sleeper_spec("adopt-me"))
+            .create(&sandbox_spec)
             .await
             .expect("worker A creates a real container");
         let wire = serde_json::to_string(&sandbox.handle()).expect("handle serializes");
@@ -702,44 +718,41 @@ async fn a_peer_provider_re_adopts_a_live_container_from_its_durable_handle() {
         // `sandbox` dropped here — worker A crashes; the container is NOT disposed.
     };
 
-    // Worker B: a fresh provider over the SAME daemon re-adopts the SAME container.
-    // adopt's internal `inspect` succeeding is itself the proof the container survived.
-    let (provider_b, _rt_b) = setup().await.expect("peer provider");
-    let adopted = provider_b
-        .adopt(&handle)
-        .await
-        .expect("a peer re-adopts the crashed worker's still-live container");
-    assert_eq!(
-        adopted.id(),
-        handle.sandbox_id,
-        "the adopted sandbox is the SAME one (same id), not a fresh create"
-    );
-    // The environment is still ready and accepts a new exec — state survived the
-    // crash independently of any one attempt process.
-    assert_eq!(
-        adopted.status().await.expect("environment status"),
-        pc::SandboxStatus::Ready
-    );
-    adopted
-        .renew_lease()
-        .await
-        .expect("replacement proves the adopted environment remains live");
-    let proc = adopted
-        .spawn(pc::Command::new(["true"]))
-        .await
-        .expect("exec after adoption");
-    assert_eq!(proc.wait().await.expect("wait").code, Some(0));
+    let container_id = handle
+        .container_payload()
+        .expect("current container handle")
+        .container_id
+        .clone();
 
-    // Authoritative teardown disposes it; a later adopt fails closed.
-    adopted
-        .dispose()
+    // Worker B has the frozen spec and exact handle, but not Worker A's
+    // process-local participant set. It must not turn locator validity into
+    // successful adoption.
+    let (provider_b, _rt_b) = setup().await.expect("peer provider");
+    let error = match provider_b
+        .adopt_environment(ContainerEnvironmentAdoption::new(&sandbox_spec, &handle))
         .await
-        .expect("dispose removes the adopted container");
-    for _ in 0..30 {
-        if provider_b.adopt(&handle).await.is_err() {
-            return; // gone -> adopt fails closed, as required
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("adopting a disposed/gone container must fail closed, but it kept succeeding");
+    {
+        Ok(_) => panic!("R1 peer must not adopt unreconstructible host-bind state"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("prior process-local"),
+        "R1: {error}"
+    );
+    assert_eq!(
+        rt.inspect(&container_id).await.expect("exact live object"),
+        awaken_sandbox_container::ContainerState::Running,
+        "R1 rejection preserves the live container"
+    );
+
+    rt.remove(&container_id)
+        .await
+        .expect("test cleanup removes the exact container");
+    assert!(
+        provider_b
+            .adopt_environment(ContainerEnvironmentAdoption::new(&sandbox_spec, &handle))
+            .await
+            .is_err(),
+        "R2"
+    );
 }

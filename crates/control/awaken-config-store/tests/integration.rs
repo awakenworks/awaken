@@ -73,6 +73,12 @@ fn tool_catalog() -> Vec<ToolDescriptor> {
 
 #[tokio::test]
 async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_safely() {
+    // Begin/final decision table:
+    // | rule | durable audit begin | final audited transaction | effect |
+    // | A0   | absent              | attempted                 | fail closed; zero config/effect/audit |
+    // | A1   | exact pending       | attempted                 | config/effect/committed atomically |
+    // | A2   | exact committed     | replay                    | Replayed; no second write |
+    // `record_management_audit_scoped` is the sole concurrent begin owner.
     let store = SqliteConfigStore::open_in_memory().expect("store");
     let scope = ScopeId::from("ws");
     let audit = ManagementAuditRecord {
@@ -88,9 +94,38 @@ async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_
             revision: 1,
         },
     };
+    let absent_error = store
+        .put_config_with_audit_effect_scoped(&scope, &agent_config(), 0, &audit, Some(&effect))
+        .await
+        .expect_err("A0");
+    assert!(absent_error.to_string().contains("pre-recorded"), "A0");
+    assert!(
+        store
+            .get_management_audit_scoped(&scope, &audit.tool, &audit.call_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "A0"
+    );
+    assert!(
+        store
+            .get_config_scoped(&scope, "support-agent")
+            .await
+            .unwrap()
+            .is_none(),
+        "A0"
+    );
     assert_eq!(
         store
-            .put_config_with_audit_effect_scoped(&scope, &agent_config(), &audit, Some(&effect))
+            .record_management_audit_scoped(&scope, &audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "A1 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_effect_scoped(&scope, &agent_config(), 0, &audit, Some(&effect),)
             .await
             .unwrap(),
         AuditedConfigWrite::Applied
@@ -104,7 +139,7 @@ async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_
     );
     assert_eq!(
         store
-            .put_config_with_audit_effect_scoped(&scope, &agent_config(), &audit, Some(&effect))
+            .put_config_with_audit_effect_scoped(&scope, &agent_config(), 0, &audit, Some(&effect),)
             .await
             .unwrap(),
         AuditedConfigWrite::Replayed
@@ -120,6 +155,233 @@ async fn audited_config_and_external_effect_are_journaled_atomically_and_replay_
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn mutable_writes_and_archive_are_ordered_by_one_generation_fence() {
+    // Cause/effect graph: C1 an audited call commits before response loss; C2 the
+    // Agent is archived before that exact call retries; C3 archive commits after
+    // an ordinary/audited/effect writer captured the prior generation; C4 an
+    // audited writer commits first. Effects: E1 exact call-id replay wins before
+    // mutable lifecycle admission; E2 every late first-apply writer conflicts and
+    // writes no config/effect/business commit while its pre-recorded audit remains
+    // pending; E3 a later archive retries at the new revision
+    // and terminates the Agent.
+    //
+    // Decision table:
+    // | rule | ordering | writer | audit state | result |
+    // | G1 | audited commit -> archive -> retry | audited | committed | Replayed, archived |
+    // | G2 | capture r1 -> archive r2 -> apply | ordinary | none | Conflict(r2) |
+    // | G3 | capture r1 -> archive r2 -> apply | audited | pending | Conflict; audit pending, no config |
+    // | G4 | capture r1 -> archive r2 -> apply | audit+effect | pending | Conflict; audit pending, no config/effect |
+    // | G5 | audited r2 -> stale archive r1 -> retry r2 | both | committed | archive r3 |
+    let store = SqliteConfigStore::open_in_memory().expect("store");
+
+    let replay_scope = ScopeId::from("audit-replay-order");
+    let original = agent_config();
+    store
+        .put_config_scoped(&replay_scope, &original)
+        .await
+        .unwrap();
+    let replay_audit = ManagementAuditRecord {
+        tool: "admin_patch_agent".into(),
+        call_id: "response-lost".into(),
+        summary: "patch before archive".into(),
+    };
+    let mut first_patch = original.clone();
+    first_patch.instructions = "audited revision".into();
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&replay_scope, &replay_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G1 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&replay_scope, &first_patch, 1, &replay_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G1 initial commit"
+    );
+    let mut archived = first_patch.clone();
+    archived.archived_at = Some("2026-08-30T00:00:00Z".into());
+    assert!(matches!(
+        store
+            .put_config_if_revision_scoped(&replay_scope, &archived, 2)
+            .await
+            .unwrap(),
+        ConfigWrite::Applied { revision: 3 }
+    ));
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&replay_scope, &first_patch, 3, &replay_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Replayed,
+        "G1/E1 replay precedes archived lifecycle admission"
+    );
+    assert!(
+        store
+            .get_config_revision_scoped(&replay_scope, &original.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .config
+            .archived_at
+            .is_some(),
+        "G1/E1"
+    );
+
+    let conflict_scope = ScopeId::from("archive-wins");
+    store
+        .put_config_scoped(&conflict_scope, &original)
+        .await
+        .unwrap();
+    let mut late_patch = original.clone();
+    late_patch.instructions = "must not revive".into();
+    let mut archive_winner = original.clone();
+    archive_winner.archived_at = Some("2026-08-30T00:00:00Z".into());
+    assert!(matches!(
+        store
+            .put_config_if_revision_scoped(&conflict_scope, &archive_winner, 1)
+            .await
+            .unwrap(),
+        ConfigWrite::Applied { revision: 2 }
+    ));
+    assert_eq!(
+        store
+            .put_config_if_revision_scoped(&conflict_scope, &late_patch, 1)
+            .await
+            .unwrap(),
+        ConfigWrite::Conflict {
+            current_revision: Some(2)
+        },
+        "G2/E2"
+    );
+    let late_audit = ManagementAuditRecord {
+        tool: "admin_patch_agent".into(),
+        call_id: "late-audit".into(),
+        summary: "must conflict".into(),
+    };
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&conflict_scope, &late_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G3 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&conflict_scope, &late_patch, 1, &late_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Conflict {
+            current_revision: Some(2)
+        },
+        "G3/E2"
+    );
+    assert!(
+        store
+            .get_management_audit_scoped(&conflict_scope, &late_audit.tool, &late_audit.call_id,)
+            .await
+            .unwrap()
+            .is_some_and(|entry| !entry.business_committed),
+        "G3/E2 pending audit intent is not a business commit"
+    );
+    let effect_audit = ManagementAuditRecord {
+        call_id: "late-effect".into(),
+        ..late_audit
+    };
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&conflict_scope, &effect_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G4 begin"
+    );
+    let late_effect = ManagementEffect::UpsertAgentInputs {
+        config: awaken_agent_config::AgentInputConfig {
+            agent_id: original.id.clone(),
+            environment: None,
+            inputs: Vec::new(),
+            revision: 1,
+        },
+    };
+    assert_eq!(
+        store
+            .put_config_with_audit_effect_scoped(
+                &conflict_scope,
+                &late_patch,
+                1,
+                &effect_audit,
+                Some(&late_effect),
+            )
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Conflict {
+            current_revision: Some(2)
+        },
+        "G4/E2"
+    );
+    assert!(
+        store
+            .pending_management_effects_scoped(&conflict_scope)
+            .await
+            .unwrap()
+            .is_empty(),
+        "G4/E2"
+    );
+
+    let authoring_scope = ScopeId::from("authoring-wins");
+    store
+        .put_config_scoped(&authoring_scope, &original)
+        .await
+        .unwrap();
+    let winner_audit = ManagementAuditRecord {
+        tool: "admin_patch_agent".into(),
+        call_id: "authoring-first".into(),
+        summary: "authoring wins generation two".into(),
+    };
+    assert_eq!(
+        store
+            .record_management_audit_scoped(&authoring_scope, &winner_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G5 begin"
+    );
+    assert_eq!(
+        store
+            .put_config_with_audit_scoped(&authoring_scope, &first_patch, 1, &winner_audit)
+            .await
+            .unwrap(),
+        AuditedConfigWrite::Applied,
+        "G5"
+    );
+    assert_eq!(
+        store
+            .put_config_if_revision_scoped(&authoring_scope, &archive_winner, 1)
+            .await
+            .unwrap(),
+        ConfigWrite::Conflict {
+            current_revision: Some(2)
+        },
+        "G5 stale archive"
+    );
+    let mut terminal = first_patch;
+    terminal.archived_at = Some("2026-08-30T00:00:01Z".into());
+    assert!(matches!(
+        store
+            .put_config_if_revision_scoped(&authoring_scope, &terminal, 2)
+            .await
+            .unwrap(),
+        ConfigWrite::Applied { revision: 3 }
+    ));
 }
 
 #[tokio::test]

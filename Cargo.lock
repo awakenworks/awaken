@@ -281,6 +281,7 @@ dependencies = [
  "awaken-agent-config",
  "awaken-environment-contract",
  "awaken-runtime-contract",
+ "awaken-session-contract",
  "serde",
  "serde_json",
  "tokio",
@@ -299,6 +300,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-model-catalog",
+ "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -535,6 +537,7 @@ dependencies = [
  "awaken-config-store",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
+ "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-session-contract",
@@ -619,7 +622,6 @@ dependencies = [
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
- "awaken-ext-permission",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-host",
@@ -630,6 +632,7 @@ dependencies = [
  "awaken-protocol-a2a",
  "awaken-protocol-managed",
  "awaken-provider-genai",
+ "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
@@ -1711,6 +1714,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-resource-contract",
  "awaken-sandbox-control",
  "serde",
  "serde_json",
@@ -1804,6 +1808,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-file-store",
  "awaken-memory-store",
+ "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
@@ -2065,6 +2070,7 @@ dependencies = [
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-container",
+ "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
  "awaken-session-contract",
@@ -2102,10 +2108,12 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-control",
+ "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-tool-relay",
  "futures",
  "serde_json",
+ "tar",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2155,6 +2163,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-sandbox-fs"
+version = "1.0.0-dev"
+dependencies = [
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "awaken-sandbox-local"
 version = "1.0.0"
 dependencies = [
@@ -2168,9 +2183,11 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-control",
+ "awaken-sandbox-fs",
  "awaken-sandbox-memoryd",
  "awaken-session-contract",
  "blake3",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "tar",
@@ -2334,6 +2351,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-contract",
  "awaken-session-store",
+ "awaken-worker-contract",
  "serde",
  "serde_json",
  "tempfile",

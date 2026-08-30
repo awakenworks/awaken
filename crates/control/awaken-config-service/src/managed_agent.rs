@@ -234,7 +234,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             .and_then(|value| serde_json::from_value(value.clone()).ok()),
     };
     config.validate_managed_tool_bindings()?;
-    Ok(config)
+    config.canonicalize_mutable_authoring()
 }
 
 fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, String> {
@@ -685,6 +685,51 @@ mod tests {
         .expect("typed toolset parses");
         assert_eq!(config.toolsets.len(), 1);
         assert_eq!(managed_from_agent_config(&config, false)["tools"], tools);
+    }
+
+    #[test]
+    fn managed_authoring_accepts_typed_tools_and_rejects_legacy_permission() {
+        // Cause/effect graph: C1 the Managed request contains the existing typed
+        // Agent toolset wire; C2 it contains retired plugin_config.permission.
+        // E1 C1 reaches the shared mutable AgentConfig authority unchanged; E2 C2
+        // returns migration_required before a writable AgentConfig is produced.
+        // Decision rows: M1=typed/no legacy -> accepted; M2=legacy -> rejected.
+        let typed = agent_config_from_managed(
+            "controlled".into(),
+            &json!({
+                "tools": [{
+                    "type": "agent_toolset_20260401",
+                    "default_config": {
+                        "enabled": false,
+                        "permission_policy": { "type": "always_allow" }
+                    },
+                    "configs": [{
+                        "name": "write",
+                        "enabled": true,
+                        "permission_policy": { "type": "always_ask" }
+                    }]
+                }]
+            }),
+        )
+        .expect("M1/E1");
+        assert_eq!(typed.toolsets.len(), 1, "M1/E1");
+
+        let error = agent_config_from_managed(
+            "legacy".into(),
+            &json!({
+                "plugin_config": {
+                    "permission": {
+                        "default_behavior": "ask",
+                        "rules": []
+                    }
+                }
+            }),
+        )
+        .expect_err("M2/E2");
+        assert!(
+            error.contains("permission migration_required"),
+            "M2/E2: {error}"
+        );
     }
 
     #[test]

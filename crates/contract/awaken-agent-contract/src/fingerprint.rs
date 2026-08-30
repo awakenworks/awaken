@@ -1,5 +1,80 @@
 //! Deterministic, secret-free equality fingerprints shared by contract values.
 
+use sha2::{Digest, Sha256};
+
+/// Failure to serialize a contract value for canonical JSON hashing.
+#[derive(Debug, thiserror::Error)]
+pub enum CanonicalJsonHashError {
+    #[error("serialize value for canonical JSON hashing: {0}")]
+    Serialize(String),
+}
+
+/// SHA-256 of one domain-separated, canonical JSON value.
+///
+/// Object keys are sorted recursively, so adapter insertion order cannot alter
+/// one logical request identity. The owner/version domain is length framed with
+/// the canonical payload; callers must use a stable domain for each protocol.
+pub fn canonical_json_sha256(
+    domain: &str,
+    value: &impl serde::Serialize,
+) -> Result<String, CanonicalJsonHashError> {
+    let value = serde_json::to_value(value)
+        .map_err(|error| CanonicalJsonHashError::Serialize(error.to_string()))?;
+    let mut canonical = String::new();
+    write_canonical_json(&value, &mut canonical);
+    let mut hasher = Sha256::new();
+    hasher.update((domain.len() as u64).to_le_bytes());
+    hasher.update(domain.as_bytes());
+    hasher.update((canonical.len() as u64).to_le_bytes());
+    hasher.update(canonical.as_bytes());
+    let digest = hasher.finalize();
+    Ok(format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+}
+
+fn write_canonical_json(value: &serde_json::Value, output: &mut String) {
+    match value {
+        serde_json::Value::Null => output.push_str("null"),
+        serde_json::Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        serde_json::Value::Number(value) => output.push_str(&value.to_string()),
+        serde_json::Value::String(value) => {
+            output
+                .push_str(&serde_json::to_string(value).expect("a JSON string always serializes"));
+        }
+        serde_json::Value::Array(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_canonical_json(value, output);
+            }
+            output.push(']');
+        }
+        serde_json::Value::Object(values) => {
+            output.push('{');
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                output.push_str(
+                    &serde_json::to_string(key).expect("a JSON object key always serializes"),
+                );
+                output.push(':');
+                write_canonical_json(&values[key], output);
+            }
+            output.push('}');
+        }
+    }
+}
+
 /// Serialize one value deterministically and compute FNV-1a. This is an
 /// equality/corruption fingerprint, not an authorization, secrecy, or MAC
 /// primitive; trust decisions must still validate their owning policy facts.
@@ -101,5 +176,35 @@ mod tests {
                 "R4: {malformed}"
             );
         }
+    }
+
+    #[test]
+    fn canonical_sha256_binds_domain_and_semantics_not_object_order() {
+        // Causes: C1 JSON object key insertion order differs; C2 one semantic
+        // value differs; C3 the version/owner domain differs. Effects: E1 C1
+        // retains one retry identity; E2 C2 and C3 produce distinct identities.
+        // Decision rules: H1=C1=>E1, H2=C2=>E2, H3=C3=>E2. This is the one
+        // canonical SHA-256 owner for commits and audited management requests.
+        let left: serde_json::Value = serde_json::from_str(r#"{"b":2,"a":1}"#).unwrap();
+        let reordered: serde_json::Value = serde_json::from_str(r#"{"a":1,"b":2}"#).unwrap();
+        let changed = serde_json::json!({"a": 3, "b": 2});
+
+        let hash = super::canonical_json_sha256("owner.v1", &left).unwrap();
+        assert_eq!(
+            hash,
+            super::canonical_json_sha256("owner.v1", &reordered).unwrap(),
+            "H1/E1"
+        );
+        assert_ne!(
+            hash,
+            super::canonical_json_sha256("owner.v1", &changed).unwrap(),
+            "H2/E2"
+        );
+        assert_ne!(
+            hash,
+            super::canonical_json_sha256("owner.v2", &left).unwrap(),
+            "H3/E2"
+        );
+        assert!(hash.starts_with("sha256:"));
     }
 }

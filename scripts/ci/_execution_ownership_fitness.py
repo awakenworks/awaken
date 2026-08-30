@@ -7,6 +7,10 @@ from pathlib import Path
 
 
 RETIRED_EXECUTION_PATHS = {
+    "AgentContainerProvider": "ContainerEnvironmentProvider is the only Container Environment owner",
+    "AgentContainerSession": "ContainerEnvironment plus RuntimeAgentProcess is the sole Session execution shape",
+    "EnvironmentOwnedProcess": "process termination cannot authorize Environment disposal",
+    "open_agent": "create_environment plus spawn_agent_process is the sole Container launch path",
     "ToolExecutorProvider": "SessionEnvironment is the only Hand owner",
     "ToolExecutorSelectionError": "Hand selection no longer occurs per Run",
     "ConfigToolExecutorProvider": "Agent config cannot place a parallel Hand",
@@ -43,6 +47,7 @@ RETIRED_DEPLOYMENT_SELECTORS = {
     "AWAKEN_REMOTE_HAND_NATS": "the Worker-owned SessionEnvironment is the only Hand owner",
 }
 EXECUTABLE_FIXTURE_ROOTS = ("deploy", "e2e", "scripts")
+THIS_CHECKER = Path(__file__).resolve()
 
 ROUTE_OWNER_FILES = (
     "crates/control/awaken-admin-config-api/src/router.rs",
@@ -210,6 +215,12 @@ def retired_deployment_selector_violations(sources: dict[str, str]) -> list[str]
     return errors
 
 
+def _is_this_checker(path: Path) -> bool:
+    """Match this source independently of relative/absolute path spelling."""
+
+    return path.resolve() == THIS_CHECKER
+
+
 def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
     errors: list[str] = []
     host_error_projection = _production(sources.get(RUNTIME_HOST_ERROR_OWNER, ""))
@@ -249,7 +260,7 @@ def check_all(repo_root: Path) -> list[str]:
     for relative_root in EXECUTABLE_FIXTURE_ROOTS:
         root = repo_root / relative_root
         for path in sorted(candidate for candidate in root.glob("**/*") if candidate.is_file()):
-            if path == Path(__file__) or "node_modules" in path.parts:
+            if _is_this_checker(path) or "node_modules" in path.parts:
                 continue
             try:
                 fixture_sources[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
@@ -325,6 +336,14 @@ def selftest() -> None:
     assert retired_deployment_selector_violations(
         {"deploy/stale.yaml": "AWAKEN_REMOTE_HAND=hand:9000"}
     ), "D2"
+
+    # Checker self-exclusion table: C1 the same checker arrives through either
+    # a relative or absolute spelling; C2 a peer fixture is scanned. Effects:
+    # S1 C1 is excluded exactly, preventing the retired-token catalog from
+    # flagging itself; S2 C2 remains eligible for the fixture gate.
+    assert _is_this_checker(Path(__file__)), "S1 absolute checker source"
+    assert _is_this_checker(Path(__file__).resolve()), "S1 resolved checker source"
+    assert not _is_this_checker(Path(__file__).with_name("peer.py")), "S2 peer fixture"
 
     # Runtime boundary decision table: B1 Session application owns the admitted
     # Run command and sole public adapter while Host maps typed codes -> accept;

@@ -96,6 +96,52 @@ impl awaken_runtime_contract::ToolExecutionAdmission for SharedToolExecutionAdmi
     }
 }
 
+/// Releases one admission from the existing generation-scoped activity map on
+/// every task exit path, including panic unwind and Tokio cancellation/drop.
+struct SharedEnvironmentActivityGuard {
+    activity: Arc<BackgroundActivity>,
+    key: (String, String),
+}
+
+impl SharedEnvironmentActivityGuard {
+    fn acquire(activity: Arc<BackgroundActivity>, class: &BackgroundWorkClass) -> Option<Self> {
+        let BackgroundWorkClass::SharedEnvironment {
+            session_id,
+            generation_id,
+        } = class
+        else {
+            return None;
+        };
+        let key = (session_id.clone(), generation_id.clone());
+        *activity
+            .shared
+            .lock()
+            .expect("background activity mutex poisoned")
+            .entry(key.clone())
+            .or_default() += 1;
+        Some(Self { activity, key })
+    }
+}
+
+impl Drop for SharedEnvironmentActivityGuard {
+    fn drop(&mut self) {
+        let mut shared = self
+            .activity
+            .shared
+            .lock()
+            .expect("background activity mutex poisoned");
+        let remove = shared.get_mut(&self.key).is_some_and(|count| {
+            *count -= 1;
+            *count == 0
+        });
+        if remove {
+            shared.remove(&self.key);
+        }
+        drop(shared);
+        self.activity.changed.notify_waiters();
+    }
+}
+
 /// Every detached task must state whether it can mutate one Session
 /// Environment. This replaces inference from Tokio task identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,41 +206,11 @@ impl BackgroundRuns {
             "aux.background",
             otel.kind = "internal"
         );
-        let activity = self.activity.clone();
-        if let BackgroundWorkClass::SharedEnvironment {
-            session_id,
-            generation_id,
-        } = &class
-        {
-            *activity
-                .shared
-                .lock()
-                .expect("background activity mutex poisoned")
-                .entry((session_id.clone(), generation_id.clone()))
-                .or_default() += 1;
-        }
+        let activity_guard = SharedEnvironmentActivityGuard::acquire(self.activity.clone(), &class);
         self.tasks.lock().await.spawn(
             async move {
+                let _activity_guard = activity_guard;
                 fut.await;
-                if let BackgroundWorkClass::SharedEnvironment {
-                    session_id,
-                    generation_id,
-                } = class
-                {
-                    let mut shared = activity
-                        .shared
-                        .lock()
-                        .expect("background activity mutex poisoned");
-                    let key = (session_id, generation_id);
-                    if let Some(count) = shared.get_mut(&key) {
-                        *count -= 1;
-                        if *count == 0 {
-                            shared.remove(&key);
-                        }
-                    }
-                    drop(shared);
-                    activity.changed.notify_waiters();
-                }
             }
             .instrument(span),
         );
@@ -209,6 +225,21 @@ impl BackgroundRuns {
             .contains_key(&(session_id.to_string(), generation_id.to_string()))
     }
 
+    fn shared_environment_waiter_with_probe<'a>(
+        &'a self,
+        session_id: &str,
+        generation_id: &str,
+        after_check: impl FnOnce(),
+    ) -> Option<tokio::sync::futures::Notified<'a>> {
+        // `notify_waiters` does not retain a permit for a future listener. A
+        // Notified created first records its generation immediately, so a task
+        // dropping after the count check cannot wake before registration.
+        let changed = self.activity.changed.notified();
+        let active = self.has_shared_environment_work(session_id, generation_id);
+        after_check();
+        active.then_some(changed)
+    }
+
     /// Wait only for work that can mutate this exact environment generation.
     /// External durable work and caches never retain Session compute.
     pub async fn quiesce_shared_environment(
@@ -218,8 +249,10 @@ impl BackgroundRuns {
         timeout: Duration,
     ) -> bool {
         tokio::time::timeout(timeout, async {
-            while self.has_shared_environment_work(session_id, generation_id) {
-                self.activity.changed.notified().await;
+            while let Some(changed) =
+                self.shared_environment_waiter_with_probe(session_id, generation_id, || {})
+            {
+                changed.await;
             }
         })
         .await
@@ -290,9 +323,11 @@ mod tests {
         );
     }
 
-    // Cause/effect design: C2=shared task active then complete; external durable
-    // and cache tasks coexist. R4 retains the environment only for the matching
-    // session+generation and then permits E2 when that exact count reaches zero.
+    // Cause/effect decision table: C1=SharedEnvironment task exit is normal;
+    // C2=query is exact or another generation; C3=external/cache work coexists.
+    // R1 exact+active -> E1 quiescence blocks; R2 other generation -> E2 it is
+    // immediately quiescent; R3 exact+normal completion -> E3 the activity
+    // count is released; R4 external/cache -> E4 no environment count changes.
     #[tokio::test]
     async fn shared_environment_quiescence_is_generation_scoped() {
         let bg = BackgroundRuns::new();
@@ -359,5 +394,165 @@ mod tests {
             .expect("R2 wake")
             .expect("R2 join");
         drop(resumed);
+    }
+
+    #[tokio::test]
+    async fn panicking_shared_environment_work_releases_exact_generation() {
+        // Cause/effect decision table: C1=SharedEnvironment task panics after
+        // admission; C2=query is exact or another generation. R1 exact+active
+        // -> E1 quiescence blocks; R2 other generation -> E2 remains quiescent;
+        // R3 panic unwinds the task -> E3 exact activity is released and drain
+        // still treats the best-effort task as finished.
+        let bg = BackgroundRuns::new();
+        let (panic_now, admitted) = tokio::sync::oneshot::channel::<()>();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "panic-session".into(),
+                generation_id: "panic-generation".into(),
+            },
+            async move {
+                let _ = admitted.await;
+                panic!("shared background panic");
+            },
+        )
+        .await;
+
+        assert!(
+            !bg.quiesce_shared_environment(
+                "panic-session",
+                "panic-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R1/E1 exact generation remains active"
+        );
+        assert!(
+            bg.quiesce_shared_environment(
+                "panic-session",
+                "other-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R2/E2 another generation is independent"
+        );
+
+        panic_now.send(()).expect("release panicking task");
+        assert!(bg.drain(Duration::from_secs(1)).await, "R3 drain");
+        assert!(
+            bg.quiesce_shared_environment(
+                "panic-session",
+                "panic-generation",
+                Duration::from_secs(1),
+            )
+            .await,
+            "R3/E3 panic releases exact generation"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_shared_environment_work_releases_exact_generation() {
+        // Cause/effect decision table: C1=SharedEnvironment task is pending;
+        // C2=query is exact or another generation; C3=the owning JoinSet aborts
+        // the task. R1 exact+pending -> E1 quiescence blocks; R2 other generation
+        // -> E2 remains quiescent; R3 abort/drop -> E3 exact activity is released
+        // and the JoinSet remains drainable.
+        let bg = BackgroundRuns::new();
+        let (_keep_pending, pending) = tokio::sync::oneshot::channel::<()>();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "abort-session".into(),
+                generation_id: "abort-generation".into(),
+            },
+            async move {
+                let _ = pending.await;
+            },
+        )
+        .await;
+
+        assert!(
+            !bg.quiesce_shared_environment(
+                "abort-session",
+                "abort-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R1/E1 exact generation remains active"
+        );
+        assert!(
+            bg.quiesce_shared_environment(
+                "abort-session",
+                "other-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R2/E2 another generation is independent"
+        );
+
+        bg.tasks.lock().await.abort_all();
+        assert!(bg.drain(Duration::from_secs(1)).await, "R3 drain");
+        assert!(
+            bg.quiesce_shared_environment(
+                "abort-session",
+                "abort-generation",
+                Duration::from_secs(1),
+            )
+            .await,
+            "R3/E3 abort releases exact generation"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completion_between_activity_check_and_waiter_creation_is_not_lost() {
+        // Cause/effect decision table for one exact generation:
+        // R1 task completed before quiesce creates its waiter -> E1 the count is
+        // already absent and quiesce succeeds without waiting; R2 task remains
+        // active after the check -> E2 its waiter remains pending; R3 task drops
+        // in the former check-to-waiter-registration interval -> E3 the already
+        // registered waiter observes that release; R4 task remains active past
+        // the deadline -> E4 only that case times out. Existing normal/timeout
+        // cases cover R1/R2/R4; this probe deterministically forces R3.
+        let bg = BackgroundRuns::new();
+        let (complete, pending) = tokio::sync::oneshot::channel::<()>();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "race-session".into(),
+                generation_id: "race-generation".into(),
+            },
+            async move {
+                let _ = pending.await;
+            },
+        )
+        .await;
+
+        let waiter = bg
+            .shared_environment_waiter_with_probe("race-session", "race-generation", || {
+                complete.send(()).expect("release race task");
+                let deadline = std::time::Instant::now() + Duration::from_secs(1);
+                while bg.has_shared_environment_work("race-session", "race-generation") {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "R3 task must drop while the ordering probe is active"
+                    );
+                    std::thread::yield_now();
+                }
+            })
+            .expect("R3 task was active at the count check");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), waiter)
+                .await
+                .is_ok(),
+            "R3/E3 completion between the check and the former waiter creation must wake"
+        );
+        assert!(bg.drain(Duration::from_secs(1)).await, "R3 drain");
+        assert!(
+            bg.quiesce_shared_environment(
+                "race-session",
+                "race-generation",
+                Duration::from_millis(50),
+            )
+            .await,
+            "R1/E1 completed work remains quiescent"
+        );
     }
 }

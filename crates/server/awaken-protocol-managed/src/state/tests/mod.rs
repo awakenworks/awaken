@@ -5,6 +5,32 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::ToolPermissionDecision;
 use std::collections::{BTreeMap, BTreeSet};
 
+const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn run_composed_async_test<F, Fut>(case: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    // One test-only executor owns the larger stack required by deeply composed
+    // Managed recovery futures. The case remains an ordinary async function,
+    // so this changes neither its authority path nor its behavior oracle.
+    let test = std::thread::Builder::new()
+        .name("managed-state-composed-test".into())
+        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("composed Managed-state test runtime")
+                .block_on(case());
+        })
+        .expect("spawn composed Managed-state test thread");
+    if let Err(panic) = test.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
@@ -106,14 +132,31 @@ impl SessionRuntime for EndSessionRecorder {
         // reintroduced merely to make archive/delete tests executable.
         Ok(None)
     }
-    async fn execute_terminal_cleanup(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.ended.lock().unwrap().push(command.thread_id.clone());
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            Vec::new(),
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        self.ended
+            .lock()
+            .unwrap()
+            .push(effect.command.thread_id.clone());
+        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(crate::test_support::complete_terminal_cleanup_disposal(
+            &effect,
         ))
     }
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {

@@ -184,5 +184,16 @@ export function managedWireContract(moduleName) {
     },
     events: literalEventTypes(sdk.root, 'resources/beta/sessions/events.d.ts'),
     managed_betas: [...managedBetas].sort(),
+    resource_params: {
+      file: interfaceProperties(sessions, 'BetaManagedAgentsFileResourceParams'),
+      github_repository: interfaceProperties(
+        sessions,
+        'BetaManagedAgentsGitHubRepositoryResourceParams',
+      ),
+      memory_store: interfaceProperties(
+        sessions,
+        'BetaManagedAgentsMemoryStoreResourceParam',
+      ),
+    },
   };
 }

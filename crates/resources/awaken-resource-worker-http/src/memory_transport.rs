@@ -12,7 +12,10 @@ use awaken_resource_contract::{
     MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError, MemoryRepository,
     ResourceAccess,
 };
-use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
+use awaken_run_ingress_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
+use awaken_session_contract::{
+    SessionRealizationControl, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
+};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -25,18 +28,39 @@ use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
 };
 
+use crate::worker_authority::{
+    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+};
+
 const MEMORY_PATH: &str = "/v1/worker/resources/memory/operation";
 
-const MEMORY_REFERENCE_PREFIX: &str = "awaken-memory-v1:";
+const MEMORY_REFERENCE_V1_PREFIX: &str = "awaken-memory-v1:";
+const MEMORY_REFERENCE_V2_PREFIX: &str = "awaken-memory-v2:";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct MemoryMaterializationReference {
+struct RunMemoryMaterializationReferenceV1 {
     workspace_id: String,
     memory_store_id: String,
     config_version: ConfigVersion,
     access: ResourceAccess,
     claim: RunClaim,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TerminalMemoryMaterializationReferenceV2 {
+    binding_id: awaken_resource_contract::BindingId,
+    config_version: ConfigVersion,
+    access: ResourceAccess,
+    materialization: awaken_provisioning_contract::MemoryMaterializationEvidence,
+    fence: ResourceOperationFence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemoryMaterializationReference {
+    RunV1(RunMemoryMaterializationReferenceV1),
+    TerminalV2(Box<SessionTerminalMemoryIntent>),
 }
 
 /// Stateless encoder for the Resource Worker HTTP wire capability.
@@ -62,6 +86,29 @@ impl MemoryMaterializationReferenceEncoder<RunClaim> for HttpMemoryMaterializati
     }
 }
 
+impl MemoryMaterializationReferenceEncoder<SessionTerminalMemoryIntent>
+    for HttpMemoryMaterializationReferenceEncoder
+{
+    fn encode(
+        &self,
+        _workspace_id: &str,
+        memory_store_id: &str,
+        config_version: ConfigVersion,
+        access: ResourceAccess,
+        intent: &SessionTerminalMemoryIntent,
+    ) -> Result<String, MemoryMaterializationReferenceError> {
+        if memory_store_id != intent.memory_store_id()
+            || config_version != intent.config_version()
+            || access != intent.access()
+        {
+            return Err(MemoryMaterializationReferenceError::new(
+                "terminal Memory encoder inputs do not match the frozen intent",
+            ));
+        }
+        terminal_memory_materialization_reference(intent)
+    }
+}
+
 /// Encode the private HTTP transport capability. Application and run-ingress
 /// layers consume only the neutral encoder port, never this representation.
 pub fn memory_materialization_reference(
@@ -71,7 +118,7 @@ pub fn memory_materialization_reference(
     access: ResourceAccess,
     claim: &RunClaim,
 ) -> Result<String, MemoryMaterializationReferenceError> {
-    let encoded = serde_json::to_string(&MemoryMaterializationReference {
+    let encoded = serde_json::to_string(&RunMemoryMaterializationReferenceV1 {
         workspace_id: workspace_id.to_owned(),
         memory_store_id: memory_store_id.to_owned(),
         config_version,
@@ -79,21 +126,58 @@ pub fn memory_materialization_reference(
         claim: claim.clone(),
     })
     .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
-    Ok(format!("{MEMORY_REFERENCE_PREFIX}{encoded}"))
+    Ok(format!("{MEMORY_REFERENCE_V1_PREFIX}{encoded}"))
+}
+
+/// Encode a terminal-only v2 capability. Workspace is intentionally absent
+/// from this Worker-authored wire value; the Session root supplies it only
+/// after matching the intent to its current Environment binding.
+pub fn terminal_memory_materialization_reference(
+    intent: &SessionTerminalMemoryIntent,
+) -> Result<String, MemoryMaterializationReferenceError> {
+    let encoded = serde_json::to_string(&TerminalMemoryMaterializationReferenceV2 {
+        binding_id: intent.binding_id().clone(),
+        config_version: intent.config_version(),
+        access: intent.access(),
+        materialization: intent.materialization().clone(),
+        fence: ResourceOperationFence::Terminal(intent.effect().clone()),
+    })
+    .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+    Ok(format!("{MEMORY_REFERENCE_V2_PREFIX}{encoded}"))
 }
 
 fn parse_reference(
     reference: &str,
 ) -> Result<MemoryMaterializationReference, MemoryMaterializationReferenceError> {
+    if let Some(encoded) = reference.strip_prefix(MEMORY_REFERENCE_V1_PREFIX) {
+        return serde_json::from_str(encoded)
+            .map(MemoryMaterializationReference::RunV1)
+            .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()));
+    }
     let encoded = reference
-        .strip_prefix(MEMORY_REFERENCE_PREFIX)
+        .strip_prefix(MEMORY_REFERENCE_V2_PREFIX)
         .ok_or_else(|| {
             MemoryMaterializationReferenceError::new(
-                "operation requires an exact claim-bound reference",
+                "operation requires an exact Memory authority reference",
             )
         })?;
-    serde_json::from_str(encoded)
-        .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))
+    let decoded = serde_json::from_str::<TerminalMemoryMaterializationReferenceV2>(encoded)
+        .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+    let ResourceOperationFence::Terminal(effect) = decoded.fence else {
+        return Err(MemoryMaterializationReferenceError::new(
+            "Memory v2 references are terminal-only",
+        ));
+    };
+    SessionTerminalMemoryIntent::try_from_untrusted_parts(
+        decoded.binding_id,
+        decoded.config_version,
+        decoded.access,
+        decoded.materialization,
+        effect,
+    )
+    .map(Box::new)
+    .map(MemoryMaterializationReference::TerminalV2)
+    .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -243,6 +327,7 @@ pub struct WorkerMemoryService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
+    session_control: Option<Arc<dyn SessionRealizationControl>>,
 }
 
 impl WorkerMemoryService {
@@ -260,7 +345,17 @@ impl WorkerMemoryService {
             dispatch,
             authenticator,
             directory,
+            session_control: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_session_control(
+        mut self,
+        session_control: Arc<dyn SessionRealizationControl>,
+    ) -> Self {
+        self.session_control = Some(session_control);
+        self
     }
 }
 
@@ -275,16 +370,9 @@ pub fn worker_memory_router(service: Arc<WorkerMemoryService>) -> Router {
         .with_state(service)
 }
 
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
 fn manifest_allows(
     dispatch: &awaken_run_ingress_contract::RunDispatch,
-    reference: &MemoryMaterializationReference,
+    reference: &RunMemoryMaterializationReferenceV1,
     writes: bool,
 ) -> bool {
     let scope_matches = dispatch
@@ -313,6 +401,52 @@ fn manifest_allows(
     scope_matches && binding_matches
 }
 
+/// Terminal operation cause/effect table:
+///
+/// | Rule | requested mutation | durable A evidence | Effect |
+/// |---|---|---|---|
+/// | T1 | snapshot | any | allow conflict/readback observation |
+/// | T2 | create path | path absent from A | allow one create CAS |
+/// | T3 | update id/base | exactly one A id+sha, no rename | allow CAS update |
+/// | T4 | conditional delete | exact A path+id+sha | allow CAS delete |
+/// | T5 | any mutation | mismatched/ambiguous A | reject before repository I/O |
+fn terminal_operation_allowed(
+    target: &SessionTerminalMemoryTarget,
+    operation: &MemoryOperation,
+) -> bool {
+    let heads = &target.intent().materialization().heads;
+    match operation {
+        MemoryOperation::Snapshot => true,
+        MemoryOperation::Create { path, .. } => !heads.iter().any(|head| head.path == *path),
+        MemoryOperation::UpdateHead {
+            id,
+            base_sha,
+            target_path,
+            ..
+        } => {
+            target_path.is_none()
+                && heads
+                    .iter()
+                    .filter(|head| head.id == *id && head.content_sha256 == *base_sha)
+                    .count()
+                    == 1
+        }
+        MemoryOperation::DeleteIfMatch {
+            path,
+            base_id,
+            base_sha,
+        } => {
+            heads
+                .iter()
+                .filter(|head| {
+                    head.path == *path && head.id == *base_id && head.content_sha256 == *base_sha
+                })
+                .count()
+                == 1
+        }
+    }
+}
+
 async fn memory_operation(
     State(service): State<Arc<WorkerMemoryService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -321,31 +455,93 @@ async fn memory_operation(
     let Ok(reference) = parse_reference(&request.reference) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    if awaken_worker_transport_security::verify_claim_owner(
-        Some(service.directory.as_ref()),
-        &worker,
-        request.identity.as_ref(),
-        &reference.claim,
-        unix_now_ms(),
-    )
-    .await
-    .is_err()
-    {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let guard = match service.dispatch.lock_commit_epoch(&reference.claim).await {
-        Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) => guard,
-        Ok(_) => return StatusCode::CONFLICT.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    // R1 Run v1 holds the exact dispatch epoch through Memory I/O. R2 terminal
+    // v2 ignores any expired Run claim and lets an asserted terminal generation
+    // reach Control after its original expiry. Control must still prove a live
+    // current same-generation root before returning the exact target; Registry
+    // binding and A-base admission follow before repository I/O.
+    let now_unix_ms = unix_now_ms();
+    let mut run_guard = None;
+    let (workspace_id, memory_store_id, config_version, terminal_target) = match &reference {
+        MemoryMaterializationReference::RunV1(reference) => {
+            if awaken_worker_transport_security::verify_claim_owner(
+                Some(service.directory.as_ref()),
+                &worker,
+                request.identity.as_ref(),
+                &reference.claim,
+                now_unix_ms,
+            )
+            .await
+            .is_err()
+            {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            let guard = match service.dispatch.lock_commit_epoch(&reference.claim).await {
+                Ok(Some(guard)) if guard.is_live_at(now_unix_ms) => guard,
+                Ok(_) => return StatusCode::CONFLICT.into_response(),
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            if !manifest_allows(guard.request(), reference, request.operation.writes()) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            let binding = (
+                reference.workspace_id.clone(),
+                reference.memory_store_id.clone(),
+                reference.config_version,
+                None,
+            );
+            run_guard = Some(guard);
+            binding
+        }
+        MemoryMaterializationReference::TerminalV2(intent) => {
+            let Some(identity) = request.identity.as_ref() else {
+                return StatusCode::FORBIDDEN.into_response();
+            };
+            let effect = intent.effect();
+            if let Some(status) = verify_session_worker_effect(
+                service.directory.as_ref(),
+                &worker,
+                identity,
+                &effect.lease,
+                now_unix_ms,
+                SessionWorkerEffectTemporalRule::TerminalGeneration,
+            )
+            .await
+            .rejection_status()
+            {
+                return status.into_response();
+            }
+            let Some(control) = service.session_control.as_deref() else {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            let target = match control
+                .authorize_terminal_memory_intent(intent.as_ref())
+                .await
+            {
+                Ok(target) if target.intent() == intent.as_ref() => target,
+                Ok(_) => return StatusCode::FORBIDDEN.into_response(),
+                Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_contract::SessionRealizationControlFailure::Conflict) => {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                Err(_) => return StatusCode::CONFLICT.into_response(),
+            };
+            if !terminal_operation_allowed(&target, &request.operation) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            (
+                target.workspace_id().to_owned(),
+                target.memory_store_id().to_owned(),
+                target.config_version(),
+                Some(target),
+            )
+        }
     };
-    if !manifest_allows(guard.request(), &reference, request.operation.writes()) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    if let Err(error) = service.validator.verify_memory_binding(
-        &reference.workspace_id,
-        &reference.memory_store_id,
-        reference.config_version,
-    ) {
+    if let Err(error) =
+        service
+            .validator
+            .verify_memory_binding(&workspace_id, &memory_store_id, config_version)
+    {
         return (
             StatusCode::CONFLICT,
             Json(MemoryOperationResponse::Error {
@@ -357,17 +553,19 @@ async fn memory_operation(
             .into_response();
     }
 
+    let _run_guard = run_guard;
+    let _terminal_target = terminal_target;
     let result = match request.operation {
         MemoryOperation::Snapshot => service
             .repository
-            .snapshot_heads(&reference.memory_store_id)
+            .snapshot_heads(&memory_store_id)
             .await
             .map(|heads| MemoryOperationResponse::Snapshot {
                 heads: heads.into_iter().map(Into::into).collect(),
             }),
         MemoryOperation::Create { path, content } => service
             .repository
-            .create(&reference.memory_store_id, &path, &content)
+            .create(&memory_store_id, &path, &content)
             .await
             .map(|memory| MemoryOperationResponse::Memory {
                 memory: memory.into(),
@@ -380,7 +578,7 @@ async fn memory_operation(
         } => service
             .repository
             .update_head(
-                &reference.memory_store_id,
+                &memory_store_id,
                 &id,
                 &content,
                 &base_sha,
@@ -396,7 +594,7 @@ async fn memory_operation(
             base_sha,
         } => service
             .repository
-            .delete_if_match(&reference.memory_store_id, &path, &base_id, &base_sha)
+            .delete_if_match(&memory_store_id, &path, &base_id, &base_sha)
             .await
             .map(|deleted| MemoryOperationResponse::Deleted { deleted }),
     }
@@ -672,12 +870,47 @@ impl MemoryRepository for HttpMemoryRepository {
 mod tests {
     use super::*;
 
+    fn terminal_intent() -> SessionTerminalMemoryIntent {
+        let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+            awaken_session_contract::SessionCleanupCommand::new(
+                "session-memory",
+                "session-memory",
+                "cleanup-root",
+            ),
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-memory".into(),
+                runtime_incarnation: "worker-memory:incarnation:3".into(),
+                epoch: 3,
+                expires_at_unix_ms: u64::MAX,
+            },
+        );
+        SessionTerminalMemoryIntent::try_from_untrusted_parts(
+            awaken_resource_contract::BindingId::from("binding-memory"),
+            ConfigVersion(7),
+            ResourceAccess::ReadWrite,
+            awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+                "memory",
+                "/memory/work",
+                vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                    path: "/note.md".into(),
+                    id: "memory-note".into(),
+                    content_sha256: "sha-a".into(),
+                }],
+            )
+            .unwrap(),
+            effect,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn memory_reference_is_strict_lossless_and_claim_bound() {
-        // Wire cause/effect decision table: M1 exact resource facts plus claim
-        // => lossless capability; M2 bad prefix => reject; M3 unknown field =>
-        // reject. This transient HTTP capability is not a second Resource or
-        // run-ingress identity. Rules W1 M1=>decode; W2 M2|M3=>fail closed.
+        // Wire cause/effect decision table: W1 exact v1 facts plus Run claim =>
+        // lossless rolling-compatible capability; W2 exact v2 intent plus
+        // terminal fence => lossless capability without caller Workspace or old
+        // Run claim; W3 bad prefix, unknown field, Run-in-v2, or non-canonical
+        // evidence => reject. The HTTP reference is transport only, never a
+        // second Resource, Session, or dispatch authority.
         let claim = RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run-memory".into()),
             owner: "worker-memory".into(),
@@ -692,14 +925,118 @@ mod tests {
         )
         .expect("W1 encode");
         let parsed = parse_reference(&encoded).expect("W1 decode");
+        let MemoryMaterializationReference::RunV1(parsed) = parsed else {
+            panic!("W1 must remain v1")
+        };
         assert_eq!(parsed.claim, claim, "W1 claim");
         assert_eq!(parsed.config_version, ConfigVersion(7), "W1 version");
-        assert!(parse_reference("invalid:{}").is_err(), "W2 bad prefix");
+
+        let intent = terminal_intent();
+        let terminal = terminal_memory_materialization_reference(&intent).expect("W2 encode");
+        assert!(!terminal.contains("workspace"), "W2 root owns Workspace");
+        assert!(!terminal.contains("run_id"), "W2 has no stale Run claim");
+        let MemoryMaterializationReference::TerminalV2(parsed) =
+            parse_reference(&terminal).expect("W2 decode")
+        else {
+            panic!("W2 must remain v2")
+        };
+        assert_eq!(parsed.as_ref(), &intent, "W2 lossless");
+
+        assert!(parse_reference("invalid:{}").is_err(), "W3 bad prefix");
 
         let unknown = format!(
             "{},\"authority_bypass\":true}}",
             encoded.strip_suffix('}').expect("reference JSON object")
         );
-        assert!(parse_reference(&unknown).is_err(), "W2 unknown field");
+        assert!(parse_reference(&unknown).is_err(), "W3 unknown field");
+
+        let run_in_v2 = terminal.replacen("\"type\":\"terminal\"", "\"type\":\"run\"", 1);
+        assert!(parse_reference(&run_in_v2).is_err(), "W3 Run-in-v2");
+    }
+
+    #[test]
+    fn terminal_operation_kernel_is_closed_over_original_heads() {
+        // Mutation cause/effect decision table: O1 snapshot => allow; O2 create
+        // absent-from-A => allow, existing-in-A => deny; O3 update exact A id+sha
+        // without rename => allow, stale/rename => deny; O4 delete exact
+        // path+id+sha => allow, any mismatch => deny. These rules are evaluated
+        // before the canonical repository sees an operation.
+        let intent = terminal_intent();
+        let target =
+            SessionTerminalMemoryTarget::from_authorized_root("workspace", intent).unwrap();
+        assert!(
+            terminal_operation_allowed(&target, &MemoryOperation::Snapshot),
+            "O1"
+        );
+        assert!(
+            terminal_operation_allowed(
+                &target,
+                &MemoryOperation::Create {
+                    path: "/new.md".into(),
+                    content: "new".into(),
+                },
+            ),
+            "O2 absent"
+        );
+        assert!(
+            !terminal_operation_allowed(
+                &target,
+                &MemoryOperation::Create {
+                    path: "/note.md".into(),
+                    content: "replacement".into(),
+                },
+            ),
+            "O2 existing"
+        );
+        assert!(
+            terminal_operation_allowed(
+                &target,
+                &MemoryOperation::UpdateHead {
+                    id: "memory-note".into(),
+                    content: "B".into(),
+                    base_sha: "sha-a".into(),
+                    target_path: None,
+                },
+            ),
+            "O3 exact"
+        );
+        for operation in [
+            MemoryOperation::UpdateHead {
+                id: "memory-note".into(),
+                content: "B".into(),
+                base_sha: "sha-c".into(),
+                target_path: None,
+            },
+            MemoryOperation::UpdateHead {
+                id: "memory-note".into(),
+                content: "B".into(),
+                base_sha: "sha-a".into(),
+                target_path: Some("/renamed.md".into()),
+            },
+        ] {
+            assert!(!terminal_operation_allowed(&target, &operation), "O3 deny");
+        }
+        assert!(
+            terminal_operation_allowed(
+                &target,
+                &MemoryOperation::DeleteIfMatch {
+                    path: "/note.md".into(),
+                    base_id: "memory-note".into(),
+                    base_sha: "sha-a".into(),
+                },
+            ),
+            "O4 exact"
+        );
+        assert!(
+            !terminal_operation_allowed(
+                &target,
+                &MemoryOperation::DeleteIfMatch {
+                    path: "/note.md".into(),
+                    base_id: "memory-note".into(),
+                    base_sha: "sha-c".into(),
+                },
+            ),
+            "O4 mismatch"
+        );
     }
 }

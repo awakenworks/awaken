@@ -71,6 +71,24 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Revision
     ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
         Some(Self::profile(agent_id, source_revision))
     }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        let profile = Self::profile(agent_id, source_revision);
+        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                agent_id,
+                profile.execution_model_ref.as_deref()?,
+                &profile.backend_ref,
+            ))
+            .build();
+        snapshot.metadata.source.revision = source_revision;
+        Some(snapshot)
+    }
 }
 
 #[tokio::test]
@@ -278,7 +296,8 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
         awaken_session_contract::SessionEnvironmentEffectKind::Create,
         "opaque-handle",
         None,
-    );
+    )
+    .for_environment("env-1");
     sink.persist(receipt.clone()).await.unwrap();
     let first = repo.get("binding-now").await.unwrap();
     assert_eq!(first.environment.binding(), Some("opaque-handle"));
@@ -373,13 +392,14 @@ impl ManagedSessionRepository for ConflictInjectingRepo {
         self.inner.get(session_id).await
     }
 
-    async fn reconcilable_sessions(
+    async fn reconcilable_sessions_page(
         &self,
+        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
     ) -> Result<
         awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,
     > {
-        self.inner.reconcilable_sessions().await
+        self.inner.reconcilable_sessions_page(after).await
     }
 
     async fn sessions_referencing_credential_source(
@@ -679,7 +699,8 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
             awaken_session_contract::SessionEnvironmentEffectKind::Create,
             "opaque",
             None,
-        );
+        )
+        .for_environment("env-1");
         let result = sink.persist(receipt).await;
         assert_eq!(result.is_ok(), accepted, "{case}");
         assert_eq!(
@@ -1402,8 +1423,17 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
     );
 }
 
-#[tokio::test]
-async fn resource_reclaimer_finishes_terminal_release_after_restart() {
+#[test]
+fn resource_reclaimer_finishes_terminal_release_after_restart() {
+    run_composed_async_test(resource_reclaimer_finishes_terminal_release_after_restart_case);
+}
+
+async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
+    // Cause/effect graph: C1 a terminal deleted Session has an active legacy
+    // generation and a durable pending release; C2 the disposable process is
+    // replaced before release settles. Effects: E1 restart executes the one
+    // canonical release; E2 the cleanup row becomes a tombstone; E3 no
+    // reconcilable Session remains. Decision rule R1=C1+C2=>E1+E2+E3.
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let mut deleted = sample_persisted("sesn_deleted");
     deleted.disposition = SessionDisposition::Deleting;
@@ -1433,8 +1463,12 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart() {
     );
 }
 
-#[tokio::test]
-async fn resource_reclaimer_never_tears_down_a_live_session_environment() {
+#[test]
+fn resource_reclaimer_never_tears_down_a_live_session_environment() {
+    run_composed_async_test(resource_reclaimer_never_tears_down_a_live_session_environment_case);
+}
+
+async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     // Resource-reclaimer cause/effect graph:
     // C1 lifecycle is live (idle/running/rescheduling) or terminal; C2 an
     // active Resource generation exists; C3 another convergence concern keeps

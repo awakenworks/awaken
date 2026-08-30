@@ -3,7 +3,7 @@
 /// One provider-owned resident Hand process inside a Session container.
 /// Authentication and topology stay on [`crate::ContainerRuntime::open_channel`];
 /// this value owns only the exact process shape rendered with the environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ResidentHandConfig {
     pub bin: String,
     pub port: u16,

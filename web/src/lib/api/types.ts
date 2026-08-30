@@ -291,6 +291,13 @@ export interface ModelCandidate {
   backend_ref: string;
 }
 
+export type AgentToolPermissionPolicy = { type: "always_allow" | "always_ask" };
+
+export interface AgentToolDefaultConfig {
+  enabled?: boolean;
+  permission_policy?: AgentToolPermissionPolicy;
+}
+
 export interface CustomClientTool {
   type: "custom";
   name: string;
@@ -317,27 +324,36 @@ export interface AgentMcpSandboxServer {
 
 export type AgentMcpServer = AgentMcpHttpServer | AgentMcpSandboxServer;
 
-export interface AgentToolsetConfig {
+export interface AgentToolsetConfig extends AgentToolDefaultConfig {
   name: string;
-  enabled?: boolean;
-  permission_policy?: { type: "always_allow" | "always_ask" };
   type?: string;
   allowed_domains?: string[];
   blocked_domains?: string[];
   max_content_tokens?: number;
-  user_location?: Record<string, string>;
-}
-
-export interface AgentToolset {
-  type: "agent_toolset_20260401" | "mcp_toolset";
-  mcp_server_name?: string;
-  configs?: AgentToolsetConfig[];
-  default_config?: {
-    enabled?: boolean;
-    permission_policy?: { type: "always_allow" | "always_ask" };
+  user_location?: {
+    type: "approximate";
+    city?: string;
+    country?: string;
+    region?: string;
+    timezone?: string;
   };
 }
+export interface AgentManagedToolset {
+  type: "agent_toolset_20260401";
+  configs?: AgentToolsetConfig[];
+  default_config?: AgentToolDefaultConfig;
+}
+export interface AgentMcpToolset {
+  type: "mcp_toolset";
+  mcp_server_name: string;
+  configs?: AgentToolsetConfig[];
+  default_config?: AgentToolDefaultConfig;
+}
 
+/** One discriminated ToolSet union; MCP identity cannot appear on Agent sets. */
+export type AgentToolset = AgentManagedToolset | AgentMcpToolset;
+
+/** Exact ids are an Awaken config-plane extension; objects are Managed wire values. */
 export type AgentTool = string | CustomClientTool | AgentToolset;
 
 export interface AgentConfig {
@@ -365,8 +381,8 @@ export interface AgentConfig {
   // extensions (our differentiated value, additive to the managed object):
   max_steps: number;
   plugins: string[];
-  /** Per-plugin config sections, keyed by plugin id (permission / state_machine /
-   * generative-ui live here as extension-owned JSON). */
+  /** Per-plugin config sections, keyed by plugin id (for example state_machine,
+   * memory, and generative-ui). Permissions live only in typed tools[]. */
   plugin_config: Record<string, unknown>;
   context_policy: ContextPolicy;
   /** Exact model-facing appearance/exposure overrides, keyed by canonical tool id. */
@@ -429,17 +445,19 @@ export interface PublishResult {
 }
 
 export type {
+  AgentToolsetCap,
+  AgentToolsetMemberCap,
   Capabilities,
   ManagedToolsetCap,
+  McpToolsetCap,
   PluginCap,
-  PolicyCap,
+  ResourceInputCapability,
+  ResourceInputDefaultMounts,
   RuntimeCap,
   SandboxCapability,
   SandboxPreset,
   ToolCap,
 } from "./capability-types";
-
-export type { PermissionBehavior, PermissionConfig, PermissionRuleConfig } from "./permission-types";
 
 export type { Vault, VaultCredential, VaultCredentialAuth } from "./vault-types";
 export type { MemoryEntry, MemoryStore, MemoryVersion } from "./memory-types";

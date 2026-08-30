@@ -169,6 +169,73 @@ mod tests {
         )
     }
 
+    fn claimed_memory_projection(
+        root: &awaken_runtime_contract::ExecutableAgentSnapshot,
+        override_candidate: &ResolvedModelCandidate,
+        manifest: &awaken_session_contract::SessionResourceManifest,
+    ) -> awaken_session_contract::FrozenSessionProjection {
+        let binding = override_candidate.binding();
+        let environment = awaken_session_contract::EnvironmentSnapshot {
+            environment_id: "claimed-memory-environment".into(),
+            revision: awaken_session_contract::EnvironmentRevision(1),
+            self_hosted: false,
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                "claimed-memory-environment-v1".into(),
+            ),
+            sandbox: Default::default(),
+            sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+        };
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                mcp_authoring: Default::default(),
+                agent_id: root.root_agent_id.0.clone(),
+                agent_revision: None,
+                model: binding.model_ref.clone(),
+                model_override: Some(awaken_session_contract::SessionModelOverride {
+                    publication: Some(Box::new(awaken_session_contract::SessionModelPublication {
+                        primary: override_candidate.clone(),
+                        candidates: Vec::new(),
+                    })),
+                    inference: Default::default(),
+                }),
+                runtime: Some(binding.backend_ref.clone()),
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
+        );
+        awaken_session_contract::FrozenSessionProjection {
+            workspace_id: manifest.workspace_id.clone(),
+            revision: awaken_session_contract::SessionRevision(1),
+            baseline,
+            agent_publication: Some(root.clone()),
+            environment: Default::default(),
+            resource_revision: manifest.revision,
+            resources: manifest.resources.clone(),
+            previous_resource_manifest: Some(
+                awaken_session_contract::SessionResourceManifest::at_revision(
+                    manifest.workspace_id.clone(),
+                    0,
+                    awaken_session_contract::ResolvedSessionResources::default(),
+                ),
+            ),
+            tools: Default::default(),
+            mcp: Vec::new(),
+            request_context: Vec::new(),
+        }
+    }
+
     fn cold_claimed_memory_host() -> (Arc<SharedHost>, crate::ManagedHost) {
         let host = Arc::new(SharedHost::new(
             Arc::new(crate::host::MemoryHostModel),
@@ -405,26 +472,34 @@ mod tests {
         // Cause/effect graph: C1 terminal truth is committed before a Runtime is
         // resident; C2 the exact dispatch carries a writable Memory binding; C3
         // the cold context selects durable delivery; C4 guarded settlement is
-        // fresh/replayed. Effects: E1 cold context construction creates no Memory
-        // intent; E2 settlement creates and completes exactly one intent/version;
-        // E3 replay remains idempotent. Constraint K1: DispatchWorker/HTTP
+        // fresh/replayed; C5 the cold target installs the complete frozen
+        // Session projection with the exact root/model publication, Resource
+        // transition, and Memory-extractor publication. Effects: E1 cold context
+        // construction creates no Memory intent; E2 settlement creates and
+        // completes exactly one intent/version; E3 replay remains idempotent.
+        // Constraint K1: DispatchWorker/HTTP
         // settlement is the sole durable terminal-delivery owner, regardless of
         // whether the context was opened from a claim. Decision rules:
-        // D1=C1+C2+C3 => E1; D2=D1+C4 => E2+E3.
+        // D1=C1+C2+C3+C5 => E1; D2=D1+C4 => E2+E3.
         let thread = "cold-durable-terminal";
         let run = RunId("cold-durable-terminal-run".into());
         let store_id = "cold-durable-terminal-memory";
         let manifest = claimed_memory_manifest(store_id);
         let (snapshot, override_candidate, extractor) = claimed_memory_snapshot();
+        let root_publication = snapshot.clone();
         let activation =
             RunActivation::new(run.clone(), ThreadId(thread.into()), snapshot, Vec::new())
                 .with_model_ref_override(Some(OVERRIDE_MODEL_REF.into()));
-        let publications =
-            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([extractor])
-                .expect("exact Memory extractor publication");
+        let publications = Arc::new(
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([
+                root_publication.clone(),
+                extractor,
+            ])
+            .expect("exact root and Memory extractor publications"),
+        );
         let admission = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
-            .with_agent_publications(Arc::new(publications));
-        admission.register_thread_resource_manifest(thread, manifest);
+            .with_agent_publications(publications.clone());
+        admission.register_thread_resource_manifest(thread, manifest.clone());
         let dispatch = admission
             .resolved_dispatch(activation)
             .expect("production root dispatch decoration");
@@ -433,12 +508,26 @@ mod tests {
             Arc::new(AnyDispatchStore::open_sqlite_in_memory().expect("durable dispatch store"));
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
-                .with_dispatch_store(queue.clone()),
+                .with_dispatch_store(queue.clone())
+                .with_agent_publications(publications),
         );
         crate::host::install_test_memory_mounter(&host);
-        let _managed = crate::ManagedHost::new(host.clone())
+        let managed = crate::ManagedHost::new(host.clone())
             .with_resource_validator(crate::host::test_resource_validator())
             .install_dispatch_session_runtime();
+        let application: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
+            Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
+        managed
+            .install_agent_coordination_application(Arc::downgrade(&application))
+            .expect("C5 install canonical Session application authority");
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &managed,
+            thread,
+            claimed_memory_projection(&root_publication, &override_candidate, &manifest),
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        )
+        .await
+        .expect("C5 install complete frozen Session projection");
         let commit = ThreadCommit::assemble(
             ThreadId(thread.into()),
             RunDisposition::ended(run.clone(), EndCause::NaturalEnd),

@@ -92,7 +92,7 @@ struct ConcurrentControlState {
 async fn blocked_cleanup_poll(State(state): State<Arc<ConcurrentControlState>>) -> Json<Value> {
     state.cleanup_started.notify_one();
     state.cleanup_release.notified().await;
-    Json(json!({"commands": null}))
+    Json(json!({"work": null}))
 }
 
 async fn concurrent_heartbeat(State(state): State<Arc<ConcurrentControlState>>) -> Json<Value> {
@@ -138,7 +138,7 @@ async fn blocked_session_control_request_does_not_serialize_worker_heartbeat() {
     let cleanup_identity = identity.clone();
     let cleanup = tokio::spawn(async move {
         cleanup_control
-            .terminal_cleanup_commands(
+            .terminal_cleanup_work(
                 &cleanup_identity,
                 "session-a",
                 &awaken_session_contract::SessionRealizationLease {

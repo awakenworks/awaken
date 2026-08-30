@@ -546,10 +546,7 @@ mod tests {
             migrated.budget,
             awaken_session_contract::SessionBudgetState::Absent
         ));
-        assert!(matches!(
-            migrated.terminal_cleanup,
-            awaken_session_contract::SessionCleanupOperation::NotRequested
-        ));
+        assert!(migrated.terminal_cleanup.is_not_requested());
 
         let mut duplicate = legacy;
         duplicate["environment"] =

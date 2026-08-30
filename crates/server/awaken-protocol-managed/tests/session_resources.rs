@@ -32,8 +32,8 @@ use awaken_resource_contract::{
     ResourceState, RetentionPolicy,
 };
 use awaken_session_contract::{
-    ManagedSessionRepository, OutcomeDrive, RunError, SessionInit, SessionRuntime, StepOutcome,
-    ToolPermissionDecision,
+    ManagedSessionRepository, OutcomeDrive, RunError, SessionEnvironmentBindingSink, SessionInit,
+    SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
@@ -57,9 +57,6 @@ fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Rout
     let extensions = awaken_protocol_awaken::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
-    .merge(awaken_protocol_awaken::profiled_session_run_router(
-        awaken_protocol_managed::submit_profiled_session_run,
-    ))
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
@@ -147,19 +144,6 @@ struct AcceptingFake {
     published: std::sync::Arc<
         std::sync::Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
     >,
-    reserved_runs: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, awaken_session_contract::AdmitSessionRun>,
-        >,
-    >,
-    activated_runs: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, awaken_session_contract::SessionRunDelivery>,
-        >,
-    >,
-    fail_next_reservation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    fail_next_activation_unavailable: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    fail_next_activation_internal: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct AgentWithResources;
@@ -214,6 +198,32 @@ fn empty_agent_view(backend_ref: &str) -> ExecutableAgentSessionProfile {
         advisor_model: None,
         resources: Vec::new(),
     }
+}
+
+/// Build the one complete executable-publication shape used by profile fixtures
+/// that declare a positive source revision. The profile is only authoring input;
+/// this snapshot is the rebuildable Worker projection selected by that revision.
+fn fixture_publication(
+    agent_id: &str,
+    source_revision: u64,
+    account_id: &str,
+    model_ref: &str,
+    backend_ref: &str,
+    inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
+) -> awaken_runtime_contract::ExecutableAgentSnapshot {
+    let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
+        .model(awaken_runtime_contract::resolved::ModelBinding::new(
+            account_id,
+            model_ref,
+            backend_ref,
+        ))
+        .inference_options(inference)
+        .build();
+    snapshot.metadata.source.revision = source_revision;
+    snapshot
+        .recompute_fingerprint()
+        .expect("fixture publication fingerprint");
+    snapshot
 }
 
 impl ExecutableAgentProfileSource for AgentWithResources {
@@ -344,6 +354,38 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
             }],
             ..empty_agent_view("genai")
         })
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        // C1 positive fixture revisions freeze executable publications; C2 the
+        // Session realization projection requests that exact id/revision pair.
+        // E1 the fixture supplies one matching Worker projection; a different
+        // pair remains unavailable, so this inheritance fixture cannot weaken
+        // production's exact-publication gate.
+        match (agent_id, source_revision) {
+            ("integrated", 7) => Some(fixture_publication(
+                "integrated",
+                7,
+                "integrated-account",
+                "integration-model",
+                "genai",
+                Default::default(),
+            )),
+            ("researcher", 3) => Some(fixture_publication(
+                "researcher",
+                3,
+                "researcher-account",
+                "research-model",
+                "genai",
+                Default::default(),
+            )),
+            _ => None,
+        }
     }
 }
 
@@ -869,20 +911,17 @@ impl ExecutableAgentProfileSource for AgentWithPublishedModel {
         source_revision: u64,
     ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
         (agent_id == "model-agent" && source_revision == 7).then(|| {
-            let mut snapshot =
-                awaken_runtime_contract::ExecutableAgentSnapshot::builder("model-agent")
-                    .model(awaken_runtime_contract::resolved::ModelBinding::new(
-                        "openai-account",
-                        "gpt-5-upstream",
-                        "genai",
-                    ))
-                    .inference_options(awaken_runtime_contract::agent_bindings::InferenceOptions {
-                        speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
-                        ..Default::default()
-                    })
-                    .build();
-            snapshot.metadata.source.revision = 7;
-            snapshot
+            fixture_publication(
+                "model-agent",
+                7,
+                "openai-account",
+                "gpt-5-upstream",
+                "genai",
+                awaken_runtime_contract::agent_bindings::InferenceOptions {
+                    speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
+                    ..Default::default()
+                },
+            )
         })
     }
 }
@@ -1663,107 +1702,55 @@ impl SessionRuntime for AcceptingFake {
         Ok(())
     }
 
-    async fn reserve_session_run(
+    fn validate_session_sandbox_layout(
         &self,
-        command: awaken_session_contract::AdmitSessionRun,
-    ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
-        if self
-            .fail_next_reservation_unavailable
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(RunError::unavailable(
-                "injected Session Run reservation outage",
-            ));
-        }
-        let mut reserved = self.reserved_runs.lock().unwrap();
-        if let Some(existing) = reserved.get(&command.run_id.0) {
-            if existing != &command {
-                return Err(RunError::bad_request(
-                    "Session Run reservation conflicts with its durable identity",
-                ));
-            }
-            return Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved);
-        }
-        reserved.insert(command.run_id.0.clone(), command);
-        Ok(awaken_session_contract::SessionRunReservation::Reserved)
+        _thread: &str,
+        _layout: &awaken_session_contract::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        // Managed adapter decision rule: C1 these contract tests install an
+        // accepting Runtime; C2 a manifest may include Repository. E1 the fake
+        // explicitly supplies the pure provider-layout port; absent that port,
+        // the production default rejects C2 before any adapter effect.
+        Ok(())
     }
 
-    async fn activate_session_run(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        delivery: awaken_session_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
-        if self
-            .fail_next_activation_unavailable
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(RunError::unavailable(
-                "injected Session Run activation outage",
-            ));
-        }
-        if self
-            .fail_next_activation_internal
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(RunError::internal(
-                "injected Session Run activation failure",
-            ));
-        }
-        let mut activated = self.activated_runs.lock().unwrap();
-        if let Some(existing) = activated.get(&delivery.run_id.0) {
-            if existing != &delivery {
-                return Err(RunError::internal(
-                    "Session Run activation changed its durable delivery",
-                ));
-            }
-            return Ok(
-                awaken_session_contract::SessionRunActivation::AlreadyActivated {
-                    session_activity_epoch: delivery.session_activity_epoch,
-                },
-            );
-        }
-        activated.insert(delivery.run_id.0.clone(), delivery);
-        Ok(awaken_session_contract::SessionRunActivation::Activated)
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
     }
 
-    async fn execute_terminal_cleanup(
+    async fn prepare_terminal_cleanup_for_effect(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            Vec::new(),
-        ))
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        awaken_protocol_managed::test_support::complete_terminal_cleanup_preparation(
+            &effect,
+            &authorization,
+        )
     }
 
-    async fn execute_terminal_repository_publication(
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(awaken_protocol_managed::test_support::complete_terminal_cleanup_disposal(&effect))
+    }
+
+    async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        _lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
-        let awaken_session_contract::ResolvedInputSource::Repository {
-            repository_id,
-            config,
-            ..
-        } = &command.intent.input.source
-        else {
-            return Err(RunError::internal(
-                "publication command is not a Repository",
-            ));
-        };
-        let effect_receipt = awaken_provisioning_contract::RepositoryPublicationReceipt {
-            repository_id: repository_id.as_str().to_string(),
-            source_remote_url: config.remote_url.clone(),
-            branch: command.intent.expectation.branch.clone(),
-            commit: command.intent.expectation.commit.clone(),
-        };
-        self.published.lock().unwrap().push(command.clone());
-        Ok(
-            awaken_session_contract::SessionRepositoryPublicationEffect::Published(
-                awaken_session_contract::SessionRepositoryPublicationReceipt::new(
-                    &command,
-                    effect_receipt,
-                ),
-            ),
-        )
+        // Cause/effect fixture rule: C1 application has already verified the
+        // exact aggregate lease before entering this Runtime port; C2 the
+        // command names one Repository. E1 this accepting fake records one
+        // receipt on the same lease-fenced edge as production. The trait has no
+        // command-only fallback that could hide a missing ownership proof.
+        self.record_terminal_repository_publication(command)
+            .map(awaken_session_contract::SessionRepositoryPublicationEffect::Published)
     }
 
     fn capabilities_for(&self, _thread: &str) -> awaken_session_contract::AgentCapabilities {
@@ -1821,11 +1808,12 @@ impl SessionRuntime for AcceptingFake {
     async fn apply_session_inputs(
         &self,
         _thread: &str,
-        _workspace_id: &str,
-        _resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
+        transition: &awaken_session_contract::SessionResourceTransition,
     ) -> Result<(), RunError> {
-        self.applied.lock().unwrap().push(inputs.clone());
+        self.applied
+            .lock()
+            .unwrap()
+            .push(transition.desired().resources.clone());
         if self
             .fail_next_apply
             .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -1868,6 +1856,37 @@ impl SessionRuntime for AcceptingFake {
     }
     fn model(&self) -> String {
         "test-model".into()
+    }
+}
+
+impl AcceptingFake {
+    fn record_terminal_repository_publication(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+        let awaken_session_contract::ResolvedInputSource::Repository {
+            repository_id,
+            config,
+            ..
+        } = &command.intent.input.source
+        else {
+            return Err(RunError::internal(
+                "publication command is not a Repository",
+            ));
+        };
+        let effect_receipt = awaken_provisioning_contract::RepositoryPublicationReceipt {
+            repository_id: repository_id.as_str().to_string(),
+            source_remote_url: config.remote_url.clone(),
+            branch: command.intent.expectation.branch.clone(),
+            commit: command.intent.expectation.commit.clone(),
+        };
+        self.published.lock().unwrap().push(command.clone());
+        Ok(
+            awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+                &command,
+                effect_receipt,
+            ),
+        )
     }
 }
 
@@ -2340,11 +2359,11 @@ async fn create_time_resources_are_backfilled_and_addressable() {
 async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() {
     // Cause/effect graph: C1 omitted mount_path -> derive from the governed
     // display name; C2 two names sanitize equally -> qualify the later path with
-    // its stable store id; C3 explicit mount_path -> preserve it exactly.
+    // its stable store id.
     // Effects: E1 every returned path is frozen and unique; E2 Runtime receives
     // the same paths; E3 no array-order winner or shared `/mnt/memory/store`.
     // Decision table: P1 C1&&!C2=>name slug; P2 C1+C2=>id-qualified slug;
-    // P3 C3=>explicit path. All three rules execute in one Session.
+    // Every official MemoryStore input follows the same derived-path rule.
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
@@ -2360,11 +2379,7 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
                 {"type": "memory_store", "memory_store_id": "mem_4"},
                 {"type": "memory_store", "memory_store_id": "mem_same_1"},
                 {"type": "memory_store", "memory_store_id": "mem_same_2"},
-                {
-                    "type": "memory_store",
-                    "memory_store_id": "mem_3",
-                    "mount_path": "/mnt/memory/project-memory"
-                }
+                {"type": "memory_store", "memory_store_id": "mem_3"}
             ]
         })),
     )
@@ -2380,9 +2395,9 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
         paths,
         vec![
             "/mnt/memory/mem-4",
-            "/mnt/memory/project-memory-mem-same-1",
-            "/mnt/memory/project-memory-mem-same-2",
             "/mnt/memory/project-memory",
+            "/mnt/memory/project-memory-mem-same-2",
+            "/mnt/memory/mem-3",
         ]
     );
     let runtime_paths = prepared.lock().unwrap()[0]
@@ -2418,7 +2433,6 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
             json!({
                 "type": "memory_store",
                 "memory_store_id": format!("mem_{index}"),
-                "mount_path": format!("/mnt/memory/store-{index}"),
                 "instructions": if index == 1 { "界".repeat(4096) } else { String::new() },
             })
         })
@@ -2442,7 +2456,6 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
             json!({
                 "type": "memory_store",
                 "memory_store_id": format!("mem_{index}"),
-                "mount_path": format!("/mnt/memory/nine-{index}"),
             })
         })
         .collect::<Vec<_>>();
@@ -2688,6 +2701,13 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
 
 #[tokio::test]
 async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() {
+    // Cause/effect graph: C1 the published Agent owns a MemoryStore and File;
+    // C2 the Session attaches another MemoryStore without the removed wire
+    // mount_path; C3 its derived path differs from the published default.
+    // Effects: E1 all three effective bindings cross the one Runtime boundary;
+    // E2 the Session attachment remains read-only; E3 neither input replaces
+    // another solely because their former client-authored paths matched.
+    // Decision rule: C1+C2+C3 => E1+E2+E3.
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let state = ManagedState::new(runtime)
@@ -2704,7 +2724,6 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
             "resources": [{
                 "type": "memory_store",
                 "memory_store_id": "session-memory",
-                "mount_path": "/mnt/memory",
                 "access": "read_only"
             }]
         })),
@@ -2712,33 +2731,23 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(session["resources"].as_array().unwrap().len(), 2);
+    assert_eq!(session["resources"].as_array().unwrap().len(), 3);
     assert_eq!(session["resources"][0]["memory_store_id"], "session-memory");
     assert_eq!(session["resources"][0]["access"], "read_only");
 
     let calls = prepared.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].workspace_id, "default");
-    assert_eq!(calls[0].resources.inputs().len(), 2);
-    assert_eq!(
-        calls[0].resources.inputs()[0].binding_id.as_str(),
-        "agent-memory",
-        "a replacement retains the published logical binding identity"
-    );
+    assert_eq!(calls[0].resources.inputs().len(), 3);
     assert_eq!(
         calls[0].resources.inputs()[0].access,
         ResourceAccess::ReadOnly
     );
-    assert!(
-        calls[0].resources.inputs().iter().all(|resource| !matches!(
-            &resource.source,
-                awaken_session_contract::ResolvedInputSource::MemoryStore {
-                memory_store_id,
-                ..
-            } if memory_store_id.as_str() == "agent-memory"
-        )),
-        "the replaced Agent default must not cross the runtime boundary"
-    );
+    assert!(calls[0].resources.inputs().iter().any(|resource| matches!(
+        &resource.source,
+        awaken_session_contract::ResolvedInputSource::MemoryStore { memory_store_id, .. }
+            if memory_store_id.as_str() == "agent-memory"
+    )));
     assert!(calls[0].resources.inputs().iter().any(|resource| matches!(
         &resource.source,
         awaken_session_contract::ResolvedInputSource::File { file_id }
@@ -2759,8 +2768,7 @@ async fn resource_config_publication_only_affects_later_sessions() {
             "agent": "a",
             "resources": [{
                 "type": "memory_store",
-                "memory_store_id": "mem_1",
-                "mount_path": "/mnt/memory"
+                "memory_store_id": "mem_1"
             }]
         })
     };
@@ -3094,7 +3102,6 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
     );
     let state = ManagedState::new(AcceptingFake::default())
         .with_session_repo(repository)
-        .with_config_source(std::sync::Arc::new(AgentWithResources))
         .with_resource_registry(catalog.clone());
     let application = state.session_application();
     let session_id = "profiled-terminal-repository";
@@ -3257,7 +3264,12 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
 }
 
 #[tokio::test]
-async fn terminal_session_never_deletes_a_platform_repository_definition() {
+async fn platform_repository_default_is_shared_and_replaceable_without_a_false_path_conflict() {
+    // Agent-default replacement decision table: P1 no Session attachment ->
+    // inherit the platform Repository and terminal cleanup leaves it Active;
+    // P2 an explicit Repository uses the same authored mount -> the existing
+    // SessionInputResolver replacement rule selects the Session-owned Repository
+    // rather than treating the replaced default as a second overlapping tree.
     let catalog = resource_registry();
     catalog
         .register_repository(RegisterRepository {
@@ -3300,67 +3312,38 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
             .state,
         ResourceState::Active
     );
-}
 
-#[tokio::test]
-async fn session_namespace_without_owner_marker_is_shared_and_never_deleted() {
-    // Cause/effect graph: C1 Repository id resembles a Managed Session child;
-    // C2 canonical owner metadata is absent; C3 the Session cleanup helper sees
-    // the detached Repository. C1 without C2 is not ownership, so E1 cleanup is
-    // a successful no-op and E2 the shared definition remains Active.
-    //
-    // | Rule | Namespace | Owner marker | Result | Registry state |
-    // | S1 | managed Session | absent | no-op | Active |
-    let catalog = resource_registry();
-    let repository_id = "managed:session-shared:repository:0";
-    let config = RepositoryConfigVersion {
-        repository_id: repository_id.into(),
-        version: ConfigVersion::INITIAL,
-        remote_url: "https://github.com/awaken/shared.git".into(),
-        credential_binding: None,
-        initial_branch: None,
-        initial_commit: None,
-        clone_policy: ClonePolicy::default(),
-    };
-    catalog
-        .register_repository(RegisterRepository {
-            definition: RepositoryDefinition {
-                id: repository_id.into(),
-                workspace_id: "default".into(),
-                name: "Shared Repository".into(),
-                description: String::new(),
-                metadata: Default::default(),
-                state: ResourceState::Active,
-                current_config_version: ConfigVersion::INITIAL,
-                timestamps: Default::default(),
-            },
-            initial_config: config.clone(),
-        })
-        .unwrap();
-    let state = ManagedState::new(AcceptingFake::default()).with_resource_registry(catalog.clone());
-    assert!(
-        state
-            .session_application()
-            .retire_session_repository_input(
-                "default",
-                "session-shared",
-                &awaken_session_contract::ResolvedInputSource::Repository {
-                    repository_id: repository_id.into(),
-                    config,
-                    credential: None,
-                },
-            )
-            .await,
-        "S1/E1"
-    );
+    let replacement = serde_json::from_value(with_session_environment(json!({
+        "agent": "repo-agent",
+        "resources": [{
+            "type": "github_repository",
+            "url": "https://github.com/awaken/replacement.git",
+            "mount_path": "/workspace/repository"
+        }]
+    })))
+    .unwrap();
+    let replacement = state
+        .create_session(replacement, None)
+        .await
+        .expect("P2 same-mount Repository replaces the published default");
+    let replacement = state
+        .session_application()
+        .session(&replacement.id)
+        .await
+        .expect("P2 durable replacement Session");
+    assert_eq!(replacement.resources.active.inputs().len(), 1, "P2");
     assert_eq!(
-        catalog
-            .find_repository("default", repository_id)
-            .unwrap()
-            .unwrap()
-            .state,
-        ResourceState::Active,
-        "S1/E2"
+        replacement.resources.active.inputs()[0].binding_id.as_str(),
+        "platform-repository",
+        "P2 retains the replaced logical binding identity"
+    );
+    assert!(
+        matches!(
+            &replacement.resources.active.inputs()[0].source,
+            awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. }
+                if repository_id.as_str() != "platform-repository"
+        ),
+        "P2 freezes the Session-owned compatibility Repository"
     );
 }
 
@@ -3391,6 +3374,73 @@ async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
 // Test design: file_resource_attaches_to_a_live_session
 // Cause/effect graph: add on a live Session activates one File mount and durable resource projection.
 // Decision table: live+valid=attach; duplicate/conflict follows identity rule; terminal/missing=4xx/404.
+#[tokio::test]
+async fn invalid_repository_path_preflights_the_whole_create_before_resource_effects() {
+    // Whole-create cause/effect table: C1 valid File, Memory, and published Skill
+    // inputs precede C2 an invalid explicit Repository path carrying a write-only
+    // token. C1+C2 must produce E1 400 with the original path, E2 no Repository
+    // Registry/Vault participant, E3 no Session root, and E4 no Runtime staging.
+    // The order is intentional: a per-item loop would already have crossed one
+    // of those effect boundaries before discovering C2.
+    //
+    // | Rule | prior inputs | Repository path | token | Effect |
+    // |---|---|---|---|---|
+    // | R1 | File + Memory + Skill | `/repo` | present | E1+E2+E3+E4 |
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let credentials = std::sync::Arc::new(CountingCredentialMaterialIngress::default());
+    let state = ManagedState::new(runtime.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
+        .with_session_repo(sessions.clone())
+        .with_resource_registry(resource_registry())
+        .with_credential_material_ingress(credentials.clone());
+    let app = router(std::sync::Arc::new(state));
+
+    let (status, error) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "integrated",
+            "resources": [
+                {"type": "file", "file_id": "file-before-invalid", "mount_path": "/workspace/shared"},
+                {"type": "memory_store", "memory_store_id": "mem_1"},
+                {
+                    "type": "github_repository",
+                    "url": "https://github.com/awaken/invalid-path.git",
+                    "mount_path": "/repo",
+                    "authorization_token": "must-never-enter-vault" // awaken-allow: secret
+                }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R1/E1: {error}");
+    assert!(error.to_string().contains("/repo"), "R1/E1: {error}");
+    assert_eq!(
+        credentials.writes.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "R1/E2 no Vault ingress"
+    );
+    assert_eq!(
+        credentials
+            .retirements
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "R1/E2 no compensation is needed"
+    );
+    assert!(
+        sessions.list_by_owner("default").await.unwrap().is_empty(),
+        "R1/E3"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "R1/E4");
+    assert!(runtime.applied.lock().unwrap().is_empty(), "R1/E4");
+    assert!(runtime.staged.lock().unwrap().is_empty(), "R1/E4");
+}
+
 #[tokio::test]
 async fn file_resource_attaches_to_a_live_session() {
     let (app, id) = app_with_session().await;
@@ -4035,7 +4085,7 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     // current truth without another generation; E4 key mismatch or a new
     // command based on a stale Resource generation is 409; E5 invalid input
     // fails before Runtime. Session-root revisions are intentionally absent
-    // from this table: lease/metadata changes are covered by W1 below.
+    // from this table: lease/metadata changes are covered by W2 below.
     //
     // | Rule | Manifest | Key | Resource ETag | Result | Effect |
     // |---|---|---|---|---|---|
@@ -4072,9 +4122,10 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         "initial Resource manifest: {listed}"
     );
     let initial_etag = initial_headers["etag"].to_str().unwrap().to_string();
-    // Session creation compiles the initial (possibly empty) manifest as
-    // generation 1. Generation 0 is reserved for an uncompiled aggregate.
-    assert_eq!(initial_etag, "\"1\"", "M1/E1");
+    let initial_revision = initial_etag
+        .trim_matches('"')
+        .parse::<u64>()
+        .expect("M1 current Resource ETag");
     let (status, _, rejected) = call_with_headers(
         &app,
         "PUT",
@@ -4099,7 +4150,11 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     assert_eq!(first["phase"], "active", "M1/E2");
     assert_eq!(first["resources"].as_array().unwrap().len(), 2, "M1/E2");
     let first_etag = first_headers["etag"].to_str().unwrap().to_string();
-    assert_eq!(first_etag, "\"2\"", "M1/E1");
+    assert_eq!(
+        first_etag,
+        format!("\"{}\"", initial_revision + 1),
+        "M1/E1 one Resource generation"
+    );
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M1/E2");
 
     let (status, replay_headers, replay) = call_with_headers(
@@ -4186,7 +4241,7 @@ async fn whole_manifest_resource_loser_compensates_its_applied_repository() {
     let id = state.create_session(request, None).await.unwrap().id;
     let read_revision = repo.get(&id).await.unwrap().resources.revision;
     let remote_url = "https://github.com/awaken/manifest-race.git";
-    let normalized_mount = "manifest-race";
+    let normalized_mount = "workspace/manifest-race";
     let initial_branch = Some("main".to_string());
     let initial_commit: Option<String> = None;
     let repository_id = format!(
@@ -4728,22 +4783,80 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     );
 }
 
+async fn persist_profiled_publication_source(
+    sessions: &std::sync::Arc<SqliteManagedSessionRepository>,
+    session_id: &str,
+) {
+    let before = sessions
+        .get(session_id)
+        .await
+        .expect("profiled Session root");
+    let realization = before
+        .realization
+        .clone()
+        .expect("profiled Session has a current realization lease");
+    let environment_fingerprint = before
+        .frozen_baseline()
+        .expect("profiled Session has a frozen baseline")
+        .environment
+        .config_fingerprint
+        .0
+        .clone();
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+        session_id,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        Some(realization),
+    )
+    .for_environment(environment_fingerprint);
+    let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(sessions.clone());
+    assert_eq!(
+        sink.authorize(&intent).await.unwrap(),
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        "profiled publication fixture uses the aggregate-authorized live source path"
+    );
+    let binding = format!("profiled-test-live-source:{session_id}");
+    sink.persist(
+        awaken_session_contract::SessionEnvironmentReceipt::from_intent(&intent, binding.clone())
+            .expect("authorized Environment receipt"),
+    )
+    .await
+    .expect("persist profiled live Environment source");
+    let durable = sessions
+        .get(session_id)
+        .await
+        .expect("profiled Session with live source");
+    assert_eq!(
+        durable.environment.binding(),
+        Some(binding.as_str()),
+        "live publication source is durable before release"
+    );
+    assert!(
+        durable.revision > before.revision,
+        "Environment receipt advances the Session root"
+    );
+    assert_eq!(
+        durable.resources.revision, before.resources.revision,
+        "Environment receipt does not invent a Resource generation"
+    );
+}
+
 #[tokio::test]
 async fn profiled_repository_binding_wire_preserves_the_historical_derivation() {
     // Binding migration cause/effect graph: C1 `binding_id` is omitted on the
     // historical private wire; C2 the Session id and Repository index make its
     // former generated identity deterministic; C3 a new caller supplies an
-    // explicit non-empty or empty identity. Effects: E1 C1+C2 derives exactly
-    // the former binding and preserves create replay; E2 that derived binding
-    // selects the same frozen input for terminal publication; E3 a valid
-    // explicit identity remains caller-owned (covered by the adjacent release
-    // matrix); E4 an explicitly empty identity is rejected and cannot
-    // masquerade as omission.
+    // explicit non-empty or empty identity; C4 the canonical Environment
+    // receipt has durably established one live source without changing the
+    // Resource generation. Effects: E1 C1+C2 derives exactly the former binding
+    // and preserves create replay; E2 C4 lets that derived binding select the
+    // same frozen input for terminal publication; E3 a valid explicit identity
+    // remains caller-owned (covered by the adjacent release matrix); E4 an
+    // explicitly empty identity is rejected and cannot masquerade as omission.
     //
     // | Rule | wire binding | deterministic Session/index | Effect |
     // |---|---|---|---|
     // | B1 | omitted | yes | historical binding + exact replay |
-    // | B2 | omitted | yes, then release selects it | one publication |
+    // | B2 | omitted | yes, then release selects it from a live source | one publication |
     // | B3 | explicit non-empty | n/a | preserve caller identity |
     // | B4 | explicit empty | n/a | reject before root creation |
     let runtime = AcceptingFake::default();
@@ -4762,7 +4875,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         "agent_id": "coder",
         "repositories": [{
             "remote_url": "https://github.com/awaken/historical.git",
-            "mount_path": "repository"
+            "mount_path": "/workspace/repository"
         }]
     });
     for replay in ["first", "replay"] {
@@ -4785,6 +4898,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         historical_binding,
         "B1 exact former generated identity"
     );
+    persist_profiled_publication_source(&sessions, "profiled-historical-binding").await;
     let (status, released) = call(
         &app,
         "POST",
@@ -4814,7 +4928,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             "repositories": [{
                 "binding_id": "",
                 "remote_url": "https://github.com/awaken/invalid.git",
-                "mount_path": "repository"
+                "mount_path": "/workspace/repository"
             }]
         })),
     )
@@ -4830,15 +4944,126 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
 }
 
 #[tokio::test]
+async fn profiled_create_receipt_replays_a_historical_repository_path_without_reauthoring() {
+    // Historical-replay cause/effect graph: C1 a durable root and its create
+    // receipt predate strict Repository-path admission; C2 the replay carries
+    // the byte-identical former request (`repo`); C3 a new request with
+    // that path would now fail admission. Effects: E1 C1+C2 returns the existing
+    // Session before lowering; E2 the stored `/repo` value is unchanged;
+    // E3 Registry, Vault, and Runtime creation effects remain zero. New-create
+    // rejection is covered by the path-admission matrix adjacent to this route.
+    //
+    // | Rule | durable receipt | request hash | new admission | Effect |
+    // |---|---|---|---|---|
+    // | H1 | historical exact | exact | bypassed | E1 + E2 + E3 |
+    let legacy_wire = json!({
+        "session_id": "profiled-legacy-path-replay",
+        "mode": "work_unit",
+        "agent_id": "coder",
+        "repositories": [{
+            "remote_url": "https://github.com/awaken/historical-path.git",
+            "mount_path": "repository"
+        }]
+    });
+
+    // Compile one otherwise-current aggregate in an isolated authority, then
+    // seed the target store with the exact shape an older compiler persisted:
+    // authored `repo` was normalized to `/repo` before storage.
+    let seed_sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("seed Session repository"),
+    );
+    let seed_state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(seed_sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let seed_app = profiled_router(seed_state, "default");
+    let mut current_wire = legacy_wire.clone();
+    current_wire["repositories"][0]["mount_path"] = json!("/workspace/repository");
+    let (status, body) = call(&seed_app, "POST", "/v1/awaken/sessions", Some(current_wire)).await;
+    assert_eq!(status, StatusCode::OK, "H1 seed: {body}");
+    let mut historical = seed_sessions
+        .get("profiled-legacy-path-replay")
+        .await
+        .expect("seed aggregate");
+    let (mut inputs, skills) = historical.resources.active.clone().into_parts();
+    inputs[0].mount_path = "/repo".into();
+    // Replay must use the storage-only decoder: public construction deliberately
+    // rejects `/repo`, while durable serde keeps this one historical wire value
+    // byte-exact and prevents it from becoming a new-create admission path.
+    historical.resources.active = serde_json::from_value(json!({
+        "inputs": inputs,
+        "skills": skills,
+    }))
+    .expect("historical aggregate remains durably decodable");
+    historical.revision = Default::default();
+    let historical_repository_id = match &historical.resources.active.inputs()[0].source {
+        awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } => {
+            repository_id.clone()
+        }
+        _ => panic!("historical fixture must retain its Repository input"),
+    };
+
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("target Session repository"),
+    );
+    let typed_legacy: awaken_protocol_awaken::ProfiledSessionCreate =
+        serde_json::from_value(legacy_wire.clone()).expect("legacy private wire");
+    let receipt = awaken_session_contract::IdempotencyRecord {
+        key: "profiled:create:profiled-legacy-path-replay".into(),
+        payload_hash: awaken_session_contract::stable_fingerprint(&typed_legacy),
+    };
+    sessions
+        .create("default", historical, receipt, Vec::new())
+        .await
+        .expect("seed historical root and receipt");
+
+    let runtime = AcceptingFake::default();
+    let target_registry = resource_registry();
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(target_registry.clone()),
+    );
+    let app = profiled_router(state, "default");
+    let (status, replayed) = call(&app, "POST", "/v1/awaken/sessions", Some(legacy_wire)).await;
+    assert_eq!(status, StatusCode::OK, "H1/E1: {replayed}");
+    assert_eq!(
+        sessions
+            .get("profiled-legacy-path-replay")
+            .await
+            .unwrap()
+            .resources
+            .active
+            .inputs()[0]
+            .mount_path,
+        "/repo",
+        "H1/E2 durable path is neither rejected nor rewritten during receipt replay"
+    );
+    assert_eq!(
+        target_registry
+            .find_repository("default", historical_repository_id.as_str())
+            .expect("H1/E3 target Registry read"),
+        None,
+        "H1/E3 receipt replay creates no Repository participant"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "H1/E3");
+    assert!(runtime.applied.lock().unwrap().is_empty(), "H1/E3");
+    assert!(runtime.staged.lock().unwrap().is_empty(), "H1/E3");
+}
+
+#[tokio::test]
 async fn profiled_release_projects_one_durable_repository_publication() {
     // Release cause/effect graph: C1 publication is absent/present; C2 the
     // Workspace and frozen binding are exact/foreign; C3 the expectation is
     // first, an exact replay, or a mismatch; C4 the Runtime returns canonical
-    // evidence. Effects: E1 legacy release archives without publication; E2 an
-    // exact request returns the provisioning receipt only after it is durable in
-    // the Session root; E3 exact replay returns the same response and performs no
-    // second effect; E4 wrong scope is 404; E5 wrong binding is 400; E6 changed
-    // expectation is 409. Rules: P1=!C1=>E1; P2=C1+exact C2+first C3+C4=>E2;
+    // evidence; C5 the canonical Environment receipt has durably established
+    // one live source without changing the Resource generation. Effects: E1
+    // legacy release archives without publication; E2 an exact request returns
+    // the provisioning receipt only after it is durable in the Session root;
+    // E3 exact replay returns the same response and performs no second effect;
+    // E4 wrong scope is 404; E5 wrong binding is 400; E6 changed expectation is
+    // 409. Rules: P1=!C1=>E1; P2=C1+exact C2+first C3+C4+C5=>E2;
     // P3=C1+exact C2+replay C3=>E3; P4=foreign C2=>E4; P5=wrong binding C2=>E5;
     // P6=mismatch C3=>E6.
     let runtime = AcceptingFake::default();
@@ -4860,7 +5085,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
             "repositories": [{
                 "binding_id": "flow-repository",
                 "remote_url": "https://github.com/awaken/publication.git",
-                "mount_path": "repository"
+                "mount_path": "/workspace/repository"
             }]
         })
     };
@@ -4872,6 +5097,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "P2 create: {created}");
+    persist_profiled_publication_source(&sessions, "profiled-publication").await;
 
     let request = json!({
         "repository_publication": {

@@ -213,6 +213,31 @@ impl SessionApplication {
                 return Err(first);
             }
         };
+        let layout = awaken_session_contract::SessionSandboxLayout {
+            workspace_id: owner_scope.clone(),
+            agent_id: compiled.baseline.agent_id.clone(),
+            agent_revision: compiled.baseline.agent_revision,
+            runtime_placement: compiled.baseline.runtime_placement,
+            model_override: compiled.baseline.model_override.clone(),
+            runtime: compiled.baseline.runtime.clone(),
+            mounts: compiled.baseline.mounts.clone(),
+            env: compiled.baseline.env.clone(),
+            environment: compiled.baseline.environment.clone(),
+            resources: compiled.initial_resources.sandbox_layout_bindings(),
+        };
+        if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
+            let first = SessionCreationError::Rejected(error);
+            if !self
+                .abort_unadopted_session_repositories(&repository_configurations)
+                .await
+            {
+                tracing::warn!(
+                    session = %session_id,
+                    "Session Repository compensation remains pending after Sandbox-layout rejection"
+                );
+            }
+            return Err(first);
+        }
         let mut persisted = match Self::compile_session_root(
             session_id.clone(),
             title,

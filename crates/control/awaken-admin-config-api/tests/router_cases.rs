@@ -1297,3 +1297,63 @@ async fn agent_input_bindings_reject_non_positive_versions() {
     let (status, problem) = call(&h.app, "GET", "/v1/config/agents/agent-1/resources", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{problem}");
 }
+
+#[tokio::test]
+async fn repository_agent_input_mount_is_validated_before_persistence() {
+    // Repository mount write-boundary cause/effect decision table:
+    // | Rule | path | Validator | Effect |
+    // | M1 | `/mnt/repo` | reject | 422 and zero durable write |
+    // | M2 | `/workspace/repo` | accept | 200 and exact readback |
+    // Constraint: validation precedes the existing aggregate revision/store
+    // port, so a rejected candidate cannot consume revision 1.
+    let h = harness();
+    let body = |mount_path: &str| {
+        json!({
+            "agent_id": "ignored-body-id",
+            "inputs": [{
+                "binding_id": "repository",
+                "target": { "kind": "repository", "id": "repository-1" },
+                "mount_path": mount_path,
+                "access": "read_write"
+            }],
+            "revision": 1
+        })
+    };
+
+    let (status, problem) = call(
+        &h.app,
+        "PUT",
+        "/v1/config/agents/agent-repository/resources",
+        Some(body("/mnt/repo")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "M1: {problem}");
+    assert_eq!(problem["code"], "invalid_mount_path", "M1");
+    let (status, absent) = call(
+        &h.app,
+        "GET",
+        "/v1/config/agents/agent-repository/resources",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "M1: {absent}");
+
+    let (status, saved) = call(
+        &h.app,
+        "PUT",
+        "/v1/config/agents/agent-repository/resources",
+        Some(body("/workspace/repo")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "M2: {saved}");
+    assert_eq!(saved["inputs"][0]["mount_path"], "/workspace/repo", "M2");
+    let (status, reloaded) = call(
+        &h.app,
+        "GET",
+        "/v1/config/agents/agent-repository/resources",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "M2: {reloaded}");
+    assert_eq!(reloaded["inputs"][0]["mount_path"], "/workspace/repo", "M2");
+}

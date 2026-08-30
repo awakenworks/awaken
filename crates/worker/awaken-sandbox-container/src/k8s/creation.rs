@@ -1,7 +1,5 @@
 //! Transactional realization of a Kubernetes Sandbox and retained claim.
 
-use super::names::continuation_claim_name;
-use super::realization::await_pod_deleted;
 use super::*;
 use crate::k8s_package_realization::stamp_sandbox_release_annotations;
 #[cfg(test)]
@@ -9,120 +7,174 @@ use crate::k8s_package_realization::{
     PACKAGE_REALIZATION_CONTRACT_ANNOTATION, RESOLVED_IMAGE_ANNOTATION, SANDBOX_SCOPE_ANNOTATION,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExistingContinuationDecision {
-    Preserve,
-    ReapPod,
-}
-
-fn existing_continuation_decision(
-    expected_claim: &str,
-    pod_claim: Option<&str>,
-    pod_claim_uid: Option<&str>,
-    observed_claim_uid: Option<&str>,
-) -> ExistingContinuationDecision {
-    if pod_claim != Some(expected_claim) {
-        return ExistingContinuationDecision::Preserve;
+pub(super) async fn create(
+    runtime: &K8sRuntime,
+    context: &ContainerRealizationContext<'_>,
+    plan: &ContainerPlan,
+    realization_fingerprint: &pc::SandboxRealizationFingerprint,
+) -> Result<String, RuntimeError> {
+    let runtime_id = runtime.realization_runtime_id(context.scope)?;
+    let pods = runtime.pods();
+    let expected_rebuild = rebuild_continuation_expectation(
+        context.intent,
+        continuation::claim_name(&runtime_id, plan, runtime.continuation_volume.is_some()),
+    )?;
+    let claim_outcome = if let Some(expected) = expected_rebuild.as_ref() {
+        let claims = runtime.persistent_volume_claims();
+        let observed = match claims.get(&expected.claim_name).await {
+            Ok(claim) => claim,
+            Err(error) if api_not_found(&error) => {
+                return Err(backend(
+                    "Kubernetes rebuild source continuation PVC disappeared before Pod creation",
+                ));
+            }
+            Err(error) => return Err(backend(error)),
+        };
+        rebuild_claim_admission(&observed, &expected.claim_uid)?;
+        Some(observed)
+    } else {
+        runtime.create_or_recover_claim(context, plan).await?
+    };
+    let claim_uid = claim_outcome
+        .as_ref()
+        .map(continuation::claim_uid)
+        .transpose()?;
+    let mut pod = runtime.pod_for_effect(&runtime_id, plan, context.effect_fence);
+    // Create the Pod before its projected ConfigMaps/Secrets. Kubernetes admits
+    // missing references as a non-running Pod, giving every later participant
+    // effect one UID-fenced recovery root instead of leaving unobservable
+    // auxiliary objects when the Worker crashes between writes.
+    stamp_sandbox_release_annotations(&mut pod, context.scope, &plan.image);
+    if let Some(uid) = claim_uid.as_deref() {
+        continuation::bind_claim_uid(&mut pod, uid);
     }
-    match (pod_claim_uid, observed_claim_uid) {
-        (_, None) => ExistingContinuationDecision::ReapPod,
-        (Some(expected), Some(observed)) if expected != observed => {
-            ExistingContinuationDecision::ReapPod
-        }
-        _ => ExistingContinuationDecision::Preserve,
-    }
-}
-
-async fn delete_exact_pod(pods: &Api<Pod>, observed: &Pod) -> Result<(), RuntimeError> {
-    let name = observed
+    runtime.stamp_effect_evidence(&mut pod, context, realization_fingerprint);
+    stamp_pod_realization(&mut pod)?;
+    let mut created = create_or_verify(&pods, &pod).await?;
+    let name = created
         .metadata
         .name
         .clone()
-        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no name"))?;
-    let uid = observed
+        .ok_or_else(|| backend("created pod has no name"))?;
+    if created
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(crate::RUNTIME_OWNER_LABEL))
+        != Some(&runtime.owner_id)
+    {
+        created
+            .metadata
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert(
+                crate::RUNTIME_OWNER_LABEL.to_string(),
+                runtime.owner_id.clone(),
+            );
+        created = pods
+            .replace(&name, &PostParams::default(), &created)
+            .await
+            .map_err(backend)?;
+    }
+    let pod_uid = created
         .metadata
         .uid
-        .clone()
-        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
-    let resource_version = observed
-        .metadata
-        .resource_version
-        .clone()
-        .ok_or_else(|| backend("Kubernetes Sandbox Pod has no resourceVersion"))?;
-    match pods
-        .delete(
-            &name,
-            &DeleteParams::default().preconditions(kube::api::Preconditions {
-                uid: Some(uid),
-                resource_version: Some(resource_version),
-            }),
-        )
-        .await
-    {
-        Ok(_) => await_pod_deleted(pods, &name).await,
-        Err(error) if api_not_found(&error) => Ok(()),
-        Err(error) => Err(backend(error)),
-    }
+        .as_deref()
+        .ok_or_else(|| backend("created pod has no UID"))?;
+    converge(
+        runtime,
+        &runtime_id,
+        &name,
+        pod_uid,
+        context,
+        plan,
+        realization_fingerprint,
+    )
+    .await?;
+    Ok(name)
 }
 
-async fn reap_broken_continuation_pod(
+/// Idempotently finish every participant behind an already UID-fenced Pod.
+/// Both first creation and response-loss recovery call this one edge; successful
+/// return is therefore the only Ready+projection completion witness.
+pub(super) async fn converge(
     runtime: &K8sRuntime,
-    pods: &Api<Pod>,
+    runtime_id: &str,
     pod_name: &str,
-    claim_name: &str,
-) -> Result<(), RuntimeError> {
-    let Some(pod) = pods.get_opt(pod_name).await.map_err(backend)? else {
-        return Ok(());
-    };
-    let pod_claim = continuation::bound_claim_name(&pod)?;
-    if pod_claim != Some(claim_name) {
-        return Ok(());
-    }
-    let observed_claim_uid = match runtime.persistent_volume_claims().get(claim_name).await {
-        Ok(claim) => Some(continuation::claim_uid(&claim)?),
-        Err(error) if api_not_found(&error) => None,
-        Err(error) => return Err(backend(error)),
-    };
-    if existing_continuation_decision(
-        claim_name,
-        pod_claim,
-        continuation::bound_claim_uid(&pod),
-        observed_claim_uid.as_deref(),
-    ) == ExistingContinuationDecision::ReapPod
-    {
-        delete_exact_pod(pods, &pod).await?;
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CreationFailureCleanup {
-    pod: bool,
-    claim: bool,
-}
-
-fn creation_failure_cleanup(
-    failed: bool,
-    pod_created: bool,
-    claim_created: bool,
-    preserve_exact_restore: bool,
-) -> CreationFailureCleanup {
-    CreationFailureCleanup {
-        pod: failed && pod_created && !preserve_exact_restore,
-        claim: failed && claim_created && !preserve_exact_restore,
-    }
-}
-
-pub(super) async fn create(
-    runtime: &K8sRuntime,
-    id: &str,
+    expected_pod_uid: &str,
+    context: &ContainerRealizationContext<'_>,
     plan: &ContainerPlan,
-) -> Result<String, RuntimeError> {
-    create_exact(runtime, id, plan, None)
-        .await
-        .map(|target| target.container_id)
+    realization_fingerprint: &pc::SandboxRealizationFingerprint,
+) -> Result<(), RuntimeError> {
+    let pod = runtime.pods().get(pod_name).await.map_err(backend)?;
+    let pod_owner = Some(pod_owner_reference(&pod, expected_pod_uid)?);
+    let cms = runtime.configmaps();
+    for (index, bind) in content_binds(plan).iter().enumerate() {
+        if crate::live_inputs::manages(bind) {
+            continue;
+        }
+        let mut configmap = build_configmap(
+            runtime_id,
+            index,
+            bind.content.as_deref(),
+            bind.content_bytes.as_deref(),
+            &pod_owner,
+        );
+        runtime.stamp_effect_evidence(&mut configmap, context, realization_fingerprint);
+        stamp_realization(&mut configmap)?;
+        let configmap = create_or_verify(&cms, &configmap).await?;
+        verify_projected_content(
+            &configmap.metadata,
+            pod_name,
+            expected_pod_uid,
+            context.attempt.as_str(),
+        )?;
+    }
+    let secrets = runtime.secrets();
+    for (index, bind) in credential_binds(plan).iter().enumerate() {
+        let mut secret = build_credential_secret(
+            runtime_id,
+            index,
+            credential_key(bind),
+            bind.secret_content
+                .as_ref()
+                .expect("credential bind has secret bytes")
+                .expose(),
+            &pod_owner,
+        );
+        runtime.stamp_effect_evidence(&mut secret, context, realization_fingerprint);
+        stamp_realization(&mut secret)?;
+        let secret = create_or_verify(&secrets, &secret).await?;
+        verify_projected_content(
+            &secret.metadata,
+            pod_name,
+            expected_pod_uid,
+            context.attempt.as_str(),
+        )?;
+    }
+    realization::await_pod_ready(&runtime.pods(), pod_name).await?;
+    if !plan.memory_mounts.is_empty() {
+        let effect_fence = context.effect_fence.ok_or_else(|| {
+            backend("Kubernetes Memory convergence requires an Environment effect fence")
+        })?;
+        if memory::projection_complete(runtime, pod_name, effect_fence).await? {
+            return Ok(());
+        }
+        // The Agent/Hand command is still blocked on the projection marker.
+        // Replaying an interrupted projection is therefore safe: no workload
+        // can observe or mutate the tree before both Memory and initial Files
+        // have converged under this exact physical-effect fence.
+        memory::project_snapshots(runtime, pod_name, plan, effect_fence).await?;
+        live_inputs::project_manifest(runtime, pod_name, plan).await?;
+        memory::mark_projection_complete(runtime, pod_name, effect_fence).await
+    } else {
+        live_inputs::project_manifest(runtime, pod_name, plan).await
+    }
 }
 
+/// Realize or adopt the one exact checkpoint-restore target. Ordinary
+/// Environment creation remains on the predecessor-fenced path above; this
+/// edge is selected only by the canonical `SandboxRestoreRequest`.
 pub(super) async fn restore_or_adopt(
     runtime: &K8sRuntime,
     id: &str,
@@ -130,31 +182,16 @@ pub(super) async fn restore_or_adopt(
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
 ) -> Result<crate::RuntimeRestoreTarget, RuntimeError> {
-    create_exact(runtime, id, plan, Some((evidence, plan_fingerprint))).await
-}
+    if crate::restoration_plan_fingerprint(plan) != plan_fingerprint {
+        return Err(backend("Kubernetes restore plan fingerprint mismatch"));
+    }
+    if !plan.memory_mounts.is_empty() {
+        return Err(backend(
+            "Kubernetes exact restore plan retained an independently governed Memory mount",
+        ));
+    }
 
-async fn create_exact(
-    runtime: &K8sRuntime,
-    id: &str,
-    plan: &ContainerPlan,
-    restoration: Option<(&pc::SandboxRestorationEvidence, &str)>,
-) -> Result<crate::RuntimeRestoreTarget, RuntimeError> {
-    if let Some(limit) = unenforceable_k8s_limit(&plan.limits) {
-        return Err(RuntimeError::Backend(format!(
-            "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \
-             setting, not a Pod-spec field); refusing to place a `{limit}`-limited \
-             spec on the k8s tier rather than silently dropping the cap"
-        )));
-    }
     let runtime_id = k8s_runtime_id(id)?;
-    let pods = runtime.pods();
-    let managed_pod_name = pod_name(&runtime_id);
-    if restoration.is_none()
-        && continuation::claim_required(plan, runtime.continuation_volume.is_some())
-    {
-        let claim_name = continuation_claim_name(&runtime_id);
-        reap_broken_continuation_pod(runtime, &pods, &managed_pod_name, &claim_name).await?;
-    }
     let claim_outcome = if continuation::claim_required(plan, runtime.continuation_volume.is_some())
     {
         let config = runtime
@@ -162,12 +199,17 @@ async fn create_exact(
             .as_ref()
             .expect("claim selector requires configured continuation storage");
         let mut claim = continuation::build_claim(&runtime_id, config)?;
-        if let Some((evidence, plan_fingerprint)) = restoration {
-            realization::stamp_restoration(&mut claim, evidence);
-            realization::stamp_restoration_plan(&mut claim, plan_fingerprint);
-        }
+        realization::stamp_restoration(&mut claim, evidence);
+        realization::stamp_restoration_plan(&mut claim, plan_fingerprint);
         stamp_realization(&mut claim)?;
-        Some(create_or_verify_with_status(&runtime.persistent_volume_claims(), &claim).await?)
+        Some(
+            realization::create_or_verify_with_status_exact(
+                &runtime.persistent_volume_claims(),
+                &claim,
+                restore::verify_claim_projection,
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -175,120 +217,76 @@ async fn create_exact(
         .as_ref()
         .map(|outcome| continuation::claim_uid(&outcome.object))
         .transpose()?;
-    let claim_created = claim_outcome
-        .as_ref()
-        .is_some_and(|outcome| outcome.created);
-    let mut created_pod_uid = None::<String>;
-    let result = async {
-        if restoration.is_none() {
-            reap_terminal_pod(&pods, &managed_pod_name).await?;
-        }
-        let cms = runtime.configmaps();
-        for (i, bind) in content_binds(plan).iter().enumerate() {
-            if crate::live_inputs::manages(bind) {
-                continue;
-            }
-            let mut cm = build_configmap(
-                &runtime_id,
-                i,
-                bind.content.as_deref(),
-                bind.content_bytes.as_deref(),
-                &runtime.owner,
-            );
-            stamp_realization(&mut cm)?;
-            create_or_verify(&cms, &cm).await?;
-        }
-        let secrets = runtime.secrets();
-        for (i, bind) in credential_binds(plan).iter().enumerate() {
-            let mut secret = build_credential_secret(
-                &runtime_id,
-                i,
-                credential_key(bind),
-                bind.secret_content
-                    .as_ref()
-                    .expect("credential bind has secret bytes")
-                    .expose(),
-                &runtime.owner,
-            );
-            stamp_realization(&mut secret)?;
-            create_or_verify(&secrets, &secret).await?;
-        }
-        let mut pod = runtime.pod(&runtime_id, plan);
-        // `runtime_id` is an adapter-local Kubernetes name and may be a hash.
-        // Preserve the original Sandbox scope and the already-resolved image at
-        // the sole Pod creation seam so a bounded cluster observer can correlate
-        // this exact Sandbox without acquiring Session or build authority.
-        stamp_sandbox_release_annotations(&mut pod, id, &plan.image);
-        if let Some(uid) = claim_uid.as_deref() {
-            continuation::bind_claim_uid(&mut pod, uid);
-        }
-        if let Some((evidence, plan_fingerprint)) = restoration {
-            realization::stamp_restoration(&mut pod, evidence);
-            realization::stamp_restoration_plan(&mut pod, plan_fingerprint);
-        }
-        stamp_pod_realization(&mut pod)?;
-        let outcome = create_or_verify_with_status(&pods, &pod).await?;
-        let was_created = outcome.created;
-        let created = outcome.object;
-        if was_created {
-            created_pod_uid = created.metadata.uid.clone();
-        }
-        let name = created
-            .metadata
-            .name
-            .clone()
-            .ok_or_else(|| backend("created pod has no name"))?;
-        let pod_uid = created
-            .metadata
-            .uid
-            .clone()
-            .ok_or_else(|| backend("created pod has no UID"))?;
-        realization::transfer_runtime_owner(&pods, created, &pod_uid, &runtime.owner_id).await?;
-        realization::await_pod_ready(&pods, &name).await?;
-        if was_created {
-            memory::project_snapshots(runtime, &name, plan).await?;
-        }
-        live_inputs::project_manifest(runtime, &name, plan).await?;
-        Ok((name, was_created))
-    }
-    .await;
 
-    let cleanup = creation_failure_cleanup(
-        result.is_err(),
-        created_pod_uid.is_some(),
-        claim_created,
-        restoration.is_some(),
-    );
-    if cleanup.pod
-        && let Some(expected_pod_uid) = created_pod_uid.as_deref()
-        && let Ok(observed) = pods.get(&managed_pod_name).await
-        && observed.metadata.uid.as_deref() == Some(expected_pod_uid)
-    {
-        let _ = delete_exact_pod(&pods, &observed).await;
-    }
-    if cleanup.claim {
-        // Preserve a claim only when an exact concurrent Pod already binds it.
-        if let Some(uid) = claim_uid.as_deref() {
-            let claim_is_in_use = pods
-                .get_opt(&managed_pod_name)
-                .await
-                .map_err(backend)?
-                .as_ref()
-                .and_then(continuation::bound_claim_uid)
-                == Some(uid);
-            if !claim_is_in_use {
-                continuation::delete_claim(
-                    &runtime.persistent_volume_claims(),
-                    &managed_pod_name,
-                    uid,
-                )
-                .await?;
-            }
+    let cms = runtime.configmaps();
+    for (index, bind) in content_binds(plan).iter().enumerate() {
+        if crate::live_inputs::manages(bind) {
+            continue;
         }
+        let mut configmap = build_configmap(
+            &runtime_id,
+            index,
+            bind.content.as_deref(),
+            bind.content_bytes.as_deref(),
+            &runtime.owner,
+        );
+        stamp_realization(&mut configmap)?;
+        create_or_verify(&cms, &configmap).await?;
     }
-    result.map(|(container_id, created)| crate::RuntimeRestoreTarget {
-        container_id,
-        disposition: if created {
+    let secrets = runtime.secrets();
+    for (index, bind) in credential_binds(plan).iter().enumerate() {
+        let mut secret = build_credential_secret(
+            &runtime_id,
+            index,
+            credential_key(bind),
+            bind.secret_content
+                .as_ref()
+                .expect("credential bind has secret bytes")
+                .expose(),
+            &runtime.owner,
+        );
+        stamp_realization(&mut secret)?;
+        create_or_verify(&secrets, &secret).await?;
+    }
+
+    let mut pod = runtime.pod(&runtime_id, plan);
+    stamp_sandbox_release_annotations(&mut pod, id, &plan.image);
+    if let Some(uid) = claim_uid.as_deref() {
+        continuation::bind_claim_uid(&mut pod, uid);
+    }
+    realization::stamp_restoration(&mut pod, evidence);
+    realization::stamp_restoration_plan(&mut pod, plan_fingerprint);
+    stamp_pod_realization(&mut pod)?;
+    let outcome = realization::create_or_verify_with_status_exact(
+        &runtime.pods(),
+        &pod,
+        restore::verify_pod_projection,
+    )
+    .await?;
+    let name = outcome
+        .object
+        .metadata
+        .name
+        .clone()
+        .ok_or_else(|| backend("created restore Pod has no name"))?;
+    let pod_uid = outcome
+        .object
+        .metadata
+        .uid
+        .clone()
+        .ok_or_else(|| backend("created restore Pod has no UID"))?;
+    realization::transfer_runtime_owner(
+        &runtime.pods(),
+        outcome.object,
+        &pod_uid,
+        &runtime.owner_id,
+    )
+    .await?;
+    realization::await_pod_ready(&runtime.pods(), &name).await?;
+    live_inputs::project_manifest(runtime, &name, plan).await?;
+    Ok(crate::RuntimeRestoreTarget {
+        container_id: name,
+        disposition: if outcome.created {
             pc::SandboxRestoreTargetDisposition::Created
         } else {
             pc::SandboxRestoreTargetDisposition::Recovered
@@ -310,6 +308,7 @@ mod tests {
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            egress_identity: Default::default(),
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
             filesystem_continuity: pc::FilesystemContinuity::Retained,
@@ -418,106 +417,37 @@ mod tests {
     }
 
     #[test]
-    fn failed_creation_cleans_only_resources_created_by_that_attempt() {
-        /* Create-failure cleanup cause/effect table.
-         * Causes: C1 realization failed; C2 this attempt created the Pod; C3
-         * this attempt created the continuation claim; C4 this is an exact
-         * restore target whose durable tuple must survive a lost receipt.
-         * Effects: E1 reap the exact created Pod; E2 evaluate deletion of the
-         * exact created claim; E3 preserve both for read-first replay.
-         * Rules: F1 !C1=>!E1+!E2; F2 C1+C2+!C3=>E1 only (ephemeral Session);
-         * F3 C1+!C2+C3=>E2 only (a peer owns the Pod); F4 C1+C2+C3=>E1+E2.
-         * F5 C1+C4=>E3 regardless of C2/C3.
-         * UID/resourceVersion and claim-UID fencing remain in the existing
-         * deletion owners; this kernel only prevents one condition from
-         * suppressing cleanup of the other resource.
+    fn projected_participants_are_owned_by_the_exact_pod_incarnation() {
+        /* Projected-participant ownership cause/effect table.
+         * Causes: C1 the API-observed Pod has name+UID; C2 the caller expects
+         * that exact/different UID; C3 the Pod is live/terminating. Effects: E1
+         * create one Pod OwnerReference carrying the exact UID; E2 reject before
+         * ConfigMap/Secret writes. Rules: O1 exact(C2)+live(C3)=>E1;
+         * O2 different(C2)=>E2; O3 terminating(C3)=>E2. Because the Pod is the
+         * only owner, Kubernetes GC is the sole absent-Pod cleanup authority.
          */
-        assert_eq!(
-            creation_failure_cleanup(false, true, true, false),
-            CreationFailureCleanup {
-                pod: false,
-                claim: false,
+        let mut pod = Pod {
+            metadata: ObjectMeta {
+                name: Some("awaken-session-1".into()),
+                uid: Some("pod-uid-1".into()),
+                ..Default::default()
             },
-            "F1"
-        );
+            ..Default::default()
+        };
+        let owner = pod_owner_reference(&pod, "pod-uid-1").expect("O1");
+        assert_eq!(owner.name, "awaken-session-1", "O1");
+        assert_eq!(owner.uid, "pod-uid-1", "O1");
+        assert_eq!(owner.controller, Some(true), "O1");
+        let configmap = build_configmap("session-1", 0, Some("value"), None, &Some(owner));
         assert_eq!(
-            creation_failure_cleanup(true, true, false, false),
-            CreationFailureCleanup {
-                pod: true,
-                claim: false,
-            },
-            "F2"
+            configmap.metadata.owner_references.unwrap()[0].uid,
+            "pod-uid-1",
+            "O1"
         );
-        assert_eq!(
-            creation_failure_cleanup(true, false, true, false),
-            CreationFailureCleanup {
-                pod: false,
-                claim: true,
-            },
-            "F3"
-        );
-        assert_eq!(
-            creation_failure_cleanup(true, true, true, false),
-            CreationFailureCleanup {
-                pod: true,
-                claim: true,
-            },
-            "F4"
-        );
-        assert_eq!(
-            creation_failure_cleanup(true, true, true, true),
-            CreationFailureCleanup {
-                pod: false,
-                claim: false,
-            },
-            "F5"
-        );
-    }
 
-    #[test]
-    fn stale_continuation_reference_decision_table() {
-        /* Existing-realization recovery cause/effect table.
-         * Causes: C1 the deterministic Pod references this realization's PVC;
-         * C2 that PVC is absent/present; C3 the Pod has no legacy incarnation,
-         * the exact current UID, or a different UID. Effects: E1 preserve a Pod
-         * which may still own live Session data; E2 reap only an impossible Pod
-         * projection before recreating the PVC. Rules: R1 !C1=>E1;
-         * R2 C1+absent(C2)=>E2; R3 C1+present(C2)+legacy(C3)=>E1;
-         * R4 C1+present(C2)+exact(C3)=>E1;
-         * R5 C1+present(C2)+different(C3)=>E2. The subsequent create transaction
-         * remains the sole PVC/Pod owner and retains UID/resourceVersion fencing.
-         */
-        use ExistingContinuationDecision::{Preserve, ReapPod};
-
-        assert_eq!(
-            existing_continuation_decision("awc-s", Some("other"), None, None),
-            Preserve,
-            "R1"
-        );
-        assert_eq!(
-            existing_continuation_decision("awc-s", Some("awc-s"), None, None),
-            ReapPod,
-            "R2"
-        );
-        assert_eq!(
-            existing_continuation_decision("awc-s", Some("awc-s"), None, Some("uid-1")),
-            Preserve,
-            "R3"
-        );
-        assert_eq!(
-            existing_continuation_decision("awc-s", Some("awc-s"), Some("uid-1"), Some("uid-1")),
-            Preserve,
-            "R4"
-        );
-        assert_eq!(
-            existing_continuation_decision(
-                "awc-s",
-                Some("awc-s"),
-                Some("uid-old"),
-                Some("uid-new")
-            ),
-            ReapPod,
-            "R5"
-        );
+        assert!(pod_owner_reference(&pod, "pod-uid-old").is_err(), "O2");
+        pod.metadata.deletion_timestamp =
+            serde_json::from_str("\"2026-08-29T00:00:00Z\"").expect("valid Kubernetes timestamp");
+        assert!(pod_owner_reference(&pod, "pod-uid-1").is_err(), "O3");
     }
 }

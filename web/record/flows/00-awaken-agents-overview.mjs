@@ -2,6 +2,7 @@
 // produces a decision brief with an explicit human approval boundary.
 
 import { setTimeout as delay } from "node:timers/promises";
+import { typedAgentTools } from "../../test-support/agent-tools.mjs";
 import { LIVE_MODEL_ID, configureLiveModel } from "../support/models.mjs";
 import { MANAGED_HEADERS } from "../support/betas.mjs";
 import {
@@ -56,7 +57,9 @@ export async function prepare({ page }) {
     description: "Reads the specified read-only release material and prepares a reviewable decision.",
     model: { id: LIVE_MODEL_ID },
     system: `First call read exactly once on ${TOOL_PATH}. Use only that file as evidence. Produce a concise brief with exactly these headings: Decision, Evidence reviewed, Blockers, Owners, Approval required, Next actions. The decision must be HOLD when any required check is failed, missing, unowned, or stale. Never deploy, approve, or invent evidence. Stay under 180 words.`,
-    tools: ["read"],
+    // Evidence decision rule: C1 a mounted read-only packet requires `read`;
+    // E1 exactly one typed Agent ToolSet enables it without a legacy scalar path.
+    tools: typedAgentTools(["read"]),
     tool_overrides: [],
     mcp_servers: [],
     skills: [],

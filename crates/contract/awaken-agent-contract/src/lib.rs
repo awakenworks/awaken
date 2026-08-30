@@ -25,7 +25,8 @@ pub use agent::thread::Id as ThreadId;
 pub use audit::record::Record as EventRecord;
 pub use event::AgentEvent;
 pub use fingerprint::{
-    collision_resistant_fingerprint, collision_resistant_fingerprint_digest, stable_fingerprint,
+    CanonicalJsonHashError, canonical_json_sha256, collision_resistant_fingerprint,
+    collision_resistant_fingerprint_digest, stable_fingerprint,
 };
 pub use id::fresh_process_id;
 pub use mcp_target::{

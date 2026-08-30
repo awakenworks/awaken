@@ -172,6 +172,7 @@ mod tests {
                     scope_id: None,
                     logical_path: None,
                     harvest_key: None,
+                    artifact_idempotency_scope: None,
                     deleted: false,
                 })
                 .await
@@ -185,6 +186,13 @@ mod tests {
         assert!(
             files.list_files("workspace", None).await.is_err(),
             "T2 list"
+        );
+        assert!(
+            files
+                .list_files_including_deleted("workspace", None)
+                .await
+                .is_err(),
+            "T2 recovery list"
         );
         assert!(
             files.mark_file_deleted("workspace", "file").await.is_err(),

@@ -10,7 +10,7 @@ impl SecretBytes {
         Self(bytes)
     }
 
-    #[cfg(feature = "k8s")]
+    #[cfg(any(test, feature = "podman", feature = "k8s"))]
     pub(crate) fn expose(&self) -> &[u8] {
         &self.0
     }

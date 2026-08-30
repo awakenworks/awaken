@@ -130,6 +130,9 @@ export default function AgentEditorSurface() {
     retry: (attempt, error) => !isAbsent(error) && attempt < 2,
   });
   const caps = useCapabilities();
+  const agentToolsetMembers = (caps.data?.toolsets ?? [])
+    .find((toolset) => toolset.type === "agent_toolset_20260401")
+    ?.members ?? [];
   const credentials = useQuery({
     queryKey: ["credentials", wsId],
     queryFn: () => api.get<CredentialSource[]>(
@@ -531,10 +534,11 @@ export default function AgentEditorSurface() {
         <AgentEditorStages
           stage={stage} builderSection={builderSection} advancedSection={advancedSection}
           config={cfg} baseline={baseline} resources={resourceInputs} resourcesError={resourcesError}
+          resourceInputDefaults={caps.data?.resource_inputs?.default_mounts}
           resourceRevision={resourceRevision} isNew={isNew} published={existing.data?.published === true}
           canRun={managedRuntime && canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
           readyModels={models} allModels={allModels} runtimes={caps.data?.runtimes ?? []}
-          tools={caps.data?.tools ?? []} plugins={caps.data?.plugins ?? []} policies={caps.data?.policies ?? []}
+          tools={caps.data?.tools ?? []} agentToolsetMembers={agentToolsetMembers} plugins={caps.data?.plugins ?? []}
           toolsets={caps.data?.toolsets ?? []}
           credentials={credentials.data ?? []} changed={changed} onPatch={patch} onRawChange={replaceRaw}
           onManageModels={() => setManageModels(true)}

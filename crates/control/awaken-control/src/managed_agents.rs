@@ -21,11 +21,11 @@ use awaken_protocol_managed::types::agent::{
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
-use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
+use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_contract::{
-    AgentTool, CustomToolInputSchema, is_agent_toolset_member, resolved_toolsets, toolset_policies,
-    validate_agent_tools,
+    AgentTool, CustomToolInputSchema, preserve_runtime_agent_overrides, resolved_toolsets,
+    toolset_policies, validate_agent_tools,
 };
 use awaken_tenancy::ScopeId;
 
@@ -490,7 +490,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             let tools = tools.unwrap_or_default();
             validate_agent_tools(&tools).map_err(ManagedAgentError::Invalid)?;
             config.tool_ids.clear();
-            config.toolsets = toolset_policies(&tools);
+            let mut replacement = toolset_policies(&tools);
+            preserve_runtime_agent_overrides(&current.config.toolsets, &mut replacement);
+            config.toolsets = replacement;
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {
@@ -543,6 +545,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?
             .ok_or(ManagedAgentError::NotFound)?;
         if current.config.lifecycle() == AgentLifecycle::Archived {
+            self.plane
+                .withdraw(workspace_id, id, current.revision)
+                .await
+                .map_err(ManagedAgentError::Storage)?;
             return Ok(project(current));
         }
         let mut config = current.config;
@@ -550,7 +556,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         config.archived_at = Some(lifecycle_timestamp());
         match self
             .plane
-            .put_if_revision(&scope, &config, current.revision)
+            .archive_if_revision(&scope, &config, current.revision)
             .await
             .map_err(ManagedAgentError::Storage)?
         {
@@ -633,7 +639,8 @@ mod tests {
         ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo, ModelSpeed,
     };
     use awaken_runtime_contract::agent_bindings::{
-        InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
+        InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort, ToolExecutionPolicy,
+        ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
     };
     use awaken_runtime_contract::resolved::{
         InferenceEndpoint, InferencePlacement, InferencePlacementMechanism, ModelBinding,
@@ -844,22 +851,29 @@ mod tests {
     }
 
     fn plane_with_delegation(path: &str) -> ConfigPlane {
+        plane_with_delegation_and_catalog(path).0
+    }
+
+    fn plane_with_delegation_and_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
         let catalog = Arc::new(ExecutableAgentCatalog::new());
-        ConfigPlane::new(
-            Arc::new(ConfigService::new(
-                Arc::new(TestModelResolver),
-                Arc::new(LocalExecutableAgentRegistrar::new(catalog)),
-            )),
-            Arc::new(SqliteConfigStore::open(path).expect("config store")),
-            Arc::new(StaticToolCatalog(vec![
-                ToolDescriptor::pinned(
-                    "managed",
-                    "agent_run",
-                    "Run an exact roster Agent",
-                    json!({"type": "object"}),
-                )
-                .with_kind(ToolKind::AgentDelegation),
-            ])),
+        (
+            ConfigPlane::new(
+                Arc::new(ConfigService::new(
+                    Arc::new(TestModelResolver),
+                    Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+                )),
+                Arc::new(SqliteConfigStore::open(path).expect("config store")),
+                Arc::new(StaticToolCatalog(vec![
+                    ToolDescriptor::pinned(
+                        "managed",
+                        "agent_run",
+                        "Run an exact roster Agent",
+                        json!({"type": "object"}),
+                    )
+                    .with_kind(ToolKind::AgentDelegation),
+                ])),
+            ),
+            catalog,
         )
     }
 
@@ -937,17 +951,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_update_preserves_versioned_runtime_only_policy() {
+        // Cause/effect table for the Managed repository caller of the shared codec:
+        // | rule | current opaque | replacement wire | effect |
+        // | M1   | agent_run ask  | closed tools     | exact opaque persists and publishes ask |
+        // The retrieval projection omits the opaque member; only the versioned current
+        // config can supply it to the revision-fenced update.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("managed-opaque.sqlite");
+        let (plane, executable) = plane_with_delegation_and_catalog(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+        let created = repository
+            .create("workspace-a", create_params("opaque"))
+            .await
+            .unwrap();
+        let scope = ScopeId::from("workspace-a");
+        let current = plane
+            .get_versioned(&scope, &created.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let runtime_only = ToolPolicyOverride::new(
+            "agent_run",
+            ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+        );
+        let current_revision = current.revision;
+        let mut seeded = current.config;
+        seeded.toolsets.push(ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: false,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: vec![runtime_only.clone()],
+        });
+        assert!(matches!(
+            plane
+                .put_if_revision(&scope, &seeded, current_revision)
+                .await
+                .unwrap(),
+            ConfigWrite::Applied { revision: 2 }
+        ));
+        plane.publish(&scope, &created.id).await.unwrap();
+        let retrieved = repository
+            .retrieve("workspace-a", &created.id, None)
+            .await
+            .unwrap();
+        assert!(
+            !serde_json::to_string(&retrieved.tools)
+                .unwrap()
+                .contains("agent_run"),
+            "M1 closed retrieval"
+        );
+        let updated = repository
+            .update(
+                "workspace-a",
+                &created.id,
+                AgentUpdateParams {
+                    version: Some(retrieved.version),
+                    name: None,
+                    model: None,
+                    description: None,
+                    system: None,
+                    metadata: None,
+                    mcp_servers: None,
+                    skills: None,
+                    tools: Some(Some(retrieved.tools)),
+                    multiagent: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.version, 3, "M1");
+        let stored = plane
+            .get_versioned(&scope, &created.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let agent = stored
+            .config
+            .toolsets
+            .iter()
+            .find(|toolset| toolset.source == ToolsetSource::Agent)
+            .unwrap();
+        assert_eq!(
+            agent
+                .overrides
+                .iter()
+                .find(|entry| entry.name == "agent_run")
+                .unwrap(),
+            &runtime_only,
+            "M1 exact opaque"
+        );
+        let runtime = executable
+            .current("workspace-a", &created.id)
+            .unwrap()
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .tool_policy("agent_run")
+            .unwrap();
+        assert!(runtime.enabled, "M1");
+        assert_eq!(
+            runtime.permission,
+            ToolPermissionRequirement::AlwaysAsk,
+            "M1"
+        );
+    }
+
+    #[tokio::test]
     async fn managed_agent_archive_retains_immutable_publication() {
         // Cause/effect graph:
         // C1 Published + archive -> E1 current execution becomes unavailable while
         // the immutable publication remains addressable; C2 Archived + archive ->
-        // E2 idempotent. Disable remains a native configuration-plane lifecycle
+        // E2 idempotent; C3 archive CAS committed but withdrawal did not run ->
+        // E3 retry replays the same revision-fenced withdrawal. Disable remains a native configuration-plane lifecycle
         // operation and is deliberately absent from the Managed SDK repository.
         //
         // Decision table:
         // | rule | current   | command | current executable | exact snapshot | result |
         // | L1   | Published | archive | no                 | yes            | archived |
         // | L2   | Archived  | archive | no                 | yes            | no new revision |
+        // | L3   | Archived  | archive | stale current      | yes            | withdraw repaired, no new revision |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
@@ -991,6 +1120,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(archived_again.version, 2, "L2");
+
+        let split = repository
+            .create("workspace-a", create_params("split-archive"))
+            .await
+            .unwrap();
+        let split_before = plane
+            .get_versioned(&ScopeId::from("workspace-a"), &split.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut split_archived = split_before.config;
+        split_archived.archived_at = Some("2026-08-30T00:00:00Z".into());
+        assert!(matches!(
+            plane
+                .archive_if_revision(
+                    &ScopeId::from("workspace-a"),
+                    &split_archived,
+                    split_before.revision,
+                )
+                .await
+                .unwrap(),
+            ConfigWrite::Applied { revision: 2 }
+        ));
+        assert!(
+            catalog.current("workspace-a", &split.id).is_some(),
+            "L3 split failure leaves the prior registration until retry"
+        );
+        let repaired = repository
+            .archive("workspace-a", &split.id)
+            .await
+            .expect("L3 retry");
+        assert_eq!(repaired.version, 2, "L3 no authoring revision");
+        assert!(
+            catalog.current("workspace-a", &split.id).is_none(),
+            "L3/E3 retry repairs withdrawal"
+        );
     }
 
     #[tokio::test]

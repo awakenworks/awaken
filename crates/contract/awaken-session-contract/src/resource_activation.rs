@@ -304,6 +304,37 @@ impl SessionResourceState {
         &self.repository_retirements
     }
 
+    /// Project the one canonical terminal Repository retirement plan from all
+    /// Resource generations still retained by this Session. The same
+    /// repository identity appears once; when generations pin different
+    /// credential revisions, the newest exact pin owns retirement.
+    #[must_use]
+    pub(crate) fn terminal_repository_retirement_plan(&self) -> Vec<ResolvedInput> {
+        let mut plan = Vec::new();
+        for input in std::iter::once(&self.active)
+            .chain(self.pending.iter())
+            .flat_map(ResolvedSessionResources::inputs)
+            .chain(self.repository_retirements.iter())
+        {
+            upsert_repository_retirement(&mut plan, input.clone());
+        }
+        plan.sort_by(|left, right| repository_id(left).cmp(&repository_id(right)));
+        plan
+    }
+
+    /// Persist the exact terminal plan through the existing Repository
+    /// retirement intent list. The ordinary retirement reconciler remains the
+    /// only participant-effect owner; terminal cleanup does not scan or delete
+    /// Repository/Vault state through a second path.
+    pub fn ensure_terminal_repository_retirements(&mut self) -> bool {
+        let plan = self.terminal_repository_retirement_plan();
+        if self.repository_retirements == plan {
+            return false;
+        }
+        self.repository_retirements = plan;
+        true
+    }
+
     #[must_use]
     pub fn has_repository_retirements(&self) -> bool {
         !self.repository_retirements.is_empty()
@@ -548,6 +579,10 @@ fn prepared_activation(
 
 #[cfg(test)]
 mod tests {
+    use awaken_credential_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
     use awaken_resource_contract::{BindingId, ConfigVersion, FileId};
 
     use super::*;
@@ -569,29 +604,54 @@ mod tests {
     }
 
     fn repository_manifest(id: &str) -> ResolvedSessionResources {
-        ResolvedSessionResources::try_new(
-            vec![ResolvedInput {
-                binding_id: BindingId::from(format!("binding-{id}")),
-                source: ResolvedInputSource::Repository {
-                    repository_id: format!("managed:session-1:repository:{id}").into(),
-                    config: awaken_resource_contract::RepositoryConfigVersion {
-                        repository_id: format!("managed:session-1:repository:{id}").into(),
-                        version: ConfigVersion::INITIAL,
-                        remote_url: format!("https://example.test/{id}.git"),
-                        credential_binding: None,
-                        initial_branch: Some("main".into()),
-                        initial_commit: None,
-                        clone_policy: Default::default(),
+        ResolvedSessionResources::try_new(vec![repository_input(id, None)], Vec::new()).unwrap()
+    }
+
+    fn repository_input(id: &str, credential_revision: Option<u64>) -> ResolvedInput {
+        let repository_id = format!("managed:session-1:repository:{id}").into();
+        let remote_url = format!("https://example.test/{id}.git");
+        let credential_binding = credential_revision.map(|_| format!("credential-{id}"));
+        let credential = credential_revision.map(|revision| {
+            let holder = PlaintextHolder::new(
+                PlaintextBoundary::Worker,
+                "spiffe://example.test/session-resource-worker",
+            );
+            Box::new(crate::ResolvedRepositoryCredential {
+                access: CredentialAccess::new(
+                    CredentialRef {
+                        id: format!("credential-{id}"),
+                        revision,
                     },
-                    credential: None,
+                    CredentialMaterialSource::ControlPlaneReference,
+                    crate::repository_transport_credential_usage(),
+                    CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(crate::repository_transport_credential_target(&remote_url).unwrap()),
+                selected_plaintext_holder: holder,
+            })
+        });
+        ResolvedInput {
+            binding_id: BindingId::from(format!("binding-{id}")),
+            source: ResolvedInputSource::Repository {
+                repository_id,
+                config: awaken_resource_contract::RepositoryConfigVersion {
+                    repository_id: format!("managed:session-1:repository:{id}").into(),
+                    version: ConfigVersion::INITIAL,
+                    remote_url,
+                    credential_binding,
+                    initial_branch: Some("main".into()),
+                    initial_commit: None,
+                    clone_policy: Default::default(),
                 },
-                mount_path: format!("/inputs/{id}"),
-                access: ResourceAccess::ReadOnly,
-                instructions: None,
-            }],
-            Vec::new(),
-        )
-        .unwrap()
+                credential,
+            },
+            mount_path: format!("/workspace/{id}"),
+            access: ResourceAccess::ReadOnly,
+            instructions: None,
+        }
     }
 
     #[test]
@@ -671,6 +731,85 @@ mod tests {
         assert!(committed.complete_repository_retirement(&repository.inputs()[0]));
         committed.prepare("session-1", repository).unwrap();
         assert!(committed.pending.is_some(), "R4/E5");
+    }
+
+    /// Terminal Repository-plan cause/effect graph: C1 Repository inputs may
+    /// exist in Active, Pending, and the retained retirement intent; C2 the
+    /// same identity may occur in more than one generation; C3 those exact
+    /// pins may carry different credential revisions; C4 the retained list is
+    /// either not yet the projected plan or already equals it. Effects: E1 a
+    /// state with no Repository input has an empty plan and needs no write; E2
+    /// the plan is the sorted identity union and excludes other Resource kinds;
+    /// E3 each duplicate selects the highest credential revision; E4 the first
+    /// ensure stores the complete plan; E5 exact replay is inert and preserves
+    /// that complete list as the later Disposing receipt's proof input.
+    ///
+    /// | Rule | Repository sources | Duplicate identity | Pin revisions | Retained list | Effect |
+    /// |---|---|---|---|---|---|
+    /// | T0 | none | no | n/a | empty | E1 |
+    /// | T1 | Active + Pending + retirement | yes | different | partial | E2 + E3 + E4 |
+    /// | T2 | Active + Pending + retirement | yes | different | exact plan | E5 |
+    ///
+    /// Constraint: Active and Pending manifests remain unchanged; the existing
+    /// retirement list is the only durable terminal-plan owner.
+    #[test]
+    fn terminal_repository_plan_is_canonical_and_idempotently_retained() {
+        let mut empty = SessionResourceState::default();
+        assert!(
+            empty.terminal_repository_retirement_plan().is_empty(),
+            "T0/E1"
+        );
+        assert!(!empty.ensure_terminal_repository_retirements(), "T0/E1");
+
+        let alpha_active = repository_input("alpha", Some(2));
+        let beta_pending = repository_input("beta", Some(1));
+        let delta_retained = repository_input("delta", Some(2));
+        let zeta_active = repository_input("zeta", Some(1));
+        let zeta_pending = repository_input("zeta", Some(4));
+        let zeta_retained = repository_input("zeta", Some(3));
+        let alpha_retained = repository_input("alpha", Some(1));
+        let file = manifest("non-repository").inputs()[0].clone();
+        let active = ResolvedSessionResources::try_new(
+            vec![zeta_active, file, alpha_active.clone()],
+            Vec::new(),
+        )
+        .unwrap();
+        let pending = ResolvedSessionResources::try_new(
+            vec![zeta_pending.clone(), beta_pending.clone()],
+            Vec::new(),
+        )
+        .unwrap();
+        let mut state = SessionResourceState {
+            revision: 2,
+            active: active.clone(),
+            pending: Some(pending.clone()),
+            activations: Vec::new(),
+            repository_retirements: vec![zeta_retained, delta_retained.clone(), alpha_retained],
+        };
+        let expected = vec![alpha_active, beta_pending, delta_retained, zeta_pending];
+
+        assert_eq!(
+            state.terminal_repository_retirement_plan(),
+            expected,
+            "T1/E2 + T1/E3"
+        );
+        assert!(state.ensure_terminal_repository_retirements(), "T1/E4");
+        assert_eq!(state.repository_retirements(), expected, "T1/E4");
+        assert_eq!(state.active, active, "Active authority is unchanged");
+        assert_eq!(
+            state.pending.as_ref(),
+            Some(&pending),
+            "Pending authority is unchanged"
+        );
+
+        let retained = state.repository_retirements().to_vec();
+        assert!(!state.ensure_terminal_repository_retirements(), "T2/E5");
+        assert_eq!(state.repository_retirements(), retained, "T2/E5");
+        assert_eq!(
+            state.terminal_repository_retirement_plan(),
+            retained,
+            "T2/E5"
+        );
     }
 
     /// Visible-generation cause/effect graph. C1=active mounted inputs; C2=active

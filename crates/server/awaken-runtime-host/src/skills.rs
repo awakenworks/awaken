@@ -28,7 +28,8 @@ use awaken_sandbox_local::LocalProvider;
 /// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
 pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
 pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
-pub(crate) const DELIVERED_SKILLS_SUBDIR: &str = ".skills";
+pub(crate) const DELIVERED_SKILLS_SUBDIR: &str =
+    awaken_provisioning_contract::WorkspaceLayout::DELIVERED_SKILLS_SUBDIR;
 
 /// Placement policy for Skill `context: fork` auxiliary Runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -52,6 +53,7 @@ impl SkillSource for EnvSkillSource {
     fn scan(&self) -> Vec<SkillFile> {
         self.env
             .scan_skill_dir(&self.subdir)
+            .unwrap_or_default()
             .into_iter()
             .map(|f| SkillFile {
                 id: f.id,
@@ -87,6 +89,7 @@ fn snapshot_repository_skill_files(
                 root.clone()
             };
             env.scan_skill_dir(root)
+                .unwrap_or_default()
                 .into_iter()
                 .map(move |file| SkillFile {
                     // The path qualifies identity so same-named Skills from

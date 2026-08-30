@@ -150,80 +150,23 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_generation: u64,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let id = config.id.clone();
-        let data = serde_json::to_string(config).map_err(reject)?;
-        let scope = scope.0.clone();
-        let call_id = format!("{}:{}", audit.tool, audit.call_id);
-        let audit_data = serde_json::to_string(audit).map_err(reject)?;
-        self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(reject)?;
-            let existing: Option<(String, i64)> = tx
-                .query_row(
-                    &format!(
-                        "SELECT record, business_committed FROM {p}_management_audit WHERE scope_id = ?1 AND call_id = ?2"
-                    ),
-                    params![scope, call_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(reject)?;
-            if let Some((existing, committed)) = existing {
-                if existing != audit_data {
-                    return Err(ConfigStoreError(
-                        "stable audit call id was reused with different content".into(),
-                    ));
-                }
-                if committed != 0 {
-                    return Ok(AuditedConfigWrite::Replayed);
-                }
-            } else {
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_management_audit (scope_id, call_id, record) VALUES (?1, ?2, ?3)"
-                    ),
-                    params![scope, call_id, audit_data],
-                )
-                .map_err(reject)?;
-            }
-            let changed = tx
-                .execute(
-                &format!(
-                    "INSERT INTO {p}_agent (id, data, scope_id, generation) VALUES (?1, ?2, ?3, 1) \
-                     ON CONFLICT(scope_id, id) DO UPDATE SET data = excluded.data, \
-                     generation = {p}_agent.generation + 1"
-                ),
-                params![id, data, scope],
-            )
-                .map_err(reject)?;
-            if changed != 1 {
-                return Err(ConfigStoreError(
-                    "audited config write was fenced by another scope".into(),
-                ));
-            }
-            tx.execute(
-                &format!(
-                    "UPDATE {p}_management_audit SET business_committed = 1 WHERE scope_id = ?1 AND call_id = ?2"
-                ),
-                params![scope, call_id],
-            )
-            .map_err(reject)?;
-            tx.commit().map_err(reject)?;
-            Ok(AuditedConfigWrite::Applied)
-        })
-        .await
+        self.put_config_with_audit_effect_scoped(scope, config, expected_generation, audit, None)
+            .await
     }
 
     async fn put_config_with_audit_effect_scoped(
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_generation: u64,
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
+        let config = config.clone();
         let id = config.id.clone();
-        let data = serde_json::to_string(config).map_err(reject)?;
         let scope = scope.0.clone();
         let call_id = format!("{}:{}", audit.tool, audit.call_id);
         let audit_data = serde_json::to_string(audit).map_err(reject)?;
@@ -249,16 +192,36 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 }
                 committed != 0
             } else {
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_management_audit (scope_id, call_id, record) \
-                         VALUES (?1, ?2, ?3)"
-                    ),
-                    params![scope, call_id, audit_data],
-                )
-                .map_err(reject)?;
-                false
+                return Err(ConfigStoreError(
+                    "audited config transaction requires a pre-recorded management audit".into(),
+                ));
             };
+            if replayed {
+                tx.commit().map_err(reject)?;
+                return Ok(AuditedConfigWrite::Replayed);
+            }
+            let current: Option<(String, u64)> = tx
+                .query_row(
+                    &format!(
+                        "SELECT data, generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+                    ),
+                    params![id, scope],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(reject)?;
+            let current_revision = current.as_ref().map(|(_, revision)| *revision);
+            if current_revision.unwrap_or(0) != expected_generation {
+                return Ok(AuditedConfigWrite::Conflict { current_revision });
+            }
+            let current_config = current
+                .as_ref()
+                .map(|(data, _)| serde_json::from_str::<AgentConfig>(data).map_err(reject))
+                .transpose()?;
+            let config = config
+                .canonicalize_mutable_authoring_against(current_config.as_ref())
+                .map_err(reject)?;
+            let data = serde_json::to_string(&config).map_err(reject)?;
             if let Some(effect) = effect {
                 let effect_payload = serde_json::to_string(&effect).map_err(reject)?;
                 let existing_payload: Option<String> = tx
@@ -291,24 +254,29 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                     }
                 }
             }
-            if replayed {
-                tx.commit().map_err(reject)?;
-                return Ok(AuditedConfigWrite::Replayed);
-            }
             let changed = tx
                 .execute(
                     &format!(
                         "INSERT INTO {p}_agent (id, data, scope_id, generation) \
                          VALUES (?1, ?2, ?3, 1) ON CONFLICT(scope_id, id) DO UPDATE SET \
-                         data = excluded.data, generation = {p}_agent.generation + 1"
+                         data = excluded.data, generation = {p}_agent.generation + 1 \
+                         WHERE {p}_agent.generation = ?4"
                     ),
-                    params![id, data, scope],
+                    params![id, data, scope, expected_generation],
                 )
                 .map_err(reject)?;
             if changed != 1 {
-                return Err(ConfigStoreError(
-                    "audited config write was fenced by another scope".into(),
-                ));
+                let current_revision = tx
+                    .query_row(
+                        &format!(
+                            "SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
+                        ),
+                        params![id, scope],
+                        |row| row.get::<_, u64>(0),
+                    )
+                    .optional()
+                    .map_err(reject)?;
+                return Ok(AuditedConfigWrite::Conflict { current_revision });
             }
             tx.execute(
                 &format!(
@@ -923,7 +891,7 @@ mod scope_tests {
         let original = agent("a");
         assert_eq!(
             store
-                .put_config_with_audit_scoped(&scope, &original, &audit)
+                .put_config_with_audit_scoped(&scope, &original, 0, &audit)
                 .await
                 .unwrap(),
             AuditedConfigWrite::Applied
@@ -939,7 +907,7 @@ mod scope_tests {
         conflicting_retry.instructions = "must not overwrite on replay".into();
         assert_eq!(
             store
-                .put_config_with_audit_scoped(&scope, &conflicting_retry, &audit)
+                .put_config_with_audit_scoped(&scope, &conflicting_retry, generation, &audit)
                 .await
                 .unwrap(),
             AuditedConfigWrite::Replayed
@@ -987,7 +955,7 @@ mod scope_tests {
         attempted.instructions = "cross-scope overwrite".into();
         assert_eq!(
             store
-                .put_config_with_audit_scoped(&attacker, &attempted, &audit)
+                .put_config_with_audit_scoped(&attacker, &attempted, 0, &audit)
                 .await
                 .unwrap(),
             AuditedConfigWrite::Applied

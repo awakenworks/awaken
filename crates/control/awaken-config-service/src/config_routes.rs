@@ -5,6 +5,7 @@
 
 use awaken_agent_config::ConfigWrite;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
+use awaken_session_contract::preserve_runtime_agent_overrides;
 use awaken_tenancy::{ExecutionWorkspace, ScopeId, WorkspaceScope};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -417,34 +418,49 @@ pub(crate) async fn put_config(
     let Ok(scope) = request_scope(scope) else {
         return workspace_not_found();
     };
-    let config = match agent_config_from_managed(id.clone(), &body) {
+    let mut config = match agent_config_from_managed(id.clone(), &body) {
         Ok(config) => config,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     };
-    if let Some(expected) = body.get("generation").and_then(Value::as_u64) {
-        return match plane.put_if_revision(&scope, &config, expected).await {
-            Ok(ConfigWrite::Applied { revision }) => (
-                StatusCode::OK,
-                Json(json!({ "id": id, "generation": revision })),
-            ),
-            Ok(ConfigWrite::Conflict { current_revision }) => (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "config generation conflict",
-                    "current_revision": current_revision,
-                })),
-            ),
-            Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
-        };
+    let current = match plane.get_versioned(&scope, &id).await {
+        Ok(current) => current,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error })),
+            );
+        }
+    };
+    let observed_revision = current.as_ref().map_or(0, |revision| revision.revision);
+    if let Some(expected) = body.get("generation").and_then(Value::as_u64)
+        && expected != observed_revision
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "config generation conflict",
+                "current_revision": (observed_revision != 0).then_some(observed_revision),
+            })),
+        );
     }
-    match plane.put(&scope, &config).await {
-        Ok(()) => match plane.get_versioned(&scope, &id).await {
-            Ok(Some(current)) => (
-                StatusCode::OK,
-                Json(json!({ "id": id, "generation": current.revision })),
-            ),
-            _ => (StatusCode::OK, Json(json!({ "id": id }))),
-        },
+    if let Some(current) = &current {
+        preserve_runtime_agent_overrides(&current.config.toolsets, &mut config.toolsets);
+    }
+    match plane
+        .put_if_revision(&scope, &config, observed_revision)
+        .await
+    {
+        Ok(ConfigWrite::Applied { revision }) => (
+            StatusCode::OK,
+            Json(json!({ "id": id, "generation": revision })),
+        ),
+        Ok(ConfigWrite::Conflict { current_revision }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "config generation conflict",
+                "current_revision": current_revision,
+            })),
+        ),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     }
 }
@@ -635,6 +651,146 @@ mod publication_projection_tests {
     use crate::config_service::resource_prompt_tests::{
         agent_config, failing_scoped_plane, test_service,
     };
+
+    #[tokio::test]
+    async fn config_get_controlled_put_preserves_runtime_only_policy_under_one_revision_fence() {
+        // Cause/effect table for the Console GET -> controlled PUT round trip:
+        // | rule | current opaque | wire visibility | expected revision | effect |
+        // | O1   | agent_run ask  | omitted         | observed r1       | exact opaque + controlled saved r2 |
+        // | O2   | agent_run ask  | omitted         | stale             | 409; zero write |
+        // The closed wire never gains another member table; the versioned current
+        // config supplies opaque bytes and the same observed revision fences the CAS.
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        use awaken_runtime_contract::resolved::ToolDescriptor;
+
+        let plane = ConfigPlane::new(
+            Arc::new(test_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![
+                ToolDescriptor::pinned(
+                    "managed",
+                    "agent_run",
+                    "Run an exact roster Agent",
+                    json!({"type": "object"}),
+                ),
+            ])),
+        );
+        let scope = ScopeId::from("workspace-console");
+        let mut seeded = agent_config("opaque-agent");
+        let runtime_only = ToolPolicyOverride::new(
+            "agent_run",
+            ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+        );
+        seeded.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: false,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: vec![runtime_only.clone()],
+        }];
+        plane.put(&scope, &seeded).await.unwrap();
+
+        let (status, Json(mut wire)) = get_config(
+            State(plane.clone()),
+            Path(seeded.id.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "O1 GET");
+        assert_eq!(wire["generation"], 1, "O1");
+        assert!(
+            !wire["tools"].to_string().contains("agent_run"),
+            "O1 closed wire"
+        );
+        wire["tools"] = json!([{
+            "type": "agent_toolset_20260401",
+            "default_config": {
+                "enabled": false,
+                "permission_policy": { "type": "always_allow" }
+            },
+            "configs": [{
+                "name": "write",
+                "enabled": true,
+                "permission_policy": { "type": "always_ask" }
+            }]
+        }]);
+        let (status, Json(saved)) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(wire.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "O1 PUT: {saved}");
+        assert_eq!(saved["generation"], 2, "O1");
+        let current = plane
+            .get_versioned(&scope, &seeded.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let agent = current
+            .config
+            .toolsets
+            .iter()
+            .find(|toolset| toolset.source == ToolsetSource::Agent)
+            .unwrap();
+        assert_eq!(
+            agent
+                .overrides
+                .iter()
+                .find(|entry| entry.name == "agent_run")
+                .unwrap(),
+            &runtime_only,
+            "O1 exact opaque bytes"
+        );
+        assert_eq!(
+            agent.policy_for("write").permission,
+            ToolPermissionRequirement::AlwaysAsk,
+            "O1 controlled policy"
+        );
+        let publication = plane.publish(&scope, &seeded.id).await.unwrap();
+        let verdict = publication
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .tool_policy("agent_run")
+            .expect("O1 Runtime policy");
+        assert!(verdict.enabled, "O1 Runtime enabled");
+        assert_eq!(
+            verdict.permission,
+            ToolPermissionRequirement::AlwaysAsk,
+            "O1 Runtime ask"
+        );
+
+        wire["generation"] = json!(1);
+        let (status, _) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(wire),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "O2");
+        assert_eq!(
+            plane
+                .get_versioned(&scope, &seeded.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            2,
+            "O2 zero write"
+        );
+    }
 
     // Causal decision table: present in trusted scope => exact value;
     // absent/cross-scope => 404; repository failure => 500.

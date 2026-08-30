@@ -103,7 +103,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
     --harness stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run \
     --harness accepted_managed_budget_cost_never_wraps \
-    --harness source_disposal_requires_ready_phase_and_checkpoint \
+    --harness source_preparation_and_disposal_require_distinct_durable_phases \
     --harness terminal_execution_never_reopens \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness runtime_intervals_open_once_and_never_close_before_start \
@@ -116,7 +116,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dream_success_and_failure_require_a_running_process \
     --harness dream_recovery_and_cancel_never_widen_terminal_authority \
     --harness dream_transition_table_is_total_exact_and_closed \
-    --harness quiescence_receipt_requires_exact_operation_epoch_and_zero_live_effects \
+    --harness quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects \
     --harness checkpoint_receipt_requires_every_immutable_generation_axis \
     --harness source_disposal_receipt_requires_exact_binding_and_termination \
     --harness restore_receipt_requires_exact_checkpoint_and_nonempty_binding \
@@ -189,7 +189,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-run-executor-acp \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
-    --harness session_resource_replacement_requires_newer_or_authority_amended_generation \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
@@ -314,6 +313,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_realization_control_disposition_projects_exact_worker_effect \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \
+    --harness session_resource_replacement_requires_newer_or_authority_amended_generation \
     --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed \
     --harness container_hand_residency_recovery_mapping_is_total_exact_and_non_widening \
     --harness mcp_credential_realization_preserves_the_request_target_exactly \

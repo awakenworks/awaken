@@ -47,8 +47,20 @@ impl EnvironmentAuthor for FakeEnvAuthor {
         &self,
         command: awaken_environment_contract::CreateEnvironmentCommand,
     ) -> Result<String, String> {
-        self.commands.lock().unwrap().push(command);
-        Ok("env_test_0".to_string())
+        let mut commands = self.commands.lock().unwrap();
+        if let Some((index, existing)) = commands
+            .iter()
+            .enumerate()
+            .find(|(_, existing)| existing.command_id == command.command_id)
+        {
+            if existing.fingerprint() != command.fingerprint() {
+                return Err("conflicting environment command id".into());
+            }
+            return Ok(format!("env_test_{index}"));
+        }
+        let index = commands.len();
+        commands.push(command);
+        Ok(format!("env_test_{index}"))
     }
 }
 
@@ -72,78 +84,161 @@ impl DraftValidator for FakeValidator {
 /// can assert a binding was authored alongside the config.
 #[derive(Default)]
 struct MemDraftStore {
-    configs: Mutex<HashMap<String, AgentConfig>>,
+    configs: Mutex<HashMap<String, AgentConfigRevision>>,
     resources: Mutex<HashMap<String, Vec<InputSpec>>>,
     audits: Mutex<HashMap<String, (AdminAuditEvent, bool)>>,
+    concurrent_config_before_audited_write: Mutex<Option<AgentConfig>>,
+    commit_audit_on_audit_read: Mutex<Option<(String, usize)>>,
+    reconcile_calls: Mutex<usize>,
 }
 
 #[async_trait]
 impl DraftStore for MemDraftStore {
-    async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
-        self.configs
-            .lock()
-            .unwrap()
-            .insert(draft.id.clone(), draft.clone());
-        Ok(())
-    }
-    async fn put_audited(
+    async fn put_audited_with_resources(
         &self,
         draft: &AgentConfig,
+        expected_revision: u64,
         audit: &AdminAuditEvent,
+        resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
         let audit_key = format!("{}:{}", audit.tool, audit.call_id);
-        if self
-            .audits
+        {
+            let audits = self.audits.lock().unwrap();
+            match audits.get(&audit_key) {
+                Some((existing, _)) if existing != audit => {
+                    return Err("conflicting audit id".into());
+                }
+                Some((_, true)) => return Ok(()),
+                Some((_, false)) => {}
+                None => {
+                    return Err(
+                        "audited config transaction requires a pre-recorded management audit"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let concurrent = self
+            .concurrent_config_before_audited_write
             .lock()
             .unwrap()
-            .get(&audit_key)
-            .is_some_and(|(_, committed)| *committed)
-        {
-            return Ok(());
+            .take();
+        if let Some(concurrent) = concurrent {
+            self.seed(&concurrent).await?;
         }
-        self.put(draft).await?;
+        let mut configs = self.configs.lock().unwrap();
+        let current = configs.get(&draft.id).cloned();
+        let current_revision = current.as_ref().map_or(0, |current| current.revision);
+        if current_revision != expected_revision {
+            return Err(format!(
+                "agent `{}` changed concurrently (current revision: {:?})",
+                draft.id,
+                (current_revision != 0).then_some(current_revision)
+            ));
+        }
+        let draft = draft
+            .canonicalize_mutable_authoring_against(current.as_ref().map(|entry| &entry.config))?;
+        let draft_id = draft.id.clone();
+        configs.insert(
+            draft_id.clone(),
+            AgentConfigRevision {
+                revision: current_revision + 1,
+                config: draft,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+            },
+        );
+        drop(configs);
+        if let Some(resources) = resources {
+            self.resources.lock().unwrap().insert(draft_id, resources);
+        }
         self.audits
             .lock()
             .unwrap()
-            .insert(audit_key, (audit.clone(), true));
+            .get_mut(&audit_key)
+            .expect("pre-recorded audit remains present")
+            .1 = true;
         Ok(())
     }
-    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<(), String> {
+    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<AuditedConfigWrite, String> {
         let audit_key = format!("{}:{}", audit.tool, audit.call_id);
         let mut audits = self.audits.lock().unwrap();
         match audits.get(&audit_key) {
             Some((existing, _)) if existing != audit => Err("conflicting audit id".into()),
-            Some(_) => Ok(()),
+            Some(_) => Ok(AuditedConfigWrite::Replayed),
             None => {
                 audits.insert(audit_key, (audit.clone(), false));
-                Ok(())
+                Ok(AuditedConfigWrite::Applied)
             }
         }
     }
-    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
-        Ok(self.configs.lock().unwrap().get(id).cloned())
-    }
-    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
-        self.resources
+    async fn get_audit(
+        &self,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String> {
+        let audit_key = format!("{tool}:{call_id}");
+        let commit_now = {
+            let mut scheduled = self.commit_audit_on_audit_read.lock().unwrap();
+            match scheduled.as_mut() {
+                Some((key, remaining)) if key == &audit_key && *remaining == 1 => {
+                    scheduled.take();
+                    true
+                }
+                Some((key, remaining)) if key == &audit_key => {
+                    *remaining -= 1;
+                    false
+                }
+                _ => false,
+            }
+        };
+        if commit_now && let Some((_, committed)) = self.audits.lock().unwrap().get_mut(&audit_key)
+        {
+            *committed = true;
+        }
+        Ok(self
+            .audits
             .lock()
             .unwrap()
-            .insert(agent_id.to_string(), resources);
+            .get(&audit_key)
+            .map(|(record, business_committed)| ManagementAuditEntry {
+                record: record.clone(),
+                business_committed: *business_committed,
+            }))
+    }
+    async fn reconcile_pending_effects(&self) -> Result<(), String> {
+        *self.reconcile_calls.lock().unwrap() += 1;
         Ok(())
     }
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
-        Ok(self
-            .resources
-            .lock()
-            .unwrap()
-            .get(agent_id)
-            .cloned()
-            .unwrap_or_default())
+    async fn get_versioned(&self, id: &str) -> Result<Option<AgentConfigRevision>, String> {
+        Ok(self.configs.lock().unwrap().get(id).cloned())
     }
 }
 
 impl MemDraftStore {
+    async fn seed(&self, draft: &AgentConfig) -> Result<(), String> {
+        let mut configs = self.configs.lock().unwrap();
+        let revision = configs
+            .get(&draft.id)
+            .map_or(1, |current| current.revision + 1);
+        configs.insert(
+            draft.id.clone(),
+            AgentConfigRevision {
+                revision,
+                config: draft.clone(),
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+            },
+        );
+        Ok(())
+    }
+
     fn stored(&self, id: &str) -> Option<AgentConfig> {
-        self.configs.lock().unwrap().get(id).cloned()
+        self.configs
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|revision| revision.config.clone())
     }
     fn is_empty(&self) -> bool {
         self.configs.lock().unwrap().is_empty()
@@ -155,6 +250,16 @@ impl MemDraftStore {
             .get(id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn race_next_audited_write_with(&self, concurrent: AgentConfig) {
+        *self.concurrent_config_before_audited_write.lock().unwrap() = Some(concurrent);
+    }
+
+    fn commit_audit_on_audit_read(&self, tool: &str, call_id: &str, read: usize) {
+        assert!(read > 0);
+        *self.commit_audit_on_audit_read.lock().unwrap() =
+            Some((format!("{tool}:{call_id}"), read));
     }
 }
 
@@ -560,6 +665,797 @@ async fn draft_agent_derives_plugin_ids_and_size_bounds_sections() {
 }
 
 #[tokio::test]
+async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_plugin_policy() {
+    // Cause/effect graph: C1 a fresh draft requests the controlled-modification
+    // preset; C2 a fresh draft tries the retired permission plugin section; C3 an
+    // historical mutable draft already contains that legacy section and an explicit
+    // controlled patch replaces it; C4 a fresh draft declares MCP; C5 a historical
+    // legacy permission owns an MCP binding without typed MCP policy; C6 an existing
+    // draft already has typed MCP and client-executed policy; C7 that draft also
+    // carries a Runtime-only Agent override; C8 a canonical noncontrolled member is
+    // disabled but has execution configuration. Effects: E1 one Agent Toolset owns permission;
+    // E2 write/edit/bash are always_ask; E3 no preset marker is persisted; E4 direct
+    // legacy authoring fails before the config write; E5 explicit replacement removes
+    // the legacy section instead of combining two permission owners; E6 fresh MCP gets
+    // one fail-closed default-ask Toolset; E7 unrepresentable legacy MCP fails with
+    // no write; E8 existing typed MCP policy and client tool remain byte-identical;
+    // E9 the Runtime-only override remains byte-identical for the Runtime gate;
+    // E10 the disabled execution configuration remains byte-identical. A1's
+    // create and A3-A8's patch routes share `apply_permission_preset`, so both
+    // entry points project the same typed-policy effects and error boundary.
+    //
+    // Decision table:
+    // | rule | prior legacy | requested authoring       | effect |
+    // | A1   | no           | controlled preset         | typed saved |
+    // | A2   | no           | plugin_config.permission  | rejected, absent |
+    // | A3   | yes          | controlled preset patch   | typed saved, legacy removed |
+    // | A4   | no + MCP     | fresh controlled draft    | Agent ask + paired MCP ask |
+    // | A5   | yes + MCP    | controlled preset patch   | migration_required, zero write |
+    // | A6   | typed MCP    | controlled preset patch   | preserve MCP + client tool |
+    // | A7   | runtime-only | controlled preset patch   | preserve exact override |
+    // | A8   | disabled configured canonical member     | preserve exact override |
+    let h = Harness::new();
+    let controlled = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(call(
+            CREATE_DRAFT_TOOL,
+            serde_json::json!({
+                "id": "controlled",
+                "instructions": "edit carefully",
+                "tool_ids": ["read", "write", "edit", "bash"],
+                "permission_preset": "controlled_modifications"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!controlled.is_error, "A1: {}", controlled.text());
+    let stored = h.store.stored("controlled").expect("A1");
+    assert_eq!(stored.toolsets.len(), 1, "A1/E1");
+    let policy = &stored.toolsets[0];
+    for name in ["write", "edit", "bash"] {
+        assert_eq!(
+            policy.policy_for(name).permission,
+            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+            "A1/E2 {name}"
+        );
+    }
+    assert!(!stored.plugin_config.contains_key("permission"), "A1/E3");
+    assert!(
+        !serde_json::to_value(&stored)
+            .unwrap()
+            .to_string()
+            .contains("permission_preset"),
+        "A1/E3"
+    );
+
+    let mut legacy_call = call(
+        CREATE_DRAFT_TOOL,
+        serde_json::json!({
+            "id": "legacy-new",
+            "instructions": "must fail",
+            "plugin_config": {
+                "permission": {
+                    "default_behavior": "ask",
+                    "rules": [{ "pattern": "write", "behavior": "ask" }]
+                }
+            }
+        }),
+    );
+    legacy_call.call_id = "c2".into();
+    let legacy = h.tool(CREATE_DRAFT_TOOL).invoke(legacy_call).await.unwrap();
+    assert!(legacy.is_error, "A2");
+    assert!(
+        legacy.text().contains("permission migration_required"),
+        "A2: {}",
+        legacy.text()
+    );
+    assert!(h.store.stored("legacy-new").is_none(), "A2/E4");
+
+    let mut historical = AgentConfig {
+        id: "legacy-existing".into(),
+        instructions: "historical".into(),
+        max_steps: 8,
+        delegation_limits: Default::default(),
+        model_binding: ModelSelection::Auto,
+        inference: Default::default(),
+        tool_ids: vec!["read".into(), "write".into()],
+        ..Default::default()
+    };
+    historical.plugin_config.insert(
+        "permission".into(),
+        serde_json::json!({ "rules": [{ "pattern": "write", "behavior": "ask" }] }),
+    );
+    h.store.seed(&historical).await.unwrap();
+    let replaced = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({
+                "id": "legacy-existing",
+                "patch": { "permission_preset": "controlled_modifications" }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(!replaced.is_error, "A3: {}", replaced.text());
+    let replaced = h.store.stored("legacy-existing").unwrap();
+    assert!(!replaced.plugin_config.contains_key("permission"), "A3/E5");
+    assert_eq!(replaced.toolsets.len(), 1, "A3/E5");
+
+    let mut fresh_mcp = call(
+        CREATE_DRAFT_TOOL,
+        serde_json::json!({
+            "id": "mcp-fresh",
+            "instructions": "fresh MCP",
+            "tool_ids": ["read", "write"],
+            "mcp_servers": [{ "id": "docs", "url": "https://mcp.example/docs" }],
+            "permission_preset": "controlled_modifications"
+        }),
+    );
+    fresh_mcp.call_id = "c4".into();
+    let output = h.tool(CREATE_DRAFT_TOOL).invoke(fresh_mcp).await.unwrap();
+    assert!(!output.is_error, "A4: {}", output.text());
+    let stored = h.store.stored("mcp-fresh").unwrap();
+    let mcp = stored
+        .toolsets
+        .iter()
+        .find(|toolset| {
+            matches!(
+                &toolset.source,
+                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name }
+                    if server_name == "docs"
+            )
+        })
+        .expect("A4/E6 paired MCP Toolset");
+    assert_eq!(
+        mcp.default.permission,
+        awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+        "A4/E6"
+    );
+    stored
+        .validate_tool_bindings()
+        .expect("A4/E6 valid pairing");
+
+    let mut historical_mcp = AgentConfig {
+        id: "mcp-legacy".into(),
+        instructions: "historical MCP".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        mcp_servers: vec![
+            awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                name: "docs".into(),
+                transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                    "https://mcp.example/docs",
+                ),
+                credential: None,
+                prompts_as_skills: false,
+            },
+        ],
+        ..Default::default()
+    };
+    historical_mcp.plugin_ids = vec!["permission".into()];
+    historical_mcp.plugin_config.insert(
+        "permission".into(),
+        serde_json::json!({
+            "default_behavior": "ask",
+            "rules": [{ "pattern": "mcp__docs__*", "behavior": "allow" }]
+        }),
+    );
+    h.store.seed(&historical_mcp).await.unwrap();
+    let mut mcp_patch = call(
+        PATCH_TOOL,
+        serde_json::json!({
+            "id": "mcp-legacy",
+            "patch": { "permission_preset": "controlled_modifications" }
+        }),
+    );
+    mcp_patch.call_id = "c5".into();
+    let output = h.tool(PATCH_TOOL).invoke(mcp_patch).await.unwrap();
+    assert!(output.is_error, "A5");
+    assert!(
+        output.text().contains("permission migration_required"),
+        "A5: {}",
+        output.text()
+    );
+    assert_eq!(
+        h.store.stored("mcp-legacy").unwrap(),
+        historical_mcp,
+        "A5/E7"
+    );
+
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+    let typed_mcp = ToolsetPolicy {
+        source: ToolsetSource::Mcp {
+            server_name: "docs".into(),
+        },
+        default: ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAsk,
+        },
+        overrides: vec![ToolPolicyOverride::new(
+            "search",
+            ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+        )],
+    };
+    let client_tool = ToolDescriptor::client_executed(
+        "local_review",
+        "review in the local client",
+        serde_json::json!({ "type": "object", "required": ["patch_id"] }),
+    );
+    let runtime_only = ToolPolicyOverride::new(
+        "agent_run",
+        ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAsk,
+        },
+    );
+    let disabled_web_fetch = ToolPolicyOverride::with_optional_configuration(
+        "web_fetch",
+        ToolExecutionPolicy {
+            enabled: false,
+            permission: ToolPermissionRequirement::AlwaysAllow,
+        },
+        Some(serde_json::json!({
+            "type": "web_fetch",
+            "domains": { "type": "allow", "domains": ["docs.example.com"] },
+            "max_content_tokens": 4096
+        })),
+    );
+    let existing_agent = ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy {
+            enabled: false,
+            permission: ToolPermissionRequirement::AlwaysAllow,
+        },
+        overrides: vec![
+            ToolPolicyOverride::new("read", ToolExecutionPolicy::default()),
+            ToolPolicyOverride::new("write", ToolExecutionPolicy::default()),
+            runtime_only.clone(),
+            disabled_web_fetch.clone(),
+        ],
+    };
+    let typed_existing = AgentConfig {
+        id: "mcp-typed".into(),
+        instructions: "typed MCP".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        tool_ids: vec!["read".into(), "write".into()],
+        mcp_servers: historical_mcp.mcp_servers.clone(),
+        toolsets: vec![existing_agent, typed_mcp.clone()],
+        client_tools: vec![client_tool.clone()],
+        ..Default::default()
+    };
+    typed_existing
+        .validate_tool_bindings()
+        .expect("A8 valid neutral execution configuration");
+    h.store.seed(&typed_existing).await.unwrap();
+    let mut typed_patch = call(
+        PATCH_TOOL,
+        serde_json::json!({
+            "id": "mcp-typed",
+            "patch": { "permission_preset": "controlled_modifications" }
+        }),
+    );
+    typed_patch.call_id = "c6".into();
+    let output = h.tool(PATCH_TOOL).invoke(typed_patch).await.unwrap();
+    assert!(!output.is_error, "A6: {}", output.text());
+    let stored = h.store.stored("mcp-typed").unwrap();
+    assert_eq!(
+        stored
+            .toolsets
+            .iter()
+            .find(|toolset| matches!(toolset.source, ToolsetSource::Mcp { .. }))
+            .expect("A6 typed MCP"),
+        &typed_mcp,
+        "A6/E8"
+    );
+    assert_eq!(stored.client_tools, vec![client_tool], "A6/E8");
+    let controlled = stored
+        .toolsets
+        .iter()
+        .find(|toolset| toolset.source == ToolsetSource::Agent)
+        .expect("A6 controlled Agent policy");
+    assert_eq!(
+        controlled.policy_for("write").permission,
+        ToolPermissionRequirement::AlwaysAsk,
+        "A6"
+    );
+    assert_eq!(
+        controlled
+            .overrides
+            .iter()
+            .find(|entry| entry.name == "agent_run")
+            .expect("A7 Runtime-only override"),
+        &runtime_only,
+        "A7/E9"
+    );
+    assert_eq!(
+        controlled
+            .overrides
+            .iter()
+            .find(|entry| entry.name == "web_fetch")
+            .expect("A8 disabled configured canonical override"),
+        &disabled_web_fetch,
+        "A8/E10"
+    );
+}
+
+#[tokio::test]
+async fn audited_replay_uses_durable_outcome_before_later_legacy_state() {
+    // Cause/effect table for response loss at the Assistant edge:
+    // | rule | durable audit | later config                       | effect |
+    // | R1   | committed     | archived + legacy MCP permission | already_applied; zero write |
+    // The audit has no durable first-response body/revision, so replay reports only a
+    // stable operation receipt instead of fabricating the first config from later state.
+    let h = Harness::new();
+    h.store
+        .seed(&AgentConfig {
+            id: "response-loss".into(),
+            instructions: "initial".into(),
+            max_steps: 8,
+            model_binding: ModelSelection::Auto,
+            tool_ids: vec!["read".into(), "write".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let arguments = serde_json::json!({
+        "id": "response-loss",
+        "patch": { "permission_preset": "controlled_modifications" }
+    });
+    let mut first = call(PATCH_TOOL, arguments.clone());
+    first.call_id = "lost-response-call".into();
+    let first_output = h.tool(PATCH_TOOL).invoke(first).await.unwrap();
+    assert!(!first_output.is_error, "R1 first: {}", first_output.text());
+
+    let mut later = h.store.stored("response-loss").unwrap();
+    later.archived_at = Some("2026-08-30T00:00:00Z".into());
+    later.toolsets.clear();
+    later.mcp_servers = vec![
+        awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+            name: "docs".into(),
+            transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                "https://mcp.example/docs",
+            ),
+            credential: None,
+            prompts_as_skills: false,
+        },
+    ];
+    later.plugin_ids = vec!["permission".into()];
+    later.plugin_config.insert(
+        "permission".into(),
+        serde_json::json!({
+            "default_behavior": "ask",
+            "rules": [{ "pattern": "mcp__docs__*", "behavior": "allow" }]
+        }),
+    );
+    h.store.seed(&later).await.unwrap();
+    let audit_count = h.store.audits.lock().unwrap().len();
+
+    let mut replay = call(PATCH_TOOL, arguments);
+    replay.call_id = "lost-response-call".into();
+    let replay_output = h.tool(PATCH_TOOL).invoke(replay).await.unwrap();
+    assert!(
+        !replay_output.is_error,
+        "R1 replay: {}",
+        replay_output.text()
+    );
+    let receipt: serde_json::Value = serde_json::from_str(&replay_output.text()).unwrap();
+    assert_eq!(receipt["status"], "already_applied", "R1");
+    assert_eq!(receipt["operation_id"], "lost-response-call", "R1");
+    assert_eq!(*h.store.reconcile_calls.lock().unwrap(), 1, "R1");
+    assert_eq!(h.store.stored("response-loss").unwrap(), later, "R1");
+    assert_eq!(h.store.audits.lock().unwrap().len(), audit_count, "R1");
+}
+
+#[tokio::test]
+async fn audit_fingerprint_upgrade_replays_only_committed_legacy_records() {
+    // Upgrade compatibility table:
+    // | rule | historical summary fingerprint | business committed | effect |
+    // | U1   | absent                         | yes                | already_applied + reconcile |
+    // | U2   | absent                         | no                 | fail closed; zero config/effect |
+    // A pending legacy record did not bind complete arguments, so no retry can
+    // safely choose a candidate. A committed record has durable business truth.
+    let committed = Harness::new();
+    let committed_event = AdminAuditEvent {
+        tool: CREATE_DRAFT_TOOL.into(),
+        call_id: "legacy-committed-call".into(),
+        summary: "draft agent `legacy-committed`".into(),
+    };
+    committed.store.audits.lock().unwrap().insert(
+        format!("{}:{}", committed_event.tool, committed_event.call_id),
+        (committed_event, true),
+    );
+    let output = committed
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(ToolCall {
+            call_id: "legacy-committed-call".into(),
+            tool_id: CREATE_DRAFT_TOOL.into(),
+            arguments: serde_json::json!({
+                "id": "legacy-committed",
+                "instructions": "payload unavailable to the old audit"
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(!output.is_error, "U1: {}", output.text());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&output.text()).unwrap()["status"],
+        "already_applied",
+        "U1"
+    );
+    assert_eq!(*committed.store.reconcile_calls.lock().unwrap(), 1, "U1");
+    assert!(committed.store.stored("legacy-committed").is_none(), "U1");
+
+    let pending = Harness::new();
+    let pending_event = AdminAuditEvent {
+        tool: CREATE_DRAFT_TOOL.into(),
+        call_id: "legacy-pending-call".into(),
+        summary: "draft agent `legacy-pending`".into(),
+    };
+    assert_eq!(
+        pending.store.record_audit(&pending_event).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "U2 setup"
+    );
+    let result = pending
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(ToolCall {
+            call_id: "legacy-pending-call".into(),
+            tool_id: CREATE_DRAFT_TOOL.into(),
+            arguments: serde_json::json!({
+                "id": "legacy-pending",
+                "instructions": "cannot be proven equal"
+            }),
+        })
+        .await;
+    assert!(result.is_err(), "U2");
+    assert!(pending.store.stored("legacy-pending").is_none(), "U2");
+    assert_eq!(*pending.store.reconcile_calls.lock().unwrap(), 0, "U2");
+}
+
+#[test]
+fn legacy_audit_classifier_uses_only_a_terminal_canonical_sha256() {
+    // Summary classification table:
+    // | rule | target contains separator | terminal suffix          | legacy match |
+    // | S1   | yes                       | 64 lowercase hex         | yes          |
+    // | S2   | either                    | malformed/noncanonical   | no           |
+    // | S3   | existing already hashed   | another valid hash       | no           |
+    // The last delimiter is authoritative; user-authored target text cannot
+    // manufacture an upgrade match, and a new-format record is never legacy.
+    let target = "draft agent `name; request_sha256=part-of-name`";
+    let existing = AdminAuditEvent {
+        tool: CREATE_DRAFT_TOOL.into(),
+        call_id: "classifier".into(),
+        summary: target.into(),
+    };
+    let request = AdminAuditEvent {
+        summary: format!("{target}{REQUEST_SHA256_SEPARATOR}{}", "a".repeat(64)),
+        ..existing.clone()
+    };
+    assert!(is_legacy_audit_for(&existing, &request), "S1");
+
+    let malformed = AdminAuditEvent {
+        summary: format!("{target}{REQUEST_SHA256_SEPARATOR}not-a-digest"),
+        ..existing.clone()
+    };
+    assert!(!is_legacy_audit_for(&existing, &malformed), "S2");
+
+    let already_hashed = request.clone();
+    let nested = AdminAuditEvent {
+        summary: format!(
+            "{}{REQUEST_SHA256_SEPARATOR}{}",
+            already_hashed.summary,
+            "b".repeat(64)
+        ),
+        ..already_hashed.clone()
+    };
+    assert!(!is_legacy_audit_for(&already_hashed, &nested), "S3");
+}
+
+#[tokio::test]
+async fn pending_audit_is_recoverable_and_a_concurrent_commit_wins_replay() {
+    // Causes: C1 an audit intent exists without a business commit (crash after
+    // record); C2 a retry's atomic begin reports replay while the original commits
+    // after the retry's first audit read but before its legacy-MCP precheck error;
+    // the deterministic hook commits only when both the scheduled read threshold
+    // and its matching audit entry are present.
+    // C3 the same durable operation id is retried with different complete arguments.
+    // Effects: E1 C1 retries pure preparation and converges through the idempotent
+    // business owner; E2 C2's final audit read absorbs the error as already_applied;
+    // E3 C3 conflicts at the audit identity and leaves config/effects unchanged.
+    // | rule | begin state | retry payload | outcome before local error | effect |
+    // | P1   | pending     | exact same    | none                       | retry commits |
+    // | P2   | pending     | exact same    | committed                  | already_applied; zero write |
+    // | P3   | pending     | different     | n/a                        | conflict; zero write/effect |
+    let h = Harness::new();
+    h.store
+        .seed(&AgentConfig {
+            id: "pending-retry".into(),
+            instructions: "initial".into(),
+            max_steps: 8,
+            model_binding: ModelSelection::Auto,
+            tool_ids: vec!["read".into(), "write".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let pending_arguments = serde_json::json!({
+        "id": "pending-retry",
+        "patch": { "instructions": "recovered" }
+    });
+    let pending = AdminAuditEvent {
+        tool: PATCH_TOOL.into(),
+        call_id: "pending-call".into(),
+        summary: mutating_audit_summary(
+            PATCH_TOOL,
+            "patch agent `pending-retry`",
+            &pending_arguments,
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        h.store.record_audit(&pending).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "P1 setup"
+    );
+    let mut retry = call(PATCH_TOOL, pending_arguments);
+    retry.call_id = "pending-call".into();
+    let output = h.tool(PATCH_TOOL).invoke(retry).await.unwrap();
+    assert!(!output.is_error, "P1: {}", output.text());
+    assert_eq!(
+        h.store.stored("pending-retry").unwrap().instructions,
+        "recovered",
+        "P1/E1"
+    );
+
+    let mut legacy = AgentConfig {
+        id: "pending-winner".into(),
+        instructions: "winner bytes".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        mcp_servers: vec![
+            awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                name: "docs".into(),
+                transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                    "https://mcp.example/docs",
+                ),
+                credential: None,
+                prompts_as_skills: false,
+            },
+        ],
+        ..Default::default()
+    };
+    legacy.plugin_ids = vec!["permission".into()];
+    legacy.plugin_config.insert(
+        "permission".into(),
+        serde_json::json!({ "rules": [{ "pattern": "write", "behavior": "ask" }] }),
+    );
+    h.store.seed(&legacy).await.unwrap();
+    let winner_arguments = serde_json::json!({
+        "id": "pending-winner",
+        "patch": { "instructions": "stale replay" }
+    });
+    let pending = AdminAuditEvent {
+        tool: PATCH_TOOL.into(),
+        call_id: "concurrent-winner-call".into(),
+        summary: mutating_audit_summary(
+            PATCH_TOOL,
+            "patch agent `pending-winner`",
+            &winner_arguments,
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        h.store.record_audit(&pending).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "P2 setup"
+    );
+    h.store
+        .commit_audit_on_audit_read(PATCH_TOOL, "concurrent-winner-call", 2);
+    let mut replay = call(PATCH_TOOL, winner_arguments);
+    replay.call_id = "concurrent-winner-call".into();
+    let output = h.tool(PATCH_TOOL).invoke(replay).await.unwrap();
+    assert!(!output.is_error, "P2: {}", output.text());
+    let receipt: serde_json::Value = serde_json::from_str(&output.text()).unwrap();
+    assert_eq!(receipt["status"], "already_applied", "P2/E2");
+    assert_eq!(h.store.stored("pending-winner").unwrap(), legacy, "P2/E2");
+
+    let before = h.store.stored("pending-retry").unwrap();
+    let original_arguments = serde_json::json!({
+        "id": "pending-retry",
+        "patch": { "instructions": "original pending request" }
+    });
+    let different_pending = AdminAuditEvent {
+        tool: PATCH_TOOL.into(),
+        call_id: "pending-different-call".into(),
+        summary: mutating_audit_summary(
+            PATCH_TOOL,
+            "patch agent `pending-retry`",
+            &original_arguments,
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        h.store.record_audit(&different_pending).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "P3 setup"
+    );
+    let different_arguments = serde_json::json!({
+        "id": "pending-retry",
+        "patch": { "instructions": "different request" }
+    });
+    let result = h
+        .tool(PATCH_TOOL)
+        .invoke(ToolCall {
+            call_id: "pending-different-call".into(),
+            tool_id: PATCH_TOOL.into(),
+            arguments: different_arguments,
+        })
+        .await;
+    assert!(
+        result.is_err(),
+        "P3 reusing one operation for another patch"
+    );
+    assert_eq!(h.store.stored("pending-retry").unwrap(), before, "P3/E3");
+}
+
+#[tokio::test]
+async fn draft_agent_pending_audit_binds_the_complete_request() {
+    // Request-identity decision table for a crash after audit admission:
+    // | rule | operation id | complete create arguments | effect |
+    // | D1   | same         | same                      | retry commits exactly that draft |
+    // | D2   | same         | different instructions    | conflict; zero config/effect write |
+    // Constraints: the durable audit stores only a secret-free SHA-256 in its
+    // summary; it never persists the complete authoring payload.
+    let h = Harness::new();
+    let arguments = serde_json::json!({
+        "id": "pending-create",
+        "instructions": "original request"
+    });
+    let pending = AdminAuditEvent {
+        tool: CREATE_DRAFT_TOOL.into(),
+        call_id: "pending-create-call".into(),
+        summary: mutating_audit_summary(
+            CREATE_DRAFT_TOOL,
+            "draft agent `pending-create`",
+            &arguments,
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        h.store.record_audit(&pending).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "D1 setup"
+    );
+    let output = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(ToolCall {
+            call_id: "pending-create-call".into(),
+            tool_id: CREATE_DRAFT_TOOL.into(),
+            arguments: arguments.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(!output.is_error, "D1: {}", output.text());
+    let committed = h.store.stored("pending-create").unwrap();
+    assert_eq!(committed.instructions, "original request", "D1");
+
+    let mismatch_arguments = serde_json::json!({
+        "id": "pending-create-mismatch",
+        "instructions": "original pending request"
+    });
+    let mismatch_event = AdminAuditEvent {
+        tool: CREATE_DRAFT_TOOL.into(),
+        call_id: "pending-create-mismatch-call".into(),
+        summary: mutating_audit_summary(
+            CREATE_DRAFT_TOOL,
+            "draft agent `pending-create-mismatch`",
+            &mismatch_arguments,
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        h.store.record_audit(&mismatch_event).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "D2 setup"
+    );
+    let result = h
+        .tool(CREATE_DRAFT_TOOL)
+        .invoke(ToolCall {
+            call_id: "pending-create-mismatch-call".into(),
+            tool_id: CREATE_DRAFT_TOOL.into(),
+            arguments: serde_json::json!({
+                "id": "pending-create-mismatch",
+                "instructions": "different request"
+            }),
+        })
+        .await;
+    assert!(
+        result.is_err(),
+        "D2 audit identity must reject payload reuse"
+    );
+    assert_eq!(h.store.stored("pending-create").unwrap(), committed, "D2");
+    assert!(h.store.stored("pending-create-mismatch").is_none(), "D2");
+}
+
+#[tokio::test]
+async fn assistant_writes_use_the_revision_that_constructed_the_candidate() {
+    // Candidate-version decision table:
+    // | rule | command | observed base | concurrent write before audited CAS | effect |
+    // | V1   | patch   | r1            | r2                                 | conflict; preserve r2 |
+    // | V2   | create  | absent (r0)   | same id r1                         | conflict; preserve r1 |
+    // The save edge must never resample the latest revision and bless a stale candidate.
+    let h = Harness::new();
+    h.store
+        .seed(&AgentConfig {
+            id: "patch-race".into(),
+            instructions: "r1".into(),
+            max_steps: 8,
+            model_binding: ModelSelection::Auto,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let concurrent_patch = AgentConfig {
+        id: "patch-race".into(),
+        instructions: "r2 winner".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        ..Default::default()
+    };
+    h.store
+        .race_next_audited_write_with(concurrent_patch.clone());
+    let output = h
+        .tool(PATCH_TOOL)
+        .invoke(call(
+            PATCH_TOOL,
+            serde_json::json!({
+                "id": "patch-race",
+                "patch": { "instructions": "stale patch" }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert!(output.is_error, "V1: {}", output.text());
+    assert!(output.text().contains("changed concurrently"), "V1");
+    assert_eq!(
+        h.store.stored("patch-race").unwrap(),
+        concurrent_patch,
+        "V1"
+    );
+
+    let concurrent_create = AgentConfig {
+        id: "create-race".into(),
+        instructions: "created elsewhere".into(),
+        max_steps: 8,
+        model_binding: ModelSelection::Auto,
+        ..Default::default()
+    };
+    h.store
+        .race_next_audited_write_with(concurrent_create.clone());
+    let mut create = call(
+        CREATE_DRAFT_TOOL,
+        serde_json::json!({ "id": "create-race", "instructions": "stale create" }),
+    );
+    create.call_id = "create-race-call".into();
+    let output = h.tool(CREATE_DRAFT_TOOL).invoke(create).await.unwrap();
+    assert!(output.is_error, "V2: {}", output.text());
+    assert!(output.text().contains("changed concurrently"), "V2");
+    assert_eq!(
+        h.store.stored("create-race").unwrap(),
+        concurrent_create,
+        "V2"
+    );
+}
+
+#[tokio::test]
 async fn draft_agent_that_fails_validation_does_not_persist() {
     let h = Harness::new();
     let out = h
@@ -630,7 +1526,7 @@ async fn draft_agent_parse_failure_is_not_audited() {
 }
 
 #[tokio::test]
-async fn patch_agent_reads_merges_and_persists() {
+async fn patch_agent_reads_merges_and_persists_non_permission_plugins() {
     let h = Harness::new();
     // Draft first, with an existing plugin section.
     h.tool(CREATE_DRAFT_TOOL)
@@ -647,7 +1543,7 @@ async fn patch_agent_reads_merges_and_persists() {
         .await
         .unwrap();
 
-    // Patch: change max_steps and ADD a permission section (merge by key).
+    // Patch: change max_steps and ADD a state-machine section (merge by key).
     let out = h
         .tool(PATCH_TOOL)
         .invoke(call(
@@ -656,7 +1552,7 @@ async fn patch_agent_reads_merges_and_persists() {
                 "id": "support",
                 "patch": {
                     "max_steps": 9,
-                    "plugin_config": { "permission": { "allow": ["read"] } }
+                    "plugin_config": { "state_machine": { "machines": [] } }
                 }
             }),
         ))
@@ -669,19 +1565,19 @@ async fn patch_agent_reads_merges_and_persists() {
     assert_eq!(stored.max_steps, 9);
     // Untouched fields preserved.
     assert_eq!(stored.tool_ids, vec!["read".to_string()]);
-    // plugin_config merged by key: BOTH the old compact and the new permission survive.
+    // plugin_config merged by key: both ordinary plugin sections survive.
     assert_eq!(
         stored.plugin_config.get("compact"),
         Some(&serde_json::json!({ "keep": 10 }))
     );
     assert_eq!(
-        stored.plugin_config.get("permission"),
-        Some(&serde_json::json!({ "allow": ["read"] }))
+        stored.plugin_config.get("state_machine"),
+        Some(&serde_json::json!({ "machines": [] }))
     );
     // plugin_ids re-derived from the merged map (sorted BTreeMap order).
     assert_eq!(
         stored.plugin_ids,
-        vec!["compact".to_string(), "permission".to_string()]
+        vec!["compact".to_string(), "state_machine".to_string()]
     );
 }
 
@@ -752,7 +1648,7 @@ async fn validate_reports_invalid_for_a_saved_draft_with_an_unknown_tool() {
     let h = Harness::new();
     // Persist a draft directly so we can validate a config the draft tool would reject.
     h.store
-        .put(&AgentConfig {
+        .seed(&AgentConfig {
             id: "a".into(),
             instructions: "hi".into(),
             max_steps: 8,
@@ -874,6 +1770,10 @@ async fn draft_environment_assembles_and_persists_the_config() {
     // C4 self-hosted plus cloud-only fields -> E4 typed error and zero author calls
     // C5 malformed/unknown fields -> E4 typed error and zero author calls
     // C6 successful call -> E5 stable control-prefixed command id and created response
+    // C7 crash after audit intent but before Environment create -> E6 exact retry
+    // reuses the stable command id and converges through EnvironmentAuthor create_once
+    // C8 same audit operation id but different complete Environment arguments ->
+    // E7 audit conflict before EnvironmentAuthor and zero environment side effect
     //
     // Decision table:
     // | rule | placement   | fields            | outcome                              |
@@ -882,12 +1782,16 @@ async fn draft_environment_assembles_and_persists_the_config() {
     // | R3   | self_hosted | cloud-only        | E4                                   |
     // | R4   | cloud       | malformed/unknown | E4                                   |
     // | R5   | either      | unknown top-level | E4                                   |
+    // | R6   | cloud       | pending same args | E6 one idempotent Environment create |
+    // | R7   | cloud       | pending diff args | E7 conflict; zero Environment create  |
     // Constraints/invariants: typed validation precedes the sole EnvironmentAuthor
-    // port; every rejected row has zero authoring side effects.
+    // port; every rejected row has zero authoring side effects. Observation locks
+    // are scoped to each assertion phase and released before the next async call.
     let author = Arc::new(FakeEnvAuthor::default());
+    let store = Arc::new(MemDraftStore::default());
     let tool = DraftEnvironment {
         author: author.clone(),
-        store: Arc::new(MemDraftStore::default()),
+        store: store.clone(),
         audit: Arc::new(CapturingAudit::default()),
     };
     let out = tool
@@ -1001,6 +1905,76 @@ async fn draft_environment_assembles_and_persists_the_config() {
             "{rule}: rejected input must have no Environment side effect"
         );
     }
+
+    let recovered_arguments = serde_json::json!({ "name": "recovered-env", "placement": "cloud" });
+    let pending = AdminAuditEvent {
+        tool: CREATE_ENV_TOOL.into(),
+        call_id: "environment-response-loss".into(),
+        summary: mutating_audit_summary(
+            CREATE_ENV_TOOL,
+            "draft environment `recovered-env` placement=Some(Cloud)",
+            &recovered_arguments,
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        store.record_audit(&pending).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "R6 setup"
+    );
+    let retry = || ToolCall {
+        call_id: "environment-response-loss".into(),
+        tool_id: CREATE_ENV_TOOL.into(),
+        arguments: recovered_arguments.clone(),
+    };
+    let first_retry = tool.invoke(retry()).await.unwrap();
+    let second_retry = tool.invoke(retry()).await.unwrap();
+    assert!(!first_retry.is_error, "R6: {}", first_retry.text());
+    assert!(!second_retry.is_error, "R6: {}", second_retry.text());
+    {
+        let commands = author.commands.lock().unwrap();
+        assert_eq!(commands.len(), accepted_calls + 1, "R6/E6");
+        assert_eq!(
+            commands.last().unwrap().command_id,
+            "control:environment-response-loss",
+            "R6/E6"
+        );
+    }
+
+    let mismatch_event = AdminAuditEvent {
+        tool: CREATE_ENV_TOOL.into(),
+        call_id: "environment-mismatch".into(),
+        summary: mutating_audit_summary(
+            CREATE_ENV_TOOL,
+            "draft environment `pending-env` placement=Some(Cloud)",
+            &serde_json::json!({ "name": "pending-env", "placement": "cloud" }),
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        store.record_audit(&mismatch_event).await.unwrap(),
+        AuditedConfigWrite::Applied,
+        "R7 setup"
+    );
+    let result = tool
+        .invoke(ToolCall {
+            call_id: "environment-mismatch".into(),
+            tool_id: CREATE_ENV_TOOL.into(),
+            arguments: serde_json::json!({
+                "name": "different-env",
+                "placement": "cloud"
+            }),
+        })
+        .await;
+    assert!(
+        result.is_err(),
+        "R7 audit identity must reject payload reuse"
+    );
+    assert_eq!(
+        author.commands.lock().unwrap().len(),
+        accepted_calls + 1,
+        "R7/E7"
+    );
 }
 
 #[test]
@@ -1158,56 +2132,54 @@ async fn explain_console_tool_falls_back_to_index_for_an_unknown_topic() {
 }
 
 // ===================================================================================
-// Task 3: store.put / put_resources error branches. A DraftStore whose write ops fail
-// lets us assert the error SURFACES to the caller (it is not swallowed / fail-open).
+// Task 3: atomic audited-store error branches. A DraftStore whose transaction fails
+// lets us assert the error surfaces and no split config/resource write can occur.
 // ===================================================================================
 
-/// A DraftStore test double that can be told to fail `put` and/or `put_resources`,
-/// delegating everything else to an in-memory `MemDraftStore`. Lets a test drive the
-/// store-write error branches in `validate_persist_emit` / `persist_resources_after`.
+/// A DraftStore test double that can fail the single audited transaction before it
+/// delegates to `MemDraftStore`; no separate resource-success path exists.
 #[derive(Default)]
 struct FaultyStore {
     fail_put: bool,
-    fail_put_resources: bool,
+    fail_resource_journal: bool,
     fail_audit: bool,
     inner: MemDraftStore,
 }
 
 #[async_trait]
 impl DraftStore for FaultyStore {
-    async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
-        if self.fail_put {
-            return Err("disk full".into());
-        }
-        self.inner.put(draft).await
-    }
-    async fn put_audited(
+    async fn put_audited_with_resources(
         &self,
         draft: &AgentConfig,
+        expected_revision: u64,
         audit: &AdminAuditEvent,
+        resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
         if self.fail_put {
             return Err("disk full".into());
         }
-        self.inner.put_audited(draft, audit).await
+        if self.fail_resource_journal && resources.is_some() {
+            return Err("resource effect journal offline".into());
+        }
+        self.inner
+            .put_audited_with_resources(draft, expected_revision, audit, resources)
+            .await
     }
-    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<(), String> {
+    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<AuditedConfigWrite, String> {
         if self.fail_audit {
             return Err("audit store offline".into());
         }
         self.inner.record_audit(audit).await
     }
-    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
-        self.inner.get(id).await
+    async fn get_audit(
+        &self,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String> {
+        self.inner.get_audit(tool, call_id).await
     }
-    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
-        if self.fail_put_resources {
-            return Err("resource store offline".into());
-        }
-        self.inner.put_resources(agent_id, resources).await
-    }
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
-        self.inner.get_resources(agent_id).await
+    async fn get_versioned(&self, id: &str) -> Result<Option<AgentConfigRevision>, String> {
+        self.inner.get_versioned(id).await
     }
 }
 
@@ -1283,7 +2255,7 @@ async fn patch_agent_surfaces_a_store_put_failure() {
     // Seed a valid draft into a plain store, then move it into a put-faulty store so the
     // patch can read it back but fail on the re-save.
     let seed = MemDraftStore::default();
-    seed.put(&AgentConfig {
+    seed.seed(&AgentConfig {
         id: "s".into(),
         instructions: "hi".into(),
         max_steps: 8,
@@ -1312,15 +2284,12 @@ async fn patch_agent_surfaces_a_store_put_failure() {
     assert!(out.text().contains("disk full"));
 }
 
-// Task 3c: `persist_resources_after` — the config saves, but binding the SEPARATE
-// data-plane resources fails. The error surfaces ("draft saved but its resources could
-// not be bound: <err>"); it is not swallowed. NOTE (characterization, not a bug): the
-// config IS left persisted while the resource bind failed — a partial write the caller
-// is told about via the error body.
+// Task 3c: journaling the external resource effect is part of the same audited
+// transaction. Failure surfaces and leaves both config and resources unchanged.
 #[tokio::test]
-async fn draft_agent_surfaces_a_resource_bind_failure_after_saving_the_config() {
+async fn draft_agent_resource_journal_failure_is_atomic() {
     let store = Arc::new(FaultyStore {
-        fail_put_resources: true,
+        fail_resource_journal: true,
         ..Default::default()
     });
     let (tools, _audit) = tools_over_store(store.clone());
@@ -1336,24 +2305,20 @@ async fn draft_agent_surfaces_a_resource_bind_failure_after_saving_the_config() 
         .await
         .unwrap();
     assert!(out.is_error, "{}", out.text());
-    assert!(out.text().contains("resources could not be bound"));
-    assert!(out.text().contains("resource store offline"));
-    // Characterization: the CONFIG was still saved (partial write) even though the
-    // resource bind failed — the config store shows the draft.
+    assert!(out.text().contains("resource effect journal offline"));
     assert!(
-        store.inner.stored("r").is_some(),
-        "the config is persisted even though the resource bind failed"
+        store.inner.stored("r").is_none(),
+        "the atomic transaction cannot leave a config-only partial write"
     );
     assert!(store.inner.stored_resources("r").is_empty());
 }
 
-// Task 3d: patch path — a present `resources` array triggers `put_resources`; its
-// failure surfaces to the caller the same way.
+// Task 3d: the patch path owns the same atomic resource-journal boundary.
 #[tokio::test]
-async fn patch_agent_surfaces_a_resource_bind_failure() {
-    // Seed a draft with no resources, then arm the put_resources fault.
+async fn patch_agent_resource_journal_failure_is_atomic() {
+    // Seed a draft with no resources, then fail the atomic effect journal.
     let seed = MemDraftStore::default();
-    seed.put(&AgentConfig {
+    seed.seed(&AgentConfig {
         id: "r".into(),
         instructions: "hi".into(),
         max_steps: 8,
@@ -1365,7 +2330,7 @@ async fn patch_agent_surfaces_a_resource_bind_failure() {
     .await
     .unwrap();
     let store = Arc::new(FaultyStore {
-        fail_put_resources: true,
+        fail_resource_journal: true,
         inner: seed,
         ..Default::default()
     });
@@ -1381,8 +2346,9 @@ async fn patch_agent_surfaces_a_resource_bind_failure() {
         .await
         .unwrap();
     assert!(out.is_error, "{}", out.text());
-    assert!(out.text().contains("resources could not be bound"));
-    assert!(out.text().contains("resource store offline"));
+    assert!(out.text().contains("resource effect journal offline"));
+    assert_eq!(store.inner.stored("r").unwrap().instructions, "hi");
+    assert!(store.inner.stored_resources("r").is_empty());
 }
 
 // ===================================================================================

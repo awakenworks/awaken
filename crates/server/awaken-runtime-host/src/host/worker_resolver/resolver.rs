@@ -51,12 +51,11 @@ impl HostWorkerResolver {
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        sandbox: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let agent = agent_id.filter(|a| !a.is_empty());
         let ctx = host
-            .ctx_for_snapshot_with_sandbox(&thread_id.0, agent, published_snapshot, sandbox)
+            .ctx_for_snapshot(&thread_id.0, agent, published_snapshot)
             .await
             .map_err(|e| Self::execution_error(e.to_string()))?;
         Ok(ctx.claimed_worker.clone())
@@ -68,19 +67,12 @@ impl HostWorkerResolver {
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
         published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-        sandbox: Option<crate::session_environment::SessionEnvironment>,
         attempt: ClaimedRuntimeInput,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let agent = agent_id.filter(|a| !a.is_empty());
         let ctx = host
-            .ctx_for_claimed_snapshot_with_sandbox(
-                &thread_id.0,
-                agent,
-                published_snapshot,
-                sandbox,
-                attempt,
-            )
+            .ctx_for_claimed_snapshot(&thread_id.0, agent, published_snapshot, attempt)
             .await
             .map_err(|error| Self::execution_error(error.to_string()))?;
         Ok(ctx.claimed_worker.clone())

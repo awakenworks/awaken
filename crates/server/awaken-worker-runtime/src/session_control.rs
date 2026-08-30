@@ -5,6 +5,7 @@ use awaken_run_ingress_contract::{RunClaim, WorkerIdentity};
 
 /// Standard client using the same registered identity-bound Worker transport as
 /// lifecycle, dispatch, recovery, and claimed commits.
+#[derive(Clone)]
 pub struct WorkerControlSessionClient {
     control: crate::WorkerControlClient,
     identity: WorkerIdentity,
@@ -14,6 +15,31 @@ impl WorkerControlSessionClient {
     #[must_use]
     pub fn new(control: crate::WorkerControlClient, identity: WorkerIdentity) -> Self {
         Self { control, identity }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionEnvironmentBindingSink for WorkerControlSessionClient {
+    async fn authorize(
+        &self,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::RunError,
+    > {
+        self.control
+            .authorize_session_environment_effect(&self.identity, intent)
+            .await
+    }
+
+    async fn persist(
+        &self,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
+        self.control
+            .persist_session_environment_receipt(&self.identity, &receipt)
+            .await
     }
 }
 
@@ -156,16 +182,57 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
             .await
     }
 
-    async fn terminal_cleanup_commands(
+    async fn terminal_cleanup_work(
         &self,
         session_id: &str,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
-        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        Option<awaken_session_contract::SessionTerminalCleanupWork>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control
-            .terminal_cleanup_commands(&self.identity, session_id, lease)
+            .terminal_cleanup_work(&self.identity, session_id, lease)
+            .await
+    }
+
+    async fn authorize_terminal_cleanup_effect(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) -> Result<
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.control
+            .authorize_terminal_cleanup_effect(&self.identity, effect)
+            .await
+    }
+
+    async fn record_terminal_cleanup_preparation(
+        &self,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.control
+            .record_terminal_cleanup_preparation(&self.identity, lease, preparation)
+            .await
+    }
+
+    async fn authorize_terminal_cleanup_disposal(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        self.control
+            .authorize_terminal_cleanup_disposal(&self.identity, effect)
+            .await
+    }
+
+    async fn record_terminal_cleanup_disposal(
+        &self,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.control
+            .record_terminal_cleanup_disposal(&self.identity, lease, receipt)
             .await
     }
 
@@ -209,7 +276,6 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
             )
             .await
     }
-
     async fn record_terminal_repository_publication_rejection(
         &self,
         session_id: &str,
@@ -223,16 +289,6 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
                 lease,
                 rejection,
             )
-            .await
-    }
-
-    async fn record_terminal_cleanup_completion(
-        &self,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        completion: awaken_session_contract::SessionCleanupCompletion,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.control
-            .record_terminal_cleanup_completion(&self.identity, lease, completion)
             .await
     }
 }

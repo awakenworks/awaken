@@ -3,7 +3,7 @@
 //! This remains an operation on [`ConfigService`]; the module split isolates
 //! dependency-refresh behavior without creating another service or authority.
 
-use awaken_agent_config::{ConfigRegistry, ConfigWrite};
+use awaken_agent_config::{AgentLifecycle, ConfigRegistry, ConfigWrite};
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -24,7 +24,10 @@ pub(crate) async fn reconcile(
     match stored {
         // Policy selections refresh their authority-owned pins; an operator's
         // concrete pinned binding remains authoritative.
-        Some(versioned) if versioned.config.model_binding.requires_reconciliation() => {
+        Some(versioned)
+            if versioned.config.lifecycle() == AgentLifecycle::Published
+                && versioned.config.model_binding.requires_reconciliation() =>
+        {
             let preview = service
                 .preview_publication(workspace, registry, id, catalog)
                 .await
@@ -53,10 +56,9 @@ pub(crate) async fn reconcile(
             // `(Workspace, Agent, source_revision)` is immutable, so advance
             // the same authoring intent with CAS before publication instead
             // of persisting a conflicting fingerprint at the old revision.
-            let next_revision = match registry
-                .put_config_if_revision(&versioned.config, versioned.revision)
-                .await
-                .map_err(|error| error.to_string())?
+            let next_revision = match service
+                .advance_reconciliation_revision(registry, &versioned.config, versioned.revision)
+                .await?
             {
                 ConfigWrite::Applied { revision } => revision,
                 ConfigWrite::Conflict { current_revision } => {

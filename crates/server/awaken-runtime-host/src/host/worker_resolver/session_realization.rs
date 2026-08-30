@@ -2,6 +2,11 @@
 //! realization driver.
 
 use super::*;
+mod projection_synchronizer;
+pub(super) use projection_synchronizer::WorkerMcpEffects;
+use projection_synchronizer::WorkerProjectionSynchronizer;
+#[cfg(test)]
+use projection_synchronizer::merge_legacy_claimed_environment_binding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionRealizationWorkerEffect {
@@ -51,222 +56,7 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
     assert_eq!(session_realization_worker_effect(disposition), expected);
 }
 
-struct WorkerProjectionSynchronizer<'a> {
-    host: &'a SharedHost,
-    claim: Option<&'a awaken_run_ingress::RunClaim>,
-    published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
-    rebuild_unavailable_environment: bool,
-    requires_runtime_before_effects: bool,
-}
-
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
-    async fn synchronize_session_projection(
-        &self,
-        session_id: &str,
-        projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        prepare_session: bool,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        let retained_publication = self
-            .host
-            .session_slots
-            .read(session_id, |slot| slot.published_snapshot.clone())
-            .flatten();
-        if let Some(claimed) = self.published_snapshot
-            && !matches!(
-                awaken_session_contract::frozen_agent_publication_decision(
-                    &projection.baseline,
-                    Some(claimed),
-                ),
-                awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-                    | awaken_session_contract::FrozenAgentPublicationDecision::Exact
-            )
-        {
-            return Err(awaken_session_contract::RunError::classified(
-                "session_runtime_publication_conflict",
-                "claimed Run does not match the frozen Session Agent publication",
-            ));
-        }
-        let delivered_publication = projection
-            .agent_publication
-            .as_ref()
-            .or(self.published_snapshot);
-        let published_snapshot = delivered_publication.or(retained_publication.as_ref());
-        match awaken_session_contract::frozen_agent_publication_decision(
-            &projection.baseline,
-            published_snapshot,
-        ) {
-            awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-            | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
-            | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
-            awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err(awaken_session_contract::RunError::classified(
-                    "session_runtime_publication_missing",
-                    "Worker Session realization requires its exact frozen Agent publication",
-                ));
-            }
-            awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err(awaken_session_contract::RunError::classified(
-                    "session_runtime_publication_conflict",
-                    "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
-                ));
-            }
-        }
-        // A claim authorizes live Resource revalidation. A preparation Stage
-        // authorizes local realization. Lease renewal never enters this
-        // projection/effect adapter.
-        let synchronize_resources = self.claim.is_some() || prepare_session;
-        // Control materializes current context on every phase directive.
-        let mut projection = projection.clone();
-        if projection.agent_publication.is_none() {
-            projection.agent_publication = published_snapshot.cloned();
-        }
-        self.host
-            .install_frozen_session_projection(
-                session_id,
-                projection.clone(),
-                self.claim,
-                synchronize_resources,
-                Some(lease.clone()),
-            )
-            .await
-            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-        let environment_absent = self.host.session_environment(session_id).await.is_none();
-        let has_environment_binding =
-            environment_absent && projection.environment.binding().is_some();
-        let runtime_authority_resident = self
-            .host
-            .session_slots
-            .read(session_id, |slot| {
-                slot.runtime.is_some() || slot.environment_owner.is_resident()
-            })
-            .unwrap_or(false);
-        if self.requires_runtime_before_effects
-            && published_snapshot.is_none()
-            && !runtime_authority_resident
-        {
-            return Err(awaken_session_contract::RunError::classified(
-                "session_runtime_publication_missing",
-                "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
-            ));
-        }
-        let (adopted, rebuild_binding) = if environment_absent
-            && let Some(binding) = projection.environment.binding()
-        {
-            let published_snapshot = published_snapshot.ok_or_else(|| {
-                awaken_session_contract::RunError::classified(
-                    "session_environment_recovery_authority_missing",
-                    "a cold Worker needs the exact claimed Agent snapshot to adopt a durable Session Environment",
-                )
-            })?;
-            self.host
-                .adopt_bound_session_environment(
-                    session_id,
-                    Some(binding),
-                    published_snapshot
-                        .resolved_spec
-                        .model_binding
-                        .provisioning(),
-                    self.rebuild_unavailable_environment,
-                )
-                .await
-                .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?
-        } else {
-            (None, false)
-        };
-        if rebuild_binding {
-            // The only admissible replacement path is the claim-bound recovery
-            // decision above. Clear the process-local expectation only after the
-            // provider has proved the exact durable binding unavailable; the new
-            // Environment receipt must still pass the ordinary durable sink.
-            debug_assert!(
-                self.host
-                    .durable_session_environment_binding(session_id)
-                    .is_none(),
-                "terminated recovery owner clears its durable binding"
-            );
-        }
-        // Synchronization is the single ordering boundary between Control's
-        // frozen projection and MCP effects. A first-use Environment has no
-        // durable binding to adopt yet, but its stage still needs the exact Run
-        // publication installed before it may realize sandbox stdio. Only the
-        // physical substrate is needed here; parent Agent plugins remain owned
-        // by the exact root attempt and must not be constructed as a side effect.
-        if published_snapshot.is_some()
-            && (has_environment_binding || self.requires_runtime_before_effects)
-        {
-            self.host
-                .session_child_execution_substrate(session_id, adopted, published_snapshot)
-                .await
-                .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-        }
-        Ok(())
-    }
-}
-
-pub(super) struct WorkerMcpEffects<'a>(pub(super) &'a SharedHost);
-
-#[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
-    {
-        self.0.stage_dispatched_mcp(request).await
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.0.publish_dispatched_mcp(generation).await
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.0.drain_dispatched_mcp(generation).await
-    }
-}
-
 impl HostWorkerResolver {
-    /// Install one terminal recovery assignment through the exact same frozen
-    /// projection synchronizer used by claimed Runs. The
-    /// assignment carries no cleanup commands; after this returns the Host polls
-    /// the aggregate-owned command projection through Session Control.
-    pub(crate) async fn install_terminal_cleanup_assignment(
-        host: &SharedHost,
-        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        let realization = host.session_slots.realization_lock(&assignment.session_id);
-        let _realization = realization.lock().await;
-        let mut teardown_projection = assignment.projection.clone();
-        // Terminal recovery has root cleanup authority, never a Run claim. It
-        // installs the exact frozen baseline/publication/environment needed to
-        // dispose the process-local realization without revalidating or
-        // rematerializing the active Resource generation being destroyed.
-        // Resource lifecycle remains owned by the Session aggregate and its
-        // catalog receipts after Runtime cleanup completes.
-        teardown_projection.resources = Default::default();
-        awaken_session_contract::SessionProjectionSynchronizer::synchronize_session_projection(
-            &WorkerProjectionSynchronizer {
-                host,
-                claim: None,
-                published_snapshot: None,
-                rebuild_unavailable_environment: false,
-                requires_runtime_before_effects: false,
-            },
-            &assignment.session_id,
-            &teardown_projection,
-            &assignment.lease,
-            true,
-        )
-        .await
-    }
-
     fn map_session_realization_drive_error(
         error: awaken_session_contract::SessionRealizationDriveError,
     ) -> awaken_run_ingress::Error {
@@ -310,16 +100,22 @@ impl HostWorkerResolver {
     ) -> Result<(), awaken_run_ingress::Error> {
         let realization = host.session_slots.realization_lock(session_id);
         let _realization = realization.lock().await;
-        Self::drive_session_realization(
+        let synchronizer = WorkerProjectionSynchronizer::for_directive(
             host,
-            control,
-            session_id,
-            directive,
+            &directive,
             claim,
             published_snapshot,
             rebuild_unavailable_environment,
+            None,
+        );
+        Self::drive_session_realization_with_synchronizer(
+            control,
+            session_id,
+            directive,
+            synchronizer,
         )
         .await
+        .map_err(Self::map_session_realization_drive_error)
     }
 
     /// Drive one already-serialized directive under the Session's realization
@@ -329,55 +125,50 @@ impl HostWorkerResolver {
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
-        claim: Option<&awaken_run_ingress::RunClaim>,
-        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-        rebuild_unavailable_environment: bool,
+        claimed: Option<&awaken_run_ingress::Claimed>,
     ) -> Result<(), awaken_run_ingress::Error> {
-        Self::drive_session_realization_raw(
+        let claim = claimed.map(|claimed| awaken_run_ingress::RunClaim::from(&claimed.lease));
+        let published_snapshot = claimed.and_then(|claimed| {
+            (claimed.request.thread_id().0 == session_id)
+                .then_some(&claimed.request.activation.snapshot)
+        });
+        let rebuild_unavailable_environment = claimed.is_some_and(|claimed| {
+            claimed.request.placement.recovery
+                == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth
+        });
+        let claimed_environment_binding = claimed.and_then(|claimed| claimed.sandbox.as_deref());
+        let synchronizer = WorkerProjectionSynchronizer::for_directive(
             host,
+            &directive,
+            claim.as_ref(),
+            published_snapshot,
+            rebuild_unavailable_environment,
+            claimed_environment_binding,
+        );
+        Self::drive_session_realization_with_synchronizer(
             control,
             session_id,
             directive,
-            claim,
-            published_snapshot,
-            rebuild_unavailable_environment,
+            synchronizer,
         )
         .await
         .map_err(Self::map_session_realization_drive_error)
     }
 
-    /// Execute the canonical realization driver without erasing its typed
-    /// Control failure. Ordinary claimed Runs use the mapped wrapper above;
-    /// lease renewal needs the exact `Conflict` variant so it can refresh one
-    /// concurrently advanced aggregate instead of revoking a still-owned
-    /// process-local projection.
-    pub(crate) async fn drive_session_realization_raw(
-        host: &SharedHost,
+    /// Sole Runtime-to-contract effect path. The production entry and the
+    /// test-only projection seam differ only in how they construct this adapter.
+    async fn drive_session_realization_with_synchronizer(
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
-        claim: Option<&awaken_run_ingress::RunClaim>,
-        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-        rebuild_unavailable_environment: bool,
+        synchronizer: WorkerProjectionSynchronizer<'_>,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
-        let requires_runtime_before_effects = matches!(
-            &directive.action,
-            awaken_session_contract::SessionRealizationAction::Stage { mcp_stages, .. }
-                if mcp_stages
-                    .iter()
-                    .any(|stage| stage.target.sandbox_stdio_target().is_some())
-        );
+        let host = synchronizer.host;
         awaken_session_contract::drive_session_realization(
             session_id,
-            claim.map(|claim| claim.run_id.clone()),
+            synchronizer.claim.map(|claim| claim.run_id.clone()),
             control,
-            &WorkerProjectionSynchronizer {
-                host,
-                claim,
-                published_snapshot,
-                rebuild_unavailable_environment,
-                requires_runtime_before_effects,
-            },
+            &synchronizer,
             &WorkerMcpEffects(host),
             directive,
         )
@@ -389,17 +180,120 @@ impl HostWorkerResolver {
 mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{
-        AdoptionModel, claim, committed_environment, deferred_environment, test_activation,
+        AdoptionModel, ToggleBindingSink, committed_environment, deferred_environment,
+        eager_environment, install_complete_projection_for_snapshot, managed_test_host,
+        test_activation, with_empty_session_resources,
     };
     use awaken_session_contract::SessionRuntime as _;
     use std::sync::{Arc, Mutex};
 
+    /// Legacy raw-claim merge cause/effect graph: C1 the durable Environment
+    /// phase; C2 a raw RunDispatch sandbox cache is present. E1 only a genuinely
+    /// legacy Unmaterialized root is upgraded to Resident; E2 every resident or
+    /// continuation phase remains byte-for-byte root-owned; E3 absence is a no-op.
+    ///
+    /// | Rule | C1 | C2 | Effect |
+    /// |---|---|---|---|
+    /// | L1 | Unmaterialized | present | E1 |
+    /// | L2 | Resident/Suspending | present | E2 |
+    /// | L3 | Hibernated/Restoring | present | E2; never resurrect source |
+    /// | L4 | any | absent | E3 |
+    #[test]
+    fn legacy_raw_claim_only_repairs_an_unmaterialized_environment() {
+        let generation = awaken_session_contract::SandboxGeneration::new(
+            "legacy-claim",
+            1,
+            u64::MAX,
+            "environment",
+            "image",
+        );
+        let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+            "workspace",
+            "legacy-claim",
+            "suspend",
+            &generation,
+            1,
+            None,
+            None,
+        );
+        let checkpoint = awaken_provisioning_contract::SandboxCheckpointRef {
+            id: "checkpoint".into(),
+            format: "awaken-fs-v1".into(),
+            digest: "digest".into(),
+            size_bytes: 1,
+            created_at_unix_ms: 1,
+            expires_at_unix_ms: u64::MAX,
+            environment_fingerprint: "environment".into(),
+            base_image_fingerprint: "image".into(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: operation.effect_id.clone(),
+        };
+        let root_binding = "{\"provider_kind\":\"root\"}";
+        let raw_claim = "{\"provider_kind\":\"claim\"}";
+
+        let mut legacy = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
+        merge_legacy_claimed_environment_binding(&mut legacy, Some(raw_claim));
+        assert!(
+            matches!(
+                legacy,
+                awaken_session_contract::SessionEnvironmentState::Resident {
+                    ref binding,
+                    effect_id: None,
+                    generation: None,
+                    idle_since_unix_ms: None,
+                } if binding == raw_claim
+            ),
+            "L1"
+        );
+
+        let protected = [
+            awaken_session_contract::SessionEnvironmentState::Resident {
+                binding: root_binding.into(),
+                effect_id: Some("effect".into()),
+                generation: Some(generation.clone()),
+                idle_since_unix_ms: None,
+            },
+            awaken_session_contract::SessionEnvironmentState::Suspending {
+                operation: operation.clone(),
+                source_effect_id: Box::new("source-effect".into()),
+                source_binding: root_binding.into(),
+                generation: generation.clone(),
+                suspend_phase: awaken_session_contract::SuspendPhase::Quiescing,
+                checkpoint: None,
+                source_release_preparation: None,
+            },
+            awaken_session_contract::SessionEnvironmentState::Hibernated {
+                checkpoint: checkpoint.clone(),
+                generation: generation.clone(),
+            },
+            awaken_session_contract::SessionEnvironmentState::Restoring {
+                operation,
+                checkpoint,
+                generation,
+            },
+        ];
+        for expected in protected {
+            let mut actual = expected.clone();
+            merge_legacy_claimed_environment_binding(&mut actual, Some(raw_claim));
+            assert_eq!(actual, expected, "L2/L3");
+        }
+
+        let mut absent = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
+        merge_legacy_claimed_environment_binding(&mut absent, None);
+        assert_eq!(
+            absent,
+            awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+            "L4"
+        );
+    }
+
     /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
-    /// the immutable dispatch envelope. Legacy absence remains eager, an exact
-    /// on-tool-use projection stays sandbox-free during Brain resolution, and a
-    /// malformed projection is rejected by claim admission before any Worker or
-    /// Sandbox effect. Moving C3 earlier preserves fail-closed behavior while
-    /// keeping one projection decoder at the run-ingress contract boundary.
+    /// the immutable dispatch envelope. A complete eager Runtime plus exact empty
+    /// Resource projection realizes eagerly, an exact on-tool-use projection stays
+    /// sandbox-free during Brain resolution, and a malformed projection is rejected
+    /// by claim admission before any Worker or Sandbox effect. Moving C3 earlier
+    /// preserves fail-closed behavior while keeping one projection decoder at the
+    /// run-ingress contract boundary.
     #[tokio::test]
     async fn cold_worker_runtime_projection_decision_table() {
         use awaken_run_ingress::{Clock, DispatchQueue, WorkerResolver as _};
@@ -411,35 +305,71 @@ mod tests {
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
         );
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let managed = managed_test_host(host.clone());
         let resolver = HostWorkerResolver {
             host: Arc::downgrade(&host),
         };
 
-        let legacy = claim(&store, "cold-legacy", "run-legacy", "worker-a", now).await;
+        let eager_environment = eager_environment();
+        let eager_activation = test_activation("cold-legacy", "run-legacy");
+        install_complete_projection_for_snapshot(
+            &managed,
+            "cold-legacy",
+            host.local_workspace(),
+            eager_environment.clone(),
+            &eager_activation.snapshot,
+        )
+        .await;
+        let eager_runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
+            eager_environment,
+            Some(Default::default()),
+            Vec::new(),
+        )
+        .expect("encode eager Runtime projection");
+        store
+            .enqueue(with_empty_session_resources(
+                awaken_run_ingress::RunDispatch::new(eager_activation)
+                    .with_session_runtime(eager_runtime),
+                host.local_workspace(),
+            ))
+            .await
+            .expect("enqueue legacy projection with exact empty Resources");
+        let legacy = store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect("claim legacy projection")
+            .expect("legacy projection available");
         resolver
             .worker_for_claimed(&legacy)
             .await
-            .expect("C1 legacy projection remains eager");
+            .expect("C1 complete eager projection remains eager");
         assert!(
             host.session_environment("cold-legacy").await.is_some(),
             "C1"
         );
 
+        let deferred_environment = deferred_environment();
+        let deferred_activation = test_activation("cold-deferred", "run-deferred");
+        install_complete_projection_for_snapshot(
+            &managed,
+            "cold-deferred",
+            host.local_workspace(),
+            deferred_environment.clone(),
+            &deferred_activation.snapshot,
+        )
+        .await;
         let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
-            deferred_environment(),
+            deferred_environment,
             Some(Default::default()),
             Vec::new(),
         )
         .expect("encode runtime projection");
         store
-            .enqueue(
-                awaken_run_ingress::RunDispatch::new(test_activation(
-                    "cold-deferred",
-                    "run-deferred",
-                ))
-                .with_session_runtime(runtime),
-            )
+            .enqueue(with_empty_session_resources(
+                awaken_run_ingress::RunDispatch::new(deferred_activation)
+                    .with_session_runtime(runtime),
+                host.local_workspace(),
+            ))
             .await
             .expect("enqueue deferred projection");
         let deferred = store
@@ -629,42 +559,71 @@ mod tests {
         }
     }
 
-    struct RecoveryControl {
+    pub(super) struct RecoveryControl {
         projection: Arc<Mutex<awaken_session_contract::FrozenSessionProjection>>,
     }
 
     impl RecoveryControl {
-        fn fixed(projection: awaken_session_contract::FrozenSessionProjection) -> Self {
+        pub(super) fn fixed(projection: awaken_session_contract::FrozenSessionProjection) -> Self {
             Self {
                 projection: Arc::new(Mutex::new(projection)),
             }
         }
 
-        fn current_projection(&self) -> awaken_session_contract::FrozenSessionProjection {
+        pub(super) fn current_projection(
+            &self,
+        ) -> awaken_session_contract::FrozenSessionProjection {
             self.projection.lock().unwrap().clone()
         }
     }
 
-    struct RecoveryEnvironmentBindingSink {
+    pub(super) struct RecoveryEnvironmentBindingSink {
         projection: Arc<Mutex<awaken_session_contract::FrozenSessionProjection>>,
         calls: std::sync::atomic::AtomicUsize,
     }
 
     impl RecoveryEnvironmentBindingSink {
-        fn new(control: &RecoveryControl) -> Self {
+        pub(super) fn new(control: &RecoveryControl) -> Self {
             Self {
                 projection: control.projection.clone(),
                 calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
-        fn calls(&self) -> usize {
+        pub(super) fn calls(&self) -> usize {
             self.calls.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
     #[async_trait::async_trait]
     impl awaken_session_contract::SessionEnvironmentBindingSink for RecoveryEnvironmentBindingSink {
+        async fn authorize(
+            &self,
+            intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+        ) -> Result<
+            awaken_session_contract::SessionEnvironmentEffectAuthorization,
+            awaken_session_contract::RunError,
+        > {
+            // Fixture cause/effect rule: C1 Control owns the current frozen
+            // Environment state and C2 Runtime submits one exact intent. E1
+            // delegate the decision to the contract state machine; never
+            // approximate AlreadyApplied from a cached binding.
+            let projection = self.projection.lock().unwrap();
+            projection
+                .environment
+                .authorize_effect(
+                    intent,
+                    &projection.baseline.environment.config_fingerprint.0,
+                    None,
+                )
+                .map_err(|error| {
+                    awaken_session_contract::RunError::classified(
+                        "test_environment_effect_rejected",
+                        error.to_string(),
+                    )
+                })
+        }
+
         async fn persist(
             &self,
             receipt: awaken_session_contract::SessionEnvironmentReceipt,
@@ -683,8 +642,7 @@ mod tests {
         projection: awaken_session_contract::FrozenSessionProjection,
         stage: awaken_session_contract::StageMcpAttachment,
         lease: Mutex<awaken_session_contract::SessionRealizationLease>,
-        begin_calls: std::sync::atomic::AtomicUsize,
-        acknowledge_conflicts_remaining: std::sync::atomic::AtomicUsize,
+        renewal_calls: std::sync::atomic::AtomicUsize,
         renewals_on_activate_remaining: std::sync::atomic::AtomicUsize,
         repeat_stage_without_progress: bool,
     }
@@ -693,26 +651,12 @@ mod tests {
     impl awaken_session_contract::SessionRealizationControl for RenewalDuringStageControl {
         async fn begin_session_realization(
             &self,
-            command: awaken_session_contract::BeginSessionRealization,
+            _command: awaken_session_contract::BeginSessionRealization,
         ) -> Result<
             awaken_session_contract::SessionRealizationDirective,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
-            self.begin_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let mut lease = self.lease.lock().unwrap();
-            lease.expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
-            let mut stage = self.stage.clone();
-            stage.generation.lease_expires_at_unix_ms = lease.expires_at_unix_ms;
-            stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
-            Ok(awaken_session_contract::SessionRealizationDirective {
-                projection: self.projection.clone(),
-                lease: lease.clone(),
-                action: awaken_session_contract::SessionRealizationAction::Stage {
-                    prepare_session: false,
-                    mcp_stages: vec![stage],
-                },
-            })
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn renew_session_realization(
@@ -722,12 +666,13 @@ mod tests {
             awaken_session_contract::SessionRealizationLease,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
-            self.begin_calls
+            self.renewal_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut lease = self.lease.lock().unwrap();
-            if lease.owner != command.asserted_lease.owner
-                || lease.runtime_incarnation != command.asserted_lease.runtime_incarnation
-                || lease.epoch != command.asserted_lease.epoch
+            if !awaken_session_contract::realization_lease_generation_authorizes(
+                &lease,
+                &command.asserted_lease,
+            ) || command.requested_expires_at_unix_ms < lease.expires_at_unix_ms
             {
                 return Err(
                     awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
@@ -801,17 +746,6 @@ mod tests {
             awaken_session_contract::SessionRealizationDirective,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
-            if self
-                .acknowledge_conflicts_remaining
-                .fetch_update(
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                    |remaining| remaining.checked_sub(1),
-                )
-                .is_ok()
-            {
-                return Err(awaken_session_contract::SessionRealizationControlFailure::Conflict);
-            }
             let lease = self.lease.lock().unwrap().clone();
             let action =
                 if command.published.iter().any(|generation| {
@@ -922,6 +856,27 @@ mod tests {
         (projection, lease, stage)
     }
 
+    /// Test-only typed-outcome seam. Production callers enter through
+    /// `drive_session_realization`; these progress tests construct the same
+    /// synchronizer and call the sole driver directly so they can assert its
+    /// un-erased `DidNotConverge` result.
+    async fn drive_test_session_realization(
+        host: &SharedHost,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        session_id: &str,
+        directive: awaken_session_contract::SessionRealizationDirective,
+    ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
+        let synchronizer =
+            WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
+        HostWorkerResolver::drive_session_realization_with_synchronizer(
+            control,
+            session_id,
+            directive,
+            synchronizer,
+        )
+        .await
+    }
+
     #[async_trait::async_trait]
     impl awaken_session_contract::SessionRealizationControl for RecoveryControl {
         async fn begin_session_realization(
@@ -977,7 +932,7 @@ mod tests {
         }
     }
 
-    fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
+    pub(super) fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
         let holder = awaken_runtime_contract::PlaintextHolder::new(
             awaken_runtime_contract::PlaintextBoundary::Worker,
             "test.worker",
@@ -1026,10 +981,32 @@ mod tests {
             environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
+            previous_resource_manifest: Some(
+                awaken_session_contract::SessionResourceManifest::new(
+                    "workspace",
+                    awaken_session_contract::ResolvedSessionResources::default(),
+                ),
+            ),
             tools: Default::default(),
             mcp: Vec::new(),
             request_context: Vec::new(),
         }
+    }
+
+    /// Build the one Store-read Resident fixture through the shared binding
+    /// projection. Binding-only `set_resident` is legacy decode evidence and
+    /// cannot represent current cold recovery because it drops the effect
+    /// identity and generation used by rebuild fencing.
+    fn committed_resident_environment(
+        thread: &str,
+        binding: String,
+    ) -> awaken_session_contract::SessionEnvironmentState {
+        committed_environment(awaken_session_contract::SessionEnvironmentReceipt::new(
+            thread,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            binding,
+            None,
+        ))
     }
 
     /// Lease-only Resource synchronization cause/effect graph: C1 the frozen
@@ -1080,6 +1057,7 @@ mod tests {
             published_snapshot: None,
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         };
         synchronizer
             .synchronize_session_projection(thread, &remote, &lease, false)
@@ -1100,6 +1078,7 @@ mod tests {
             published_snapshot: None,
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         }
         .synchronize_session_projection("cold-renewal-resources", &remote, &lease, false)
         .await
@@ -1126,7 +1105,7 @@ mod tests {
 
         let thread = "dynamic-publication-renewal";
         let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let mut projection = frozen_projection();
         projection.baseline.agent_revision = Some(7);
         projection.baseline.runtime = Some("acp:claude".into());
@@ -1149,6 +1128,7 @@ mod tests {
             published_snapshot: None,
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         }
         .synchronize_session_projection(thread, &projection, &lease, true)
         .await
@@ -1162,6 +1142,7 @@ mod tests {
             published_snapshot: None,
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         }
         .synchronize_session_projection(thread, &compatibility_renewal, &lease, false)
         .await
@@ -1191,6 +1172,7 @@ mod tests {
             published_snapshot: Some(&effective),
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         }
         .synchronize_session_projection(thread, &projection, &lease, false)
         .await
@@ -1212,6 +1194,7 @@ mod tests {
             published_snapshot: Some(&foreign),
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         }
         .synchronize_session_projection(thread, &projection, &lease, false)
         .await
@@ -1226,6 +1209,7 @@ mod tests {
             published_snapshot: None,
             rebuild_unavailable_environment: false,
             requires_runtime_before_effects: false,
+            claimed_environment_binding: None,
         }
         .synchronize_session_projection("publication-missing", &missing, &lease, true)
         .await
@@ -1258,6 +1242,7 @@ mod tests {
                 published_snapshot: None,
                 rebuild_unavailable_environment: false,
                 requires_runtime_before_effects: false,
+                claimed_environment_binding: None,
             }
             .synchronize_session_projection(session_id, &conflicting, &lease, true)
             .await
@@ -1271,8 +1256,9 @@ mod tests {
     /// heartbeat requests the same owner/incarnation/epoch lease extension.
     /// Effects: E1 extend durable and local authority without blocking; E2 never
     /// start a second Stage/Publish driver; E3 the current driver catches its
-    /// exact generation up before completion. Replacement fencing is owned by the contract authorization
-    /// table; ordinary idle renewal is W6 in the parent resolver tests.
+    /// exact generation up before completion. Replacement fencing is owned by
+    /// the contract authorization table; ordinary idle renewal is W6 in the
+    /// parent resolver tests.
     ///
     /// | Rule | C1 | C2 | C3 | Effect |
     /// |---|---|---|---|---|
@@ -1289,8 +1275,7 @@ mod tests {
             projection: projection.clone(),
             stage: stage.clone(),
             lease: Mutex::new(lease.clone()),
-            begin_calls: std::sync::atomic::AtomicUsize::new(0),
-            acknowledge_conflicts_remaining: std::sync::atomic::AtomicUsize::new(0),
+            renewal_calls: std::sync::atomic::AtomicUsize::new(0),
             renewals_on_activate_remaining: std::sync::atomic::AtomicUsize::new(0),
             repeat_stage_without_progress: false,
         });
@@ -1351,7 +1336,7 @@ mod tests {
         );
         assert_eq!(
             control
-                .begin_calls
+                .renewal_calls
                 .load(std::sync::atomic::Ordering::SeqCst),
             1,
             "R1/E1 durable renewal advances once"
@@ -1401,8 +1386,7 @@ mod tests {
             projection: projection.clone(),
             stage: stage.clone(),
             lease: Mutex::new(lease.clone()),
-            begin_calls: std::sync::atomic::AtomicUsize::new(0),
-            acknowledge_conflicts_remaining: std::sync::atomic::AtomicUsize::new(0),
+            renewal_calls: std::sync::atomic::AtomicUsize::new(0),
             renewals_on_activate_remaining: std::sync::atomic::AtomicUsize::new(5),
             repeat_stage_without_progress: false,
         });
@@ -1413,7 +1397,7 @@ mod tests {
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
             .install_dispatch_session_runtime();
-        HostWorkerResolver::drive_session_realization_raw(
+        drive_test_session_realization(
             &host,
             control.as_ref(),
             thread,
@@ -1425,9 +1409,6 @@ mod tests {
                     mcp_stages: vec![stage],
                 },
             },
-            None,
-            None,
-            false,
         )
         .await
         .expect("D1/E1-E2 monotonic renewal progress converges");
@@ -1445,8 +1426,7 @@ mod tests {
             projection: projection.clone(),
             stage: stage.clone(),
             lease: Mutex::new(lease.clone()),
-            begin_calls: std::sync::atomic::AtomicUsize::new(0),
-            acknowledge_conflicts_remaining: std::sync::atomic::AtomicUsize::new(0),
+            renewal_calls: std::sync::atomic::AtomicUsize::new(0),
             renewals_on_activate_remaining: std::sync::atomic::AtomicUsize::new(0),
             repeat_stage_without_progress: true,
         });
@@ -1457,7 +1437,7 @@ mod tests {
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
             .install_dispatch_session_runtime();
-        let error = HostWorkerResolver::drive_session_realization_raw(
+        let error = drive_test_session_realization(
             &host,
             control.as_ref(),
             thread,
@@ -1469,9 +1449,6 @@ mod tests {
                     mcp_stages: vec![stage],
                 },
             },
-            None,
-            None,
-            false,
         )
         .await
         .expect_err("D2/E3 exact repetition fails closed");
@@ -1493,12 +1470,17 @@ mod tests {
          * Worker process has no resident Runtime/Environment; C3 the claimed Run
          * carries the exact immutable Agent snapshot; C4 Control requires the
          * active sandbox-stdio MCP generation to be restaged; C5 a rebuild-mode
-         * Run names a provider-valid typed durable Environment whose physical root
-         * is no longer available; C6 the first-use Managed binding sink commits and
-         * reads back Resident. Effects:
-         * E1 adopt the exact bound Environment before MCP stage; E2 never consult
-         * current Agent publication; E3 preserve the Sandbox handle and generation;
-         * E4 a cold lease-only replay without the exact snapshot fails closed; E5
+         * Run names a provider-created typed Environment handle whose exact
+         * physical root was lost and is definitively unavailable; C6 the fixture
+         * producer installs the same complete frozen projection used by cold
+         * adoption before creating that handle; C7 a fresh consumer Host has no
+         * resident slot or Runtime; C8 the first-use Managed binding sink commits
+         * and reads back Resident; C9 cold replay carries that exact Store-read
+         * effect id and generation, never a legacy binding-only repair. Effects:
+         * E1 adopt the exact bound Environment
+         * before MCP stage; E2 never consult current
+         * Agent publication; E3 preserve the Sandbox handle and generation; E4 a
+         * cold lease-only replay without the exact snapshot fails closed; E5
          * rebuild only when the claimed Run's explicit recovery policy permits it;
          * E6 no MCP effect runs when a first-use stdio stage lacks that snapshot;
          * E7 C6 persists exactly once and MCP stage observes the Store-read Resident
@@ -1518,15 +1500,39 @@ mod tests {
         let storage = tempfile::tempdir().expect("storage");
         let thread = "cold-frozen-environment";
         let activation = test_activation(thread, "run-cold-frozen-environment");
-        let original =
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let original = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let original_managed = managed_test_host(original.clone());
+        let mut frozen = frozen_projection();
+        let mut original_projection = frozen.clone();
+        original_projection.agent_publication = Some(activation.snapshot.clone());
+        let original_control = RecoveryControl::fixed(original_projection.clone());
+        let original_binding_sink =
+            Arc::new(RecoveryEnvironmentBindingSink::new(&original_control));
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &original_managed,
+            original_binding_sink.clone(),
+        );
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &original_managed,
+            thread,
+            original_projection,
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                lease: lease.clone(),
+                prepare_session: true,
+            },
+        )
+        .await
+        .expect("R1 install exact original frozen projection");
         let original_ctx = original
-            .ctx_for_snapshot_with_sandbox(
-                thread,
-                Some("agent-a"),
-                Some(activation.snapshot.clone()),
-                None,
-            )
+            .ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone()))
             .await
             .expect("R1 original Environment");
         let handle = original_ctx
@@ -1535,7 +1541,20 @@ mod tests {
             .expect("R1 eager Environment")
             .handle();
         let binding = serde_json::to_string(&handle).expect("R1 durable binding");
+        let committed_environment = original_control.current_projection().environment;
+        assert_eq!(
+            committed_environment.binding(),
+            Some(binding.as_str()),
+            "R1/C9 Store-read binding remains exact"
+        );
+        frozen.environment = committed_environment;
+        assert_eq!(
+            original_binding_sink.calls(),
+            1,
+            "R1/C9 producer commits and reads one exact durable identity"
+        );
         drop(original_ctx);
+        drop(original_managed);
         drop(original);
 
         let stage = awaken_session_contract::StageMcpAttachment {
@@ -1560,14 +1579,6 @@ mod tests {
             prompts_as_skills: false,
             selected_plaintext_holder: None,
         };
-        let mut frozen = frozen_projection();
-        frozen.environment.set_resident(binding);
-        let lease = awaken_session_contract::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a".into(),
-            epoch: 1,
-            expires_at_unix_ms: u64::MAX,
-        };
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection: frozen.clone(),
             lease,
@@ -1584,9 +1595,14 @@ mod tests {
             required_environment: Some((Arc::downgrade(&host), thread.into())),
             ..Default::default()
         });
-        let _managed = crate::ManagedHost::new(host.clone())
+        let managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
             .install_dispatch_session_runtime();
+        let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &managed,
+            binding_sink,
+        );
         HostWorkerResolver::realize_session(
             &host,
             &control,
@@ -1620,11 +1636,13 @@ mod tests {
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"
         );
+        let mut resident_directive = directive.clone();
+        resident_directive.projection = control.current_projection();
         HostWorkerResolver::realize_session(
             &host,
             &control,
             thread,
-            directive.clone(),
+            resident_directive,
             None,
             None,
             false,
@@ -1706,9 +1724,17 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
         let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
-        let _managed = crate::ManagedHost::new(unpinned_host.clone())
+        let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone())
             .with_mcp_attachment_realizer(unpinned_realizer.clone())
             .install_dispatch_session_runtime();
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &unpinned_managed,
+            Arc::new(ToggleBindingSink {
+                fail: std::sync::atomic::AtomicBool::new(false),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                binding: Mutex::new(None),
+            }),
+        );
         let error = HostWorkerResolver::realize_session(
             &unpinned_host,
             &RecoveryControl::fixed(frozen_projection()),
@@ -1749,20 +1775,22 @@ mod tests {
 
         let rebuild_thread = "cold-missing-environment";
         let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
-        let unavailable_local_handle = |thread: &str| {
-            awaken_provisioning_contract::SandboxHandle::local(
-                thread,
-                handle
-                    .local_payload()
-                    .expect("R5/R6 original typed local payload")
-                    .clone(),
-            )
-        };
-        let missing = unavailable_local_handle(rebuild_thread);
+        let rebuild_fixture_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
         let mut rebuild_frozen = frozen_projection();
-        rebuild_frozen
-            .environment
-            .set_resident(serde_json::to_string(&missing).expect("R5 missing durable binding"));
+        rebuild_frozen.agent_publication = Some(rebuild_activation.snapshot.clone());
+        let missing =
+            crate::host::worker_resolver::test_support::unavailable_local_environment_binding(
+                &rebuild_fixture_host,
+                rebuild_thread,
+                &rebuild_frozen,
+            )
+            .await;
+        let missing_handle: awaken_provisioning_contract::SandboxHandle =
+            serde_json::from_str(&missing).expect("R5 exact unavailable handle");
+        drop(rebuild_fixture_host);
+        rebuild_frozen.environment = committed_resident_environment(rebuild_thread, missing);
         let rebuild_directive = awaken_session_contract::SessionRealizationDirective {
             projection: rebuild_frozen.clone(),
             lease: awaken_session_contract::SessionRealizationLease {
@@ -1776,11 +1804,17 @@ mod tests {
         let rebuild_host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
-        let _managed =
+        let rebuild_managed =
             crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
+        let rebuild_control = RecoveryControl::fixed(rebuild_frozen.clone());
+        let rebuild_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&rebuild_control));
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &rebuild_managed,
+            rebuild_sink,
+        );
         HostWorkerResolver::realize_session(
             &rebuild_host,
-            &RecoveryControl::fixed(rebuild_frozen),
+            &rebuild_control,
             rebuild_thread,
             rebuild_directive,
             None,
@@ -1789,22 +1823,32 @@ mod tests {
         )
         .await
         .expect("R5 rebuild policy replaces the unavailable Environment");
-        assert!(
+        assert_ne!(
             rebuild_host
-                .session_environment(rebuild_thread)
+                .session_environment_handle(rebuild_thread)
                 .await
-                .is_some(),
-            "R5/E5"
+                .expect("R5 rebuilt Environment handle"),
+            missing_handle,
+            "R5/E5 rebuild publishes a new physical Environment"
         );
 
         let continuity_thread = "cold-continuity-missing";
         let continuity_activation =
             test_activation(continuity_thread, "run-cold-continuity-missing");
-        let mut continuity_frozen = frozen_projection();
-        continuity_frozen.environment.set_resident(
-            serde_json::to_string(&unavailable_local_handle(continuity_thread))
-                .expect("R6 missing durable binding"),
+        let continuity_fixture_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
+        let mut continuity_frozen = frozen_projection();
+        continuity_frozen.agent_publication = Some(continuity_activation.snapshot.clone());
+        let missing =
+            crate::host::worker_resolver::test_support::unavailable_local_environment_binding(
+                &continuity_fixture_host,
+                continuity_thread,
+                &continuity_frozen,
+            )
+            .await;
+        drop(continuity_fixture_host);
+        continuity_frozen.environment = committed_resident_environment(continuity_thread, missing);
         let continuity_directive = awaken_session_contract::SessionRealizationDirective {
             projection: continuity_frozen.clone(),
             lease: awaken_session_contract::SessionRealizationLease {
@@ -1818,11 +1862,17 @@ mod tests {
         let continuity_host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
-        let _managed =
+        let continuity_managed =
             crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();
-        HostWorkerResolver::realize_session(
+        let continuity_control = RecoveryControl::fixed(continuity_frozen.clone());
+        let continuity_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&continuity_control));
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &continuity_managed,
+            continuity_sink,
+        );
+        let error = HostWorkerResolver::realize_session(
             &continuity_host,
-            &RecoveryControl::fixed(continuity_frozen),
+            &continuity_control,
             continuity_thread,
             continuity_directive,
             None,
@@ -1831,5 +1881,16 @@ mod tests {
         )
         .await
         .expect_err("R6 continuity policy rejects a missing Environment");
+        assert!(
+            error.to_string().contains("unavailable or terminal"),
+            "R6 fails for exact physical unavailability, not fixture drift: {error}"
+        );
+        assert!(
+            continuity_host
+                .session_environment(continuity_thread)
+                .await
+                .is_none(),
+            "R6 continuity failure publishes no replacement Environment"
+        );
     }
 }

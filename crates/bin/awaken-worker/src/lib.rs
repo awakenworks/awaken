@@ -461,7 +461,23 @@ impl WorkerNodeBuilder {
             return Ok(self);
         }
         let backend = self.deployment.sandbox_support().1;
-        let components = awaken_runtime_host::build_container_environment(
+        let installation_root = self.deployment.storage_dir.as_deref().ok_or_else(|| {
+            WorkerNodeBuildError(
+                "container Worker requires DeploymentConfig::storage_dir for stable realization identity"
+                    .into(),
+            )
+        })?;
+        let installation_workspace =
+            awaken_runtime_host::SharedHost::provision_local_workspace_at(installation_root);
+        let realization_namespace =
+            awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                "worker-installation",
+                installation_workspace.as_str(),
+                self.upstream.worker_id(),
+            ])
+            .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
+        let components = awaken_runtime_host::build_container_environment_for_realization(
+            realization_namespace,
             self.deployment.sandbox_tier,
             self.deployment.container_image.as_deref(),
             &self.deployment.sandbox,
@@ -930,7 +946,7 @@ fn configured_container_acp_capability_source(
         acp_capability::ConfiguredAcpCapabilityObservationSource::new(
             targets,
             negotiator,
-            std::path::PathBuf::from("/workspace"),
+            std::path::PathBuf::from(awaken_provisioning_contract::WorkspaceLayout::ROOT),
         ),
     )))
 }
@@ -1108,13 +1124,16 @@ impl WorkerNode {
             host = host.with_attempt_decorator(decorator);
         }
         // Every registered Worker realizes the already-frozen Session projection
-        // through Control; WorkQueue remains the sole Session ownership path.
-        host = host.with_session_control(Arc::new(
-            awaken_worker_runtime::WorkerControlSessionClient::new(
-                control.clone(),
-                registration.snapshot.identity.clone(),
-            ),
+        // through Control; the same client projects the one durable Environment
+        // root authorization before provider I/O. WorkQueue remains the sole
+        // Session ownership path.
+        let session_control = Arc::new(awaken_worker_runtime::WorkerControlSessionClient::new(
+            control.clone(),
+            registration.snapshot.identity.clone(),
         ));
+        host = host
+            .with_session_control(session_control.clone())
+            .with_environment_binding_sink(session_control);
         if let Some(gate) = self.tool_gate {
             host = host.with_gate_override(gate);
         }

@@ -7,9 +7,30 @@ use awaken_provisioning_contract::SandboxProvider;
 use std::collections::HashMap;
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::io::AsyncWriteExt;
+
+fn disposal_authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDisposalAuthorization {
+    let preparation_fingerprint = format!("test-preparation:{}", prepared.operation_id);
+    let preparation =
+        pc::SandboxDisposalPreparation::new(prepared.clone(), preparation_fingerprint)
+            .expect("test preparation is complete");
+    let operation_id = preparation
+        .operation_id()
+        .expect("stable disposal identity");
+    let successor = pc::SandboxEffectFence::new(
+        operation_id,
+        prepared.owner.clone(),
+        prepared.runtime_incarnation.clone(),
+        prepared.epoch,
+        prepared.expires_at_unix_ms,
+    )
+    .expect("test authorization successor is valid");
+    preparation
+        .authorize(successor)
+        .expect("test authorization is aggregate-authorized")
+}
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -490,12 +511,19 @@ fn mount_ref_covers_every_source_kind() {
 
 #[test]
 fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
+    /* Memory layout cause/effect table — MP1. C1 one MemoryStore carries a
+     * logical store id; C2 its effect-scoped materialization reference is
+     * absent/present. C1 => E1 the byte-bind projection excludes the mount and
+     * E2 the runtime plan retains the logical store id/path/access. C1+C2 => E3
+     * first materialization uses the reference while durable recovery evidence
+     * retains the logical store id through the same normalized projection
+     * (covered by NM1/CN1), without changing E2. */
     let mut s = spec("mem");
     s.mounts.push(pc::MountRequirement {
         mount_id: "notes".into(),
         source: pc::MountSource::MemoryStore {
             store_id: "store-42".into(),
-            materialization_reference: None,
+            materialization_reference: Some("effect-reference-42".into()),
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/workspace/.mnt/notes".into(),
@@ -659,6 +687,7 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
     let torn_down = Arc::new(AtomicBool::new(false));
     p.install_memory_mounter(Arc::new(FakeMemoryMounter {
         torn_down: torn_down.clone(),
+        fail_teardown: false,
     }));
     let sandbox = p.create(&s).await.unwrap();
     let mem = sandbox
@@ -700,9 +729,14 @@ fn one_file_archive(path: &str, bytes: &[u8]) -> Vec<u8> {
     archive.into_inner().unwrap()
 }
 
+type ReconciledMemoryEntries = Arc<Mutex<Option<Vec<(String, Vec<u8>)>>>>;
+
 struct HarvestingMemoryMounter {
     reference: Arc<Mutex<Option<String>>>,
     harvested: Arc<Mutex<Option<Vec<u8>>>>,
+    recovered_evidence: Arc<Mutex<Option<pc::MemoryMaterializationEvidence>>>,
+    reconciled: ReconciledMemoryEntries,
+    reconcile_calls: Arc<AtomicUsize>,
 }
 
 struct HarvestingMemoryMount {
@@ -728,6 +762,20 @@ impl pc::MemoryMounter for HarvestingMemoryMounter {
             harvested: self.harvested.clone(),
         }))
     }
+
+    async fn reconcile_recovered_copy(
+        &self,
+        store_id: &str,
+        evidence: &pc::MemoryMaterializationEvidence,
+        files: &[(String, Vec<u8>)],
+        _access: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+        *self.reference.lock().unwrap() = Some(store_id.to_owned());
+        *self.recovered_evidence.lock().unwrap() = Some(evidence.clone());
+        *self.reconciled.lock().unwrap() = Some(files.to_vec());
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -736,8 +784,17 @@ impl pc::MemoryMount for HarvestingMemoryMount {
         pc::Realization::Copy
     }
 
-    async fn teardown(self: Box<Self>) {
+    fn materialization_heads(&self) -> Option<Vec<pc::MemoryMaterializationHead>> {
+        Some(vec![pc::MemoryMaterializationHead {
+            path: "seed.txt".into(),
+            id: "seed-head".into(),
+            content_sha256: "seed-sha256".into(),
+        }])
+    }
+
+    async fn teardown(&self) -> Result<(), pc::SandboxError> {
         *self.harvested.lock().unwrap() = std::fs::read(self.root.join("changed.txt")).ok();
+        Ok(())
     }
 }
 
@@ -770,9 +827,15 @@ async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
     let provider = provider(runtime.clone());
     let reference = Arc::new(Mutex::new(None));
     let harvested = Arc::new(Mutex::new(None));
+    let recovered_evidence = Arc::new(Mutex::new(None));
+    let reconciled = Arc::new(Mutex::new(None));
+    let reconcile_calls = Arc::new(AtomicUsize::new(0));
     provider.install_memory_mounter(Arc::new(HarvestingMemoryMounter {
         reference: reference.clone(),
         harvested: harvested.clone(),
+        recovered_evidence,
+        reconciled,
+        reconcile_calls,
     }));
 
     let sandbox = provider.create(&sandbox_spec).await.expect("NM1 create");
@@ -800,11 +863,761 @@ async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
     );
 }
 
-struct FakeMemoryMounter {
-    torn_down: Arc<AtomicBool>,
+#[tokio::test]
+async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
+    /* Container disposal preparation/authorization table NM2. Causes: C1 a
+     * fresh handle carries exact copy materialization M and a writable Secret;
+     * C2 aggregate fence F is live; C3 acknowledgement is missing/exact/foreign;
+     * C4 the exact acknowledgement/preparation response is lost and replayed;
+     * C5 Secret writeback fails after a continuation ack; C6 a terminal successor
+     * has the same/different realization lease; C7 aggregate preparation is/is
+     * not durably accepted before physical authorization. Effects: E1 missing or
+     * foreign acknowledgement fails before Secret writeback or runtime removal;
+     * E2 exact M+F drains only the process-local CopyMount guard without RunV1
+     * teardown; E3 exact ack/preparation replay is idempotent; E4 Secret failure
+     * retains the realization before the cleanup gate; E5 a same-lease successor
+     * rebinds drained acknowledgement with zero Memory I/O, while a foreign lease
+     * remains rejected; E6 prepare writes the stable physical/ref Secret effect
+     * but performs zero removal; E7 only C7 invokes exact runtime removal, with
+     * zero repeated live credential read. Staging and non-copy dependencies stay
+     * owned until removal succeeds. C8 Container/Kubernetes has not installed a
+     * physical cleanup gate at preparation; E8 its returned predecessor is the
+     * exact input fence and does not claim provider-marker durability.
+     *
+     * | Rule | M/F/ack | Secret prepare | prep durable | Effect |
+     * |---|---|---|---|---|
+     * | N1 | missing/foreign | not called | no | E1 |
+     * | N2 | exact/replay | pending | no | E2+E3 |
+     * | N3 | exact | fails | no | E4 |
+     * | N4 | same lease successor | succeeds/replays | no | E5+E6+E8 |
+     * | N5 | foreign/superseded | not called | no | E1 |
+     * | N6 | exact latest | already durable | yes | E7 |
+     *
+     * N3-N6 are the canonical equivalent coverage for the retired one-shot
+     * process-exit Secret tests: successful and failed writeback, replay, and
+     * exact physical removal are all driven by the aggregate fence. A process
+     * terminal status is deliberately absent from the causes because it owns
+     * neither source preparation nor Environment disposal. */
+    let runtime = Arc::new(
+        FakeRuntime::default()
+            .with_native_memory_archive(Vec::new())
+            .with_live_credential(b"rotated-terminal-secret"),
+    );
+    let mut sandbox_spec = writable_credential_spec("terminal-memory-ack");
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "memory-authority".into(),
+            materialization_reference: Some("run-v1-must-not-be-used-at-terminal".into()),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/.mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = b"initial-terminal-secret".to_vec();
+    broker.reject_writeback.store(true, Ordering::SeqCst);
+    let provider = provider_without_broker(runtime.clone()).with_secret_broker(broker.clone());
+    let torn_down = Arc::new(AtomicBool::new(false));
+    provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: torn_down.clone(),
+        fail_teardown: false,
+    }));
+    let sandbox = provider
+        .create(&sandbox_spec)
+        .await
+        .expect("NM2 create exact copy-backed Container");
+    let handle = sandbox.handle();
+    let materializations = handle
+        .memory_materializations()
+        .expect("NM2 valid V2 handle")
+        .expect("NM2 exact copy evidence")
+        .to_vec();
+    let continuation = pc::SandboxEffectFence::new(
+        "continuation-memory-ack-effect",
+        "worker-owner",
+        "worker-incarnation",
+        11,
+        u64::MAX,
+    )
+    .unwrap();
+
+    assert!(
+        sandbox
+            .prepare_disposal_for_effect(&continuation)
+            .await
+            .is_err(),
+        "N1 missing acknowledgement rejects preparation"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-terminal-memory-ack"),
+        Some(&true),
+        "N1 zero physical removal"
+    );
+
+    let mut foreign = materializations.clone();
+    foreign[0].store_id = "foreign-memory".into();
+    assert!(
+        sandbox
+            .acknowledge_memory_reconciliation(&continuation, &foreign)
+            .await
+            .is_err(),
+        "N2 foreign materialization cannot unlock disposal"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-terminal-memory-ack"),
+        Some(&true),
+        "N2 zero physical removal"
+    );
+
+    sandbox
+        .acknowledge_memory_reconciliation(&continuation, &materializations)
+        .await
+        .expect("N2 exact continuation reconciliation acknowledgement");
+    sandbox
+        .acknowledge_memory_reconciliation(&continuation, &materializations)
+        .await
+        .expect("N2 response-loss replay is idempotent");
+    assert!(
+        sandbox
+            .prepare_disposal_for_effect(&continuation)
+            .await
+            .is_err(),
+        "N3 Secret rejection keeps the physical realization"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-terminal-memory-ack"),
+        Some(&true),
+        "N4 zero physical removal"
+    );
+
+    let terminal = pc::SandboxEffectFence::new(
+        "terminal-memory-ack-effect",
+        "worker-owner",
+        "worker-incarnation",
+        11,
+        u64::MAX,
+    )
+    .unwrap();
+    let foreign_lease = pc::SandboxEffectFence::new(
+        "foreign-terminal-memory-ack-effect",
+        "foreign-owner",
+        "worker-incarnation",
+        11,
+        u64::MAX,
+    )
+    .unwrap();
+    assert!(
+        sandbox
+            .acknowledge_memory_reconciliation(&foreign_lease, &materializations)
+            .await
+            .is_err(),
+        "N6 a foreign realization lease cannot take over drained guards"
+    );
+    sandbox
+        .acknowledge_memory_reconciliation(&terminal, &materializations)
+        .await
+        .expect("N4 same-lease terminal successor rebinds the acknowledgement");
+    assert!(
+        sandbox
+            .prepare_disposal_for_effect(&continuation)
+            .await
+            .is_err(),
+        "N5 only the latest authorized successor may prepare"
+    );
+    broker.reject_writeback.store(false, Ordering::SeqCst);
+    let expected_secret_effect = pc::SecretWritebackEffect::new(
+        "credential://acp/native/claude",
+        handle
+            .container_physical_incarnation()
+            .expect("N5 current physical incarnation"),
+        terminal.clone(),
+    )
+    .expect("N5 canonical Secret effect");
+    let prepared = sandbox
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("N4 exact successor prepares every source-dependent effect");
+    assert_eq!(prepared, terminal, "N4/E8 exact input predecessor");
+    let live_reads_after_prepare = runtime.st.lock().unwrap().live_credential_reads;
+    let replayed = sandbox
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("N4 preparation response-loss replay");
+    assert_eq!(replayed, terminal, "N4/E8 exact replay predecessor");
+    assert_eq!(
+        runtime.st.lock().unwrap().live_credential_reads,
+        live_reads_after_prepare,
+        "N4 successful preparation replay performs no second live read"
+    );
+    assert_eq!(
+        live_reads_after_prepare, 2,
+        "N3 failed writeback remains retryable; N4 successful writeback reads once"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-terminal-memory-ack"),
+        Some(&true),
+        "N4 preparation has zero physical effect"
+    );
+    sandbox
+        .dispose_for_effect(&disposal_authorization(&terminal))
+        .await
+        .expect("N6 aggregate-authorized physical authorization");
+    assert!(
+        !torn_down.load(Ordering::SeqCst),
+        "N3-N6 terminal-v2 reconciliation is not repeated through RunV1 teardown"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-terminal-memory-ack"),
+        Some(&false),
+        "N6 physical removal follows durable preparation"
+    );
+    assert_eq!(
+        runtime.st.lock().unwrap().live_credential_reads,
+        live_reads_after_prepare,
+        "N6 physical authorization performs zero live credential read"
+    );
+    assert_eq!(
+        broker.effect_operations.lock().unwrap().as_slice(),
+        std::slice::from_ref(&terminal.operation_id),
+        "N4/N5 failed predecessor writes no Secret; successor writes exactly once"
+    );
+    assert_eq!(
+        broker.writeback_ids.lock().unwrap().as_slice(),
+        &[expected_secret_effect.writeback_id().to_string()],
+        "N5 Secret idempotency is bound to the exact credential reference and physical Sandbox, not the aggregate operation",
+    );
 }
 
-struct FakeMemoryMount(Arc<AtomicBool>);
+#[tokio::test]
+async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participants() {
+    /* Cold terminal-participant cause/effect decision table — CN1:
+     * Causes: C1 the durable V2 handle carries one canonical copy-head set that
+     * exactly joins the frozen Memory store+mount; C2 the runtime is native and
+     * can reconstruct participant access; C3 the replacement Worker installs
+     * the frozen Secret broker while the root terminal owner retains the only
+     * MemoryMounter commit port; C4 live Secret/Memory reads succeed; C5 the
+     * exact incarnation is Terminal/Ready/absent/Provisioning; C6 the deployment wraps the
+     * provider in a warm-capacity adapter. C1-C6+
+     * Terminal or Ready => E1 terminal preparation rebuilds descriptors without a host
+     * staging guard, E2 the root commits Memory exactly once and acknowledges
+     * the complete evidence while Container writes back its Secret, and E3
+     * removes the physical object only afterwards.
+     * Exact absent => E5 `None` without fabricating a lifecycle; Provisioning,
+     * !C2, !C3, a different C1, or missing handle => E4 fail closed with zero
+     * removal. The ordinary active-adoption port also
+     * rejects Terminal, so it cannot become a parallel authorization path. The
+     * original in-process mount guard is dropped before recovery, so success
+     * cannot come from the first Worker's process-local cleanup state. */
+    let runtime = Arc::new(
+        FakeRuntime::default()
+            .with_native_memory_archive(one_file_archive("changed.txt", b"changed-after-restart"))
+            .with_live_credential(b"credential-after-restart"),
+    );
+    let mut sandbox_spec = writable_credential_spec("cold-native-recovery");
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "mutable-store-id".into(),
+            materialization_reference: Some("claim-fenced-reference".into()),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/.mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = b"credential-before-restart".to_vec();
+    let reference = Arc::new(Mutex::new(None));
+    let harvested = Arc::new(Mutex::new(None));
+    let recovered_evidence = Arc::new(Mutex::new(None));
+    let reconciled = Arc::new(Mutex::new(None));
+    let reconcile_calls = Arc::new(AtomicUsize::new(0));
+    let mounter = Arc::new(HarvestingMemoryMounter {
+        reference: reference.clone(),
+        harvested: harvested.clone(),
+        recovered_evidence: recovered_evidence.clone(),
+        reconciled: reconciled.clone(),
+        reconcile_calls: reconcile_calls.clone(),
+    });
+
+    let node_a = provider_without_broker(runtime.clone()).with_secret_broker(broker.clone());
+    node_a.install_memory_mounter(mounter.clone());
+    let sandbox = node_a
+        .create_container(&sandbox_spec)
+        .await
+        .expect("CN1 initial native create");
+    let handle = pc::Sandbox::handle(&sandbox);
+    let handle: pc::SandboxHandle =
+        serde_json::from_slice(&serde_json::to_vec(&handle).expect("CN1 serialize durable handle"))
+            .expect("CN1 deserialize durable handle");
+    let evidence = handle
+        .memory_materializations()
+        .expect("CN1 valid handle")
+        .expect("CN1 current V2 evidence");
+    assert_eq!(evidence.len(), 1, "C1 one copy projection");
+    assert_eq!(evidence[0].store_id, "mutable-store-id");
+    assert_eq!(evidence[0].mount_path, "/workspace/.mnt/memory");
+    assert_eq!(evidence[0].heads[0].path, "seed.txt");
+    drop(sandbox);
+    drop(node_a);
+
+    assert!(
+        ContainerCleanupState::recovered_native(
+            &sandbox_spec,
+            &handle,
+            Some(broker.clone()),
+            false,
+        )
+        .is_err(),
+        "E4 host-bind attempt cannot reconstruct participants"
+    );
+    assert!(
+        ContainerCleanupState::recovered_native(&sandbox_spec, &handle, None, true,).is_err(),
+        "E4 missing broker"
+    );
+    let mut different = sandbox_spec.clone();
+    let pc::MountSource::MemoryStore { store_id, .. } = &mut different.mounts[1].source else {
+        unreachable!("CN1 Memory fixture")
+    };
+    *store_id = "different-store".into();
+    assert!(
+        ContainerCleanupState::recovered_native(&different, &handle, Some(broker.clone()), true,)
+            .is_err(),
+        "E4 frozen Memory identity mismatch"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-cold-native-recovery"),
+        Some(&true),
+        "E4 decision rows do not remove the live realization"
+    );
+
+    let node_b =
+        Arc::new(provider_without_broker(runtime.clone()).with_secret_broker(broker.clone()));
+    let pool = WarmContainerPool::new(node_b.clone(), 0);
+    let terminal_fence = pc::SandboxEffectFence::new(
+        "cold-native-terminal",
+        "worker-owner",
+        "worker-incarnation",
+        7,
+        u64::MAX,
+    )
+    .unwrap();
+    runtime.set_observation(pc::SandboxObservation::Terminal {
+        physical_incarnation: "cid-cold-native-recovery".into(),
+    });
+    assert!(
+        ContainerEnvironmentProvider::adopt_environment_for_effect(
+            &pool,
+            ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
+            Some(&terminal_fence),
+        )
+        .await
+        .is_err(),
+        "E4 active adoption does not disguise terminal preparation",
+    );
+    let adapter_prepared = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        &pool,
+        &sandbox_spec,
+        Some(&handle),
+        None,
+        &terminal_fence,
+    )
+    .await
+    .expect("E1 reconstruct exact terminal participants through adapter port")
+    .expect("E1 terminal realization has a lifecycle owner");
+    let recovered_files = adapter_prepared
+        .read_files("/workspace/.mnt/memory")
+        .await
+        .expect("E2 provider reads the exact frozen Memory root")
+        .into_iter()
+        .map(|file| (file.path, file.bytes))
+        .collect::<Vec<_>>();
+    pc::MemoryMounter::reconcile_recovered_copy(
+        mounter.as_ref(),
+        "terminal-memory-operation",
+        &evidence[0],
+        &recovered_files,
+        pc::MountAccess::ReadWrite,
+    )
+    .await
+    .expect("E2 root terminal Memory owner commits once");
+    drop(adapter_prepared);
+    runtime.set_observation(pc::SandboxObservation::Ready);
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &pool,
+            &sandbox_spec,
+            Some(&handle),
+            None,
+            &terminal_fence,
+        )
+        .await
+        .expect("E1 exact Ready remains disposable")
+        .is_some(),
+        "E1 Ready produces the same raw lifecycle without renewing or launching it"
+    );
+    runtime.set_observation(pc::SandboxObservation::DefinitivelyUnavailable {
+        physical_incarnation: Some("cid-cold-native-recovery".into()),
+    });
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &pool,
+            &sandbox_spec,
+            Some(&handle),
+            None,
+            &terminal_fence,
+        )
+        .await
+        .expect("E5 exact absence is a closed outcome")
+        .is_none(),
+        "E5 absence cannot fabricate a lifecycle"
+    );
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &pool,
+            &sandbox_spec,
+            None,
+            Some(&terminal_fence),
+            &terminal_fence,
+        )
+        .await
+        .is_err(),
+        "E4 built-in container restore has no handle-free terminal owner"
+    );
+    runtime.set_observation(pc::SandboxObservation::Terminal {
+        physical_incarnation: "cid-cold-native-recovery".into(),
+    });
+    let adopted = pc::SandboxProvider::prepare_terminal_for_effect(
+        node_b.as_ref(),
+        &sandbox_spec,
+        Some(&handle),
+        None,
+        &terminal_fence,
+    )
+    .await
+    .expect("E1 neutral port projects the same terminal owner")
+    .expect("E1 terminal realization has a neutral lifecycle owner");
+    adopted
+        .acknowledge_memory_reconciliation(&terminal_fence, evidence)
+        .await
+        .expect("E2 exact terminal Memory acknowledgement gates physical cleanup");
+    adopted
+        .prepare_disposal_for_effect(&terminal_fence)
+        .await
+        .expect("E2 source-dependent preparation precedes aggregate admission");
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-cold-native-recovery"),
+        Some(&true),
+        "E2 preparation has zero physical effect"
+    );
+    adopted
+        .dispose_for_effect(&disposal_authorization(&terminal_fence))
+        .await
+        .expect("E2/E3 terminal cleanup");
+
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[b"credential-after-restart".to_vec()],
+        "E2 recovered Secret writeback"
+    );
+    assert_eq!(
+        broker.effect_operations.lock().unwrap().as_slice(),
+        &["cold-native-terminal".to_string()],
+        "E2 recovered Secret writeback uses the root terminal operation"
+    );
+    assert_eq!(
+        reference.lock().unwrap().as_deref(),
+        Some("terminal-memory-operation"),
+        "E2 root owns the operation reference"
+    );
+    assert_eq!(
+        recovered_evidence
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("E2 durable copy base")
+            .heads[0]
+            .path
+            .as_str(),
+        "seed.txt",
+        "E2 reconciliation consumes the persisted original heads"
+    );
+    assert_eq!(
+        reconciled.lock().unwrap().as_deref(),
+        Some([("changed.txt".to_string(), b"changed-after-restart".to_vec())].as_slice()),
+        "E2 recovered Memory bytes"
+    );
+    assert_eq!(
+        reconcile_calls.load(Ordering::SeqCst),
+        1,
+        "E2 Container disposal cannot perform a second Memory commit"
+    );
+    assert!(
+        harvested.lock().unwrap().is_none(),
+        "E1 process-local first-Worker guard was not reused"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-cold-native-recovery"),
+        Some(&false),
+        "E3 exact physical removal follows root Memory commit and Secret writeback"
+    );
+}
+
+#[tokio::test]
+async fn disposing_terminal_preparation_reconstructs_only_physical_cleanup() {
+    /* Disposing participant table CN2. Causes: C1 the exact durable handle
+     * carries writable Secret and native Copy-Memory evidence; C2 the aggregate
+     * has already durably accepted source preparation and the provider now
+     * observes its physical cleanup gate as Disposing; C3 the same aggregate
+     * terminal fence resumes cleanup. Effects: E1 reconstruction contains only
+     * the existing physical owner; E2 disposal performs zero Pod exec/read,
+     * RunV1 teardown, or Secret rewrite; E3 only the exact physical realization
+     * is removed. Disposing itself is physical evidence, not a second durable
+     * preparation receipt. Ordinary Terminal/Ready preparation is covered by
+     * CN1; absence returns no owner in CT1.
+     *
+     * | Rule | observation | participants | live read/write | removal | Effect |
+     * | C1 | Ready/Terminal | reconstructed | permitted | after durable I/O | CN1 |
+     * | C2 | Disposing | physical only | forbidden | exact | E1+E2+E3 |
+     * | C3 | absent | none | forbidden | none | CT1 | */
+    let runtime = Arc::new(
+        FakeRuntime::default()
+            .with_native_memory_archive(one_file_archive("changed.txt", b"must-not-be-read"))
+            .with_live_credential(b"must-not-be-written-back"),
+    );
+    let mut sandbox_spec = writable_credential_spec("disposing-physical-only");
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "disposing-memory".into(),
+            materialization_reference: Some("run-v1-must-not-be-reused".into()),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/.mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = b"initial-credential".to_vec();
+    let torn_down = Arc::new(AtomicBool::new(false));
+    let provider = provider_without_broker(runtime.clone()).with_secret_broker(broker.clone());
+    provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: torn_down.clone(),
+        fail_teardown: false,
+    }));
+    let created = provider
+        .create_container(&sandbox_spec)
+        .await
+        .expect("CN2 create exact native source");
+    let handle = pc::Sandbox::handle(&created);
+    drop(created);
+    let terminal = pc::SandboxEffectFence::new(
+        "disposing-physical-cleanup",
+        "worker-owner",
+        "worker-incarnation",
+        13,
+        u64::MAX,
+    )
+    .unwrap();
+    runtime.set_observation(pc::SandboxObservation::Disposing {
+        physical_incarnation: handle.container_physical_incarnation().unwrap().to_string(),
+    });
+
+    let cleanup = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        &provider,
+        &sandbox_spec,
+        Some(&handle),
+        None,
+        &terminal,
+    )
+    .await
+    .expect("CN2 prepare exact disposing owner")
+    .expect("CN2 disposing realization still needs physical cleanup");
+    cleanup
+        .dispose_for_effect(&disposal_authorization(&terminal))
+        .await
+        .expect("CN2 resume exact physical cleanup");
+
+    let state = runtime.st.lock().unwrap();
+    assert!(state.spawned.is_empty(), "CN2/E2 zero Pod exec/read");
+    assert_eq!(
+        state.alive.get("cid-disposing-physical-only"),
+        Some(&false),
+        "CN2/E3"
+    );
+    drop(state);
+    assert!(broker.writes.lock().unwrap().is_empty(), "CN2/E2");
+    assert!(!torn_down.load(Ordering::SeqCst), "CN2/E2");
+}
+
+#[tokio::test]
+async fn cold_host_bind_terminal_preparation_fails_before_observation_or_removal() {
+    /* Cold host-bind cause/effect table. C1 the durable V2 handle names a
+     * Docker/Podman-style realization whose File/Secret/Memory participants are
+     * owned only by the creating process; C2 that process is gone; C3 the root
+     * authorizes terminal cleanup. C1+C2+C3 => E1 fail closed before backend
+     * observation/removal and E2 preserve the exact physical object. Native
+     * reconstructible runtimes occupy the successful CN1 rows above. This is a
+     * deliberate safety boundary, not a claim that CurrentAttemptOnly recovery
+     * is live or automatically reclaimable. */
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = provider(runtime.clone());
+    let sandbox_spec = spec("cold-host-bind-terminal");
+    let sandbox = provider
+        .create_container(&sandbox_spec)
+        .await
+        .expect("fixture creates one current V2 handle");
+    let handle = pc::Sandbox::handle(&sandbox);
+    drop(sandbox);
+    runtime.set_observation(pc::SandboxObservation::Terminal {
+        physical_incarnation: "cid-cold-host-bind-terminal".into(),
+    });
+    let observations_before = runtime.st.lock().unwrap().observations;
+    let terminal_fence = pc::SandboxEffectFence::new(
+        "cold-host-bind-cleanup",
+        "worker-owner",
+        "worker-incarnation",
+        8,
+        u64::MAX,
+    )
+    .unwrap();
+
+    assert!(
+        ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &provider,
+            &sandbox_spec,
+            Some(&handle),
+            None,
+            &terminal_fence,
+        )
+        .await
+        .is_err(),
+        "E1 prior process-local participants are not reconstructible"
+    );
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(
+        state.observations, observations_before,
+        "E1 zero observation"
+    );
+    assert_eq!(
+        state.alive.get("cid-cold-host-bind-terminal"),
+        Some(&true),
+        "E2 zero removal"
+    );
+}
+
+#[tokio::test]
+async fn effect_fenced_total_absence_has_no_terminal_environment() {
+    /* Total-absence terminal preparation table CT1. Causes: C1 the durable
+     * current handle carries exact physical identity; C2 adapter observation
+     * has already proved every typed participant absent; C3 the aggregate
+     * supplies a live terminal effect fence. Effect E1 return `None`, so no
+     * executable or cleanup-only Environment is fabricated and exact disposal
+     * replay is a zero-mutation success. Rule CT1 C1+C2+C3=>E1. Kubernetes's
+     * absent-Pod/live-PVC row is deliberately rejected by its adapter before
+     * this provider-neutral branch and is covered by KAP1/KPV5. */
+    let runtime = Arc::new(FakeRuntime::default().with_native_memory_archive(Vec::new()));
+    let provider = provider(runtime.clone());
+    let sandbox_spec = spec("claim-only-terminal");
+    let sandbox = provider.create_container(&sandbox_spec).await.unwrap();
+    let created = pc::Sandbox::handle(&sandbox);
+    let mut previous = created.container_payload().unwrap().clone();
+    previous.runtime_handle = Some(pc::ContainerContinuationHandle::KubernetesContinuationV2 {
+        pod_uid: "pod-a".into(),
+        claim_uid: Some("claim-p".into()),
+    });
+    let handle = pc::SandboxHandle::container_v2(
+        created.sandbox_id.clone(),
+        pc::ContainerSandboxHandleV2 {
+            previous,
+            adoption_fingerprint: created
+                .container_adoption_fingerprint()
+                .unwrap()
+                .unwrap()
+                .clone(),
+            realization_fingerprint: created.realization_fingerprint().unwrap().clone(),
+            owned_paths: created.owned_paths().unwrap().to_vec(),
+        },
+    );
+    drop(sandbox);
+    runtime.set_observation(pc::SandboxObservation::DefinitivelyUnavailable {
+        physical_incarnation: Some("pod-a".into()),
+    });
+    let terminal_fence = pc::SandboxEffectFence::new(
+        "claim-only-terminal-effect",
+        "worker-owner",
+        "worker-incarnation",
+        9,
+        u64::MAX,
+    )
+    .unwrap();
+
+    let target = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        &provider,
+        &sandbox_spec,
+        Some(&handle),
+        None,
+        &terminal_fence,
+    )
+    .await
+    .expect("CT1 exact total-absence observation");
+    assert!(target.is_none(), "CT1/E1");
+}
+
+struct FakeMemoryMounter {
+    torn_down: Arc<AtomicBool>,
+    fail_teardown: bool,
+}
+
+struct FakeMemoryMount {
+    torn_down: Arc<AtomicBool>,
+    fail_teardown: bool,
+}
 
 #[async_trait]
 impl pc::MemoryMounter for FakeMemoryMounter {
@@ -817,7 +1630,10 @@ impl pc::MemoryMounter for FakeMemoryMounter {
         std::fs::create_dir_all(host_path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
         std::fs::write(host_path.join("seed.txt"), b"seed")
             .map_err(|e| pc::SandboxError::new(e.to_string()))?;
-        Ok(Box::new(FakeMemoryMount(self.torn_down.clone())))
+        Ok(Box::new(FakeMemoryMount {
+            torn_down: self.torn_down.clone(),
+            fail_teardown: self.fail_teardown,
+        }))
     }
 }
 
@@ -827,8 +1643,17 @@ impl pc::MemoryMount for FakeMemoryMount {
         pc::Realization::Copy
     }
 
-    async fn teardown(self: Box<Self>) {
-        self.0.store(true, Ordering::SeqCst);
+    fn materialization_heads(&self) -> Option<Vec<pc::MemoryMaterializationHead>> {
+        Some(Vec::new())
+    }
+
+    async fn teardown(&self) -> Result<(), pc::SandboxError> {
+        self.torn_down.store(true, Ordering::SeqCst);
+        if self.fail_teardown {
+            Err(pc::SandboxError::new("injected Memory teardown failure"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -855,9 +1680,12 @@ struct FakeState {
     artifacts: Vec<pc::Artifact>,
     blobs: HashMap<String, Vec<u8>>,
     fail_create: bool,
+    may_have_committed_create: bool,
+    attempted_binds: Vec<BindPlan>,
     refreshed_credential: Option<Vec<u8>>,
     live_credential: Option<Vec<u8>>,
     live_credential_error: Option<String>,
+    live_credential_reads: usize,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
     runtime_path_observations: Vec<RuntimePathObservation>,
@@ -878,6 +1706,8 @@ struct FakeState {
     restore_plan_fingerprints: HashMap<String, String>,
     restore_creates: usize,
     restore_disposals: usize,
+    observations: u32,
+    observation: Option<pc::SandboxObservation>,
 }
 
 #[derive(Default)]
@@ -969,6 +1799,10 @@ impl FakeRuntime {
         drop(state);
         self
     }
+
+    fn set_observation(&self, observation: pc::SandboxObservation) {
+        self.st.lock().unwrap().observation = Some(observation);
+    }
 }
 
 #[async_trait]
@@ -1033,6 +1867,10 @@ impl ContainerRuntime for FakeRuntime {
         self.st.lock().unwrap().native_memory
     }
 
+    fn uses_host_bind_materialization(&self) -> bool {
+        !self.st.lock().unwrap().native_memory
+    }
+
     async fn project_live_input(
         &self,
         _container_id: &str,
@@ -1057,7 +1895,8 @@ impl ContainerRuntime for FakeRuntime {
         _container_id: &str,
         _path: &str,
     ) -> Result<Option<Vec<u8>>, RuntimeError> {
-        let state = self.st.lock().unwrap();
+        let mut state = self.st.lock().unwrap();
+        state.live_credential_reads += 1;
         match &state.live_credential_error {
             Some(error) => Err(RuntimeError::Backend(error.clone())),
             None => Ok(state.live_credential.clone()),
@@ -1082,6 +1921,12 @@ impl ContainerRuntime for FakeRuntime {
             }
         }
         let mut st = self.st.lock().unwrap();
+        st.attempted_binds = plan.binds.clone();
+        if st.may_have_committed_create {
+            return Err(RuntimeError::MayHaveCommitted(
+                "injected create response loss".into(),
+            ));
+        }
         if st.fail_create {
             return Err(RuntimeError::Backend("image pull failed".into()));
         }
@@ -1260,6 +2105,22 @@ impl ContainerRuntime for FakeRuntime {
         Ok(())
     }
 
+    async fn observe(
+        &self,
+        expectation: crate::ContainerObservationExpectation<'_>,
+    ) -> Result<pc::SandboxObservation, RuntimeError> {
+        let mut state = self.st.lock().unwrap();
+        state.observations += 1;
+        Ok(state.observation.clone().unwrap_or_else(|| {
+            if state.alive.get(expectation.container_id) == Some(&false) {
+                pc::SandboxObservation::DefinitivelyUnavailable {
+                    physical_incarnation: Some(expectation.container_id.to_string()),
+                }
+            } else {
+                pc::SandboxObservation::Ready
+            }
+        }))
+    }
     async fn spawn(
         &self,
         container_id: &str,
@@ -1307,7 +2168,7 @@ impl ContainerRuntime for FakeRuntime {
         container_id: &str,
         command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
-        let memory_archive = if command.argv.iter().any(|arg| arg == "awaken-read-files") {
+        let memory_archive = if command.argv.iter().any(|arg| arg == "read-tree-nofollow") {
             self.st.lock().unwrap().memory_archive.clone()
         } else {
             Vec::new()
@@ -1403,13 +2264,65 @@ impl ContainerRuntime for FakeRuntime {
         state.alive.insert(container_id.into(), false);
         Ok(())
     }
+
+    async fn remove_exact_incarnation(
+        &self,
+        container_id: &str,
+        _runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        _authorization: &pc::SandboxDisposalAuthorization,
+    ) -> Result<(), RuntimeError> {
+        self.remove(container_id).await
+    }
+}
+
+#[tokio::test]
+async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() {
+    /* Provider-effect cause/effect table. Causes: C1 fence live/expired; C2 a
+     * spec that would otherwise require BlobSource staging and runtime create.
+     * Effects: E1 expired rejects at the one provider boundary; E2 no runtime
+     * observation/create and no materialized Sandbox is published. The live row
+     * is covered by the fenced runtime decision tests; this test locks the
+     * time-bound zero-effect rejection rather than accepting a later adapter
+     * error as equivalent evidence. */
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = ContainerProvider::new(runtime.clone(), "agent:test");
+    let expired =
+        pc::SandboxEffectFence::new("operation-expired", "owner-1", "runtime-1", 1, 0).unwrap();
+    let error = match provider
+        .create_container_for_effect(
+            &spec("expired-fence"),
+            Some(&expired),
+            ContainerRealizationIntent::Create,
+        )
+        .await
+    {
+        Ok(_) => panic!("E1 expired fence must reject"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("expired"), "E1");
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(state.observations, 0, "E2 observation");
+    assert!(state.alive.is_empty(), "E2 create");
 }
 
 #[derive(Default)]
 struct RecordingSecretBroker {
     current: Mutex<Vec<u8>>,
     writes: Mutex<Vec<Vec<u8>>>,
+    effect_operations: Mutex<Vec<String>>,
+    writeback_ids: Mutex<Vec<String>>,
     reject_writeback: AtomicBool,
+}
+
+impl RecordingSecretBroker {
+    fn record_writeback(&self, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        if self.reject_writeback.load(Ordering::SeqCst) {
+            return Err(pc::SandboxError::new("injected write-back rejection"));
+        }
+        *self.current.lock().unwrap() = bytes.clone();
+        self.writes.lock().unwrap().push(bytes);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1423,11 +2336,23 @@ impl pc::SecretBroker for RecordingSecretBroker {
     }
 
     async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
-        if self.reject_writeback.load(Ordering::SeqCst) {
-            return Err(pc::SandboxError::new("injected write-back rejection"));
-        }
-        *self.current.lock().unwrap() = bytes.clone();
-        self.writes.lock().unwrap().push(bytes);
+        self.record_writeback(bytes)
+    }
+
+    async fn write_back_for_effect(
+        &self,
+        effect: &pc::SecretWritebackEffect,
+        bytes: Vec<u8>,
+    ) -> Result<(), pc::SandboxError> {
+        self.record_writeback(bytes)?;
+        self.effect_operations
+            .lock()
+            .unwrap()
+            .push(effect.authorization().operation_id.clone());
+        self.writeback_ids
+            .lock()
+            .unwrap()
+            .push(effect.writeback_id().to_string());
         Ok(())
     }
 }
@@ -1435,7 +2360,12 @@ impl pc::SecretBroker for RecordingSecretBroker {
 fn writable_credential_spec(scope: &str) -> pc::SandboxSpec {
     let mut sandbox_spec = spec(scope);
     sandbox_spec.network = pc::NetworkPolicy::Unrestricted;
-    sandbox_spec.mounts = vec![pc::MountRequirement {
+    sandbox_spec.mounts = vec![writable_credential_mount()];
+    sandbox_spec
+}
+
+fn writable_credential_mount() -> pc::MountRequirement {
+    pc::MountRequirement {
         mount_id: "native-auth".into(),
         source: pc::MountSource::Secret {
             reference: "credential://acp/native/claude".into(),
@@ -1445,8 +2375,7 @@ fn writable_credential_spec(scope: &str) -> pc::SandboxSpec {
         access: pc::MountAccess::ReadWrite,
         lifetime: pc::MountLifetime::Durable,
         required: true,
-    }];
-    sandbox_spec
+    }
 }
 
 fn base_provider(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
@@ -1508,8 +2437,9 @@ fn restore_request(spec: &pc::SandboxSpec) -> pc::SandboxRestoreRequest {
  * physical evidence remains.
  * Effects: E1 one physical creation; E2 one identical durable handle; E3 one
  * Created plus one Recovered disposition; E4 recover without provider-local
- * memory; E5 mismatch preserves target and fails closed; E6 stripped adoption
- * fails while exact adoption succeeds.
+ * memory; E5 mismatch preserves target and fails closed; E6 request-owned
+ * handle verification rejects stripped evidence while accepting the exact
+ * handle.
  * C7 terminal cleanup carries the original request. E7 delete only the exact
  * target, with absent replay succeeding. Rules: R1=C1=>E1; R2=C2=>E2;
  * R3=C2+C3=>E2+E4; R4=C1+C4=>E1+E2+E3; R6=C5=>E5;
@@ -1568,19 +2498,15 @@ async fn exact_restore_target_is_shared_by_concurrent_and_fresh_container_provid
     );
     assert_eq!(runtime.st.lock().unwrap().restore_creates, 1, "R6/E5");
 
-    fresh_provider
-        .adopt_container_with_spec(Some(&sandbox_spec), &handle)
-        .await
-        .expect("R7 exact evidence adopts");
+    request
+        .verify_handle(&sandbox_spec, &handle)
+        .expect("R7 exact evidence verifies");
     let stripped = pc::SandboxHandle::container(
         handle.sandbox_id.clone(),
         handle.container_payload().unwrap().clone(),
     );
     assert!(
-        fresh_provider
-            .adopt_container_with_spec(Some(&sandbox_spec), &stripped)
-            .await
-            .is_err(),
+        request.verify_handle(&sandbox_spec, &stripped).is_err(),
         "R7/E6 physical restore evidence cannot be stripped"
     );
 
@@ -1650,14 +2576,16 @@ impl SandboxControlService for UnavailableControlService {
 #[tokio::test]
 async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnation() {
     /* Container control-binding cause/effect decision table:
-     * C1=empty control demand; C2=typed demand on a capable runtime; C3=generic
-     * adoption of exact handle evidence; C4=spec-aware exact adoption;
+     * C1=empty control demand; C2=typed demand on a capable runtime;
+     * C3=spec-aware exact adoption; C4=fenced spec-aware exact adoption;
      * C5=requested/realized mismatch; C6=set/incarnation inconsistency;
      * C7=provider lacks the realized capability; C8=runtime omits an
      * incarnation. E1=no callback and unchanged ordinary creation; E2=one new
      * binding and exact topology persisted; E3=adopt with that exact topology;
-     * E4=fail closed before ambient inference. Rules: B1 C1=>E1; B2 C2=>E2;
-     * B3 C2+(C3|C4)=>E3; B4 C5|C6|C7|C8=>E4.
+     * E4=fail closed before ambient inference; E5=a missing post-create binding
+     * retains the exact possibly-committed runtime object for root-driven retry
+     * and performs no compensating removal. Rules: B1 C1=>E1; B2 C2=>E2;
+     * B3 C2+(C3|C4)=>E3; B4 C5|C6|C7=>E4; B5 C8=>E5.
      */
     let ordinary_runtime = Arc::new(FakeRuntime::default());
     provider(ordinary_runtime.clone())
@@ -1695,15 +2623,34 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         Some("fake-control-incarnation"),
         "B2/E2 persisted"
     );
-    let generic = container_provider
-        .adopt_container(&handle)
-        .await
-        .expect("B3/E3 generic restore");
-    assert_eq!(generic.control_services, demanded.control_services, "B3/E3");
-    container_provider
-        .adopt_container_with_spec(Some(&demanded), &handle)
-        .await
-        .expect("B4/E3 exact spec");
+    let exact = ContainerEnvironmentProvider::adopt_environment(
+        &container_provider,
+        ContainerEnvironmentAdoption::new(&demanded, &handle),
+    )
+    .await
+    .expect("B3/E3 exact adoption");
+    assert_eq!(
+        recovery::decode_handle(&exact.handle())
+            .unwrap()
+            .control_services,
+        demanded.control_services,
+        "B3/E3"
+    );
+    let adoption_fence = ContainerEffectFence::new(
+        "control-adoption",
+        "worker-control",
+        "worker-control:1:boot",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    ContainerEnvironmentProvider::adopt_environment_for_effect(
+        &container_provider,
+        ContainerEnvironmentAdoption::new(&demanded, &handle),
+        Some(&adoption_fence),
+    )
+    .await
+    .expect("B4/E3 fenced exact spec");
     assert_eq!(
         runtime.st.lock().unwrap().control_binding_calls,
         vec![
@@ -1722,10 +2669,12 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         },
     );
     assert!(
-        container_provider
-            .adopt_container_with_spec(Some(&demanded), &missing_incarnation)
-            .await
-            .is_err(),
+        ContainerEnvironmentProvider::adopt_environment(
+            &container_provider,
+            ContainerEnvironmentAdoption::new(&demanded, &missing_incarnation),
+        )
+        .await
+        .is_err(),
         "B6/E4 realized set without incarnation"
     );
 
@@ -1746,10 +2695,12 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
 
     let ordinary = spec("demanded-control");
     assert!(
-        container_provider
-            .adopt_container_with_spec(Some(&ordinary), &handle)
-            .await
-            .is_err(),
+        ContainerEnvironmentProvider::adopt_environment(
+            &container_provider,
+            ContainerEnvironmentAdoption::new(&ordinary, &handle),
+        )
+        .await
+        .is_err(),
         "B5/E4 requested narrower"
     );
     let legacy = pc::SandboxHandle::container(
@@ -1761,17 +2712,22 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
         },
     );
     assert!(
-        container_provider
-            .adopt_container_with_spec(Some(&demanded), &legacy)
-            .await
-            .is_err(),
+        ContainerEnvironmentProvider::adopt_environment(
+            &container_provider,
+            ContainerEnvironmentAdoption::new(&demanded, &legacy),
+        )
+        .await
+        .is_err(),
         "B5/E4 legacy empty handle plus new demand"
     );
+    let unsupported_provider = provider(Arc::new(FakeRuntime::default()));
     assert!(
-        provider(Arc::new(FakeRuntime::default()))
-            .adopt_container(&handle)
-            .await
-            .is_err(),
+        ContainerEnvironmentProvider::adopt_environment(
+            &unsupported_provider,
+            ContainerEnvironmentAdoption::new(&demanded, &handle),
+        )
+        .await
+        .is_err(),
         "B7/E4 unsupported realized topology"
     );
 
@@ -1783,10 +2739,15 @@ async fn control_binding_is_demand_driven_and_adoption_requires_exact_incarnatio
             .is_err(),
         "B8/E4 demanded create needs an incarnation"
     );
+    let missing_state = missing_runtime.st.lock().unwrap();
+    assert!(
+        missing_state.removals.is_empty(),
+        "B8/E5 indeterminate post-create result is not compensated"
+    );
     assert_eq!(
-        missing_runtime.st.lock().unwrap().removals.len(),
-        1,
-        "B8 failed creation reaps its runtime object"
+        missing_state.alive.get("cid-demanded-control"),
+        Some(&true),
+        "B8/E5 exact runtime object remains recoverable"
     );
 }
 
@@ -1893,6 +2854,51 @@ async fn control_publication_survives_idle_and_channel_failure_but_stops_before_
     );
     drop(lease);
     assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B8/E4");
+}
+
+#[tokio::test]
+async fn adoption_configuration_is_revalidated_before_runtime_observation() {
+    /* Provider-effective adoption cause/effect table.
+     * Causes: C1 durable handle is current V2/legacy V1; C2 current effective
+     * spec+egress+runtime+resident configuration is exact/different; C3 backend
+     * observation would report Ready. Effects: E1 exact V2 reaches the backend
+     * once and returns Ready; E2 different V2 returns Incompatible with zero
+     * backend I/O; E3 legacy remains continuity-only and is governed by the
+     * runtime observer. Rules exercised here: A1 V2+exact+C3=>E1; A2
+     * V2+different+C3=>E2. Runtime observation tests own E3. */
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = provider(runtime.clone());
+    let exact = spec("adoption-configuration");
+    let sandbox = provider.create_container(&exact).await.unwrap();
+    let handle = pc::Sandbox::handle(&sandbox);
+
+    assert_eq!(
+        ContainerEnvironmentProvider::observe_environment(
+            &provider,
+            ContainerEnvironmentAdoption::new(&exact, &handle),
+        )
+        .await
+        .unwrap(),
+        pc::SandboxObservation::Ready,
+        "A1"
+    );
+    assert_eq!(runtime.st.lock().unwrap().observations, 1, "A1 one I/O");
+
+    let mut drifted = exact.clone();
+    drifted.outputs_path = "/mnt/session/drifted-outputs".into();
+    assert!(
+        matches!(
+            ContainerEnvironmentProvider::observe_environment(
+                &provider,
+                ContainerEnvironmentAdoption::new(&drifted, &handle),
+            )
+            .await
+            .unwrap(),
+            pc::SandboxObservation::Incompatible { .. }
+        ),
+        "A2"
+    );
+    assert_eq!(runtime.st.lock().unwrap().observations, 1, "A2 zero I/O");
 }
 
 struct RejectingSecretBroker;
@@ -2124,7 +3130,8 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
     let rt =
         Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"work"));
     let node_a = provider(rt.clone());
-    let sandbox_a = node_a.create(&spec("run-x")).await.unwrap();
+    let sandbox_spec = spec("run-x");
+    let sandbox_a = node_a.create(&sandbox_spec).await.unwrap();
     let wire = serde_json::to_string(&sandbox_a.handle()).unwrap();
     drop(sandbox_a);
     drop(node_a);
@@ -2132,10 +3139,12 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
     assert_eq!(recovered.provider_kind(), "container");
     let node_b = provider(rt.clone());
-    let sandbox_b = node_b
-        .adopt(&recovered)
-        .await
-        .expect("a second node adopts the container from its handle");
+    let sandbox_b = ContainerEnvironmentProvider::adopt_environment(
+        &node_b,
+        ContainerEnvironmentAdoption::new(&sandbox_spec, &recovered),
+    )
+    .await
+    .expect("a second node adopts the container from its handle");
 
     assert_eq!(sandbox_b.id(), "run-x");
     assert!(matches!(
@@ -2178,15 +3187,30 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
 
 #[tokio::test]
 async fn handle_round_trips_and_adopt_reconnects() {
+    /* Adoption-port cause/effect table — AP1. C1 current V2 handle; C2 frozen
+     * SandboxSpec present/absent. C1+!C2 => E1 handle-only compatibility port
+     * rejects before treating terminal participants as complete. C1+C2 => E2
+     * canonical provider adoption reconnects and retains live behavior. Legacy
+     * V1+!C2 remains the separate compatibility row covered below. */
     let rt = Arc::new(FakeRuntime::default());
     let p = provider(rt.clone());
-    let sandbox = p.create(&spec("run-2")).await.unwrap();
+    let sandbox_spec = spec("run-2");
+    let sandbox = p.create(&sandbox_spec).await.unwrap();
     let handle = sandbox.handle();
     assert_eq!(handle.provider_kind(), "container");
 
     let wire = serde_json::to_string(&handle).unwrap();
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
-    let adopted = p.adopt(&recovered).await.unwrap();
+    assert!(
+        p.adopt(&recovered).await.is_err(),
+        "current handle-only adoption cannot invent terminal participant policy"
+    );
+    let adopted = ContainerEnvironmentProvider::adopt_environment(
+        &p,
+        ContainerEnvironmentAdoption::new(&sandbox_spec, &recovered),
+    )
+    .await
+    .unwrap();
     assert_eq!(adopted.id(), "run-2");
     let proc = adopted.process("main").await.unwrap();
     assert_eq!(proc.id(), "main");
@@ -2268,6 +3292,26 @@ async fn default_runtime_rejects_future_handle_before_remove() {
 }
 
 #[tokio::test]
+async fn legacy_container_adoption_reemits_v1_without_invented_evidence() {
+    // Compatibility rule: a live V1 locator may still be adopted when no
+    // Repository proof is required, but crossing the provider boundary cannot
+    // synthesize a V2 realization fingerprint or owned-path WAL.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = provider(runtime);
+    let current = provider.create(&spec("legacy-container-v1")).await.unwrap();
+    let current_handle = current.handle();
+    let legacy = pc::SandboxHandle::container(
+        current_handle.sandbox_id.clone(),
+        current_handle.container_payload().unwrap().clone(),
+    );
+    let adopted = provider.adopt(&legacy).await.unwrap();
+    let emitted = adopted.handle();
+    assert_eq!(emitted, legacy);
+    assert!(emitted.realization_fingerprint().is_none());
+    assert!(emitted.owned_paths().is_none());
+}
+
+#[tokio::test]
 async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_root() {
     // Cause/effect live-input table — LI1:
     // C1: the resident runtime owns an isolated projector; C2: a later generation
@@ -2276,10 +3320,9 @@ async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_ro
     // and E2 removal deletes them; C1 survives handle adoption => E3 recovery uses
     // the same projector. !C1 or !C2 => E4 fail closed without projection.
     let runtime = Arc::new(FakeRuntime::default().with_live_input_projection());
-    let sandbox = provider(runtime.clone())
-        .create_container(&spec("live-inputs"))
-        .await
-        .unwrap();
+    let provider = provider(runtime.clone());
+    let sandbox_spec = spec("live-inputs");
+    let sandbox = provider.create_container(&sandbox_spec).await.unwrap();
     let input = pc::MountRequirement {
         mount_id: "current-report".into(),
         source: pc::MountSource::File {
@@ -2319,12 +3362,16 @@ async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_ro
             .contains_key(&input.mount_path)
     );
 
-    let adopted = provider(runtime.clone())
-        .adopt_container(&pc::Sandbox::handle(&sandbox))
-        .await
-        .unwrap();
+    let handle = pc::Sandbox::handle(&sandbox);
+    let adopted = ContainerEnvironmentProvider::adopt_environment(
+        &provider,
+        ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
+    )
+    .await
+    .unwrap();
     assert!(adopted.supports_live_mount_replacement(&[], std::slice::from_ref(&input)));
-    pc::Sandbox::attach(&adopted, input.clone())
+    adopted
+        .attach(input.clone())
         .await
         .expect("recovery retains the resident Pod's projector capability");
 
@@ -2336,7 +3383,7 @@ async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_ro
     let mut escaped = input;
     escaped.mount_path = "/mnt/session/uploads/../secret".into();
     assert!(!adopted.supports_live_mount_replacement(&[], std::slice::from_ref(&escaped)));
-    assert!(pc::Sandbox::attach(&adopted, escaped).await.is_err());
+    assert!(adopted.attach(escaped).await.is_err());
 }
 
 #[tokio::test]
@@ -2347,10 +3394,19 @@ async fn adopt_rejects_a_handle_whose_runtime_is_gone() {
      * re-place it. Merely completing locator decoding is not successful adopt. */
     let rt = Arc::new(FakeRuntime::default());
     let p = provider(rt);
-    let sandbox = p.create(&spec("run-gone")).await.unwrap();
+    let sandbox_spec = spec("run-gone");
+    let sandbox = p.create(&sandbox_spec).await.unwrap();
     let handle = sandbox.handle();
     sandbox.dispose().await.unwrap();
-    assert!(p.adopt(&handle).await.is_err(), "A2");
+    assert!(
+        ContainerEnvironmentProvider::adopt_environment(
+            &p,
+            ContainerEnvironmentAdoption::new(&sandbox_spec, &handle),
+        )
+        .await
+        .is_err(),
+        "A2"
+    );
 }
 
 #[tokio::test]
@@ -2398,10 +3454,158 @@ async fn create_fails_closed_on_bad_spec_and_backend_error_but_needs_no_attempt_
     assert!(provider(rt).create(&spec("run-5")).await.is_err());
 }
 
+#[tokio::test]
+async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effect() {
+    /* Create-outcome cause/effect table.
+     * Causes: C1 the runtime result is a definite pre/zero-effect Backend error
+     * or MayHaveCommitted after crossing a mutation boundary; C2 host staging
+     * and a Memory mount have already been materialized. Effects: D1+C2 => E1
+     * every Memory handle is torn down and the staging guard is removed;
+     * M1+C2 => E2 neither participant is torn down because an exact physical
+     * object may still reference it, and the stronger error propagates. If a
+     * definite runtime rejection is followed by a Memory teardown failure,
+     * E4 retains the remaining process-local participants and reports both
+     * errors instead of dropping the only retryable cleanup handle. The
+     * shared runtime decision table's CurrentAttemptOnly/prior-attempt row owns
+     * E3: a later process remains fail-closed and performs zero replacement.
+     * This closes safety only; it deliberately makes no cross-process liveness
+     * or automatic-reclamation claim for host-bind participants. */
+    fn memory_spec(scope: &str) -> pc::SandboxSpec {
+        let mut requested = spec(scope);
+        requested.mounts.push(pc::MountRequirement {
+            mount_id: "notes".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "store-create-outcome".into(),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/workspace/.mnt/notes".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        });
+        requested
+    }
+
+    let definite_runtime = Arc::new(FakeRuntime {
+        st: Mutex::new(FakeState {
+            fail_create: true,
+            ..Default::default()
+        }),
+    });
+    let definite_teardown = Arc::new(AtomicBool::new(false));
+    let definite_provider = provider(definite_runtime.clone());
+    definite_provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: definite_teardown.clone(),
+        fail_teardown: false,
+    }));
+    assert!(
+        definite_provider
+            .create_container(&memory_spec("definite-create-rejection"))
+            .await
+            .is_err(),
+        "D1 runtime rejection propagates"
+    );
+    assert!(
+        definite_teardown.load(Ordering::SeqCst),
+        "E1 Memory teardown"
+    );
+    let definite_source = definite_runtime.st.lock().unwrap().attempted_binds[0]
+        .source_ref
+        .clone();
+    assert!(
+        !std::path::Path::new(&definite_source).exists(),
+        "E1 definite rejection drops host staging"
+    );
+
+    let ambiguous_runtime = Arc::new(FakeRuntime {
+        st: Mutex::new(FakeState {
+            may_have_committed_create: true,
+            ..Default::default()
+        }),
+    });
+    let ambiguous_teardown = Arc::new(AtomicBool::new(false));
+    let ambiguous_provider = provider(ambiguous_runtime.clone());
+    ambiguous_provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: ambiguous_teardown.clone(),
+        fail_teardown: false,
+    }));
+    let error = match ambiguous_provider
+        .create_container(&memory_spec("ambiguous-create-response"))
+        .await
+    {
+        Ok(_) => panic!("M1 response loss cannot publish a Sandbox"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("may have committed"), "E2");
+    assert!(
+        !ambiguous_teardown.load(Ordering::SeqCst),
+        "E2 a possibly referenced Memory mount is retained"
+    );
+    let ambiguous_source = ambiguous_runtime.st.lock().unwrap().attempted_binds[0]
+        .source_ref
+        .clone();
+    assert!(
+        std::path::Path::new(&ambiguous_source).exists(),
+        "E2 a possibly referenced host stage is retained"
+    );
+    // The test owns no backend object, so it may clean only its injected stage
+    // after observing the retention boundary. Production has no such proof and
+    // intentionally retains it.
+    let retained_root = std::path::Path::new(&ambiguous_source)
+        .parent()
+        .expect("staged file parent");
+    std::fs::remove_dir_all(retained_root).expect("test-only retained stage cleanup");
+
+    let cleanup_runtime = Arc::new(FakeRuntime {
+        st: Mutex::new(FakeState {
+            fail_create: true,
+            ..Default::default()
+        }),
+    });
+    let cleanup_attempted = Arc::new(AtomicBool::new(false));
+    let cleanup_provider = provider(cleanup_runtime.clone());
+    cleanup_provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: cleanup_attempted.clone(),
+        fail_teardown: true,
+    }));
+    let cleanup_error = match cleanup_provider
+        .create_container(&memory_spec("failed-create-cleanup"))
+        .await
+    {
+        Ok(_) => panic!("E4 failed cleanup cannot publish a Sandbox"),
+        Err(error) => error,
+    };
+    assert!(
+        cleanup_attempted.load(Ordering::SeqCst),
+        "E4 cleanup attempted"
+    );
+    assert!(
+        cleanup_error.to_string().contains("cleanup failed"),
+        "E4 combined error"
+    );
+    let cleanup_source = cleanup_runtime.st.lock().unwrap().attempted_binds[0]
+        .source_ref
+        .clone();
+    assert!(
+        std::path::Path::new(&cleanup_source).exists(),
+        "E4 failed cleanup cannot drop the participant stage"
+    );
+    let cleanup_root = std::path::Path::new(&cleanup_source)
+        .parent()
+        .expect("cleanup stage parent");
+    std::fs::remove_dir_all(cleanup_root).expect("test-only failed-cleanup stage removal");
+}
+
 #[test]
 fn runtime_error_messages_render() {
     assert!(RuntimeError::NotFound("c".into()).to_string().contains('c'));
     assert!(RuntimeError::Backend("x".into()).to_string().contains('x'));
+    assert!(
+        RuntimeError::MayHaveCommitted("x".into())
+            .to_string()
+            .contains("may have committed")
+    );
 }
 
 #[tokio::test]
@@ -2467,26 +3671,104 @@ async fn unrestricted_egress_may_use_a_forward_proxy_for_connectivity() {
 }
 
 #[tokio::test]
-async fn open_agent_creates_the_container_and_returns_its_channel_and_process() {
-    // The host-facing seam: realize the container running the ACP agent and hand back
-    // its channel + process handle (runtime chosen behind the `dyn` by worker config).
-    let rt = Arc::new(FakeRuntime::default());
-    let agent_provider: Box<dyn AgentContainerProvider> = Box::new(provider(rt.clone()));
-    let session = agent_provider.open_agent(&spec("run-oa")).await.unwrap();
+async fn canonical_environment_spawns_agent_without_process_owning_terminal_cleanup() {
+    /* Canonical Container launch/terminal-ownership table CO1. Causes: C1 the
+     * Environment provider realizes one Session environment; C2 its agent exec
+     * is running/terminal; C3 a writable Secret participant is present; C4 the
+     * aggregate has/has not supplied an exact terminal preparation and disposal
+     * authorization. Effects: E1 C1 returns one durable Environment plus an
+     * independent channel/process; E2 C2 without C4 reports process status but
+     * performs zero Secret read/write and zero Environment removal; E3 only C4
+     * writes the Secret and removes the exact Environment. Rules: L1 C1=>E1;
+     * L2 C1+C2+C3+!C4=>E2; L3 C1+C3+C4=>E3. NM2 N1-N6 owns the exhaustive
+     * fenced failure/replay table; this case locks the formerly missing negative
+     * process-terminal row while preserving basic launch and handle coverage. */
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
+    let rt = Arc::new(
+        FakeRuntime::default()
+            .refreshing_credential(refreshed)
+            .with_live_credential(refreshed),
+    );
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = br#"{"tokens":{"access_token":"old"}}"#.to_vec();
+    let provider = provider_without_broker(rt.clone()).with_secret_broker(broker.clone());
+    let mut requested = spec("run-oa");
+    requested.mounts.push(writable_credential_mount());
+    let environment = ContainerEnvironmentProvider::create_environment(&provider, &requested)
+        .await
+        .expect("L1 canonical Environment creation");
+    let handle = environment.handle();
+    let RuntimeAgentProcess { process, channel } = environment
+        .spawn_agent_process(pc::Command {
+            argv: command_of(&requested),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("L1 canonical agent exec");
 
-    // The one-shot compatibility seam also launches the agent through exec; it does
-    // not return PID 1 as though the environment were the attempt process.
-    assert_eq!(session.process.id(), "exec-0");
+    assert_eq!(process.id(), "exec-0", "L1 attempt process is not PID 1");
+    process.signal(pc::Signal::Term).await.unwrap();
     assert_eq!(
-        session.process.poll().await.unwrap(),
+        process.wait().await.unwrap(),
+        pc::ExitStatus {
+            code: Some(0),
+            signaled: false,
+        },
+        "L2 process wait is process-only"
+    );
+    assert_eq!(
+        process.poll().await.unwrap(),
         Some(pc::ExitStatus {
             code: Some(0),
             signaled: false,
-        })
+        }),
+        "L2 terminal replay remains process-only"
     );
+    assert_eq!(
+        rt.st.lock().unwrap().alive.get("cid-run-oa"),
+        Some(&true),
+        "L2 process terminal cannot remove the Session Environment"
+    );
+    assert_eq!(rt.st.lock().unwrap().live_credential_reads, 0, "L2");
+    assert!(broker.writes.lock().unwrap().is_empty(), "L2");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let source = rt
+            .st
+            .lock()
+            .unwrap()
+            .credential_source
+            .clone()
+            .expect("credential staging source");
+        assert_eq!(
+            std::fs::metadata(source.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777
+        );
+        assert_eq!(
+            std::fs::metadata(source.parent().unwrap().parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(source).unwrap().permissions().mode() & 0o777,
+            0o666
+        );
+    }
+
     // The durable handle carries the container id for reattach.
-    assert_eq!(session.handle.provider_kind(), "container");
-    let payload = session.handle.container_payload().unwrap();
+    assert_eq!(handle.provider_kind(), "container");
+    let payload = handle.container_payload().unwrap();
     assert_eq!(payload.container_id, "cid-run-oa");
     // Durable-handle decision rule H1: C1=a realized container has mounted
     // inputs; C2=the provider is later adopted from only its typed handle.
@@ -2496,19 +3778,19 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     // mounts after the old untyped extension was removed.
     assert_eq!(
         payload.continuation_excluded_paths,
-        ["/data/in.txt", "/work"]
+        ["/data/in.txt", "/work", "/acp-config/.credentials.json"]
     );
-    let durable = serde_json::to_vec(&session.handle).unwrap();
+    let durable = serde_json::to_vec(&handle).unwrap();
     let adopted: pc::SandboxHandle = serde_json::from_slice(&durable).unwrap();
     assert_eq!(
         adopted
             .container_payload()
             .unwrap()
             .continuation_excluded_paths,
-        ["/data/in.txt", "/work"]
+        ["/data/in.txt", "/work", "/acp-config/.credentials.json"]
     );
     // A live duplex channel was opened (the ACP bridge would drive it).
-    let _channel = session.channel;
+    let _channel = channel;
     // The physical container is an environment keepalive, not the attempt agent.
     assert_eq!(
         rt.st.lock().unwrap().created_command.get("cid-run-oa"),
@@ -2517,6 +3799,36 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
     assert_eq!(
         rt.st.lock().unwrap().spawned[0].1,
         ["claude", "--acp"].map(str::to_string)
+    );
+
+    let terminal = pc::SandboxEffectFence::new(
+        "canonical-environment-terminal",
+        "worker-owner",
+        "worker-incarnation",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    assert_eq!(
+        environment
+            .prepare_disposal_for_effect(&terminal)
+            .await
+            .expect("L3 aggregate-owned terminal preparation"),
+        terminal,
+        "L3 Container reports its exact provider-prepared predecessor"
+    );
+    environment
+        .dispose_for_effect(&disposal_authorization(&terminal))
+        .await
+        .expect("L3 aggregate-authorized physical cleanup");
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[refreshed.to_vec()]
+    );
+    assert_eq!(
+        rt.st.lock().unwrap().alive.get("cid-run-oa"),
+        Some(&false),
+        "L3 explicit terminal owner removes the Environment"
     );
 }
 
@@ -2647,7 +3959,14 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
 }
 
 #[tokio::test]
-async fn durable_writable_secret_is_materialized_and_written_back_after_process_exit() {
+async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
+    // Credential terminal-ownership table CW1. Causes: C1 one Environment has
+    // a durable writable Secret; C2 its child process exits; C3 the aggregate
+    // supplies exact preparation plus disposal authorization. Effects: E1 C2
+    // leaves the Environment and Secret authority untouched; E2 C3 writes the
+    // refreshed material exactly once and removes the Environment; E3 polling
+    // the already-terminal child cannot repeat writeback. Rules: W1 C1+C2=>E1;
+    // W2 C1+C2+C3=>E2; W3 W2+poll=>E3.
     let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
     let rt = Arc::new(FakeRuntime::default().refreshing_credential(refreshed));
     let broker = Arc::new(RecordingSecretBroker::default());
@@ -2682,7 +4001,21 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
         control_services: Default::default(),
     };
 
-    let session = provider.open_agent(&spec).await.unwrap();
+    let environment = ContainerEnvironmentProvider::create_environment(&provider, &spec)
+        .await
+        .expect("W1 canonical Environment creation");
+    let RuntimeAgentProcess {
+        process,
+        channel: _channel,
+    } = environment
+        .spawn_agent_process(pc::Command {
+            argv: command_of(&spec),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("W1 canonical child process");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2714,30 +4047,95 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
             0o666
         );
     }
-    session.process.wait().await.unwrap();
+    process.wait().await.unwrap();
+    assert!(broker.writes.lock().unwrap().is_empty(), "W1/E1");
+    assert_eq!(
+        rt.st.lock().unwrap().alive.get("cid-credential-refresh"),
+        Some(&true),
+        "W1/E1 process exit cannot remove the Environment"
+    );
+    let terminal = pc::SandboxEffectFence::new(
+        "credential-refresh-terminal",
+        "worker-owner",
+        "worker-incarnation",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    environment
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("W2 aggregate-owned terminal preparation");
+    environment
+        .dispose_for_effect(&disposal_authorization(&terminal))
+        .await
+        .expect("W2 aggregate-authorized physical cleanup");
     assert_eq!(
         broker.writes.lock().unwrap().as_slice(),
         &[refreshed.to_vec()]
     );
     // Idempotent poll/wait cannot reseal the same refresh twice.
-    session.process.poll().await.unwrap();
-    assert_eq!(broker.writes.lock().unwrap().len(), 1);
+    process.poll().await.unwrap();
+    assert_eq!(broker.writes.lock().unwrap().len(), 1, "W3/E3");
 }
 
 #[tokio::test]
-async fn remote_runtime_harvests_live_credential_when_signalled_attempt_finishes_session() {
+async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() {
+    // Signalled-process table CW2. C1 a live credential changes remotely; C2
+    // the child receives Term and reaches terminal; C3 the aggregate later
+    // authorizes Environment disposal. E1 C2 performs no credential read/write
+    // and keeps the Environment live; E2 C3 harvests the live value exactly
+    // once. Rules: S1 C1+C2=>E1; S2 C1+C2+C3=>E2.
     let refreshed = br#"{"claudeAiOauth":{"accessToken":"new","refreshToken":"rotated"}}"#;
     let rt = Arc::new(FakeRuntime::default().with_live_credential(refreshed));
     let broker = Arc::new(RecordingSecretBroker::default());
     *broker.current.lock().unwrap() = br#"{"claudeAiOauth":{"accessToken":"old"}}"#.to_vec();
     let provider =
         ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
-    let session = provider
-        .open_agent(&writable_credential_spec("remote-credential-refresh"))
+    let requested = writable_credential_spec("remote-credential-refresh");
+    let environment = ContainerEnvironmentProvider::create_environment(&provider, &requested)
         .await
-        .unwrap();
-    session.process.signal(pc::Signal::Term).await.unwrap();
-    session.process.wait().await.unwrap();
+        .expect("S1 canonical Environment creation");
+    let RuntimeAgentProcess {
+        process,
+        channel: _channel,
+    } = environment
+        .spawn_agent_process(pc::Command {
+            argv: command_of(&requested),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("S1 canonical child process");
+    process.signal(pc::Signal::Term).await.unwrap();
+    process.wait().await.unwrap();
+    assert!(broker.writes.lock().unwrap().is_empty(), "S1/E1");
+    assert_eq!(
+        rt.st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-remote-credential-refresh"),
+        Some(&true),
+        "S1/E1 process terminal cannot remove the Environment"
+    );
+    let terminal = pc::SandboxEffectFence::new(
+        "remote-credential-refresh-terminal",
+        "worker-owner",
+        "worker-incarnation",
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    environment
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("S2 aggregate-owned terminal preparation");
+    environment
+        .dispose_for_effect(&disposal_authorization(&terminal))
+        .await
+        .expect("S2 aggregate-authorized physical cleanup");
     assert_eq!(
         broker.writes.lock().unwrap().as_slice(),
         &[refreshed.to_vec()]
@@ -2866,7 +4264,7 @@ async fn resolve_and_stage_realizes_a_file_from_the_seed() {
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"resolved-file-bytes".to_vec());
 
-    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
+    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false, true)
         .await
         .expect("resolve");
     assert!(guard.guard.is_some(), "bytes were staged");
@@ -2881,6 +4279,62 @@ async fn resolve_and_stage_realizes_a_file_from_the_seed() {
     assert_eq!(
         std::fs::read(&bind.source_ref).unwrap(),
         b"resolved-file-bytes"
+    );
+}
+
+#[tokio::test]
+async fn native_mount_projection_does_not_duplicate_plaintext_in_host_staging() {
+    /* Native-materialization cause/effect table. Causes: C1 the runtime binds
+     * host files / projects bytes through its native API; C2 the resolved mount
+     * is ordinary content / a writable Secret. Effects: E1 host-bind creates
+     * one guarded file; E2 native projection carries the same bytes only in the
+     * plan and creates no host directory; E3 writable native Secret retains its
+     * logical directory/file metadata for live writeback without a disk fallback.
+     * Rules: N1 host(C1)+either(C2)=>E1; N2 native(C1)+content(C2)=>E2;
+     * N3 native(C1)+writable-Secret(C2)=>E2+E3. The host rows are covered by
+     * `resolve_and_stage_realizes_a_file_from_the_seed` and the writable test. */
+    let mut spec = file_mount_spec(
+        "native-secret",
+        pc::MountSource::Secret {
+            reference: "credential-1".into(),
+            content_hash: None,
+        },
+        true,
+    );
+    spec.mounts[0].mount_path = "/acp-config/auth.json".into();
+    spec.mounts[0].access = pc::MountAccess::ReadWrite;
+    spec.mounts[0].lifetime = pc::MountLifetime::Durable;
+    let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
+    let seed = HashMap::from([("credential-1".into(), b"secret-bytes".to_vec())]);
+
+    let staged = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false, false)
+        .await
+        .expect("native projection");
+
+    assert!(staged.guard.is_none(), "N3 no host plaintext stage");
+    assert_eq!(staged.secret_writebacks.len(), 1, "N3 writeback metadata");
+    assert!(
+        staged.secret_writebacks[0].staged_path.is_none(),
+        "N3 live native bytes are the only writeback source"
+    );
+    assert_eq!(plan.binds[0].source_ref, "credential-1", "N3 no host path");
+    assert_eq!(
+        plan.binds[0].mount_path, "/acp-config",
+        "N3 directory projection"
+    );
+    assert_eq!(
+        plan.binds[0].credential_file_path.as_deref(),
+        Some("/acp-config/auth.json"),
+        "N3 exact harvest path"
+    );
+    assert_eq!(
+        plan.binds[0]
+            .secret_content
+            .as_ref()
+            .expect("native Secret bytes")
+            .expose(),
+        b"secret-bytes",
+        "N3 one in-plan projection"
     );
 }
 
@@ -2902,7 +4356,7 @@ async fn resolve_and_stage_makes_declared_read_write_content_writable_by_contain
     let mut seed = HashMap::new();
     seed.insert("blob-rw".to_string(), b"writable".to_vec());
 
-    let _guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
+    let _guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false, true)
         .await
         .expect("resolve writable mount");
     let mode = std::fs::metadata(&plan.binds[0].source_ref)
@@ -2937,6 +4391,7 @@ async fn resolve_and_stage_resolves_a_resource_from_the_injected_store() {
         &store,
         &None,
         false,
+        true,
     )
     .await
     .expect("resolve from store");
@@ -2954,9 +4409,17 @@ async fn resolve_and_stage_fails_closed_on_a_required_unresolved_mount() {
         true,
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
-    let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None, false)
-        .await
-        .expect_err("a required mount with no bytes must fail closed");
+    let e = resolve_and_stage(
+        &spec,
+        &mut plan.binds,
+        &HashMap::new(),
+        &None,
+        &None,
+        false,
+        true,
+    )
+    .await
+    .expect_err("a required mount with no bytes must fail closed");
     assert!(e.to_string().contains("did not resolve"), "{e}");
 }
 
@@ -2973,7 +4436,7 @@ async fn resolve_and_stage_rejects_a_content_hash_mismatch() {
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"whatever".to_vec());
-    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
+    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false, true)
         .await
         .expect_err("a hash mismatch must fail closed");
     assert!(e.to_string().contains("hash mismatch"), "{e}");
@@ -2994,7 +4457,7 @@ async fn resolve_and_stage_verifies_a_matching_content_hash() {
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), bytes);
-    resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
+    resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false, true)
         .await
         .expect("a matching pin resolves");
     assert_eq!(plan.binds[0].content.as_deref(), Some("pinned-bytes"));
@@ -3013,9 +4476,17 @@ async fn inline_bytes_are_staged_binary_safe_and_hash_verified() {
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
 
-    let staged = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None, false)
-        .await
-        .expect("matching binary content stages");
+    let staged = resolve_and_stage(
+        &spec,
+        &mut plan.binds,
+        &HashMap::new(),
+        &None,
+        &None,
+        false,
+        true,
+    )
+    .await
+    .expect("matching binary content stages");
 
     assert!(staged.guard.is_some());
     assert_eq!(plan.binds[0].content, None);
@@ -3038,9 +4509,17 @@ async fn inline_bytes_hash_mismatch_fails_before_container_start() {
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
 
-    let error = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None, false)
-        .await
-        .expect_err("corrupt binary content must fail closed");
+    let error = resolve_and_stage(
+        &spec,
+        &mut plan.binds,
+        &HashMap::new(),
+        &None,
+        &None,
+        false,
+        true,
+    )
+    .await
+    .expect_err("corrupt binary content must fail closed");
 
     assert!(error.to_string().contains("hash mismatch"), "{error}");
 }

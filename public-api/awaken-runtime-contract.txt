@@ -1482,6 +1482,10 @@ pub fn awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::recompute_fin
 pub fn awaken_runtime_contract::snapshot::ExecutableAgentSnapshot::validate_embedded_native(&self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId(pub alloc::string::String)
 pub mod awaken_runtime_contract::terminal
+pub enum awaken_runtime_contract::terminal::CommittedTerminalProjection
+pub awaken_runtime_contract::terminal::CommittedTerminalProjection::Exact(awaken_runtime_contract::terminal::CommittedTerminalRun)
+pub awaken_runtime_contract::terminal::CommittedTerminalProjection::IdentityConflict
+pub awaken_runtime_contract::terminal::CommittedTerminalProjection::Nonterminal
 pub struct awaken_runtime_contract::terminal::CommittedTerminalRun
 pub awaken_runtime_contract::terminal::CommittedTerminalRun::cause: awaken_agent_contract::agent::run::EndCause
 pub awaken_runtime_contract::terminal::CommittedTerminalRun::run_id: awaken_agent_contract::agent::run::Id
@@ -1493,6 +1497,7 @@ pub struct awaken_runtime_contract::terminal::RunTerminalObserverError(pub alloc
 pub trait awaken_runtime_contract::terminal::RunTerminalObserver: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::terminal::CommittedTerminalRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observer_id(&self) -> &str
+pub fn awaken_runtime_contract::terminal::committed_terminal_projection(&dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> awaken_runtime_contract::terminal::CommittedTerminalProjection
 pub async fn awaken_runtime_contract::terminal::deliver_committed_terminal(&[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_runtime_contract::terminal::CommittedTerminalRun) -> alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>
 pub async fn awaken_runtime_contract::terminal::redeliver_committed_terminal(&dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>>
 pub mod awaken_runtime_contract::tool

@@ -459,23 +459,31 @@ async fn dispose_removes_the_environment() {
 }
 
 #[tokio::test]
-async fn adopt_of_a_disposed_handle_reports_terminated() {
-    // A durable handle outlives the process, but the environment it names may be
-    // gone by the time we adopt (crash after dispose, stale dispatch binding).
-    // `adopt` still reconnects — but the reconnected sandbox reports Terminated,
-    // the signal `reconcile_adoption` reaps an orphan on rather than a false Ready.
+async fn disposed_handle_is_observed_as_absent_and_cannot_be_adopted() {
+    // Cause/effect decision table: C1 a current durable handle names the exact
+    // realization; C2 disposal has published its Removed tombstone and deleted
+    // the physical root. R1 C1+!C2 => observe Ready and ordinary adopt may
+    // reconnect (covered by the adoption tests above). R2 C1+C2 => the one
+    // provider observation authority returns DefinitivelyUnavailable and
+    // ordinary adopt fails closed; terminal recovery may consume the tombstone
+    // through prepare_terminal_for_effect, but must not manufacture a live
+    // Terminated sandbox object.
     let tmp = tempfile::tempdir().unwrap();
     let provider = LocalProvider::new(tmp.path());
     let sandbox = provider.create(&spec("t-stale")).await.unwrap();
     let handle = sandbox.handle();
     sandbox.dispose().await.unwrap();
 
-    let adopted = provider.adopt(&handle).await.unwrap();
-    assert_eq!(adopted.id(), "t-stale");
     assert!(matches!(
-        adopted.status().await.unwrap(),
-        pc::SandboxStatus::Terminated
+        provider.observe(&handle).await.unwrap(),
+        pc::SandboxObservation::DefinitivelyUnavailable {
+            physical_incarnation: None
+        }
     ));
+    assert!(
+        provider.adopt(&handle).await.is_err(),
+        "R2 must not reinterpret durable absence as an adopted sandbox"
+    );
 }
 
 #[tokio::test]

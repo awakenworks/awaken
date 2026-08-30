@@ -13,15 +13,31 @@
 //! realization consumes that pin through the common exact resolver without
 //! selecting another source or revision.
 
-use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 
-mod environment_binding;
+mod disposition;
+mod persisted_session;
+mod recovery;
+mod repository_port;
 mod repository_publication;
 mod runtime_intervals;
 
+use disposition::{SessionDeleteDispositionClass, session_delete_request_plan};
+pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
+pub use persisted_session::PersistedSession;
+pub use recovery::{
+    SessionRecoveryCursor, SessionRecoveryQuarantine, SessionRecoveryScan,
+    SessionRepositoryRecoveryAction,
+};
+pub use repository_port::{
+    IdempotencyRecord, ManagedSessionRepository, ScopedPersistedSession, SessionCreateResult,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionMutationValidationError, SessionRealizationLease, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRevision, SessionTombstone, session_tombstone_is_admitted,
+};
 pub use repository_publication::SessionArchiveWithRepositoryPublicationError;
 
+#[cfg(test)]
 use crate::ManagedLifecycleFact;
 
 mod execution_state;
@@ -37,1041 +53,6 @@ pub struct VisibleMcpServer {
     pub target: crate::McpTarget,
     pub prompts_as_skills: bool,
 }
-
-/// Monotonic root revision for every mutation of one Session aggregate.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct SessionRevision(pub u64);
-
-/// Durable retention and public-visibility state of one Session.
-///
-/// `Deleting` is committed before physical cleanup starts. `Deleted` is retained
-/// for imported historical rows and compact tombstone projections; ordinary new
-/// deletions remove the aggregate only after cleanup receipts are committed.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum SessionDisposition {
-    #[default]
-    Active,
-    Archived {
-        archived_at: String,
-    },
-    Deleting,
-    Deleted,
-}
-
-impl SessionDisposition {
-    #[must_use]
-    pub const fn denies_activity(&self) -> bool {
-        !matches!(self, Self::Active)
-    }
-
-    #[must_use]
-    pub const fn is_hidden(&self) -> bool {
-        matches!(self, Self::Deleting | Self::Deleted)
-    }
-
-    #[must_use]
-    pub fn archived_at(&self) -> Option<&str> {
-        match self {
-            Self::Archived { archived_at } => Some(archived_at),
-            Self::Active | Self::Deleting | Self::Deleted => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum SessionDeleteDispositionClass {
-    Active,
-    Archived,
-    Deleting,
-    Deleted,
-}
-
-impl From<&SessionDisposition> for SessionDeleteDispositionClass {
-    fn from(value: &SessionDisposition) -> Self {
-        match value {
-            SessionDisposition::Active => Self::Active,
-            SessionDisposition::Archived { .. } => Self::Archived,
-            SessionDisposition::Deleting => Self::Deleting,
-            SessionDisposition::Deleted => Self::Deleted,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SessionDeleteRequestPlan {
-    transition_to_deleting: bool,
-    terminalize_execution: bool,
-    request_cleanup: bool,
-}
-
-/// Closed reducer plan for the durable Delete-intent transaction. Deleting and
-/// Deleted are absorbing replays; every admitted request hides the aggregate,
-/// fences nonterminal execution, and requests recoverable cleanup together.
-#[must_use]
-const fn session_delete_request_plan(
-    disposition: SessionDeleteDispositionClass,
-    execution_terminal: bool,
-) -> SessionDeleteRequestPlan {
-    let transition_to_deleting = matches!(
-        disposition,
-        SessionDeleteDispositionClass::Active | SessionDeleteDispositionClass::Archived
-    );
-    SessionDeleteRequestPlan {
-        transition_to_deleting,
-        terminalize_execution: transition_to_deleting && !execution_terminal,
-        request_cleanup: transition_to_deleting,
-    }
-}
-
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum SessionDispositionTransitionError {
-    #[error("cannot archive a Session while deletion is in progress or complete")]
-    ArchiveAfterDelete,
-}
-
-/// Durable owner fence for all process-local Session projections. Runtime and
-/// Worker identities are opaque to the Session domain.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionRealizationLease {
-    pub owner: String,
-    pub runtime_incarnation: String,
-    pub epoch: u64,
-    pub expires_at_unix_ms: u64,
-}
-
-/// The durable, adapter-side configuration of one Managed session, keyed by its
-/// id (which is also its thread id). Everything here is what the wire `Session`
-/// object needs beyond the runtime's committed transcript.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PersistedSession {
-    pub session_id: String,
-    /// The one optimistic-concurrency fence for baseline, Resource, MCP,
-    /// environment, execution, and disposition mutations. New, not-yet-inserted
-    /// values use 0.
-    pub revision: SessionRevision,
-    /// The only immutable configuration authority. A preparation intent is
-    /// consumed exactly once and replaced by its frozen baseline.
-    pub baseline: crate::SessionBaselineState,
-    pub title: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-    /// Exact durable neutral mutable tool policy. Empty is an intentional clear;
-    /// public protocol tool unions are projections and never persistence truth.
-    pub tools: crate::SessionToolConfiguration,
-    /// All accepted Session Event batches in root-revision order. Entries remain
-    /// after processing as the sole durable inbound DTO provenance; User/System
-    /// completion remains owned by Dispatch/Thread and Outcome state by the
-    /// Thread Outcome aggregate.
-    pub event_batches: Vec<crate::SessionEventBatch>,
-    /// Monotonic root-CAS environment fence for overlapping driving events.
-    /// Execution and disposition remain the durable logical state; completion
-    /// membership is owned by `active_activity_epochs`, while this scalar never
-    /// rewinds and therefore keeps environment operations uniquely ordered.
-    pub activity_epoch: u64,
-    /// Epochs of driving activities that have been admitted but have not yet
-    /// settled. This is Session activity truth, not a child/coordinator
-    /// relationship registry. `activity_epoch` remains the monotonic
-    /// environment fence; this set only prevents an out-of-order completion
-    /// from closing the shared Running interval while an older activity remains.
-    ///
-    /// Historical Running rows deserialize with an empty set. A direct settle
-    /// of their current scalar epoch is treated as the one legacy activity; a
-    /// new admission supersedes that unknowable crash-orphan and starts the
-    /// explicit set at its successor epoch.
-    pub active_activity_epochs: BTreeSet<u64>,
-    /// One continuous authoritative Running interval. It is persisted in the
-    /// aggregate so process recovery and overlapping driving events cannot
-    /// fabricate gaps or emit two customer-usage intervals.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub running_interval: Option<crate::SessionRuntimeIntervalStart>,
-    /// Every closed aggregate Running interval in root-revision order. This is
-    /// intentionally retained for the Session lifetime: the public Events API
-    /// accepts any prior event id as a page cursor, so truncating this prefix
-    /// would make a valid cross-replica cursor unknowable.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub closed_runtime_intervals: Vec<crate::SessionRuntimeInterval>,
-    /// Cumulative wall-clock milliseconds across closed Running intervals.
-    /// Overlapping activities share one interval, so this is the authoritative
-    /// non-double-counted Session runtime quantity used by list-cost pricing.
-    pub runtime_active_millis: u64,
-    /// Latest cumulative neutral Runtime usage observed by the Session root.
-    /// Runtime remains the counter authority; retaining this root-CAS projection
-    /// lets no-budget Sessions close an exact historical usage event too.
-    #[serde(default)]
-    pub usage_cursor: crate::ManagedBudgetUsageCursor,
-    /// Exact Managed list-cost budget and immutable price snapshot. All
-    /// Session threads share this root-owned admission and settlement fence.
-    pub budget: crate::SessionBudgetState,
-    /// Durable, secret-free execution-environment phase. Opaque bindings are
-    /// interpreted only by the runtime that produced them; this aggregate owns
-    /// their transition, not their substrate meaning.
-    pub environment: crate::SessionEnvironmentState,
-    /// The only initial and hot MCP desired-state authority.
-    pub mcp: crate::SessionMcpAttachmentSet,
-    /// Durable resource activation state. Its `active` manifest is the exact,
-    /// secret-free Session pin; `pending` and activation records make external
-    /// realization/release recoverable without importing authorization concepts.
-    pub resources: crate::SessionResourceState,
-    /// Continuing Session projection ownership; no process-local slot is an
-    /// authority for this lease.
-    pub realization: Option<SessionRealizationLease>,
-    /// Initial Environment realization retry state. Kept inside the Session
-    /// root so a reclaimed Worker claim cannot reset the failure budget.
-    pub realization_progress: crate::SessionRealizationProgress,
-    /// The only durable execution-state authority. The retained serialized key
-    /// keeps historical aggregate JSON readable through the store codec.
-    #[serde(rename = "status")]
-    pub execution: SessionExecutionState,
-    /// Retention/public-visibility is independent from execution progress.
-    pub disposition: SessionDisposition,
-    /// Durable intent/receipt state for terminal Runtime effects. Resource,
-    /// Environment, artifact, and process cleanup project from this one fact.
-    pub terminal_cleanup: crate::SessionCleanupOperation,
-}
-
-impl PersistedSession {
-    /// Construct a complete Session root after the creation compiler has
-    /// consumed every authoring input. New creation persists this shape in one
-    /// insert. Historical interrupted rows remain representable only through
-    /// deserialization; no creation API can produce another one.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn frozen_with_budget(
-        session_id: impl Into<String>,
-        baseline: crate::SessionBaseline,
-        resources: crate::SessionResourceState,
-        mcp: crate::SessionMcpAttachmentSet,
-        title: Option<String>,
-        metadata: BTreeMap<String, String>,
-        tools: crate::SessionToolConfiguration,
-        budget: crate::SessionBudgetState,
-    ) -> Self {
-        Self {
-            session_id: session_id.into(),
-            revision: SessionRevision::default(),
-            baseline: crate::SessionBaselineState::Frozen(baseline),
-            title,
-            metadata,
-            tools,
-            event_batches: Vec::new(),
-            activity_epoch: 0,
-            active_activity_epochs: BTreeSet::new(),
-            running_interval: None,
-            closed_runtime_intervals: Vec::new(),
-            runtime_active_millis: 0,
-            usage_cursor: Default::default(),
-            budget,
-            environment: Default::default(),
-            mcp,
-            resources,
-            realization: None,
-            realization_progress: Default::default(),
-            execution: SessionExecutionState::Preparing,
-            disposition: Default::default(),
-            terminal_cleanup: Default::default(),
-        }
-    }
-
-    /// Install one complete create-time Event plan before the Session root is
-    /// inserted. The root activity begins in this same value so a nonempty batch
-    /// is observably Running without a follow-up mutation.
-    pub fn install_initial_event_plan(
-        &mut self,
-        mut plan: crate::SessionInitialEventPlan,
-    ) -> Result<(), crate::SessionEventBatchError> {
-        if !self.event_batches.is_empty() {
-            return Err(crate::SessionEventBatchError::ProgressMismatch);
-        }
-        let activity_epoch = self
-            .begin_activity_epoch()
-            .ok_or(crate::SessionEventBatchError::ProgressMismatch)?;
-        plan.batch.admitted_revision = SessionRevision(
-            self.revision
-                .0
-                .checked_add(1)
-                .ok_or(crate::SessionEventBatchError::ProgressMismatch)?,
-        );
-        plan.batch.wake_activity_epoch = Some(activity_epoch);
-        self.event_batches.push(plan.batch);
-        Ok(())
-    }
-
-    /// Apply the sole durable Session execution transition function.
-    ///
-    /// Returns `false` for an idempotent replay and leaves the aggregate
-    /// untouched when the transition is invalid.
-    pub fn transition_execution(
-        &mut self,
-        next: SessionExecutionState,
-    ) -> Result<bool, SessionExecutionTransitionError> {
-        let from = self.execution;
-        if !from.can_transition_to(next) {
-            return Err(SessionExecutionTransitionError { from, to: next });
-        }
-        if from == next {
-            return Ok(false);
-        }
-        if next.is_terminal() {
-            self.active_activity_epochs.clear();
-        }
-        self.execution = next;
-        Ok(true)
-    }
-
-    /// Advance the monotonic activity fence and record the newly admitted
-    /// activity. An empty set on a historical Running row is deliberately not
-    /// backfilled here: after crash recovery the predecessor has no durable
-    /// completion owner, so the successor becomes the sole explicit activity.
-    pub fn begin_activity_epoch(&mut self) -> Option<u64> {
-        let next = self.activity_epoch.checked_add(1)?;
-        self.activity_epoch = next;
-        self.active_activity_epochs.insert(next);
-        Some(next)
-    }
-
-    /// Open an activity at the exact root revision reserved by an idempotent
-    /// application mutation. The revision is monotonic and therefore remains in
-    /// the same fencing domain as ordinary activity epochs without an auxiliary
-    /// operation-to-epoch registry.
-    pub fn begin_activity_epoch_at(&mut self, epoch: u64) -> bool {
-        if epoch == 0 || epoch <= self.activity_epoch {
-            return false;
-        }
-        self.activity_epoch = epoch;
-        self.active_activity_epochs.insert(epoch)
-    }
-
-    /// Settle one admitted activity epoch.
-    ///
-    /// `None` is an unknown, duplicate, or stale completion. `Some(false)`
-    /// means another admitted activity remains; `Some(true)` means this was the
-    /// last activity and the application may close the shared Running interval.
-    /// A historical Running row with no explicit set treats its non-zero scalar
-    /// epoch as a singleton for backward-compatible settlement.
-    pub fn settle_activity_epoch(&mut self, expected_epoch: u64) -> Option<bool> {
-        if self.active_activity_epochs.is_empty() {
-            return (self.execution == SessionExecutionState::Running
-                && expected_epoch != 0
-                && expected_epoch == self.activity_epoch)
-                .then_some(true);
-        }
-        self.active_activity_epochs
-            .remove(&expected_epoch)
-            .then_some(self.active_activity_epochs.is_empty())
-    }
-
-    /// Whether the current aggregate has explicit, unsettled activity truth.
-    /// Legacy Running compatibility is intentionally handled only by
-    /// [`Self::settle_activity_epoch`], where the caller supplies the epoch.
-    #[must_use]
-    pub fn has_active_activities(&self) -> bool {
-        !self.active_activity_epochs.is_empty()
-    }
-
-    /// Whether the durable aggregate may be replaced by a compact tombstone.
-    /// This is deliberately checked again by the store inside its transaction;
-    /// callers cannot authorize physical deletion merely by constructing a
-    /// [`SessionMutationPayload::Delete`].
-    #[must_use]
-    pub fn admits_tombstone(
-        &self,
-        asserted_session_id: &str,
-        deleted_revision: SessionRevision,
-    ) -> bool {
-        session_tombstone_is_admitted(
-            self.disposition.is_hidden(),
-            self.execution.is_terminal(),
-            self.has_verified_completed_cleanup(),
-            !self.has_incomplete_event_batches(),
-            self.session_id == asserted_session_id,
-            self.revision
-                .0
-                .checked_add(1)
-                .is_some_and(|next| deleted_revision == SessionRevision(next)),
-        )
-    }
-
-    /// Archive one visible Session while terminating further execution.
-    pub fn archive(
-        &mut self,
-        archived_at: impl Into<String>,
-    ) -> Result<bool, SessionDispositionTransitionError> {
-        match self.disposition {
-            SessionDisposition::Deleting | SessionDisposition::Deleted => {
-                return Err(SessionDispositionTransitionError::ArchiveAfterDelete);
-            }
-            SessionDisposition::Archived { .. } => return Ok(false),
-            SessionDisposition::Active => {}
-        }
-        if !self.execution.is_terminal() {
-            self.execution = SessionExecutionState::Terminated;
-        }
-        self.active_activity_epochs.clear();
-        self.terminal_cleanup.request(&self.session_id);
-        self.disposition = SessionDisposition::Archived {
-            archived_at: archived_at.into(),
-        };
-        Ok(true)
-    }
-
-    /// Commit the hidden deletion phase before any external cleanup. Archived
-    /// and activation-failed Sessions remain deletable because disposition is an
-    /// orthogonal state axis.
-    pub fn request_delete(&mut self) -> bool {
-        let plan = session_delete_request_plan(
-            SessionDeleteDispositionClass::from(&self.disposition),
-            self.execution.is_terminal(),
-        );
-        if !plan.transition_to_deleting {
-            return false;
-        }
-        if plan.terminalize_execution {
-            self.execution = SessionExecutionState::Terminated;
-        }
-        self.active_activity_epochs.clear();
-        if plan.request_cleanup {
-            self.terminal_cleanup.request(&self.session_id);
-        }
-        self.disposition = SessionDisposition::Deleting;
-        true
-    }
-
-    /// Install the durable admission fence required by terminal recovery.
-    ///
-    /// New Archive/Delete commands establish this fence in their root mutation.
-    /// The explicit method exists for legacy terminal rows discovered by the
-    /// reconciler, so no external cleanup effect needs to infer authority from a
-    /// protocol projection.
-    pub fn ensure_terminal_cleanup_fence(&mut self) -> bool {
-        self.terminal_cleanup.request(&self.session_id)
-    }
-
-    /// Freeze the exact Runtime target set and begin release of the currently
-    /// committed Resource generation in the same aggregate mutation.
-    pub fn freeze_terminal_cleanup_targets(
-        &mut self,
-        thread_ids: impl IntoIterator<Item = String>,
-        delegation_watermark: u64,
-        runtime_commit_cursor: u64,
-    ) -> Result<bool, crate::SessionCleanupError> {
-        let mut changed = self.terminal_cleanup.freeze_targets(
-            &self.session_id,
-            thread_ids,
-            delegation_watermark,
-            runtime_commit_cursor,
-        )?;
-        if self.resources.pending.is_none() {
-            let before = self.resources.clone();
-            self.resources
-                .begin_release()
-                .expect("terminal release has no pending Resource generation");
-            changed |= self.resources != before;
-        }
-        Ok(changed)
-    }
-
-    /// Accept the exact per-thread cleanup evidence and retire the Resource
-    /// projection atomically with the cleanup completion fact.
-    pub fn complete_terminal_cleanup(
-        &mut self,
-        receipts: &[crate::VerifiedSessionCleanupReceipt],
-        release_reason: impl Into<String>,
-    ) -> Result<bool, crate::SessionCleanupError> {
-        let changed = self.terminal_cleanup.complete(&self.session_id, receipts)?;
-        if changed {
-            self.resources.complete_terminal_release(release_reason);
-            self.environment = crate::SessionEnvironmentState::Unmaterialized;
-        }
-        Ok(changed)
-    }
-
-    /// Admit one exact remote Runtime receipt into the existing cleanup
-    /// operation. This changes no target or phase and therefore cannot create a
-    /// second cleanup queue beside [`crate::SessionCleanupOperation`].
-    pub fn record_terminal_cleanup_completion(
-        &mut self,
-        completion: crate::SessionCleanupCompletion,
-    ) -> Result<bool, crate::SessionCleanupError> {
-        self.terminal_cleanup
-            .record_completion(&self.session_id, completion)
-    }
-
-    /// Whether the root Session state forbids every new realization effect.
-    /// Keep this classification on the aggregate so API rehydration, MCP recovery,
-    /// and later reconcilers cannot grow different terminal-status lists.
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        self.execution.is_terminal() || self.disposition.denies_activity()
-    }
-
-    #[must_use]
-    pub const fn is_hidden(&self) -> bool {
-        self.disposition.is_hidden()
-    }
-
-    /// Whether an ordinary protocol read may expose this aggregate.
-    ///
-    /// `ActivationFailed` is the durable terminal result of an accepted create
-    /// intent. It remains exactly readable so an async caller can distinguish a
-    /// transport timeout from background failure and inspect the aggregate-owned
-    /// error; only the orthogonal hidden disposition removes public visibility.
-    #[must_use]
-    pub const fn is_publicly_readable(&self) -> bool {
-        !self.is_hidden()
-    }
-
-    #[must_use]
-    pub fn archived_at(&self) -> Option<&str> {
-        self.disposition.archived_at()
-    }
-
-    /// Whether the Resource convergence driver owns work for this Session.
-    ///
-    /// A running or rescheduling Session with an active manifest is deliberately
-    /// excluded: its resident Environment is live execution state, not terminal
-    /// cleanup work. Keeping this predicate beside [`Self::is_terminal`] prevents
-    /// reconcilers from recreating lifecycle status lists with string comparisons.
-    #[must_use]
-    pub fn needs_resource_reconciliation(&self) -> bool {
-        matches!(
-            self.disposition,
-            SessionDisposition::Deleting | SessionDisposition::Deleted
-        ) || self.resources.needs_reconciliation()
-            || (self.is_terminal() && self.resources.has_active())
-    }
-
-    /// Whether this durable aggregate must be revisited by any Coordinator
-    /// convergence driver. Keeping the union here prevents SQLite, Postgres,
-    /// and future repositories from growing different recovery scans.
-    #[must_use]
-    pub fn needs_reconciliation(&self) -> bool {
-        self.needs_event_reconciliation()
-            || self.needs_outcome_reconciliation()
-            || self.needs_resource_reconciliation()
-            || self.resources.has_references()
-            || self.mcp.needs_reconciliation()
-            || !matches!(
-                self.environment,
-                crate::SessionEnvironmentState::Unmaterialized
-            )
-            || self.verified_cleanup_needs_reconciliation()
-            || self.needs_work_dispatch()
-    }
-
-    /// Whether the sole lifecycle supervisor must continue any retained
-    /// root-owned Event batch. Completed batches remain provenance but do not
-    /// produce repeated reconciliation work; an ordinary queued batch owns no
-    /// aggregate activity while waiting behind an earlier Run.
-    #[must_use]
-    pub fn has_incomplete_event_batches(&self) -> bool {
-        self.event_batches.iter().any(|batch| !batch.is_complete())
-    }
-
-    #[must_use]
-    pub fn needs_event_reconciliation(&self) -> bool {
-        self.has_incomplete_event_batches()
-    }
-
-    /// Whether retained root provenance can identify a Thread whose canonical
-    /// Outcome aggregate may still need continuation. The root intentionally
-    /// stores no active/terminal shadow flag: the lifecycle supervisor revisits
-    /// this conservative candidate set and the Thread aggregate decides whether
-    /// work exists. This trades a bounded read for one source of effect truth.
-    #[must_use]
-    pub fn needs_outcome_reconciliation(&self) -> bool {
-        !self.is_terminal()
-            && self.event_batches.iter().any(|batch| {
-                batch.events.iter().any(|entry| {
-                    matches!(
-                        entry.event,
-                        crate::SessionEventCommand::DefineOutcome { .. }
-                    )
-                })
-            })
-    }
-
-    /// Whether the externally executed Session must have its one authoritative
-    /// Environment WorkQueue projection.
-    #[must_use]
-    pub fn needs_work_dispatch(&self) -> bool {
-        !self.is_terminal()
-            && self
-                .frozen_baseline()
-                .is_some_and(|baseline| baseline.environment.self_hosted)
-    }
-
-    #[must_use]
-    pub fn frozen_baseline(&self) -> Option<&crate::SessionBaseline> {
-        match &self.baseline {
-            crate::SessionBaselineState::Frozen(baseline) => Some(baseline),
-            crate::SessionBaselineState::Preparing(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn agent_id(&self) -> Option<&str> {
-        self.frozen_baseline()
-            .map(|baseline| baseline.agent_id.as_str())
-    }
-
-    #[must_use]
-    pub fn model(&self) -> Option<&str> {
-        self.frozen_baseline()
-            .map(|baseline| baseline.model.as_str())
-    }
-
-    #[must_use]
-    pub fn environment_id(&self) -> &str {
-        match &self.baseline {
-            crate::SessionBaselineState::Preparing(intent) => {
-                &intent.control.environment.environment_id
-            }
-            crate::SessionBaselineState::Frozen(baseline) => &baseline.environment.environment_id,
-        }
-    }
-
-    /// Managed wire projection derived from durably active generations only.
-    #[must_use]
-    pub fn visible_mcp_servers(&self) -> Vec<VisibleMcpServer> {
-        self.mcp
-            .visible()
-            .into_iter()
-            .map(|attachment| VisibleMcpServer {
-                name: attachment.name.clone(),
-                target: attachment.target.clone(),
-                prompts_as_skills: attachment.prompts_as_skills,
-            })
-            .collect()
-    }
-
-    /// Secret-free MCP configuration accepted for this Session's current Agent
-    /// snapshot. The Managed API must echo desired configuration even while its
-    /// Runtime attachment is still Requested/Realizing or has failed closed;
-    /// [`Self::visible_mcp_servers`] remains the separate execution-visibility
-    /// projection and may legitimately be empty during those states.
-    #[must_use]
-    pub fn configured_mcp_servers(&self) -> Vec<VisibleMcpServer> {
-        self.mcp
-            .desired_attachments()
-            .into_iter()
-            .map(|attachment| VisibleMcpServer {
-                name: attachment.name.clone(),
-                target: attachment.target.clone(),
-                prompts_as_skills: attachment.prompts_as_skills,
-            })
-            .collect()
-    }
-}
-
-/// Closed admission kernel for physically deleting the authoritative Session
-/// row. Visibility, execution fencing, accepted Event provenance, and verified
-/// cleanup are independent axes; omitting any one of them fails closed.
-#[must_use]
-pub const fn session_tombstone_is_admitted(
-    disposition_hidden: bool,
-    execution_terminal: bool,
-    cleanup_completed: bool,
-    event_batches_complete: bool,
-    session_identity_exact: bool,
-    next_revision_exact: bool,
-) -> bool {
-    disposition_hidden
-        && execution_terminal
-        && cleanup_completed
-        && event_batches_complete
-        && session_identity_exact
-        && next_revision_exact
-}
-
-/// One durable Session together with its intrinsic Workspace partition.
-///
-/// Recovery consumes this envelope atomically instead of looking up an owner in
-/// a second step. It contains no principal, role, policy, credential, or
-/// authorization decision; `workspace_id` is resource routing state only.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ScopedPersistedSession {
-    pub workspace_id: String,
-    pub session: PersistedSession,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionTombstone {
-    pub session_id: String,
-    pub deleted_revision: SessionRevision,
-    pub deleted_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct IdempotencyRecord {
-    pub key: String,
-    pub payload_hash: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionIdempotencyReceipt {
-    pub payload_hash: String,
-    pub committed_revision: SessionRevision,
-}
-
-/// Atomic outcome of one Session-root create command. Both variants carry the
-/// repository's durable aggregate; callers must never continue from their
-/// locally compiled candidate after the repository classified a replay.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SessionCreateResult {
-    Applied(PersistedSession),
-    Replayed(PersistedSession),
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "the public root-mutation contract intentionally carries a complete replacement aggregate"
-)]
-pub enum SessionMutationPayload {
-    Replace(PersistedSession),
-    Delete(SessionTombstone),
-}
-
-impl SessionMutationPayload {
-    #[must_use]
-    pub fn session_id(&self) -> &str {
-        match self {
-            Self::Replace(session) => &session.session_id,
-            Self::Delete(tombstone) => &tombstone.session_id,
-        }
-    }
-
-    #[must_use]
-    pub fn stable_hash(&self) -> String {
-        crate::stable_fingerprint(self)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SessionMutation {
-    pub expected_revision: SessionRevision,
-    pub idempotency: IdempotencyRecord,
-    pub payload: SessionMutationPayload,
-    #[serde(default)]
-    pub lifecycle_facts: Vec<ManagedLifecycleFact>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionMutationResult {
-    Applied { new_revision: SessionRevision },
-    Replayed { new_revision: SessionRevision },
-    Conflict { current_revision: SessionRevision },
-    IdempotencyMismatch,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionMutationValidationError {
-    #[error("Session mutation idempotency key is empty")]
-    EmptyIdempotencyKey,
-    #[error("Session mutation payload hash is empty")]
-    EmptyPayloadHash,
-    #[error("Session mutation id is empty")]
-    EmptySessionId,
-    #[error("Session mutation revision is exhausted")]
-    RevisionExhausted,
-    #[error("replacement carries a revision different from expected_revision")]
-    ReplacementRevisionMismatch,
-    #[error("tombstone deleted_revision is not the next root revision")]
-    TombstoneRevisionMismatch,
-    #[error("lifecycle fact targets another Session")]
-    LifecycleSessionMismatch,
-    #[error("Session Running interval is inconsistent with execution state")]
-    RuntimeIntervalStateMismatch,
-    #[error("Session active activity epochs are inconsistent with execution state or fence")]
-    ActiveActivityStateMismatch,
-    #[error("lifecycle runtime interval payload is inconsistent")]
-    RuntimeIntervalFactMismatch,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionRepositoryConflict {
-    #[error("Session already exists")]
-    AlreadyExists,
-    #[error("Session was deleted")]
-    Tombstoned,
-    #[error("Session idempotency key was reused with another payload")]
-    IdempotencyMismatch,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionRepositoryError {
-    #[error("Session was not found")]
-    NotFound,
-    #[error("Session repository is unavailable: {0}")]
-    Unavailable(String),
-    #[error("Session repository contains corrupt durable state: {0}")]
-    Corrupt(String),
-    #[error("Session repository conflict: {0}")]
-    Conflict(SessionRepositoryConflict),
-    #[error("Session repository rejected invalid mutation: {0}")]
-    InvalidMutation(String),
-}
-
-/// Closed supervisor policy for persistence failures. Retryable outages remain
-/// pending; corrupt durable truth is isolated for operator repair; command and
-/// concurrency failures are returned without background replay.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionRepositoryRecoveryAction {
-    Retry,
-    Quarantine,
-    Reject,
-}
-
-/// One corrupt durable Session row isolated by the authoritative store scan.
-/// The raw aggregate is deliberately absent so recovery reporting cannot leak
-/// persisted configuration or credentials.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionRecoveryQuarantine {
-    pub session_id: String,
-    pub reason: String,
-}
-
-/// Complete result of one recovery scan. Store adapters own row decoding and
-/// durable quarantine, so callers receive healthy work and isolation evidence
-/// from one authority instead of maintaining a parallel recovery registry.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SessionRecoveryScan {
-    pub sessions: Vec<ScopedPersistedSession>,
-    pub quarantined: Vec<SessionRecoveryQuarantine>,
-}
-
-impl SessionRepositoryError {
-    #[must_use]
-    pub const fn recovery_action(&self) -> SessionRepositoryRecoveryAction {
-        match self {
-            Self::Unavailable(_) => SessionRepositoryRecoveryAction::Retry,
-            Self::Corrupt(_) => SessionRepositoryRecoveryAction::Quarantine,
-            Self::NotFound | Self::Conflict(_) | Self::InvalidMutation(_) => {
-                SessionRepositoryRecoveryAction::Reject
-            }
-        }
-    }
-}
-
-impl SessionMutation {
-    /// Validate all command-local causes before a repository reads or writes.
-    /// A successful return is the only root revision the transaction may commit.
-    pub fn validate(&self) -> Result<SessionRevision, SessionMutationValidationError> {
-        if self.idempotency.key.trim().is_empty() {
-            return Err(SessionMutationValidationError::EmptyIdempotencyKey);
-        }
-        if self.idempotency.payload_hash.trim().is_empty() {
-            return Err(SessionMutationValidationError::EmptyPayloadHash);
-        }
-        let session_id = self.payload.session_id();
-        if session_id.trim().is_empty() {
-            return Err(SessionMutationValidationError::EmptySessionId);
-        }
-        let next = SessionRevision(
-            self.expected_revision
-                .0
-                .checked_add(1)
-                .ok_or(SessionMutationValidationError::RevisionExhausted)?,
-        );
-        match &self.payload {
-            SessionMutationPayload::Replace(session)
-                if session.revision != self.expected_revision =>
-            {
-                return Err(SessionMutationValidationError::ReplacementRevisionMismatch);
-            }
-            SessionMutationPayload::Delete(tombstone) if tombstone.deleted_revision != next => {
-                return Err(SessionMutationValidationError::TombstoneRevisionMismatch);
-            }
-            SessionMutationPayload::Replace(_) | SessionMutationPayload::Delete(_) => {}
-        }
-        if let SessionMutationPayload::Replace(session) = &self.payload
-            && session.running_interval.is_some()
-            && session.execution != SessionExecutionState::Running
-        {
-            return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
-        }
-        if let SessionMutationPayload::Replace(session) = &self.payload
-            && (session
-                .active_activity_epochs
-                .iter()
-                .any(|epoch| *epoch == 0 || *epoch > session.activity_epoch)
-                || (!session.active_activity_epochs.is_empty()
-                    && (session.execution == SessionExecutionState::Idle || session.is_terminal())))
-        {
-            return Err(SessionMutationValidationError::ActiveActivityStateMismatch);
-        }
-        if self
-            .lifecycle_facts
-            .iter()
-            .any(|fact| fact.object_id != session_id)
-        {
-            return Err(SessionMutationValidationError::LifecycleSessionMismatch);
-        }
-        if self.lifecycle_facts.iter().any(|fact| {
-            match (&fact.runtime_interval, fact.event_type.as_str()) {
-                (None, "session.runtime_interval_closed") => true,
-                (Some(interval), event_type) => {
-                    event_type != "session.runtime_interval_closed"
-                        || fact.id != interval.interval_id
-                        || interval.ended_at_unix_ms < interval.started_at_unix_ms
-                }
-                (None, _) => false,
-            }
-        }) {
-            return Err(SessionMutationValidationError::RuntimeIntervalFactMismatch);
-        }
-        if self
-            .lifecycle_facts
-            .iter()
-            .any(|fact| fact.runtime_interval.is_some())
-            && matches!(
-                &self.payload,
-                SessionMutationPayload::Replace(session)
-                    if session.execution == SessionExecutionState::Running
-                        || session.running_interval.is_some()
-            )
-        {
-            return Err(SessionMutationValidationError::RuntimeIntervalFactMismatch);
-        }
-        Ok(next)
-    }
-}
-
-/// The port the Managed adapter drives to persist and restore [`PersistedSession`]
-/// rows. The default in-memory impl keeps single-process behavior; a durable impl
-/// (e.g. SQLite alongside the transcript store) lets a session survive a restart
-/// and be reported faithfully by another process.
-#[async_trait]
-pub trait ManagedSessionRepository: Send + Sync {
-    /// Insert one new aggregate together with owner, idempotency and outbox, or
-    /// atomically return the exact durable aggregate for an owner-bound replay.
-    async fn create(
-        &self,
-        owner_scope: &str,
-        session: PersistedSession,
-        idempotency: IdempotencyRecord,
-        lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionCreateResult, SessionRepositoryError>;
-
-    /// Atomically classify a deterministic create identity without inserting.
-    /// `Ok(None)` means both receipt and identity are absent. An exact receipt
-    /// returns the current durable aggregate; occupied, tombstoned, mismatched,
-    /// or corrupt identities retain the same typed result as [`Self::create`].
-    async fn replay_create(
-        &self,
-        owner_scope: &str,
-        session_id: &str,
-        idempotency: &IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, SessionRepositoryError>;
-
-    /// Commit the one root-revision CAS transaction.
-    async fn commit_mutation(
-        &self,
-        owner_scope: &str,
-        mutation: SessionMutation,
-    ) -> Result<SessionMutationResult, SessionRepositoryError>;
-
-    /// Commit a lifecycle transition fact idempotently by stable id.
-    async fn append_lifecycle(
-        &self,
-        fact: ManagedLifecycleFact,
-    ) -> Result<(), SessionRepositoryError>;
-
-    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError>;
-
-    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError>;
-
-    /// The stored configuration for `session_id`. Absence is the typed
-    /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
-    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError>;
-
-    /// Every visible aggregate owned by one Workspace. Collection reads must
-    /// come from durable truth so a process restart cannot make existing
-    /// Sessions disappear merely because the protocol projection cache is cold.
-    async fn list_by_owner(
-        &self,
-        _owner_scope: &str,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        Err(SessionRepositoryError::Unavailable(
-            "Session repository does not support Workspace listing".into(),
-        ))
-    }
-
-    /// Sessions carrying any durable Resource, MCP, environment, or WorkQueue
-    /// projection reconciliation work.
-    /// Implementations preserve the intrinsic Workspace partition in the same
-    /// row scan; application coordinators filter by their owned state machine.
-    /// One index avoids parallel per-feature recovery registries and scans.
-    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError>;
-
-    /// Count one typed Environment phase across every canonical live Session
-    /// row. Unsupported adapters fail closed; a recovery batch is not global.
-    async fn count_environment_phase(
-        &self,
-        _phase: crate::SessionEnvironmentPhase,
-    ) -> Result<u64, SessionRepositoryError> {
-        Err(SessionRepositoryError::Unavailable(
-            "Session repository does not support global Environment phase counts".into(),
-        ))
-    }
-
-    /// Healthy Sessions whose immutable authoring baseline references a Vault.
-    /// This is the durable index used by credential rollout controllers; an
-    /// in-memory cache or one process's active-runtime list is never complete in
-    /// HA. Adapters that cannot provide the scan fail closed and leave the
-    /// credential outbox event pending.
-    async fn sessions_referencing_vault(
-        &self,
-        _workspace_id: &str,
-        _vault_id: &str,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        Err(SessionRepositoryError::Unavailable(
-            "Session repository does not support Vault rollout indexing".into(),
-        ))
-    }
-
-    /// Healthy Sessions whose current desired MCP attachments reference one
-    /// exact credential source. The Workspace comes from the Session root row;
-    /// callers supply a source id only from the credential authority's exact
-    /// committed rollout provenance. This index is additive to immutable Vault
-    /// authoring references: neither can be inferred from or substituted for the
-    /// other.
-    async fn sessions_referencing_credential_source(
-        &self,
-        workspace_id: &str,
-        source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, SessionRepositoryError>;
-
-    /// Durable application-command receipt. This is a read of the same
-    /// idempotency table written atomically by `create`/`commit_mutation`, not a
-    /// second command registry.
-    async fn idempotency_receipt(
-        &self,
-        session_id: &str,
-        key: &str,
-    ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError>;
-
-    /// The atomically persisted owner scope of `session_id`.
-    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError>;
-}
-
-// In-memory and durable adapters live outward in `awaken-session-store`.
-// Workspace ownership is persisted atomically beside each row through `create`;
-// authorization scope decorators do not belong in this resource persistence port.
 
 #[cfg(test)]
 mod mutation_tests {
@@ -1174,6 +155,17 @@ mod mutation_tests {
         }
     }
 
+    fn terminal_disposal_command(
+        session: &PersistedSession,
+    ) -> Option<crate::SessionCleanupDisposalCommand> {
+        match session.terminal_cleanup_work_action().unwrap() {
+            Some(crate::SessionTerminalCleanupAction::Dispose { command }) => Some(command),
+            Some(crate::SessionTerminalCleanupAction::Waiting)
+            | Some(crate::SessionTerminalCleanupAction::Prepare { .. })
+            | None => None,
+        }
+    }
+
     #[test]
     fn frozen_constructor_owns_the_complete_initial_aggregate_shape() {
         // Cause/effect graph: C1 complete typed creation input is compiled; C2
@@ -1219,13 +211,888 @@ mod mutation_tests {
         assert!(prepared.mcp.attachments.is_empty(), "C1/E1");
         assert!(prepared.resources.active.inputs().is_empty(), "C1/E1");
         assert!(prepared.realization.is_none(), "C1/E1");
+        assert!(prepared.terminal_cleanup.is_not_requested(), "C1/E1");
+    }
+
+    #[test]
+    fn terminal_memory_authority_joins_cleanup_input_and_current_handle_exactly_once() {
+        // Cause/effect decision table:
+        // | Rule | cleanup | active input | current handle A | request | Effect |
+        // |---|---|---|---|---|---|
+        // | M1 | exact root pending | exact binding/store/config/path/RW | exact A | exact | admit |
+        // | M2 | exact | same store, other mount/binding | exact A | other mount | resource mismatch |
+        // | M3 | exact | exact | exact A | altered A | environment mismatch |
+        // | M4 | exact | pending replacement exists | exact A | exact | resource mismatch |
+        // | M5 | exact | exact | legacy/no evidence | exact | environment mismatch |
+        // | M6 | child command | any | any | child | constructor rejects |
+        // Constraints: caller evidence never becomes truth; only the serialized
+        // current root binding supplies A. A store mounted twice is correlated by
+        // binding id plus exact mount path, never by vector position or store id.
+        let input = crate::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::from("memory-binding"),
+            source: crate::ResolvedInputSource::MemoryStore {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
+                config: awaken_resource_contract::MemoryStoreConfigVersion {
+                    memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
+                    version: awaken_resource_contract::ConfigVersion(4),
+                    retention_policy: Default::default(),
+                },
+            },
+            mount_path: "/memory/work".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadWrite,
+            instructions: None,
+        };
+        let resources =
+            crate::ResolvedSessionResources::try_new(vec![input.clone()], Vec::new()).unwrap();
+        let evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "memory-store",
+            "/memory/work",
+            vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                path: "/note.md".into(),
+                id: "memory-note".into(),
+                content_sha256: "sha-a".into(),
+            }],
+        )
+        .unwrap();
+        let lease = crate::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            epoch: 7,
+            expires_at_unix_ms: 100,
+        };
+        let fingerprint = awaken_provisioning_contract::SandboxRealizationFingerprint::from_spec(
+            &awaken_provisioning_contract::SandboxSpec {
+                scope: "session-memory".into(),
+                isolation: awaken_provisioning_contract::IsolationClass::Workdir,
+                environment: None,
+                command: Vec::new(),
+                deny_tool_egress: false,
+                mounts: Vec::new(),
+                env: Vec::new(),
+                packages: Default::default(),
+                network: awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+                outputs_path: "/mnt/session/outputs".into(),
+                requests: Default::default(),
+                limits: Default::default(),
+                filesystem_continuity: Default::default(),
+                control_services: Default::default(),
+                lease_ttl_secs: None,
+            },
+        );
+        let handle = awaken_provisioning_contract::SandboxHandle::local_v2(
+            "sandbox-memory",
+            awaken_provisioning_contract::LocalSandboxHandleV2 {
+                previous: awaken_provisioning_contract::LocalSandboxHandleV1 {
+                    outputs_path: "/mnt/session/outputs".into(),
+                    base_env: Vec::new(),
+                    continuation_excluded_paths: Vec::new(),
+                    deny_tool_egress: false,
+                },
+                realization_fingerprint: fingerprint,
+                effect_fence: lease.sandbox_effect_fence("create-memory").unwrap(),
+                physical_incarnation: "physical-memory".into(),
+                owned_paths: vec!["/memory/work".into()],
+            },
+        )
+        .with_memory_materializations(vec![evidence.clone()])
+        .unwrap();
+
+        let mut aggregate = session("session-memory", SessionRevision(1));
+        aggregate.resources = crate::SessionResourceState::from_active(resources.clone());
+        aggregate
+            .environment
+            .set_resident(serde_json::to_string(&handle).unwrap());
+        aggregate.realization = Some(lease.clone());
+        aggregate.ensure_terminal_cleanup_fence();
+        aggregate.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
+        let command = aggregate
+            .terminal_cleanup
+            .pending_commands("session-memory")
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let effect = crate::SessionTerminalCleanupEffect::new(command, lease);
+        let exact =
+            crate::terminal_memory_reconciliation_intent(&input, &evidence, &effect).unwrap();
+        assert_eq!(
+            aggregate.authorize_terminal_memory_intent(&exact),
+            Ok(()),
+            "M1"
+        );
+
+        let mut other_mount_input = input.clone();
+        other_mount_input.binding_id = awaken_resource_contract::BindingId::from("memory-other");
+        other_mount_input.mount_path = "/memory/other".into();
+        let other_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "memory-store",
+            "/memory/other",
+            evidence.heads.clone(),
+        )
+        .unwrap();
+        let other_mount = crate::terminal_memory_reconciliation_intent(
+            &other_mount_input,
+            &other_evidence,
+            &effect,
+        )
+        .unwrap();
+        assert_eq!(
+            aggregate.authorize_terminal_memory_intent(&other_mount),
+            Err(crate::SessionMemoryReconciliationError::ResourceMismatch),
+            "M2"
+        );
+
+        let altered_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "memory-store",
+            "/memory/work",
+            vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                path: "/note.md".into(),
+                id: "memory-note".into(),
+                content_sha256: "sha-not-a".into(),
+            }],
+        )
+        .unwrap();
+        let altered =
+            crate::terminal_memory_reconciliation_intent(&input, &altered_evidence, &effect)
+                .unwrap();
+        assert_eq!(
+            aggregate.authorize_terminal_memory_intent(&altered),
+            Err(crate::SessionMemoryReconciliationError::EnvironmentMismatch),
+            "M3"
+        );
+
+        let mut pending = aggregate.clone();
+        pending.resources.pending = Some(resources);
+        assert_eq!(
+            pending.authorize_terminal_memory_intent(&exact),
+            Err(crate::SessionMemoryReconciliationError::ResourceMismatch),
+            "M4"
+        );
+
+        let mut legacy = aggregate.clone();
+        legacy.environment.set_resident(
+            serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::local(
+                "sandbox-memory",
+                awaken_provisioning_contract::LocalSandboxHandleV1 {
+                    outputs_path: "/mnt/session/outputs".into(),
+                    base_env: Vec::new(),
+                    continuation_excluded_paths: Vec::new(),
+                    deny_tool_egress: false,
+                },
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            legacy.authorize_terminal_memory_intent(&exact),
+            Err(crate::SessionMemoryReconciliationError::EnvironmentMismatch),
+            "M5"
+        );
+
+        let mut child_effect = effect;
+        child_effect.command.thread_id = "child-thread".into();
         assert!(
             matches!(
-                prepared.terminal_cleanup,
-                crate::SessionCleanupOperation::NotRequested
+                crate::terminal_memory_reconciliation_intent(&input, &evidence, &child_effect,),
+                Err(crate::SessionMemoryReconciliationError::InvalidIntent(_))
             ),
-            "C1/E1"
+            "M6"
         );
+    }
+
+    #[test]
+    fn terminal_preparation_and_physical_disposal_retire_one_aggregate_atomically() {
+        // Cause/effect graph: C1 the current realization lease is exact/stale;
+        // C2 root preparation is absent/durable; C3 physical disposal is
+        // absent/exact/foreign; C4 the final root-CAS response is delivered or
+        // lost. Effects: E1 preparation may advance cleanup but cannot retire
+        // Resource/Environment truth; E2 only Disposing authorizes physical
+        // work; E3 exact disposal atomically retires those projections and
+        // enters Completed; E4 exact response-loss replay is a no-op; E5 stale
+        // or foreign evidence fails closed.
+        //
+        // | Rule | lease | preparation | disposal | Effect |
+        // | A1 | exact | absent | any | no disposal authorization/E1 |
+        // | A2 | stale | exact | absent | reject preparation/E5 |
+        // | A3 | exact | exact | absent | Disposing, projections retained/E1/E2 |
+        // | A3b | successor epoch | exact A | absent | disposer carries A→B/E2 |
+        // | A4 | exact | exact | foreign | reject, projections retained/E5 |
+        // | A5 | exact | exact | exact/replay | E3/E4 |
+        let lease = crate::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:boot".into(),
+            epoch: 7,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let mut aggregate = session("prepared-root", SessionRevision(1));
+        aggregate.resources = crate::SessionResourceState::from_active(
+            crate::ResolvedSessionResources::try_new(
+                vec![crate::ResolvedInput {
+                    binding_id: awaken_resource_contract::BindingId::from("prepared-memory"),
+                    source: crate::ResolvedInputSource::MemoryStore {
+                        memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                            "prepared-store",
+                        ),
+                        config: awaken_resource_contract::MemoryStoreConfigVersion {
+                            memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                                "prepared-store",
+                            ),
+                            version: awaken_resource_contract::ConfigVersion(1),
+                            retention_policy: Default::default(),
+                        },
+                    },
+                    mount_path: "/memory/prepared".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        aggregate.realization = Some(lease.clone());
+        aggregate.environment.set_resident("sandbox-binding");
+        assert!(aggregate.ensure_terminal_cleanup_fence());
+        assert!(aggregate.freeze_terminal_cleanup_targets([], 3, 5).unwrap());
+        assert!(terminal_disposal_command(&aggregate).is_none(), "A1/E1");
+        let command = aggregate
+            .terminal_cleanup
+            .pending_preparation_commands("prepared-root")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let preparation_effect = crate::SessionTerminalCleanupEffect::new(command, lease.clone());
+        let preparation = crate::SessionCleanupPreparation::try_new(
+            &preparation_effect,
+            preparation_effect.sandbox_effect_fence().unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let repository_preparation = crate::SessionCleanupRepositoryPreparation::new(
+            "prepared-root",
+            "workspace",
+            &aggregate.resources,
+        )
+        .unwrap();
+        let mut stale = lease.clone();
+        stale.epoch -= 1;
+        assert_eq!(
+            aggregate.record_terminal_cleanup_preparation(
+                "workspace",
+                &stale,
+                preparation.clone(),
+                Some(repository_preparation.clone()),
+            ),
+            Err(crate::SessionCleanupError::RealizationMismatch),
+            "A2/E5"
+        );
+        assert!(
+            aggregate
+                .record_terminal_cleanup_preparation(
+                    "workspace",
+                    &lease,
+                    preparation,
+                    Some(repository_preparation),
+                )
+                .unwrap(),
+            "A3"
+        );
+        assert!(aggregate.terminal_cleanup.is_requested(), "A3/E1");
+        assert!(aggregate.environment.binding().is_some(), "A3/E1");
+        assert!(!aggregate.resources.active.inputs().is_empty(), "A3/E1");
+
+        let disposal = terminal_disposal_command(&aggregate).unwrap();
+        let successor = crate::SessionRealizationLease {
+            owner: "worker-b".into(),
+            runtime_incarnation: "worker-b:boot".into(),
+            epoch: lease.epoch + 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        aggregate.realization = Some(successor.clone());
+        let effect =
+            crate::SessionTerminalCleanupDisposalEffect::new(disposal.clone(), successor.clone());
+        assert_eq!(
+            aggregate.authorize_terminal_cleanup_disposal_effect("workspace", &effect),
+            Ok(()),
+            "A3b/E2"
+        );
+        let provider_effect = effect.sandbox_disposal_authorization().expect("A3b/E2");
+        assert_eq!(provider_effect.prepared_effect_fence().epoch, lease.epoch);
+        assert_eq!(provider_effect.effect_fence().epoch, successor.epoch);
+        let mut foreign = crate::SessionCleanupDisposalReceipt::new(&disposal);
+        foreign.preparation_fingerprint.push_str("-foreign");
+        assert_eq!(
+            aggregate.record_terminal_cleanup_disposal(
+                "workspace",
+                &successor,
+                foreign,
+                "released",
+            ),
+            Err(crate::SessionCleanupError::DisposalReceiptMismatch),
+            "A4/E5"
+        );
+        assert!(aggregate.environment.binding().is_some(), "A4/E5");
+
+        let exact = crate::SessionCleanupDisposalReceipt::new(&disposal);
+        assert!(
+            aggregate
+                .record_terminal_cleanup_disposal(
+                    "workspace",
+                    &successor,
+                    exact.clone(),
+                    "released",
+                )
+                .unwrap(),
+            "A5/E3"
+        );
+        assert!(aggregate.terminal_cleanup.is_completed(), "A5/E3");
+        assert!(aggregate.resources.active.inputs().is_empty(), "A5/E3");
+        assert!(aggregate.environment.binding().is_none(), "A5/E3");
+        aggregate.realization = None;
+        assert!(
+            !aggregate
+                .record_terminal_cleanup_disposal("workspace", &successor, exact, "released",)
+                .unwrap(),
+            "A5/E4"
+        );
+    }
+
+    #[test]
+    fn restoring_rejects_target_free_legacy_completion_without_mutation() {
+        // Cause/effect graph: C1 a complete historical one-stage receipt set
+        // is present; C2 the Environment is Restoring or has no unpublished
+        // restore target. Effects: E1 Restoring fails closed and retains both
+        // exact target evidence and Requested cleanup; E2 a non-Restoring
+        // historical row retains the existing decode-only normalization path.
+        //
+        // | Rule | complete legacy receipts | Environment | Effect |
+        // |---|---|---|---|
+        // | L1 | yes | Restoring | E1 ReceiptMismatch, no mutation |
+        // | L2 | yes | Unmaterialized | E2 normalize to Completed |
+        //
+        // Constraint: legacy completion has no `SandboxRestoreRequest`, so it
+        // can never prove disposal of a Phase-B unpublished physical target.
+        let session_id = "legacy-restoring";
+        let workspace_id = "workspace";
+        let lease = crate::SessionRealizationLease {
+            owner: "legacy-worker".into(),
+            runtime_incarnation: "legacy-worker:incarnation".into(),
+            epoch: 2,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let generation = crate::SandboxGeneration::new(
+            session_id,
+            1,
+            90_000,
+            "legacy-restoring-environment",
+            "legacy-restoring-image",
+        );
+        let checkpoint = crate::SandboxCheckpointRef {
+            id: "legacy-restoring-checkpoint".into(),
+            format: "awaken-fs-tar-v1".into(),
+            digest: "legacy-restoring-digest".into(),
+            size_bytes: 1,
+            created_at_unix_ms: 1,
+            expires_at_unix_ms: 90_000,
+            environment_fingerprint: generation.environment_fingerprint.clone(),
+            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: "legacy-suspend".into(),
+        };
+        let operation = crate::SessionEnvironmentOperation::new(
+            workspace_id,
+            session_id,
+            "restore",
+            &generation,
+            1,
+            Some(lease.clone()),
+            Some(&checkpoint),
+        );
+        let mut aggregate = session(session_id, SessionRevision(1));
+        aggregate.realization = Some(lease);
+        aggregate.environment = crate::SessionEnvironmentState::Restoring {
+            operation,
+            checkpoint,
+            generation,
+        };
+        assert!(aggregate.ensure_terminal_cleanup_fence());
+        assert!(aggregate.freeze_terminal_cleanup_targets([], 0, 0).unwrap());
+        let command = aggregate
+            .terminal_cleanup
+            .command_for(session_id, session_id)
+            .expect("L1 legacy root command");
+        let artifact_evidence = Vec::<(&str, &str)>::new();
+        let receipt_fingerprint = crate::stable_fingerprint(&(
+            "session-terminal-cleanup-thread-receipt-v1",
+            command.session_id.as_str(),
+            command.thread_id.as_str(),
+            command.effect_id.as_str(),
+            artifact_evidence.as_slice(),
+        ));
+        let mut wire = serde_json::to_value(&aggregate).unwrap();
+        wire["terminal_cleanup"]["completions"] = serde_json::json!({
+            (session_id): {
+                "session_id": command.session_id,
+                "thread_id": command.thread_id,
+                "effect_id": command.effect_id,
+                "artifact_receipts": [],
+                "receipt_fingerprint": receipt_fingerprint,
+            }
+        });
+        let mut recovered = serde_json::from_value::<PersistedSession>(wire)
+            .expect("L1 exact historical aggregate decodes");
+        assert_eq!(
+            recovered.has_complete_legacy_terminal_cleanup_evidence(),
+            Ok(true),
+            "L1 complete historical evidence"
+        );
+        let before = recovered.clone();
+        assert_eq!(
+            recovered.normalize_legacy_terminal_cleanup("legacy released"),
+            Err(crate::SessionCleanupError::ReceiptMismatch),
+            "L1/E1"
+        );
+        assert_eq!(recovered, before, "L1/E1 atomic rejection");
+
+        let mut ordinary = recovered;
+        ordinary.environment = crate::SessionEnvironmentState::Unmaterialized;
+        assert!(
+            ordinary
+                .normalize_legacy_terminal_cleanup("legacy released")
+                .expect("L2 compatibility normalization"),
+            "L2/E2"
+        );
+        assert!(ordinary.terminal_cleanup.is_completed(), "L2/E2");
+    }
+
+    #[test]
+    fn terminal_provider_predecessor_survives_renewal_and_both_root_cas_orders() {
+        // Provider-predecessor decision table TP1. Causes: C1 work assertion is
+        // initial A or retry D; C2 the provider durably prepared C and returns C
+        // on the D response-loss replay; C3 the A or D root CAS wins first; C4
+        // the receipt reports exact C, a foreign operation/generation, or the
+        // caller records it under a lease unequal to its work assertion.
+        // Effects: E1 either winning CAS persists its own work assertion but
+        // projects the same physical predecessor C; E2 the losing different
+        // receipt is rejected without changing that predecessor; E3 foreign or
+        // self-inconsistent evidence has zero aggregate mutation.
+        //
+        // | Rule | assertion | provider P | first CAS | Effect |
+        // | TP1a | A | C | A | A+C durable, D rejected / E1-E2 |
+        // | TP1b | D | C | D | D+C durable, A rejected / E1-E2 |
+        // | TP1c | A/D | foreign | none | reject / E3 |
+        // | TP1d | A | C | record under C | reject / E3 |
+        let lease = |expires_at_unix_ms| crate::SessionRealizationLease {
+            owner: "provider-worker".into(),
+            runtime_incarnation: "provider-runtime".into(),
+            epoch: 9,
+            expires_at_unix_ms,
+        };
+        let lease_a = lease(10_000);
+        let lease_c = lease(30_000);
+        let lease_d = lease(40_000);
+        let mut base = session("provider-race", SessionRevision(1));
+        base.realization = Some(lease_d.clone());
+        base.environment.set_resident("provider-binding");
+        assert!(base.ensure_terminal_cleanup_fence());
+        assert!(base.freeze_terminal_cleanup_targets([], 3, 5).unwrap());
+        let command = base
+            .terminal_cleanup
+            .pending_preparation_commands("provider-race")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let effect_a = crate::SessionTerminalCleanupEffect::new(command.clone(), lease_a.clone());
+        let effect_d = crate::SessionTerminalCleanupEffect::new(command, lease_d.clone());
+        let provider_c = lease_c
+            .sandbox_effect_fence(effect_a.operation_id())
+            .unwrap();
+        let receipt_a =
+            crate::SessionCleanupPreparation::try_new(&effect_a, provider_c.clone(), Vec::new())
+                .unwrap();
+        let receipt_d =
+            crate::SessionCleanupPreparation::try_new(&effect_d, provider_c.clone(), Vec::new())
+                .unwrap();
+        let repository_preparation = crate::SessionCleanupRepositoryPreparation::new(
+            "provider-race",
+            "workspace",
+            &base.resources,
+        )
+        .unwrap();
+
+        for (rule, first_lease, first, second_lease, second) in [
+            ("TP1a", &lease_a, &receipt_a, &lease_d, &receipt_d),
+            ("TP1b", &lease_d, &receipt_d, &lease_a, &receipt_a),
+        ] {
+            let mut candidate = base.clone();
+            assert!(
+                candidate
+                    .record_terminal_cleanup_preparation(
+                        "workspace",
+                        first_lease,
+                        first.clone(),
+                        Some(repository_preparation.clone()),
+                    )
+                    .unwrap(),
+                "{rule}/E1"
+            );
+            assert_eq!(
+                candidate.record_terminal_cleanup_preparation(
+                    "workspace",
+                    second_lease,
+                    second.clone(),
+                    Some(repository_preparation.clone()),
+                ),
+                Err(crate::SessionCleanupError::PreparationReceiptMismatch),
+                "{rule}/E2",
+            );
+            assert_eq!(
+                terminal_disposal_command(&candidate)
+                    .unwrap()
+                    .provider_disposal
+                    .prepared_effect_fence(),
+                &provider_c,
+                "{rule}/E1 exact provider predecessor",
+            );
+        }
+
+        let foreign = awaken_provisioning_contract::SandboxEffectFence::new(
+            "foreign-operation",
+            lease_a.owner.clone(),
+            lease_a.runtime_incarnation.clone(),
+            lease_a.epoch,
+            lease_c.expires_at_unix_ms,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::SessionCleanupPreparation::try_new(&effect_a, foreign, Vec::new()),
+            Err(crate::SessionCleanupError::PreparationReceiptMismatch),
+            "TP1c/E3",
+        );
+        let mut inconsistent = base.clone();
+        assert_eq!(
+            inconsistent.record_terminal_cleanup_preparation(
+                "workspace",
+                &lease_c,
+                receipt_a,
+                Some(repository_preparation),
+            ),
+            Err(crate::SessionCleanupError::RealizationMismatch),
+            "TP1d/E3",
+        );
+        assert!(
+            terminal_disposal_command(&inconsistent).is_none(),
+            "TP1d/E3"
+        );
+    }
+
+    #[test]
+    fn continuation_provider_predecessor_survives_renewal_and_both_root_cas_orders() {
+        // Continuation-predecessor decision table CP1. Causes: C1 source work
+        // asserts original A or retry D; C2 provider preparation C completed
+        // before its response was lost and the D retry returns immutable C; C3
+        // A-CAS or D-CAS wins first; C4 P has exact or foreign operation/
+        // generation. Effects: E1 either winner enters the one Disposing phase
+        // with physical predecessor C; E2 the losing non-identical receipt is
+        // rejected without changing C; E3 foreign P has zero aggregate mutation.
+        //
+        // | Rule | assertion | provider P | first CAS | Effect |
+        // | CP1a | A | C | A | A+C durable, D rejected / E1-E2 |
+        // | CP1b | D | C | D | D+C durable, A rejected / E1-E2 |
+        // | CP1c | A/D | foreign | none | reject / E3 |
+        let lease = |expires_at_unix_ms| crate::SessionRealizationLease {
+            owner: "continuation-worker".into(),
+            runtime_incarnation: "continuation-runtime".into(),
+            epoch: 5,
+            expires_at_unix_ms,
+        };
+        let lease_a = lease(10_000);
+        let lease_c = lease(30_000);
+        let lease_d = lease(40_000);
+        let generation = crate::SandboxGeneration::new(
+            "continuation-race",
+            1,
+            90_000,
+            "continuation-env",
+            "continuation-image",
+        );
+        let mut base = session("continuation-race", SessionRevision(1));
+        base.realization = Some(lease_d.clone());
+        base.environment = crate::SessionEnvironmentState::Resident {
+            binding: "continuation-source".into(),
+            effect_id: Some("create".into()),
+            generation: Some(generation.clone()),
+            idle_since_unix_ms: None,
+        };
+        let operation = base
+            .environment
+            .begin_suspend_at(
+                "workspace",
+                "continuation-race",
+                base.activity_epoch,
+                Some(lease_a.clone()),
+                1_000,
+            )
+            .unwrap()
+            .clone();
+        base.environment
+            .record_quiescence(
+                &crate::QuiescenceReceipt {
+                    effect_id: operation.effect_id.clone(),
+                    generation_id: generation.id.clone(),
+                    activity_epoch: base.activity_epoch,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
+            .unwrap();
+        base.environment
+            .record_checkpoint(&crate::CheckpointReceipt {
+                effect_id: operation.effect_id.clone(),
+                generation_id: generation.id.clone(),
+                checkpoint: crate::SandboxCheckpointRef {
+                    id: "continuation-checkpoint".into(),
+                    format: "awaken-fs-v1".into(),
+                    digest: "continuation-digest".into(),
+                    size_bytes: 1,
+                    created_at_unix_ms: 2_000,
+                    expires_at_unix_ms: 80_000,
+                    environment_fingerprint: generation.environment_fingerprint.clone(),
+                    base_image_fingerprint: generation.base_image_fingerprint.clone(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: operation.effect_id.clone(),
+                },
+            })
+            .unwrap();
+        let preparation_a =
+            crate::SourceReleasePreparationEffect::new(operation.clone(), lease_a.clone()).unwrap();
+        let preparation_d =
+            crate::SourceReleasePreparationEffect::new(operation.clone(), lease_d.clone()).unwrap();
+        let provider_c = lease_c
+            .sandbox_effect_fence(operation.effect_id.as_str())
+            .unwrap();
+        let receipt_a = crate::SourceReleasePreparedReceipt::try_new(
+            preparation_a.clone(),
+            provider_c.clone(),
+            &generation,
+            "continuation-source",
+        )
+        .unwrap();
+        let receipt_d = crate::SourceReleasePreparedReceipt::try_new(
+            preparation_d.clone(),
+            provider_c.clone(),
+            &generation,
+            "continuation-source",
+        )
+        .unwrap();
+
+        for (rule, first, second) in [
+            ("CP1a", &receipt_a, &receipt_d),
+            ("CP1b", &receipt_d, &receipt_a),
+        ] {
+            let mut candidate = base.clone();
+            assert!(
+                candidate.record_source_release_prepared(first).unwrap(),
+                "{rule}/E1"
+            );
+            assert_eq!(
+                candidate.record_source_release_prepared(second),
+                Err(crate::SessionEnvironmentReceiptError::Mismatch),
+                "{rule}/E2",
+            );
+            assert_eq!(
+                candidate
+                    .source_release_disposal()
+                    .unwrap()
+                    .sandbox_disposal_authorization()
+                    .unwrap()
+                    .prepared_effect_fence(),
+                &provider_c,
+                "{rule}/E1 exact provider predecessor",
+            );
+        }
+
+        let foreign = awaken_provisioning_contract::SandboxEffectFence::new(
+            "foreign-continuation",
+            lease_a.owner,
+            lease_a.runtime_incarnation,
+            lease_a.epoch,
+            lease_c.expires_at_unix_ms,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::SourceReleasePreparedReceipt::try_new(
+                preparation_a,
+                foreign,
+                &generation,
+                "continuation-source",
+            ),
+            Err(crate::SessionEnvironmentReceiptError::Mismatch),
+            "CP1c/E3",
+        );
+        assert!(base.source_release_disposal().is_err(), "CP1c/E3");
+    }
+
+    #[test]
+    fn terminal_disposal_inherits_the_exact_continuation_predecessor() {
+        // Cause/effect graph: C1 the Environment is ordinary Resident or a
+        // continuation whose source preparation A is durably Disposing; C2 the
+        // terminal root preparation T is complete; C3 the current disposer is
+        // the same generation, a higher epoch, or foreign. Effects: E1 ordinary
+        // terminal cleanup derives provider predecessor T; E2 continuation
+        // takeover derives A without copying it into terminal progress; E3 the
+        // aggregate fingerprint remains terminal-owned; E4 only a canonical
+        // A->successor authorization reaches the provider. Decision rules:
+        //
+        // | Rule | Environment | terminal prep | successor | Effect |
+        // | X1 | Resident | T complete | live | provider T / E1 |
+        // | X2 | Disposing(A) | T complete | higher epoch | provider A / E2-E4 |
+        // | X3 | Disposing(A) | T incomplete | any | no disposal command |
+        // | X4 | malformed/foreign A | T complete | any | fail before command |
+        let source_lease = crate::SessionRealizationLease {
+            owner: "source-worker".into(),
+            runtime_incarnation: "source-runtime".into(),
+            epoch: 4,
+            expires_at_unix_ms: 40_000,
+        };
+        let generation = crate::SandboxGeneration::new(
+            "takeover-session",
+            3,
+            30_000,
+            "environment-fingerprint",
+            "base-image-fingerprint",
+        );
+        let mut aggregate = session("takeover-session", SessionRevision(1));
+        aggregate.realization = Some(source_lease.clone());
+        aggregate.environment = crate::SessionEnvironmentState::Resident {
+            binding: "source-binding".into(),
+            effect_id: Some("create".into()),
+            generation: Some(generation.clone()),
+            idle_since_unix_ms: None,
+        };
+        let operation = aggregate
+            .environment
+            .begin_suspend_at(
+                "workspace",
+                "takeover-session",
+                aggregate.activity_epoch,
+                Some(source_lease.clone()),
+                1_000,
+            )
+            .unwrap()
+            .clone();
+        aggregate
+            .environment
+            .record_quiescence(
+                &crate::QuiescenceReceipt {
+                    effect_id: operation.effect_id.clone(),
+                    generation_id: generation.id.clone(),
+                    activity_epoch: aggregate.activity_epoch,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
+            .unwrap();
+        aggregate
+            .environment
+            .record_checkpoint(&crate::CheckpointReceipt {
+                effect_id: operation.effect_id.clone(),
+                generation_id: generation.id.clone(),
+                checkpoint: crate::SandboxCheckpointRef {
+                    id: "checkpoint".into(),
+                    format: "awaken-fs-v1".into(),
+                    digest: "digest".into(),
+                    size_bytes: 42,
+                    created_at_unix_ms: 2_000,
+                    expires_at_unix_ms: 50_000,
+                    environment_fingerprint: generation.environment_fingerprint.clone(),
+                    base_image_fingerprint: generation.base_image_fingerprint.clone(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: operation.effect_id.clone(),
+                },
+            })
+            .unwrap();
+        let source_preparation = aggregate.source_release_preparation_effect().unwrap();
+        let source_prepared_effect_fence = source_preparation.sandbox_effect_fence().unwrap();
+        let source_receipt = crate::SourceReleasePreparedReceipt::try_new(
+            source_preparation,
+            source_prepared_effect_fence,
+            &generation,
+            "source-binding",
+        )
+        .unwrap();
+        assert!(
+            aggregate
+                .record_source_release_prepared(&source_receipt)
+                .unwrap(),
+            "X2 source preparation becomes durable"
+        );
+
+        let terminal_lease = crate::SessionRealizationLease {
+            owner: "terminal-worker".into(),
+            runtime_incarnation: "terminal-runtime".into(),
+            epoch: source_lease.epoch + 1,
+            expires_at_unix_ms: 60_000,
+        };
+        aggregate.disposition = SessionDisposition::Deleting;
+        aggregate.realization = Some(terminal_lease.clone());
+        assert!(aggregate.ensure_terminal_cleanup_fence());
+        assert!(
+            aggregate
+                .freeze_terminal_cleanup_targets([], 7, 11)
+                .unwrap()
+        );
+        assert!(terminal_disposal_command(&aggregate).is_none(), "X3");
+        let root = aggregate
+            .terminal_cleanup
+            .pending_preparation_commands("takeover-session")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let terminal_effect =
+            crate::SessionTerminalCleanupEffect::new(root, terminal_lease.clone());
+        assert!(
+            aggregate
+                .record_terminal_cleanup_preparation(
+                    "workspace",
+                    &terminal_lease,
+                    crate::SessionCleanupPreparation::try_new(
+                        &terminal_effect,
+                        terminal_effect.sandbox_effect_fence().unwrap(),
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                    Some(
+                        crate::SessionCleanupRepositoryPreparation::new(
+                            "takeover-session",
+                            "workspace",
+                            &aggregate.resources,
+                        )
+                        .unwrap(),
+                    ),
+                )
+                .unwrap(),
+            "X2 terminal preparation becomes durable"
+        );
+        let disposal = terminal_disposal_command(&aggregate).expect("X2/E2");
+        let inherited = source_receipt.sandbox_disposal_preparation().unwrap();
+        assert_eq!(disposal.provider_disposal, inherited, "X2/E2");
+        assert_ne!(
+            disposal
+                .provider_disposal
+                .prepared_effect_fence()
+                .operation_id,
+            terminal_effect.command.effect_id,
+            "X2/E3 source and terminal preparation identities remain distinct"
+        );
+        let successor = crate::SessionRealizationLease {
+            epoch: terminal_lease.epoch + 1,
+            ..terminal_lease
+        };
+        let authorization = crate::SessionTerminalCleanupDisposalEffect::new(disposal, successor)
+            .sandbox_disposal_authorization()
+            .expect("X2/E4");
+        assert_eq!(authorization.preparation(), inherited, "X2/E4");
     }
 
     #[test]

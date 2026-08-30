@@ -8,10 +8,7 @@ use std::sync::{Arc, Weak};
 
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::RepositoryBindingVerifier;
-use awaken_run_ingress_contract::{
-    SessionResourceInstallDecision, session_resource_install_decision,
-};
-use awaken_session_contract::{RunError, SessionRuntime};
+use awaken_session_contract::RunError;
 
 use crate::{ManagedHost, SharedHost};
 
@@ -66,7 +63,7 @@ pub(crate) struct DispatchSessionRuntime {
 }
 
 impl DispatchSessionRuntime {
-    fn managed(&self) -> Result<ManagedHost, RunError> {
+    pub(crate) fn managed(&self) -> Result<ManagedHost, RunError> {
         let host = self
             .host
             .upgrade()
@@ -89,7 +86,6 @@ impl DispatchSessionRuntime {
         thread: &str,
         manifest: &awaken_session_contract::SessionResourceManifest,
         claim: Option<&awaken_run_ingress::RunClaim>,
-        authority_amends_unattempted: bool,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         // Resource generation is the innermost Session transition. A complete
@@ -101,59 +97,125 @@ impl DispatchSessionRuntime {
             .session_slots
             .update(thread, |slot| slot.resource_projection.clone());
         let _resource_projection = resource_projection.lock().await;
-        let previous = managed.host.thread_resource_manifest(thread);
-        let decision = match &previous {
-            Some(previous) => session_resource_install_decision(
-                true,
-                previous == manifest,
-                previous.workspace_id == manifest.workspace_id,
-                previous.revision,
-                manifest.revision,
-                authority_amends_unattempted,
-            ),
-            None => session_resource_install_decision(
-                false,
-                false,
-                false,
-                0,
-                manifest.revision,
-                authority_amends_unattempted,
-            ),
-        };
-        match decision {
-            SessionResourceInstallDecision::Reject => Err(RunError::bad_request(
-                "a claimed Worker cannot replace the active Session Resource generation",
-            )),
-            // A newer/different generation reuses the canonical live Session
-            // transition with claim-fenced remote reads and without mutating the
-            // authority-side reference graph.
-            SessionResourceInstallDecision::Replace => {
-                managed
-                    .apply_session_inputs_under_resource_lock(
-                        thread,
-                        &manifest.workspace_id,
-                        manifest.revision,
-                        &manifest.resources,
-                        claim,
-                    )
-                    .await
+        let active = managed.host.thread_resource_manifest(thread);
+        if let Some(active) = &active {
+            if active != manifest {
+                // A desired-only envelope cannot prove the physical previous
+                // generation. Every replacement, including an unattempted
+                // Coordinator amendment, must carry the exact aggregate
+                // `SessionResourceTransition` instead.
+                return Err(RunError::unavailable_classified(
+                    "session_resource_transition_required",
+                    "a desired-only Resource manifest cannot replace the active generation",
+                ));
             }
-            SessionResourceInstallDecision::Stage => {
-                // Re-stage even when the manifest is unchanged: immutable File
-                // bytes, config-version integrity, and credential revocation are
-                // live-deny checks at every claimed operation.
-                managed
-                    .stage_resource_manifest(
-                        thread,
-                        &manifest.workspace_id,
-                        manifest.revision,
-                        &manifest.resources,
-                        claim,
-                    )
-                    .await?;
-                Ok(())
-            }
+            // Re-stage even when the active manifest is unchanged: immutable
+            // File bytes, config-version integrity, and credential revocation
+            // are live-deny checks at every claimed operation. Staging never
+            // republishes completion.
+            return managed
+                .stage_resource_manifest(
+                    thread,
+                    &manifest.workspace_id,
+                    manifest.revision,
+                    &manifest.resources,
+                    claim,
+                )
+                .await;
         }
+
+        let live_environment = managed.host.session_environment(thread).await;
+        let (expected_binding, projected_transition) = managed
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                (
+                    slot.environment_owner.durable_binding().is_some(),
+                    slot.resource_transition.clone(),
+                )
+            })
+            .unwrap_or_default();
+        if live_environment.is_some() || expected_binding {
+            return Err(RunError::unavailable_classified(
+                "session_resource_transition_required",
+                "a desired-only Resource manifest cannot identify the bound Environment's active generation",
+            ));
+        }
+        let empty = awaken_session_contract::SessionResourceManifest::at_revision(
+            manifest.workspace_id.clone(),
+            0,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        );
+        let proven_transition =
+            awaken_session_contract::SessionResourceTransition::new(empty, manifest.clone())
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        if projected_transition
+            .as_ref()
+            .is_some_and(|projected| projected != &proven_transition)
+        {
+            return Err(RunError::unavailable_classified(
+                "session_resource_transition_conflict",
+                "the cold Session already carries a different exact Resource transition",
+            ));
+        }
+        managed
+            .stage_resource_manifest(
+                thread,
+                &manifest.workspace_id,
+                manifest.revision,
+                &manifest.resources,
+                claim,
+            )
+            .await?;
+        // No resident or durable binding exists, so Empty→desired is proven
+        // rather than inferred from a cache. Persist only the command projection;
+        // the active manifest remains absent until physical realization succeeds.
+        managed.host.session_slots.update(thread, |slot| {
+            if slot.resource_transition.is_none() {
+                slot.resource_transition = Some(proven_transition);
+            }
+        });
+        Ok(())
+    }
+
+    async fn stage_prevalidated_transition_under_resource_projection(
+        &self,
+        thread: &str,
+        transition: &awaken_session_contract::SessionResourceTransition,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        prospective_environment_binding: bool,
+    ) -> Result<(), RunError> {
+        let managed = self.managed()?;
+        managed
+            .stage_prevalidated_resource_transition_under_resource_projection(
+                thread,
+                transition,
+                claim,
+                prospective_environment_binding,
+            )
+            .await
+    }
+
+    async fn apply_transition(
+        &self,
+        thread: &str,
+        transition: &awaken_session_contract::SessionResourceTransition,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<(), RunError> {
+        self.managed()?
+            .apply_session_inputs_with_context(thread, transition, claim)
+            .await
+    }
+
+    async fn apply_transition_under_lifecycle(
+        &self,
+        thread: &str,
+        transition: &awaken_session_contract::SessionResourceTransition,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<(), RunError> {
+        self.managed()?
+            .apply_session_inputs_under_lifecycle(thread, transition, claim)
+            .await
     }
 
     /// Compile only the authored Memory binding selected by one frozen Agent.
@@ -238,23 +300,6 @@ impl DispatchSessionRuntime {
             }
         }
     }
-
-    async fn execute_terminal_cleanup(
-        &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.managed()?.execute_terminal_cleanup(command).await
-    }
-
-    async fn execute_terminal_repository_publication(
-        &self,
-        command: awaken_session_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
-        self.managed()?
-            .publish_terminal_repository(command, Some(lease))
-            .await
-    }
 }
 
 impl SharedHost {
@@ -265,21 +310,51 @@ impl SharedHost {
         claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
-            .install(thread, manifest, claim, false)
+            .install(thread, manifest, claim)
             .await
     }
 
-    /// Replace only the Coordinator's unclaimed dispatch projection after the
-    /// Session aggregate amends a generation that no external attempt observed.
-    /// Claimed Worker installation uses [`Self::install_dispatched_resources`]
-    /// and therefore cannot cross this authority-only rule.
-    pub(crate) async fn amend_unattempted_dispatched_resources(
+    /// Stage cold requirements from one already-preflighted complete projection.
+    /// The caller holds `resource_projection` across prospective validation,
+    /// this staging, and publication of every immutable Session fact. The exact
+    /// aggregate transition is retained as cache identity, while the active
+    /// manifest remains owned by physical transition completion.
+    pub(crate) async fn stage_prevalidated_dispatched_resource_transition_under_resource_projection(
         &self,
         thread: &str,
-        manifest: &awaken_session_contract::SessionResourceManifest,
+        transition: &awaken_session_contract::SessionResourceTransition,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
-            .install(thread, manifest, None, true)
+            .stage_prevalidated_transition_under_resource_projection(
+                thread,
+                transition,
+                claim,
+                prospective_environment_binding,
+            )
+            .await
+    }
+
+    pub(crate) async fn apply_dispatched_resource_transition(
+        &self,
+        thread: &str,
+        transition: &awaken_session_contract::SessionResourceTransition,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<(), RunError> {
+        self.dispatch_session_runtime()?
+            .apply_transition(thread, transition, claim)
+            .await
+    }
+
+    pub(crate) async fn apply_dispatched_resource_transition_under_lifecycle(
+        &self,
+        thread: &str,
+        transition: &awaken_session_contract::SessionResourceTransition,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<(), RunError> {
+        self.dispatch_session_runtime()?
+            .apply_transition_under_lifecycle(thread, transition, claim)
             .await
     }
 
@@ -357,24 +432,5 @@ impl SharedHost {
         generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?.drain_mcp(generation).await
-    }
-
-    pub(crate) async fn execute_dispatched_terminal_cleanup(
-        &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.dispatch_session_runtime()?
-            .execute_terminal_cleanup(command)
-            .await
-    }
-
-    pub(crate) async fn execute_dispatched_terminal_repository_publication(
-        &self,
-        command: awaken_session_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
-        self.dispatch_session_runtime()?
-            .execute_terminal_repository_publication(command, lease)
-            .await
     }
 }

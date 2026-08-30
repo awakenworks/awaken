@@ -13,7 +13,9 @@ use awaken_admin_assistant::{
     ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, InputSpec,
     PlatformCapabilities, PluginInfo, ResourceInventory, admin_assistant_config,
 };
-use awaken_agent_config::{AgentConfig, ManagementEffect, ModelSelection};
+use awaken_agent_config::{
+    AgentConfig, AgentConfigRevision, AuditedConfigWrite, ManagementEffect, ModelSelection,
+};
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, FileId, InputBinding,
     InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
@@ -516,14 +518,6 @@ fn parse_target(kind: &str, resource_id: String) -> Result<InputResourceId, Stri
     }
 }
 
-fn kind_str(target: &InputResourceId) -> &'static str {
-    match target {
-        InputResourceId::File(_) => "file",
-        InputResourceId::MemoryStore(_) => "memory_store",
-        InputResourceId::Repository(_) => "repository",
-    }
-}
-
 /// Map the neutral `access` string to a [`ResourceAccess`], defaulting to read/write
 /// when the operator omits it (mirrors the editor's default).
 fn parse_access(access: Option<&str>) -> Result<ResourceAccess, String> {
@@ -534,22 +528,13 @@ fn parse_access(access: Option<&str>) -> Result<ResourceAccess, String> {
     }
 }
 
-/// The per-kind default mount path when the operator omits `mount_path` — mirrors the
-/// console editor's defaults so an assistant-authored binding matches a hand-authored one.
-fn default_mount_path(target: &InputResourceId) -> &'static str {
-    match target {
-        InputResourceId::MemoryStore(_) => "/mnt/memory",
-        InputResourceId::File(_) => "/mnt/files/data",
-        InputResourceId::Repository(_) => "/workspace/repo",
-    }
-}
-
 fn resource_config(
     agent_id: &str,
     resources: Vec<InputSpec>,
     environment: Option<awaken_config_resolver::AgentEnvironmentBinding>,
     revision: i64,
 ) -> Result<AgentInputConfig, String> {
+    let default_mounts = awaken_provisioning_contract::resource_input_default_mounts();
     let mut bindings = Vec::with_capacity(resources.len());
     for (index, spec) in resources.into_iter().enumerate() {
         let target = parse_target(&spec.kind, spec.resource_id)?;
@@ -562,7 +547,7 @@ fn resource_config(
         let mount_path = spec
             .mount_path
             .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| default_mount_path(&target).to_string());
+            .unwrap_or_else(|| default_mounts.mount_path(&target).to_string());
         bindings.push(InputBinding {
             binding_id: BindingId::new(format!("agent:{agent_id}:input:{index}")),
             target,
@@ -581,24 +566,10 @@ fn resource_config(
 
 #[async_trait]
 impl DraftStore for ConfigServiceDraftStore {
-    async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
-        self.plane.put(&self.workspace.resolve()?, draft).await
-    }
-
-    async fn put_audited(
-        &self,
-        draft: &AgentConfig,
-        audit: &awaken_admin_assistant::AdminAuditEvent,
-    ) -> Result<(), String> {
-        self.plane
-            .put_with_audit(&self.workspace.resolve()?, draft, audit)
-            .await
-            .map(|_| ())
-    }
-
     async fn put_audited_with_resources(
         &self,
         draft: &AgentConfig,
+        expected_revision: u64,
         audit: &awaken_admin_assistant::AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
@@ -613,9 +584,11 @@ impl DraftStore for ConfigServiceDraftStore {
             .map(|resources| resource_config(&draft.id, resources, environment, revision))
             .transpose()?;
         let effect = resource_config.map(|config| ManagementEffect::UpsertAgentInputs { config });
-        self.plane
-            .put_with_audit_effect(&scope, draft, audit, effect.as_ref())
+        let write = self
+            .plane
+            .put_with_audit_effect(&scope, draft, expected_revision, audit, effect.as_ref())
             .await?;
+        accept_audited_config_write(write)?;
         apply_pending_resource_effects(&self.plane, &scope, self.resources.as_ref())
             .await
             .map_err(|error| format!("resources could not be bound: {error}"))?;
@@ -625,57 +598,43 @@ impl DraftStore for ConfigServiceDraftStore {
     async fn record_audit(
         &self,
         audit: &awaken_admin_assistant::AdminAuditEvent,
-    ) -> Result<(), String> {
+    ) -> Result<AuditedConfigWrite, String> {
         self.plane
             .record_management_audit(&self.workspace.resolve()?, audit)
             .await
+    }
+
+    async fn get_audit(
+        &self,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<awaken_agent_config::ManagementAuditEntry>, String> {
+        self.plane
+            .get_management_audit(&self.workspace.resolve()?, tool, call_id)
+            .await
+    }
+
+    async fn reconcile_pending_effects(&self) -> Result<(), String> {
+        let scope = self.workspace.resolve()?;
+        apply_pending_resource_effects(&self.plane, &scope, self.resources.as_ref())
+            .await
             .map(|_| ())
+            .map_err(|error| format!("resources could not be bound: {error}"))
     }
 
-    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
-        self.plane.get(&self.workspace.resolve()?, id).await
+    async fn get_versioned(&self, id: &str) -> Result<Option<AgentConfigRevision>, String> {
+        self.plane
+            .get_versioned(&self.workspace.resolve()?, id)
+            .await
     }
+}
 
-    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
-        let scope = self.workspace.resolve()?;
-        let current = self
-            .resources
-            .get_agent_inputs(scope.as_str(), agent_id)
-            .map_err(|error| error.to_string())?;
-        let revision = current.as_ref().map_or(1, |current| current.revision + 1);
-        let environment = current.and_then(|current| current.environment);
-        self.resources
-            .put_agent_inputs(
-                scope.as_str(),
-                resource_config(agent_id, resources, environment, revision)?,
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    }
-
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
-        let scope = self.workspace.resolve()?;
-        let Some(cfg) = self
-            .resources
-            .get_agent_inputs(scope.as_str(), agent_id)
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(Vec::new());
-        };
-        Ok(cfg
-            .inputs
-            .into_iter()
-            .map(|b| InputSpec {
-                kind: kind_str(&b.target).to_string(),
-                resource_id: b.target.id().to_string(),
-                mount_path: Some(b.mount_path),
-                access: Some(match b.access {
-                    ResourceAccess::ReadOnly => "read_only".to_string(),
-                    ResourceAccess::ReadWrite => "read_write".to_string(),
-                }),
-                instructions: b.instructions,
-            })
-            .collect())
+fn accept_audited_config_write(write: AuditedConfigWrite) -> Result<(), String> {
+    match write {
+        AuditedConfigWrite::Applied | AuditedConfigWrite::Replayed => Ok(()),
+        AuditedConfigWrite::Conflict { current_revision } => Err(format!(
+            "Agent changed concurrently (current revision: {current_revision:?})"
+        )),
     }
 }
 
@@ -820,6 +779,63 @@ mod tests {
         )
     }
 
+    #[test]
+    fn assistant_resource_defaults_and_overrides_are_total_and_file_is_read_only() {
+        // Assistant Resource cause/effect decision table:
+        // | Rule | kind | mount input | requested access | Effect |
+        // | A1 | memory_store | omitted | omitted | canonical Memory default + RW |
+        // | A2 | file | empty | RW | canonical File default + forced RO |
+        // | A3 | repository | omitted | omitted | canonical Repository default + RW |
+        // | A4 | repository | explicit canonical path | RO | exact path + RO |
+        // Constraints: omitted and empty both select the provisioning authority;
+        // an explicit path is never rewritten; immutable File access never widens.
+        let config = resource_config(
+            "agent-defaults",
+            vec![
+                InputSpec {
+                    kind: "memory_store".into(),
+                    resource_id: "memory".into(),
+                    mount_path: None,
+                    access: None,
+                    instructions: None,
+                },
+                InputSpec {
+                    kind: "file".into(),
+                    resource_id: "file".into(),
+                    mount_path: Some(String::new()),
+                    access: Some("read_write".into()),
+                    instructions: None,
+                },
+                InputSpec {
+                    kind: "repository".into(),
+                    resource_id: "repository-default".into(),
+                    mount_path: None,
+                    access: None,
+                    instructions: None,
+                },
+                InputSpec {
+                    kind: "repository".into(),
+                    resource_id: "repository-explicit".into(),
+                    mount_path: Some("/workspace/custom".into()),
+                    access: Some("read_only".into()),
+                    instructions: None,
+                },
+            ],
+            None,
+            1,
+        )
+        .unwrap();
+        let defaults = awaken_provisioning_contract::resource_input_default_mounts();
+        assert_eq!(config.inputs[0].mount_path, defaults.memory_store, "A1");
+        assert_eq!(config.inputs[0].access, ResourceAccess::ReadWrite, "A1");
+        assert_eq!(config.inputs[1].mount_path, defaults.file, "A2");
+        assert_eq!(config.inputs[1].access, ResourceAccess::ReadOnly, "A2");
+        assert_eq!(config.inputs[2].mount_path, defaults.repository, "A3");
+        assert_eq!(config.inputs[2].access, ResourceAccess::ReadWrite, "A3");
+        assert_eq!(config.inputs[3].mount_path, "/workspace/custom", "A4");
+        assert_eq!(config.inputs[3].access, ResourceAccess::ReadOnly, "A4");
+    }
+
     #[tokio::test]
     async fn draft_resource_bindings_keep_equal_agent_ids_in_their_workspace() {
         // Causes: C1 equal Agent id under distinct Workspace scopes; C2 an
@@ -840,7 +856,7 @@ mod tests {
         let workspace_b = Arc::new(ConfigServiceDraftStore::new(
             plane,
             "workspace-b",
-            resources,
+            resources.clone(),
         ));
         let binding = |resource_id: &str| InputSpec {
             kind: "file".into(),
@@ -850,21 +866,51 @@ mod tests {
             instructions: None,
         };
 
-        workspace_a
-            .put_resources("shared-agent", vec![binding("file-a")])
-            .await
-            .unwrap();
-        workspace_b
-            .put_resources("shared-agent", vec![binding("file-b")])
-            .await
-            .unwrap();
+        let draft = AgentConfig {
+            id: "shared-agent".into(),
+            instructions: "workspace-isolated resource binding".into(),
+            max_steps: 8,
+            model_binding: ModelSelection::Auto,
+            ..Default::default()
+        };
+        for (store, call_id, resource_id) in [
+            (workspace_a.as_ref(), "resource-a", "file-a"),
+            (workspace_b.as_ref(), "resource-b", "file-b"),
+        ] {
+            let audit = awaken_agent_config::ManagementAuditRecord {
+                tool: awaken_admin_assistant::CREATE_DRAFT_TOOL.into(),
+                call_id: call_id.into(),
+                summary: format!("workspace resource `{resource_id}`"),
+            };
+            assert_eq!(
+                store.record_audit(&audit).await.unwrap(),
+                AuditedConfigWrite::Applied,
+                "sole audit begin"
+            );
+            store
+                .put_audited_with_resources(&draft, 0, &audit, Some(vec![binding(resource_id)]))
+                .await
+                .unwrap();
+        }
 
         assert_eq!(
-            workspace_a.get_resources("shared-agent").await.unwrap()[0].resource_id,
+            resources
+                .get_agent_inputs("workspace-a", "shared-agent")
+                .unwrap()
+                .unwrap()
+                .inputs[0]
+                .target
+                .id(),
             "file-a"
         );
         assert_eq!(
-            workspace_b.get_resources("shared-agent").await.unwrap()[0].resource_id,
+            resources
+                .get_agent_inputs("workspace-b", "shared-agent")
+                .unwrap()
+                .unwrap()
+                .inputs[0]
+                .target
+                .id(),
             "file-b"
         );
         let cancellation = awaken_runtime_contract::CancellationToken::new();
@@ -873,6 +919,100 @@ mod tests {
             .run_resource_effect_reconciliation(cancellation)
             .await
             .expect("R2 cancelled reconciler exits");
+    }
+
+    #[tokio::test]
+    async fn committed_replay_projection_applies_the_existing_resource_effect() {
+        // Response-loss effect table:
+        // | rule | config+audit | resource effect | retry projection | effect |
+        // | E1   | committed    | pending         | reconcile        | readback present; journal empty |
+        // The Assistant replay test owns invocation of this narrow projection; this
+        // adapter test proves it delegates to the one existing effect reconciler.
+        let raw_store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let plane = ConfigPlane::new(
+            Arc::new(test_config_service()),
+            raw_store,
+            Arc::new(StaticToolCatalog(Vec::new())),
+        );
+        let resources = Arc::new(InMemoryAgentInputBindingRepository::new());
+        let scope = ScopeId::from("effect-replay");
+        let adapter = ConfigServiceDraftStore::new(plane.clone(), scope.clone(), resources.clone());
+        let draft = AgentConfig {
+            id: "effect-agent".into(),
+            instructions: "resource effect".into(),
+            max_steps: 8,
+            model_binding: ModelSelection::Auto,
+            ..Default::default()
+        };
+        let audit = awaken_agent_config::ManagementAuditRecord {
+            tool: awaken_admin_assistant::CREATE_DRAFT_TOOL.into(),
+            call_id: "effect-response-loss".into(),
+            summary: "draft agent `effect-agent`".into(),
+        };
+        let effect = ManagementEffect::UpsertAgentInputs {
+            config: resource_config(
+                &draft.id,
+                vec![InputSpec {
+                    kind: "file".into(),
+                    resource_id: "file-replayed".into(),
+                    mount_path: None,
+                    access: Some("read_only".into()),
+                    instructions: None,
+                }],
+                None,
+                1,
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            plane.record_management_audit(&scope, &audit).await.unwrap(),
+            AuditedConfigWrite::Applied,
+            "E1 sole audit begin"
+        );
+        assert_eq!(
+            plane
+                .put_with_audit_effect(&scope, &draft, 0, &audit, Some(&effect))
+                .await
+                .unwrap(),
+            AuditedConfigWrite::Applied,
+            "E1 setup"
+        );
+        assert!(
+            resources
+                .get_agent_inputs(scope.as_str(), &draft.id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            plane
+                .pending_management_effects(&scope)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        adapter.reconcile_pending_effects().await.unwrap();
+
+        assert_eq!(
+            resources
+                .get_agent_inputs(scope.as_str(), &draft.id)
+                .unwrap()
+                .unwrap()
+                .inputs[0]
+                .target
+                .id(),
+            "file-replayed",
+            "E1"
+        );
+        assert!(
+            plane
+                .pending_management_effects(&scope)
+                .await
+                .unwrap()
+                .is_empty(),
+            "E1"
+        );
     }
 
     #[tokio::test]
@@ -904,9 +1044,23 @@ mod tests {
                 "workspace-tenant",
             ))),
         };
-        awaken_runtime_contract::tool::with_tool_operation_context(context, store.put(&draft))
-            .await
-            .expect("H1 scoped write");
+        let audit = awaken_agent_config::ManagementAuditRecord {
+            tool: awaken_admin_assistant::CREATE_DRAFT_TOOL.into(),
+            call_id: "hosted-draft".into(),
+            summary: "hosted draft scope".into(),
+        };
+        awaken_runtime_contract::tool::with_tool_operation_context(context, async {
+            assert_eq!(
+                store.record_audit(&audit).await?,
+                AuditedConfigWrite::Applied,
+                "H1 sole audit begin"
+            );
+            store
+                .put_audited_with_resources(&draft, 0, &audit, None)
+                .await
+        })
+        .await
+        .expect("H1 scoped write");
         assert!(
             plane
                 .get(&ScopeId::from("workspace-tenant"), &draft.id)
@@ -924,7 +1078,11 @@ mod tests {
             "H1"
         );
         assert!(
-            store.put(&draft).await.unwrap_err().contains("no trusted"),
+            store
+                .put_audited_with_resources(&draft, 1, &audit, None)
+                .await
+                .unwrap_err()
+                .contains("no trusted"),
             "H2"
         );
     }

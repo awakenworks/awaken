@@ -56,22 +56,118 @@ pub(crate) struct ParsedSessionInput {
 
 pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub(super) enum InputProjectionClass {
+    File,
+    MemoryStore,
+    Repository,
+}
+
+pub(super) fn parsed_projection_class(target: &ParsedInputTarget) -> InputProjectionClass {
+    match target {
+        ParsedInputTarget::File(_) => InputProjectionClass::File,
+        ParsedInputTarget::MemoryStore(_) => InputProjectionClass::MemoryStore,
+        ParsedInputTarget::Repository { .. } => InputProjectionClass::Repository,
+    }
+}
+
+fn binding_projection_class(
+    target: &awaken_resource_contract::InputResourceId,
+) -> InputProjectionClass {
+    match target {
+        awaken_resource_contract::InputResourceId::File(_) => InputProjectionClass::File,
+        awaken_resource_contract::InputResourceId::MemoryStore(_) => {
+            InputProjectionClass::MemoryStore
+        }
+        awaken_resource_contract::InputResourceId::Repository(_) => {
+            InputProjectionClass::Repository
+        }
+    }
+}
+
+pub(super) fn resolved_projection_class(
+    source: &awaken_session_contract::ResolvedInputSource,
+) -> InputProjectionClass {
+    match source {
+        awaken_session_contract::ResolvedInputSource::File { .. } => InputProjectionClass::File,
+        awaken_session_contract::ResolvedInputSource::MemoryStore { .. } => {
+            InputProjectionClass::MemoryStore
+        }
+        awaken_session_contract::ResolvedInputSource::Repository { .. } => {
+            InputProjectionClass::Repository
+        }
+    }
+}
+
+pub(super) fn preflight_repository_mount_paths(
+    resources: &[ParsedSessionInput],
+) -> Result<(), StateError> {
+    let paths = resources
+        .iter()
+        .filter(|resource| matches!(&resource.target, ParsedInputTarget::Repository { .. }))
+        .map(|resource| resource.mount_path.as_str())
+        .collect::<Vec<_>>();
+    awaken_provisioning_contract::validate_repository_mount_paths(&paths, &[])
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))
+}
+
+fn plan_session_input_attachments(
+    session_id: &str,
+    resources: &[ParsedSessionInput],
+    agent_defaults: &[awaken_resource_contract::InputBinding],
+) -> Vec<awaken_session_contract::SessionInputAttachment> {
+    resources
+        .iter()
+        .enumerate()
+        .map(|(index, resource)| {
+            let repository_id = matches!(&resource.target, ParsedInputTarget::Repository { .. })
+                .then(|| awaken_resource_contract::RepositoryId::from("preflight"));
+            let mut binding = input_binding(
+                format!("session:{session_id}:input:{index}"),
+                resource,
+                repository_id,
+            );
+            let normalized = binding.mount_path.trim_start_matches('/');
+            let replaces = agent_defaults
+                .iter()
+                .find(|default| {
+                    default.mount_path.trim_start_matches('/') == normalized
+                        && binding_projection_class(&default.target)
+                            == parsed_projection_class(&resource.target)
+                })
+                .map(|default| default.binding_id.clone());
+            if let Some(replaced) = &replaces {
+                binding.binding_id.clone_from(replaced);
+            }
+            awaken_session_contract::SessionInputAttachment { binding, replaces }
+        })
+        .collect()
+}
+
+pub(crate) struct PreparedSessionInputs {
+    resources: Vec<ParsedSessionInput>,
+    attachments: Vec<awaken_session_contract::SessionInputAttachment>,
+    effective_bindings: Vec<awaken_resource_contract::InputBinding>,
+}
+
+impl PreparedSessionInputs {
+    pub(crate) fn effective_bindings(&self) -> &[awaken_resource_contract::InputBinding] {
+        &self.effective_bindings
+    }
+}
+
 impl ManagedState {
-    /// Lower all create-time Managed resources through the sole Resource Registry
-    /// and Vault ingress into the shared Session attachment language.
-    pub(crate) async fn lower_session_input_attachments(
+    /// Resolve server-derived logical paths and compile the one effective typed
+    /// binding plan before entering Skill/File/Vault/Repository effects. The
+    /// returned value is consumed unchanged by effect lowering, so replacement
+    /// semantics and layout validation cannot drift between two preflights.
+    pub(crate) fn prepare_session_input_attachments(
         &self,
         session_id: &str,
         owner_scope: &str,
         resources: &[ParsedSessionInput],
         agent_defaults: &[awaken_resource_contract::InputBinding],
-    ) -> Result<
-        (
-            Vec<awaken_session_contract::SessionInputAttachment>,
-            Vec<awaken_session_application::ConfiguredSessionRepository>,
-        ),
-        StateError,
-    > {
+    ) -> Result<PreparedSessionInputs, StateError> {
         let mut used_mounts = agent_defaults
             .iter()
             .map(|binding| binding.mount_path.trim_start_matches('/').to_string())
@@ -106,9 +202,42 @@ impl ManagedState {
             normalized_resources.push(resource);
         }
 
-        let mut attachments = Vec::with_capacity(normalized_resources.len());
+        // Build the complete logical binding set with a non-durable placeholder
+        // Repository id. The shared resolver owns replacement/collision/tree
+        // semantics, and this call remains pure; only after it succeeds may the
+        // adapter enter Registry/Vault participants.
+        let attachments =
+            plan_session_input_attachments(session_id, &normalized_resources, agent_defaults);
+        let effective_bindings = awaken_session_contract::SessionInputResolver::effective_bindings(
+            agent_defaults,
+            &attachments,
+        )
+        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+
+        Ok(PreparedSessionInputs {
+            resources: normalized_resources,
+            attachments,
+            effective_bindings,
+        })
+    }
+
+    /// Configure the Repository/Vault participants for one already-validated
+    /// binding plan. No logical path or replacement decision is recomputed here.
+    pub(crate) async fn lower_prepared_session_input_attachments(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        prepared: &PreparedSessionInputs,
+    ) -> Result<
+        (
+            Vec<awaken_session_contract::SessionInputAttachment>,
+            Vec<awaken_session_application::ConfiguredSessionRepository>,
+        ),
+        StateError,
+    > {
+        let mut attachments = Vec::with_capacity(prepared.resources.len());
         let mut repository_configurations = Vec::new();
-        for (index, resource) in normalized_resources.iter().enumerate() {
+        for (index, resource) in prepared.resources.iter().enumerate() {
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
                 authorization_token,
@@ -158,23 +287,15 @@ impl ManagedState {
             } else {
                 None
             };
-            let mut binding = input_binding(
-                format!("session:{session_id}:input:{index}"),
-                resource,
-                repository_id,
-            );
-            let normalized = binding.mount_path.trim_start_matches('/');
-            let replaces = agent_defaults
-                .iter()
-                .find(|default| default.mount_path.trim_start_matches('/') == normalized)
-                .map(|default| default.binding_id.clone());
+            let mut attachment = prepared.attachments[index].clone();
+            if let Some(repository_id) = repository_id {
+                attachment.binding.target =
+                    awaken_resource_contract::InputResourceId::Repository(repository_id);
+            }
             // A replacement changes the resource occupying one logical Agent
             // slot; it does not invent a new slot identity. This keeps published
             // extension configuration (such as memory.binding_id) stable.
-            if let Some(replaced) = &replaces {
-                binding.binding_id.clone_from(replaced);
-            }
-            attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
+            attachments.push(attachment);
         }
         Ok((attachments, repository_configurations))
     }
@@ -247,17 +368,17 @@ impl ResourceInput {
             },
             ResourceInput::MemoryStore {
                 memory_store_id,
-                mount_path,
                 instructions,
                 access,
             } => ParsedSessionInput {
                 target: ParsedInputTarget::MemoryStore(memory_store_id.clone().into()),
-                mount_path: mount_path.clone().unwrap_or_else(|| {
-                    format!("/mnt/memory/{}", memory_mount_component(memory_store_id))
-                }),
+                // This provisional spelling is never exposed or frozen. The
+                // Managed preparation step always replaces it with the
+                // definition-owned display-name projection.
+                mount_path: format!("/mnt/memory/{}", memory_mount_component(memory_store_id)),
                 access: access.unwrap_or(ResourceAccess::ReadWrite).into(),
                 instructions: instructions.clone(),
-                implicit_memory_mount: mount_path.is_none(),
+                implicit_memory_mount: true,
             },
             ResourceInput::GithubRepository {
                 url,
@@ -265,9 +386,9 @@ impl ResourceInput {
                 mount_path,
                 checkout,
             } => ParsedSessionInput {
-                mount_path: mount_path
-                    .clone()
-                    .unwrap_or_else(|| format!("/workspace/{}", repo_name(url))),
+                mount_path: mount_path.clone().unwrap_or_else(|| {
+                    awaken_provisioning_contract::WorkspaceLayout::child(&repo_name(url))
+                }),
                 target: ParsedInputTarget::Repository {
                     remote_url: url.clone(),
                     authorization_token: authorization_token.clone(),

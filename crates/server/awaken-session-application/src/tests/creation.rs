@@ -8,6 +8,18 @@ struct RecordingCreateRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingCreateRuntime {
+    fn validate_session_sandbox_layout(
+        &self,
+        _thread: &str,
+        _layout: &awaken_session_contract::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        // Test-runtime decision rule: C1 creation tests intentionally model an
+        // available provider; C2 layouts may contain Repository bindings. E1 an
+        // explicit capable fake admits both, while the production trait default
+        // remains fail-closed for C2 when no layout authority is installed.
+        Ok(())
+    }
+
     async fn install_session_projection(
         &self,
         _thread: &str,
@@ -410,6 +422,58 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
         idempotency: None,
         initial_events: None,
     }
+}
+
+#[tokio::test]
+async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
+    // Creation-topology decision table: C1 frozen placement is Local/Worker;
+    // C2 retention is Resident/CheckpointAndRelease. Only Worker+checkpoint
+    // requires a remote continuation transport that does not exist. Effect E1
+    // rejects before root insert or Runtime projection; the other three rules
+    // retain their existing create paths. Constraint K1: the registered-Worker
+    // authorize/persist channel is closed over Create/Adopt/Rebuild/Resource
+    // reservation, while claimed resume ends at realization projection/MCP and
+    // rejects continuation phases; neither is a checkpoint/restore transport.
+    //
+    // | Rule | placement | retention | Effect |
+    // | T1 | Worker | CheckpointAndRelease | E1 reject, zero root/effect |
+    // | T2 | Worker | Resident | existing external creation |
+    // | T3 | Local | CheckpointAndRelease | existing local continuation |
+    // | T4 | Local | Resident | existing local creation |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session repository"),
+    );
+    let runtime = Arc::new(RecordingCreateRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let mut command = creation_command("worker-checkpoint-retention");
+    command.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    command.intent.control.environment.idle_retention =
+        super::continuation::checkpoint_release_retention();
+
+    let error = app
+        .create_session(command)
+        .await
+        .expect_err("T1/E1 unsupported external continuation must fail before insert");
+    let SessionCreationError::Rejected(error) = error else {
+        panic!("T1/E1 expected deterministic creation rejection")
+    };
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "T1/E1",
+    );
+    assert!(matches!(
+        repository.get("worker-checkpoint-retention").await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+    ));
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "T1/E1");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "T1/E1");
 }
 
 fn owned_repository_input(session_id: &str) -> SessionRepositoryResourceInput {
@@ -1425,39 +1489,47 @@ async fn assert_profiled_direct_resource_rules() {
     );
     assert_eq!(agent_runtime.preparations.load(Ordering::SeqCst), 0, "D3");
 
+    // Final-path cause/effect rules: D4 gives a File and Repository the same
+    // authored spelling, but the Runtime projects the File below
+    // `/mnt/session/uploads`, so creation succeeds and the canonical
+    // Stage-to-Publish sequence installs two complete phase projections while
+    // preparing physical state once. D5 gives two Repository trees a
+    // parent/child overlap; because both paths are already final, admission
+    // rejects the whole set before Registry or Runtime effects.
     let repository_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("Repository collision Session store"),
+            .expect("Repository path Session store"),
     );
     let repository_runtime = Arc::new(RecordingCreateRuntime::default());
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
-    let mut repository_collision = application_with_runtime(
+    let mut repository_application = application_with_runtime(
         repository_runtime.clone(),
         repository_repo.clone(),
         Arc::new(AdmissionEnvironment),
     );
-    repository_collision.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
-    repository_collision.set_resource_registry(registry.clone());
-    let mut collides_repository =
-        profiled_session_command("profiled-direct-repository-collision", None);
-    collides_repository
+    repository_application.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    repository_application.set_resource_registry(registry.clone());
+    let disjoint_session = "profiled-direct-projected-disjoint";
+    let disjoint_repository_id = format!("profiled:{disjoint_session}:repository:0");
+    let mut projected_disjoint = profiled_session_command(disjoint_session, None);
+    projected_disjoint
         .resource_inputs
         .push(direct_file_attachment(
-            "direct-collides-repository",
-            "file-collides-repository",
+            "direct-file-shared-spelling",
+            "file-shared-spelling",
             "/workspace/repository",
         ));
-    collides_repository.repositories = vec![crate::ProfiledSessionRepositoryInput {
+    projected_disjoint.repositories = vec![crate::ProfiledSessionRepositoryInput {
         binding_id: awaken_resource_contract::BindingId::new(
-            "profiled-collision-repository-binding",
+            "profiled-disjoint-repository-binding",
         ),
         repository: SessionRepositoryResourceInput {
-            id: "profiled-collision-repository".into(),
+            id: disjoint_repository_id.clone(),
             workspace_id: "workspace".into(),
-            name: "Collision Repository".into(),
-            description: "must not be registered".into(),
-            remote_url: "https://example.test/collision.git".into(),
+            name: "Projected-disjoint Repository".into(),
+            description: "File spelling is projected to another final tree".into(),
+            remote_url: "https://example.test/disjoint.git".into(),
             credential_material: None,
             credential: None,
             mount_path: "/workspace/repository".into(),
@@ -1465,36 +1537,83 @@ async fn assert_profiled_direct_resource_rules() {
             initial_commit: None,
         },
     }];
+    repository_application
+        .create_profiled_session(projected_disjoint)
+        .await
+        .expect("D4 projected paths are disjoint");
     assert!(
-        repository_collision
-            .create_profiled_session(collides_repository)
-            .await
-            .is_err(),
-        "D4 Repository collision"
-    );
-    assert_eq!(
         registry
-            .find_repository("workspace", "profiled-collision-repository")
-            .expect("D4 inventory"),
-        None,
-        "D4 collision fails before Repository configuration"
-    );
-    assert_eq!(
-        repository_repo
-            .get("profiled-direct-repository-collision")
-            .await,
-        Err(awaken_session_contract::SessionRepositoryError::NotFound),
-        "D4 no root"
+            .find_repository("workspace", &disjoint_repository_id)
+            .expect("D4 inventory")
+            .is_some(),
+        "D4 Repository configuration is admitted"
     );
     assert_eq!(
         repository_runtime.baseline_installs.load(Ordering::SeqCst),
-        0,
-        "D4 no Runtime effect"
+        2,
+        "D4 Stage and Publish install two complete phase projections"
     );
     assert_eq!(
         repository_runtime.preparations.load(Ordering::SeqCst),
-        0,
-        "D4"
+        1,
+        "D4 one physical preparation"
+    );
+
+    let overlapping_session = "profiled-direct-repository-overlap";
+    let repository_input =
+        |index: usize, binding: &str, mount_path: &str| crate::ProfiledSessionRepositoryInput {
+            binding_id: awaken_resource_contract::BindingId::new(binding),
+            repository: SessionRepositoryResourceInput {
+                id: format!("profiled:{overlapping_session}:repository:{index}"),
+                workspace_id: "workspace".into(),
+                name: format!("Overlapping Repository {index}"),
+                description: "must fail before registration".into(),
+                remote_url: format!("https://example.test/overlap-{index}.git"),
+                credential_material: None,
+                credential: None,
+                mount_path: mount_path.into(),
+                initial_branch: Some("main".into()),
+                initial_commit: None,
+            },
+        };
+    let mut overlaps = profiled_session_command(overlapping_session, None);
+    overlaps.repositories = vec![
+        repository_input(0, "overlap-parent", "/workspace/parent"),
+        repository_input(1, "overlap-child", "/workspace/parent/child"),
+    ];
+    assert!(
+        repository_application
+            .create_profiled_session(overlaps)
+            .await
+            .is_err(),
+        "D5 Repository trees overlap"
+    );
+    for index in 0..2 {
+        assert_eq!(
+            registry
+                .find_repository(
+                    "workspace",
+                    &format!("profiled:{overlapping_session}:repository:{index}"),
+                )
+                .expect("D5 inventory"),
+            None,
+            "D5 no Registry effect"
+        );
+    }
+    assert_eq!(
+        repository_repo.get(overlapping_session).await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound),
+        "D5 no root"
+    );
+    assert_eq!(
+        repository_runtime.baseline_installs.load(Ordering::SeqCst),
+        2,
+        "D5 no additional phase projection install"
+    );
+    assert_eq!(
+        repository_runtime.preparations.load(Ordering::SeqCst),
+        1,
+        "D5 no additional physical preparation"
     );
 }
 
@@ -1505,11 +1624,16 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     // admitted. Causes: C1 profile exists, C2 Agent available, C3 requested model
     // absent/equal, C4 requested model differs, C5 complete local inputs are
     // supplied up front, C6 Agent and Session MCP candidates are distinct or
-    // overlap by name, C7 equal-origin names conflict, and C8 direct resources
-    // are none/valid/collide with Agent/collide with Repository. Effects: E1 freeze the
-    // published execution identity and local inputs, E2 reject without a row, E3
-    // retain Agent-only and Session-only MCP while Session overrides Agent by
-    // logical name. Graph: C1&&C2&&C3&&C5&&C6 -> E1+E3; C4||!C2||C7 -> E2.
+    // overlap by name, C7 equal-origin names conflict, C8 direct resources are
+    // none/valid/collide with an Agent final path/share authored spelling with
+    // a Repository but project disjointly, and C9 final Repository trees
+    // overlap. Effects: E1 freeze the published execution identity and local
+    // inputs, E2 reject without a row, E3 retain Agent-only and Session-only MCP
+    // while Session overrides Agent by logical name, E4 admit the final-path
+    // disjoint pair through two phase projection installs and one physical
+    // preparation, and E5 reject final Repository overlap before effects.
+    // Graph: C1&&C2&&C3&&C5&&C6 -> E1+E3; C4||!C2||C7 -> E2;
+    // C8(projected disjoint) -> E4; C9 -> E5.
     //
     // | Rule | Profile | Available | Requested model | Product MCP | Effect |
     // |---|---|---|---|---|---|
@@ -1520,7 +1644,8 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     // | D1 | yes | yes | absent/equal | no direct resource | existing P1-P4 semantics |
     // | D2 | yes | yes | absent/equal | valid direct File | original rev1 root contains File |
     // | D3 | yes | yes | absent/equal | direct collides Agent | E2 before root/effect |
-    // | D4 | yes | yes | absent/equal | direct collides Repository | E2 before registry/root/effect |
+    // | D4 | yes | yes | absent/equal | File/Repository spelling projects disjointly | E4: admit; 2 installs/1 prepare |
+    // | D5 | yes | yes | absent/equal | Repository final trees overlap | E5 before registry/root/effect |
     //
     // Each cause/effect partition owns a separate boxed future. This keeps the
     // test's large, deeply composed Session values out of one aggregate async

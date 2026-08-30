@@ -11,6 +11,7 @@ authority = "resource-worker-http"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-run-ingress-contract.workspace = true
 awaken-session-contract.workspace = true

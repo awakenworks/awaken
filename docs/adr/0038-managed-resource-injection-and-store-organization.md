@@ -59,6 +59,19 @@ capability kernel, a two-plane crate split) until distribution forces each.
   pin, and never echoes material or the internal binding.
 - **memory-stores** is an independent API `/v1/memory_stores` (id `memstore_…`).
 
+The aligned Managed schema permits an explicit GitHub Repository `mount_path`;
+`/workspace/<repo>` is only its default, not a protocol restriction. Awaken's
+current *substitutable provider profile* has a narrower, explicit realization
+capability: Repository working-tree continuity is guaranteed only for one
+canonical child of `/workspace`. New Session resolution and Resource Manifest
+replacement therefore return a client error before Repository/Vault/Git effects
+for `/repo`, a relative path, aliases, traversal, or cross-platform separator
+forms. Historical aggregates retain their exact durable value and fingerprint,
+but runtime admission rejects an unsupported value before environment/Git
+realization. No layer rewrites `/repo` into `/workspace/repo`. Widening this
+profile requires Namespace and every Container/checkpoint/continuation backend
+to preserve the same exact path; it is not an adapter-local normalization.
+
 ## Decision
 
 ### D1: Three store aggregates, never one `ResourceStore`

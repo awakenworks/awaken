@@ -29,8 +29,6 @@ mod control;
 use control::ContainerControlPublicationRegistry;
 mod cgroup;
 mod egress;
-mod environment_owned;
-use environment_owned::EnvironmentOwnedProcess;
 mod files;
 mod live_inputs;
 mod packages;
@@ -42,28 +40,57 @@ use process_env::environment_keepalive_command;
 pub use process_env::runtime_configuration_homes;
 mod recovery;
 mod resident_hand;
+mod restore_target;
 mod runtime;
 mod secret;
 mod writable;
 pub use cgroup::CgroupCaps;
 pub use egress::{
-    AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, ForwardProxy, NetworkMode,
-    egress_plan, egress_plan_with_allowlist, normalize_hostname,
+    AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
+    ForwardProxy, NetworkMode, egress_plan, egress_plan_with_allowlist, normalize_hostname,
 };
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
-    AgentContainerProvider, AgentContainerSession, ContainerEnvironment,
-    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, EnvironmentFile,
+    ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
+    ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
+    ContainerRealizationContext, ContainerRealizationIntent, ContainerRealizationNamespace,
+    EnvironmentFile,
 };
 pub use resident_hand::ResidentHandConfig;
+#[cfg(any(test, feature = "docker", feature = "podman"))]
+use restore_target::remove_host_staging_path;
+pub(crate) use restore_target::restoration_plan_fingerprint;
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) use restore_target::restore_container_name;
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) use restore_target::{
+    RESTORE_PLAN_LABEL, restoration_evidence_from_metadata, restoration_metadata,
+};
+use restore_target::{restoration_runtime_scope, retained_host_staging};
 pub use runtime::{
     ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
     RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
-use runtime::{allowlist_capability_advertised, container_capabilities};
+pub(crate) use runtime::{MANAGED_SANDBOX_LABEL, runtime_owner_id};
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+pub(crate) use runtime::{
+    RUNTIME_OWNER_LABEL, SANDBOX_ATTEMPT_LABEL, container_effect_fence_from_values,
+    sandbox_scope_identity,
+};
+#[cfg(any(feature = "docker", feature = "podman"))]
+pub(crate) use runtime::{
+    SANDBOX_ADOPTION_LABEL, SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL,
+    SANDBOX_EFFECT_LABEL, SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL,
+    SANDBOX_REALIZATION_LABEL, SANDBOX_SCOPE_LABEL, container_effect_label_values,
+    runtime_container_name,
+};
+use runtime::{
+    allowlist_capability_advertised, container_adoption_fingerprint, container_capabilities,
+    container_realization_fingerprint, container_runtime_unix_now_ms,
+};
 pub use secret::SecretBytes;
 pub use writable::{
     checkpoint_writable_roots, checkpoint_writable_roots_from_output_path,
@@ -112,6 +139,7 @@ pub struct ContainerPlan {
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
     pub outputs_volume: String,
     pub network: NetworkMode,
+    pub egress_identity: EgressRealizationIdentity,
     pub requests: pc::ResourceRequests,
     pub limits: pc::ResourceLimits,
     /// Exact writable-filesystem lifecycle requested by the neutral spec.
@@ -201,6 +229,13 @@ mod planner_tests {
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: NetworkMode::None,
+            egress_identity: EgressRealizationIdentity {
+                network: NetworkMode::None,
+                proxy_endpoint: None,
+                capability_ttl_secs: None,
+                issuer_revision: None,
+                ephemeral_capability: false,
+            },
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits {
                 cpu_millis: Some(1500),
@@ -383,9 +418,6 @@ impl StagingGuard {
         &self.path
     }
 
-    /// A restored physical target outlives this process-local wrapper. Its
-    /// staging directory is removed only by explicit terminal disposal after a
-    /// replacement provider has re-observed the same runtime handle.
     fn retain_for_restoration(&mut self) {
         self.remove_on_drop = false;
     }
@@ -413,8 +445,104 @@ impl Drop for StagingGuard {
 #[derive(Debug)]
 struct SecretWriteback {
     reference: String,
-    staged_path: std::path::PathBuf,
+    /// Host-bind runtimes harvest from the live container first and may fall
+    /// back to their exact staged file. Native runtimes never create that
+    /// redundant plaintext copy and therefore have no fallback path.
+    staged_path: Option<std::path::PathBuf>,
     mount_path: String,
+}
+
+/// One frozen Memory projection reused by first materialization and cold
+/// terminal reconciliation. It contains only Resource-owned coordinates from
+/// the SandboxSpec; runtime bytes and mount handles remain effect-scoped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MemoryProjection {
+    store_id: String,
+    store_reference: String,
+    mount_path: String,
+    access: pc::MountAccess,
+    write_consistency: pc::MemoryWriteConsistency,
+}
+
+fn memory_projections(spec: &pc::SandboxSpec) -> Vec<MemoryProjection> {
+    spec.mounts
+        .iter()
+        .filter_map(|mount| match &mount.source {
+            pc::MountSource::MemoryStore {
+                store_id,
+                materialization_reference,
+                write_consistency,
+            } => Some(MemoryProjection {
+                store_id: store_id.clone(),
+                store_reference: materialization_reference
+                    .as_deref()
+                    .unwrap_or(store_id)
+                    .to_owned(),
+                mount_path: mount.mount_path.clone(),
+                access: mount.access,
+                write_consistency: *write_consistency,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn validated_recovered_memory_projections(
+    spec: &pc::SandboxSpec,
+    handle: &pc::SandboxHandle,
+) -> Result<Vec<MemoryProjection>, pc::SandboxError> {
+    let projections = memory_projections(spec);
+    let materializations = handle.memory_materializations()?;
+    if projections.is_empty() {
+        if materializations.is_some_and(|materializations| !materializations.is_empty()) {
+            return Err(pc::SandboxError::new(
+                "container handle carries Memory evidence absent from the frozen specification",
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let materializations = materializations.ok_or_else(|| {
+        pc::SandboxError::new(
+            "legacy container handle cannot reconstruct copy-backed Memory participants",
+        )
+    })?;
+    if materializations.len() != projections.len() {
+        return Err(pc::SandboxError::new(
+            "container Memory evidence does not exactly cover the frozen specification",
+        ));
+    }
+    projections
+        .into_iter()
+        .map(|projection| {
+            let materialization = materializations
+                .iter()
+                .find(|materialization| {
+                    materialization.store_id == projection.store_id
+                        && materialization.mount_path == projection.mount_path
+                })
+                .ok_or_else(|| {
+                    pc::SandboxError::new(
+                        "container Memory evidence differs from the frozen specification",
+                    )
+                })?;
+            materialization.validate()?;
+            Ok(projection)
+        })
+        .collect()
+}
+
+fn secret_writeback_projection(mount: &pc::MountRequirement) -> Option<SecretWriteback> {
+    if !mount.is_secret_writeback() {
+        return None;
+    }
+    let pc::MountSource::Secret { reference, .. } = &mount.source else {
+        return None;
+    };
+    Some(SecretWriteback {
+        reference: reference.clone(),
+        staged_path: None,
+        mount_path: mount.mount_path.clone(),
+    })
 }
 
 #[derive(Default)]
@@ -429,8 +557,39 @@ struct StagedMemoryMount {
     host_path: std::path::PathBuf,
     mount_path: String,
     access: pc::MountAccess,
+    materialization: Option<pc::MemoryMaterializationEvidence>,
     native_runtime_volume: bool,
     writeback_prepared: bool,
+}
+
+impl StagedMounts {
+    /// Tear down every effect-scoped Memory participant after the runtime has
+    /// proved that no backend object was committed. A single failed teardown
+    /// must not prevent the remaining independent handles from being tried.
+    async fn teardown_memory_after_definite_no_backend_effect(
+        &self,
+    ) -> Result<(), pc::SandboxError> {
+        let mut first_error = None;
+        for mount in &self.memory {
+            if let Err(error) = mount.handle.teardown().await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Preserve process-local participant ownership after an ambiguous backend
+    /// mutation or a failed explicit teardown. Docker/Podman host binds and
+    /// Memory mount handles cannot be reconstructed by a later process, so
+    /// dropping either here could break a physical object that actually
+    /// committed or erase the only retryable cleanup handle. This intentionally
+    /// trades liveness/capacity for safety; the shared CurrentAttemptOnly kernel
+    /// keeps later processes fail-closed instead of claiming recovery.
+    fn retain_participants_without_cleanup(self) {
+        std::mem::forget(self);
+    }
 }
 
 impl std::fmt::Debug for StagedMounts {
@@ -443,6 +602,25 @@ impl std::fmt::Debug for StagedMounts {
     }
 }
 
+async fn reject_unaccepted_memory_mount(
+    handle: Box<dyn pc::MemoryMount>,
+    cause: pc::SandboxError,
+) -> pc::SandboxError {
+    match handle.teardown().await {
+        Ok(()) => cause,
+        Err(cleanup_error) => {
+            // `MemoryMount::teardown` is retryable by contract. If it fails,
+            // dropping the only handle would silently convert a cleanup error
+            // into leaked/unknown physical state; retain it for process-lifetime
+            // safety just like an ambiguous backend participant.
+            std::mem::forget(handle);
+            pc::SandboxError::new(format!(
+                "{cause}; Memory participant cleanup failed: {cleanup_error}"
+            ))
+        }
+    }
+}
+
 async fn stage_memory_binds(
     spec: &pc::SandboxSpec,
     plan: &mut ContainerPlan,
@@ -450,84 +628,98 @@ async fn stage_memory_binds(
     mounter: Option<Arc<dyn pc::MemoryMounter>>,
     native_runtime_volume: bool,
 ) -> Result<(), pc::SandboxError> {
-    let memory: Vec<_> = spec
-        .mounts
-        .iter()
-        .filter_map(|mount| match &mount.source {
-            pc::MountSource::MemoryStore {
-                store_id,
-                materialization_reference,
-                write_consistency,
-            } => Some((
-                mount,
-                store_id,
-                materialization_reference,
-                write_consistency,
-            )),
-            _ => None,
-        })
-        .collect();
+    let memory = memory_projections(spec);
     if memory.is_empty() {
         return Ok(());
     }
     let mounter = mounter
         .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
     let root = staging_dir(&mut staged.guard, &spec.scope)?;
-    for (mount, store_id, materialization_reference, write_consistency) in memory {
-        let host_path = root.join(format!("memory-{}", stage_name(&mount.mount_path)));
+    for projection in memory {
+        let host_path = root.join(format!("memory-{}", stage_name(&projection.mount_path)));
         let handle = mounter
-            .mount(
-                materialization_reference.as_deref().unwrap_or(store_id),
-                &host_path,
-                mount.access,
-            )
+            .mount(&projection.store_reference, &host_path, projection.access)
             .await?;
-        if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-            && handle.realization() != pc::Realization::Fuse
+        let realization = handle.realization();
+        let materialization = match realization {
+            pc::Realization::Copy => {
+                let Some(heads) = handle.materialization_heads() else {
+                    return Err(reject_unaccepted_memory_mount(
+                        handle,
+                        pc::SandboxError::new(
+                            "copy-backed Memory mount omitted its original durable heads",
+                        ),
+                    )
+                    .await);
+                };
+                let evidence = pc::MemoryMaterializationEvidence::new(
+                    projection.store_id.clone(),
+                    projection.mount_path.clone(),
+                    heads,
+                );
+                match evidence {
+                    Ok(evidence) => Some(evidence),
+                    Err(error) => {
+                        return Err(reject_unaccepted_memory_mount(handle, error).await);
+                    }
+                }
+            }
+            pc::Realization::Fuse => None,
+            _ => {
+                return Err(reject_unaccepted_memory_mount(
+                    handle,
+                    pc::SandboxError::new("MemoryStore mount returned an unsupported realization"),
+                )
+                .await);
+            }
+        };
+        if projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+            && realization != pc::Realization::Fuse
         {
-            handle.teardown().await;
-            return Err(pc::SandboxError::new(
-                "MemoryStore mount requires write-through FUSE realization",
-            ));
+            return Err(reject_unaccepted_memory_mount(
+                handle,
+                pc::SandboxError::new("MemoryStore mount requires write-through FUSE realization"),
+            )
+            .await);
         }
-        if native_runtime_volume && handle.realization() != pc::Realization::Copy {
-            handle.teardown().await;
-            return Err(pc::SandboxError::new(
-                "remote container Memory volume requires a copy-capable MemoryMounter",
-            ));
+        if native_runtime_volume && realization != pc::Realization::Copy {
+            return Err(reject_unaccepted_memory_mount(
+                handle,
+                pc::SandboxError::new(
+                    "remote container Memory volume requires a copy-capable MemoryMounter",
+                ),
+            )
+            .await);
         }
         #[cfg(unix)]
-        if let Err(error) = make_memory_tree_accessible(&host_path, mount.access) {
-            handle.teardown().await;
-            return Err(error);
+        if let Err(error) = make_memory_tree_accessible(&host_path, projection.access) {
+            return Err(reject_unaccepted_memory_mount(handle, error).await);
         }
         if native_runtime_volume {
             let snapshot_tar = match memory_snapshot_tar(&host_path) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    handle.teardown().await;
-                    return Err(error);
+                    return Err(reject_unaccepted_memory_mount(handle, error).await);
                 }
             };
             let planned = plan
                 .memory_mounts
                 .iter_mut()
-                .find(|planned| planned.mount_path == mount.mount_path)
+                .find(|planned| planned.mount_path == projection.mount_path)
                 .ok_or_else(|| pc::SandboxError::new("Memory mount disappeared from plan"));
             let planned = match planned {
                 Ok(planned) => planned,
                 Err(error) => {
-                    handle.teardown().await;
-                    return Err(error);
+                    return Err(reject_unaccepted_memory_mount(handle, error).await);
                 }
             };
             planned.snapshot_tar = snapshot_tar;
-            planned.access = mount.access;
+            planned.access = projection.access;
         } else {
             plan.binds.push(BindPlan {
                 source_ref: host_path.to_string_lossy().into_owned(),
-                mount_path: mount.mount_path.clone(),
-                read_only: mount.access == pc::MountAccess::ReadOnly,
+                mount_path: projection.mount_path.clone(),
+                read_only: projection.access == pc::MountAccess::ReadOnly,
                 content: None,
                 content_bytes: None,
                 secret_content: None,
@@ -538,8 +730,9 @@ async fn stage_memory_binds(
         staged.memory.push(StagedMemoryMount {
             handle,
             host_path,
-            mount_path: mount.mount_path.clone(),
-            access: mount.access,
+            mount_path: projection.mount_path,
+            access: projection.access,
+            materialization,
             native_runtime_volume,
             writeback_prepared: false,
         });
@@ -804,8 +997,9 @@ async fn resolve_blob(
 }
 
 /// Resolve + materialize every mount's bytes for the container. Self-contained
-/// content ships as-is; reference sources resolve through [`resolve_blob`]. Bytes
-/// are staged for Docker/Podman or Kubernetes; required misses fail closed.
+/// content ships as-is; reference sources resolve through [`resolve_blob`].
+/// Docker/Podman stage one host bind, while native Kubernetes projects the
+/// resolved bytes directly from the plan. Required misses fail closed.
 async fn resolve_and_stage(
     spec: &pc::SandboxSpec,
     binds: &mut [BindPlan],
@@ -813,6 +1007,7 @@ async fn resolve_and_stage(
     store: &Option<Arc<dyn pc::BlobSource>>,
     secret_broker: &Option<Arc<dyn pc::SecretBroker>>,
     persistent_volume_claims: bool,
+    host_bind_materialization: bool,
 ) -> Result<StagedMounts, pc::SandboxError> {
     use std::collections::HashMap;
     let by_path: HashMap<&str, &pc::MountRequirement> = spec
@@ -871,15 +1066,10 @@ async fn resolve_and_stage(
                 _ => continue,
             }
         };
-        // 2. Stage the bytes to a host file the docker/podman tier binds. A native
-        // credential gets a whole writable config-directory bind: CLIs keep transient
-        // state beside auth.json, and Docker cannot write a nested file bind beneath a
-        // tmpfs parent. Only the credential file is harvested below.
-        let dir = staging_dir(&mut guard, &spec.scope)?;
         let original_mount_path = bind.mount_path.clone();
         let mount = by_path.get(original_mount_path.as_str()).copied();
         let directory_bind = mount.is_some_and(pc::MountRequirement::is_secret_writeback);
-        let (host_file, host_config_dir, config_mount_path) = if directory_bind {
+        let config_mount_path = if directory_bind {
             let (parent, filename) = original_mount_path.rsplit_once('/').ok_or_else(|| {
                 err(RuntimeError::Backend(format!(
                     "credential mount needs an absolute file path: {original_mount_path}"
@@ -890,57 +1080,64 @@ async fn resolve_and_stage(
                     "credential mount needs a non-root parent and filename: {original_mount_path}"
                 ))));
             }
-            let config_dir = dir.join(format!("credential-{}", stage_name(&original_mount_path)));
-            std::fs::create_dir(&config_dir)
-                .map_err(|e| err(RuntimeError::Backend(format!("stage credential dir: {e}"))))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                // The random outer directory is 0700; this inner directory may be writable
-                // by the image-defined UID without exposing its contents to host users.
-                std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o777))
-                    .map_err(|e| {
+            Some((parent.to_string(), filename.to_string()))
+        } else {
+            None
+        };
+        let staged_path = if host_bind_materialization {
+            // Docker/Podman bind the host file. A writable native credential
+            // receives a directory bind so the CLI may keep transient state
+            // beside the credential file.
+            let dir = staging_dir(&mut guard, &spec.scope)?;
+            let (host_file, host_source) = if let Some((parent, filename)) = &config_mount_path {
+                let config_dir =
+                    dir.join(format!("credential-{}", stage_name(&original_mount_path)));
+                std::fs::create_dir(&config_dir).map_err(|e| {
+                    err(RuntimeError::Backend(format!("stage credential dir: {e}")))
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o777))
+                        .map_err(|e| {
                         err(RuntimeError::Backend(format!("secure credential dir: {e}")))
                     })?;
+                }
+                bind.mount_path = parent.clone();
+                bind.credential_file_path = Some(original_mount_path.clone());
+                (config_dir.join(filename), config_dir)
+            } else {
+                let host_file = dir.join(stage_name(&original_mount_path));
+                (host_file.clone(), host_file)
+            };
+            std::fs::write(&host_file, &bytes)
+                .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
+            #[cfg(unix)]
+            if mount.is_some_and(|mount| mount.access == pc::MountAccess::ReadWrite) {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o666))
+                    .map_err(|e| {
+                        err(RuntimeError::Backend(format!("secure writable mount: {e}")))
+                    })?;
             }
-            (
-                config_dir.join(filename),
-                Some(config_dir),
-                Some(parent.to_string()),
-            )
+            bind.source_ref = host_source.to_string_lossy().into_owned();
+            Some(host_file)
         } else {
-            (dir.join(stage_name(&original_mount_path)), None, None)
+            // Kubernetes projects the bytes from the plan. Preserve only the
+            // logical writable-directory projection needed by the Pod builder;
+            // no host path participates in this realization.
+            if let Some((parent, _)) = &config_mount_path {
+                bind.mount_path = parent.clone();
+                bind.credential_file_path = Some(original_mount_path.clone());
+            }
+            None
         };
-        std::fs::write(&host_file, &bytes)
-            .map_err(|e| err(RuntimeError::Backend(format!("stage mount content: {e}"))))?;
-        #[cfg(unix)]
-        if mount.is_some_and(|mount| mount.access == pc::MountAccess::ReadWrite) {
-            use std::os::unix::fs::PermissionsExt;
-            // Docker/Podman images deliberately run as non-root with an image-defined UID
-            // that is not known to the host. The private 0700 parent prevents host users
-            // from reaching this per-session file; 0666 lets the sandboxed UID honor the
-            // neutral ReadWrite contract (resource/memory write-back and OAuth refresh).
-            std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o666))
-                .map_err(|e| err(RuntimeError::Backend(format!("secure writable mount: {e}"))))?;
-        }
-        bind.source_ref = host_config_dir
-            .as_ref()
-            .unwrap_or(&host_file)
-            .to_string_lossy()
-            .into_owned();
-        if let Some(config_mount_path) = config_mount_path {
-            bind.mount_path = config_mount_path;
+        if config_mount_path.is_some() && bind.credential_file_path.is_none() {
             bind.credential_file_path = Some(original_mount_path.clone());
         }
-        if let Some(mount) = mount
-            && mount.is_secret_writeback()
-            && let pc::MountSource::Secret { reference, .. } = &mount.source
-        {
-            secret_writebacks.push(SecretWriteback {
-                reference: reference.clone(),
-                staged_path: host_file.clone(),
-                mount_path: mount.mount_path.clone(),
-            });
+        if let Some(mut writeback) = mount.and_then(secret_writeback_projection) {
+            writeback.staged_path = staged_path;
+            secret_writebacks.push(writeback);
         }
         // 3. For the k8s tier: record the bytes so `build_pod` projects a ConfigMap — UTF-8
         // as `content` (ConfigMap `data`), otherwise as `content_bytes` (ConfigMap
@@ -999,16 +1196,13 @@ fn inline_content_of(source: &pc::MountSource) -> Option<String> {
 /// container tier realizes each through the canonical MemoryMounter and either a
 /// host bind or a runtime-native seeded volume.
 fn memory_mounts_of(spec: &pc::SandboxSpec) -> Vec<MemoryMount> {
-    spec.mounts
-        .iter()
-        .filter_map(|m| match &m.source {
-            pc::MountSource::MemoryStore { store_id, .. } => Some(MemoryMount {
-                store_id: store_id.clone(),
-                mount_path: m.mount_path.clone(),
-                access: m.access,
-                snapshot_tar: Vec::new(),
-            }),
-            _ => None,
+    memory_projections(spec)
+        .into_iter()
+        .map(|projection| MemoryMount {
+            store_id: projection.store_id,
+            mount_path: projection.mount_path,
+            access: projection.access,
+            snapshot_tar: Vec::new(),
         })
         .collect()
 }
@@ -1081,6 +1275,7 @@ fn container_plan_with_allowlist(
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
         network: egress.network,
+        egress_identity: egress.identity,
         requests: spec.requests.clone(),
         limits: spec.limits.clone(),
         filesystem_continuity: spec.filesystem_continuity,
@@ -1089,484 +1284,12 @@ fn container_plan_with_allowlist(
     })
 }
 
-/// Stable label every managed Sandbox container/pod carries. The wire value is
-/// retained for compatibility with existing resources; it is discovery evidence,
-/// never disposal authorization.
-pub(crate) const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
-/// Identifies the runtime incarnation that currently owns a container. It fences
-/// realization/adoption only and cannot authorize garbage collection.
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RUNTIME_OWNER_LABEL: &str = "awaken.sandbox.owner";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_EFFECT_LABEL: &str = "awaken.sandbox.restore.effect";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_GENERATION_LABEL: &str = "awaken.sandbox.restore.generation";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_CHECKPOINT_LABEL: &str = "awaken.sandbox.restore.checkpoint";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_CHECKPOINT_DIGEST_LABEL: &str = "awaken.sandbox.restore.checkpoint-digest";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_SPEC_LABEL: &str = "awaken.sandbox.restore.spec";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_EXCLUSIONS_LABEL: &str = "awaken.sandbox.restore.exclusions";
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const RESTORE_PLAN_LABEL: &str = "awaken.sandbox.restore.plan";
-
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn restoration_metadata(
-    evidence: &pc::SandboxRestorationEvidence,
-) -> [(&'static str, &str); 6] {
-    [
-        (RESTORE_EFFECT_LABEL, evidence.effect_id()),
-        (RESTORE_GENERATION_LABEL, evidence.generation_id()),
-        (RESTORE_CHECKPOINT_LABEL, evidence.checkpoint_id()),
-        (
-            RESTORE_CHECKPOINT_DIGEST_LABEL,
-            evidence.checkpoint_digest(),
-        ),
-        (RESTORE_SPEC_LABEL, evidence.sandbox_spec_fingerprint()),
-        (
-            RESTORE_EXCLUSIONS_LABEL,
-            evidence.checkpoint_exclusions_fingerprint(),
-        ),
-    ]
-}
-
-/// Stable secret-free fingerprint of the complete pre-materialization runtime
-/// plan. It is calculated before Blob/Secret/Memory resolution and passed
-/// unchanged to the substrate, so a read-first retry can verify immutable
-/// realization without reopening any external source.
-pub(crate) fn restoration_plan_fingerprint(plan: &ContainerPlan) -> String {
-    let mut canonical = plan.clone();
-    // Docker/Podman add this exact provider-owned locator only after the
-    // read-first fingerprint is frozen. Its host source is preserved and
-    // verified through the durable continuation handle instead.
-    canonical
-        .binds
-        .retain(|bind| bind.mount_path != LIVE_INPUTS_ROOT);
-    // Package resolution deterministically replaces only the image reference;
-    // the complete package demand and original base image remain bound by the
-    // SandboxSpec evidence. Normalizing that derived reference lets a fresh
-    // provider verify the same logical plan before reopening the image source.
-    if !canonical.packages.is_empty() {
-        canonical.image = "<awaken-package-derived-image>".into();
-        if matches!(canonical.rootfs, RootfsPlan::Image(_)) {
-            canonical.rootfs = RootfsPlan::Image("<awaken-package-derived-image>".into());
-        }
-    }
-    blake3::hash(format!("container-restore-plan-v1\0{canonical:?}").as_bytes())
-        .to_hex()
-        .to_string()
-}
-
-/// Decode the one canonical restore-evidence tuple from substrate metadata.
-/// All four fields are one atomic identity: an object with a partial tuple is
-/// corrupt and must never be adopted as either an ordinary or restored target.
-#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) fn restoration_evidence_from_metadata(
-    mut value: impl FnMut(&str) -> Option<String>,
-    substrate: &str,
-) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
-    let effect_id = value(RESTORE_EFFECT_LABEL);
-    let generation_id = value(RESTORE_GENERATION_LABEL);
-    let checkpoint_id = value(RESTORE_CHECKPOINT_LABEL);
-    let checkpoint_digest = value(RESTORE_CHECKPOINT_DIGEST_LABEL);
-    let sandbox_spec_fingerprint = value(RESTORE_SPEC_LABEL);
-    let checkpoint_exclusions_fingerprint = value(RESTORE_EXCLUSIONS_LABEL);
-    match (
-        effect_id,
-        generation_id,
-        checkpoint_id,
-        checkpoint_digest,
-        sandbox_spec_fingerprint,
-        checkpoint_exclusions_fingerprint,
-    ) {
-        (None, None, None, None, None, None) => Ok(None),
-        (
-            Some(effect_id),
-            Some(generation_id),
-            Some(checkpoint_id),
-            Some(checkpoint_digest),
-            Some(sandbox_spec_fingerprint),
-            Some(checkpoint_exclusions_fingerprint),
-        ) => pc::SandboxRestorationEvidence::from_exact_parts(
-            effect_id,
-            generation_id,
-            checkpoint_id,
-            checkpoint_digest,
-            sandbox_spec_fingerprint,
-            checkpoint_exclusions_fingerprint,
-        )
-        .map(Some)
-        .map_err(|error| RuntimeError::Backend(error.to_string())),
-        _ => Err(RuntimeError::Backend(format!(
-            "{substrate} has incomplete restore evidence"
-        ))),
-    }
-}
-
-fn retained_host_staging(
-    handle: Option<&pc::ContainerContinuationHandle>,
-) -> Result<Option<StagingGuard>, RuntimeError> {
-    let Some(pc::ContainerContinuationHandle::HostBindRestoration(locator)) = handle else {
-        return Ok(None);
-    };
-    retained_host_staging_path(std::path::PathBuf::from(locator.staging_root())).map(Some)
-}
-
-fn retained_host_staging_path(path: std::path::PathBuf) -> Result<StagingGuard, RuntimeError> {
-    validate_host_staging_path(&path)?;
-    let metadata = std::fs::symlink_metadata(&path)
-        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(RuntimeError::Backend(
-            "restored host-bind staging locator is not a physical directory".into(),
-        ));
-    }
-    Ok(StagingGuard::retained(path))
-}
-
-fn validate_host_staging_path(path: &std::path::Path) -> Result<(), RuntimeError> {
-    let provider_temp = std::env::temp_dir();
-    let trusted_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("awaken-acp-stage-"));
-    if path.parent() != Some(provider_temp.as_path()) || !trusted_name {
-        return Err(RuntimeError::Backend(
-            "restored host-bind staging locator is outside the provider staging namespace".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// Remove one daemon-observed host-bind locator without requiring it to have
-/// survived a Host reboot. Namespace validation precedes any filesystem effect;
-/// a symlink is unlinked as an object and is never followed.
-#[cfg(any(test, feature = "docker", feature = "podman"))]
-fn remove_host_staging_path(path: &std::path::Path) -> Result<(), RuntimeError> {
-    validate_host_staging_path(path)?;
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            std::fs::remove_dir_all(path).map_err(|error| RuntimeError::Backend(error.to_string()))
-        }
-        Ok(_) => {
-            std::fs::remove_file(path).map_err(|error| RuntimeError::Backend(error.to_string()))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(RuntimeError::Backend(error.to_string())),
-    }
-}
-
-pub(crate) fn runtime_owner_id() -> String {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{}-{epoch}-{sequence}", std::process::id())
-}
-
-/// Stable runtime namespace for one exact restore effect. Unlike ordinary
-/// Docker/Podman placement it deliberately excludes the process-local runtime
-/// owner, so a replacement provider instance resolves the same physical target.
-fn restoration_runtime_scope(
-    evidence: &pc::SandboxRestorationEvidence,
-) -> Result<String, pc::SandboxError> {
-    evidence.physical_target_key()
-}
-
-/// A daemon-global container name. Session/thread ids are only unique inside one
-/// host, while Docker and Podman names share a daemon namespace across hosts and CI
-/// processes. Prefix the readable scope with the runtime-owner fingerprint so two
-/// valid `sesn_0` executions cannot collide. The durable sandbox identity remains
-/// the original scope; this is only an adapter-local runtime name.
-#[cfg(any(feature = "docker", feature = "podman"))]
-pub(crate) fn runtime_container_name(owner_id: &str, scope: &str) -> String {
-    let owner = blake3::hash(owner_id.as_bytes()).to_hex();
-    let scope = stage_name(scope);
-    let scope = &scope[..scope.len().min(80)];
-    format!("awaken-{}-{scope}", &owner[..16])
-}
-
-#[cfg(any(feature = "docker", feature = "podman"))]
-pub(crate) fn restore_container_name(scope: &str) -> String {
-    let identity = blake3::hash(scope.as_bytes()).to_hex();
-    format!("awaken-restore-{identity}")
-}
-
 fn err(e: RuntimeError) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
 }
 
-// ── Provider + Sandbox over the port ────────────────────────────────────────────
-
-/// Realizes [`pc::Sandbox`]es on a [`ContainerRuntime`].
-pub struct ContainerProvider<R: ContainerRuntime> {
-    runtime: Arc<R>,
-    package_provisioner: Option<Arc<dyn PackageImageProvisioner>>,
-    default_image: String,
-    /// Optional connectivity proxy for unrestricted traffic. It is never treated
-    /// as network-policy enforcement.
-    forward_proxy: Option<ForwardProxy>,
-    /// Capability issuer plus proxy coordinate. Presence is not enough to
-    /// advertise support: the runtime must independently attest that direct
-    /// workload egress cannot bypass this proxy.
-    allowlist_proxy: Option<AllowlistProxy>,
-    /// In-memory blob seed for `File`/`Resource`/`Secret` mounts (keyed by content id),
-    /// consulted before the store — the test/seed path, mirroring `LocalProvider`.
-    blobs: Arc<std::collections::HashMap<String, Vec<u8>>>,
-    /// The injected content-addressed store consulted after the seed. The worker tier
-    /// links no durable store (A-G17); the composition root injects an adapter over the
-    /// resources-tier content store, so a `File`/`Resource` id resolves to real bytes.
-    file_store: Option<Arc<dyn pc::BlobSource>>,
-    /// Bidirectional broker used only for `MountSource::Secret`; durable writable
-    /// mounts are committed through it after the agent process exits.
-    secret_broker: std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>,
-    /// Neutral MemoryStore projection injected by the composition root. Interior
-    /// mutability lets an already-shared provider receive the platform adapter.
-    memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
-    resident_hand: Option<ResidentHandConfig>,
-}
-
-impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
-    fn runtime_sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        container_capabilities(
-            self.runtime.enforces_network_none(),
-            allowlist_capability_advertised(
-                self.runtime.enforces_network_allowlist(),
-                self.allowlist_proxy.is_some(),
-            ),
-            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
-            self.runtime.sandbox_control_services(),
-        )
-    }
-
-    async fn probe_runtime_ready(&self) -> Result<(), pc::SandboxError> {
-        self.runtime.probe_ready().await.map_err(err)
-    }
-
-    pub fn new(runtime: Arc<R>, default_image: impl Into<String>) -> Self {
-        Self {
-            runtime,
-            package_provisioner: None,
-            default_image: default_image.into(),
-            forward_proxy: None,
-            allowlist_proxy: None,
-            blobs: Arc::new(std::collections::HashMap::new()),
-            file_store: None,
-            secret_broker: std::sync::RwLock::new(None),
-            memory_mounter: std::sync::RwLock::new(None),
-            resident_hand: None,
-        }
-    }
-
-    /// Make the existing Hand the Session container's resident process. This is
-    /// mutually exclusive with attached-exec Hand launch at the Runtime Host.
-    #[must_use]
-    pub fn with_resident_hand(mut self, config: ResidentHandConfig) -> Self {
-        self.resident_hand = Some(config);
-        self
-    }
-
-    pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        *self
-            .memory_mounter
-            .write()
-            .expect("container memory mounter lock poisoned") = Some(mounter);
-    }
-
-    /// Configure a conventional forward proxy for unrestricted traffic.
-    #[must_use]
-    pub fn with_forward_proxy(mut self, proxy: ForwardProxy) -> Self {
-        self.forward_proxy = Some(proxy);
-        self
-    }
-
-    #[must_use]
-    pub fn with_allowlist_proxy(mut self, proxy: AllowlistProxy) -> Self {
-        self.allowlist_proxy = Some(proxy);
-        self
-    }
-
-    /// Use an independent image builder/publisher. This is required when the
-    /// execution runtime cannot build images itself (for example Kubernetes).
-    #[must_use]
-    pub fn with_package_provisioner(
-        mut self,
-        provisioner: Arc<dyn PackageImageProvisioner>,
-    ) -> Self {
-        self.package_provisioner = Some(provisioner);
-        self
-    }
-
-    /// Register bytes a `File`/`Resource`/`Secret` mount can resolve to by content id
-    /// (test/seed helper, mirroring `LocalProvider::with_blob`).
-    #[must_use]
-    pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
-        Arc::make_mut(&mut self.blobs).insert(id.into(), bytes.into());
-        self
-    }
-
-    /// Inject the content-addressed store consulted after the seed map, so `File` /
-    /// `Resource` / `Secret` mounts resolve their bytes by id at `create` (A-G17: the
-    /// provider names no durable store; it holds only this `BlobSource` port).
-    #[must_use]
-    pub fn with_blob_source(mut self, store: Arc<dyn pc::BlobSource>) -> Self {
-        self.file_store = Some(store);
-        self
-    }
-
-    #[must_use]
-    pub fn with_secret_broker(self, broker: Arc<dyn pc::SecretBroker>) -> Self {
-        self.install_secret_broker(broker);
-        self
-    }
-
-    pub fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        *self
-            .secret_broker
-            .write()
-            .expect("container secret broker lock poisoned") = Some(broker);
-    }
-
-    /// Realize a Session-owned container environment. The trait `create` boxes this.
-    pub async fn create_container(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        self.realize_container(spec, None).await
-    }
-
-    fn environment_plan(&self, spec: &pc::SandboxSpec) -> Result<ContainerPlan, pc::SandboxError> {
-        let command = self
-            .resident_hand
-            .as_ref()
-            .map_or_else(environment_keepalive_command, ResidentHandConfig::command);
-        let mut plan = container_plan_with_allowlist(
-            spec,
-            &self.default_image,
-            &command,
-            self.forward_proxy.as_ref(),
-            self.allowlist_proxy.as_ref(),
-        )
-        .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
-        if let Some(hand) = &self.resident_hand {
-            process_env::bind_resident_process_environment(&mut plan.env, &spec.outputs_path);
-            plan.env
-                .push(("AWAKEN_HAND_LEDGER_DIR".into(), hand.ledger_dir.clone()));
-            plan.env.push((
-                "AWAKEN_HAND_LEDGER_MAX_ENTRIES".into(),
-                hand.ledger_max_entries.to_string(),
-            ));
-            plan.env.push((
-                "AWAKEN_HAND_MAX_CONNECTIONS".into(),
-                hand.max_connections.to_string(),
-            ));
-        }
-        Ok(plan)
-    }
-}
-
-#[async_trait]
-impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
-    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        self.runtime_sandbox_capabilities()
-    }
-
-    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
-        self.install_memory_mounter(mounter);
-    }
-
-    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
-        self.install_secret_broker(broker);
-    }
-
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.probe_runtime_ready().await
-    }
-
-    async fn create_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Ok(Arc::new(self.create_container(spec).await?))
-    }
-
-    async fn adopt_environment(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        Ok(Arc::new(
-            self.adopt_container_with_spec(Some(adoption.spec), adoption.handle)
-                .await?,
-        ))
-    }
-
-    async fn acquire_restore_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
-        Ok(self
-            .acquire_restore_sandbox(spec, request)
-            .await?
-            .map_target(|sandbox| Arc::new(sandbox) as Arc<dyn ContainerEnvironment>))
-    }
-
-    async fn dispose_restored_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-    ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request).await
-    }
-}
-
-#[async_trait]
-impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R> {
-    fn capabilities(&self) -> pc::SandboxCapabilities {
-        self.runtime_sandbox_capabilities()
-    }
-
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
-        self.probe_runtime_ready().await
-    }
-
-    async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.create_container(spec).await?))
-    }
-
-    async fn adopt(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.adopt_container(handle).await?))
-    }
-
-    async fn acquire_restore(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
-        Ok(self
-            .acquire_restore_sandbox(spec, request)
-            .await?
-            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
-    }
-
-    async fn dispose_restored(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-    ) -> Result<(), pc::SandboxError> {
-        self.dispose_restore_target(spec, request).await
-    }
-}
+mod provider;
+pub use provider::ContainerProvider;
 
 /// A realized Session-owned container environment. The opaque agent channel is
 /// returned together with the exact exec process by [`ContainerEnvironment::spawn_agent_process`].
@@ -1591,9 +1314,17 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     runtime_handle: Option<pc::ContainerContinuationHandle>,
     /// Exact independently governed paths retained only for checkpoint safety.
     continuation_excluded_paths: Vec<String>,
-    /// Exact reader-owned wire handle retained only across adoption. Current
-    /// creation paths emit restoration None; exact physical restore acquisition
-    /// installs the request-bound handle before returning the target.
+    /// Current V2 create-or-adopt evidence. `None` is retained only when a
+    /// legacy V1 handle is adopted and must never be promoted implicitly.
+    adoption_fingerprint: Option<pc::SandboxRealizationFingerprint>,
+    realization_fingerprint: Option<pc::SandboxRealizationFingerprint>,
+    /// Original CAS bases for copy-backed Memory mounts. Creation captures this
+    /// once from the canonical MemoryMount; adoption reuses only the validated
+    /// durable handle projection and never reconstructs heads from current bytes.
+    memory_materializations: Vec<pc::MemoryMaterializationEvidence>,
+    owned_paths: std::sync::Mutex<Vec<String>>,
+    /// Exact request-bound wire handle for a restored target. Ordinary P-aware
+    /// create/adopt paths retain their existing V1/V2 projection below.
     adopted_handle: Option<pc::SandboxHandle>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
@@ -1618,10 +1349,49 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             .map_err(err)
     }
 
-    #[cfg(feature = "connection")]
+    #[cfg(any(feature = "connection", test))]
     fn bind_scope(mut self, scope: impl Into<String>) -> Self {
         self.id = scope.into();
         self
+    }
+
+    async fn prepare_disposal(
+        &self,
+        effect_fence: Option<&pc::SandboxEffectFence>,
+    ) -> Result<(), pc::SandboxError> {
+        self.control_publication.close_for_dispose().await;
+        // Writable durable credentials belong to the Session environment and
+        // are harvested when that environment terminates. Managed cleanup
+        // carries the root operation into the credential authority, whose
+        // WAL/CAS makes response-loss replay idempotent; the local flag is only
+        // an in-process fast path.
+        let handle = effect_fence.map(|_| pc::Sandbox::handle(self));
+        self.lifecycle
+            .write_back_secrets(
+                self.runtime.as_ref(),
+                &self.container_id,
+                effect_fence.zip(handle.as_ref()),
+            )
+            .await?;
+        // Explicit effectless Sandbox disposal still owns its live RunV1 Memory
+        // claim. Managed terminal/continuation cleanup carries an effect
+        // fence and must use Host terminal-v2 reconciliation plus the explicit
+        // acknowledgement port instead of replaying this stale claim.
+        if effect_fence.is_none() {
+            let mut memory = self.lifecycle.memory.lock().await;
+            if let Some(memory) = memory.as_mut() {
+                for mount in memory.iter_mut().filter(|mount| {
+                    mount.native_runtime_volume
+                        && mount.access == pc::MountAccess::ReadWrite
+                        && !mount.writeback_prepared
+                }) {
+                    let files = files::read_files(self, &mount.mount_path).await?;
+                    replace_memory_snapshot(&mount.host_path, &files)?;
+                    mount.writeback_prepared = true;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1645,6 +1415,14 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
 
     async fn remove_live_input_path(&self, path: &str) -> Result<(), pc::SandboxError> {
         self.remove_live_input_path(path).await
+    }
+
+    fn record_owned_path(&self, path: &str) -> Result<(), pc::SandboxError> {
+        let mut owned = self.owned_paths.lock().expect("owned paths lock poisoned");
+        if !owned.iter().any(|current| current == path) {
+            owned.push(path.to_string());
+        }
+        Ok(())
     }
 
     async fn spawn_agent_process(
@@ -1704,6 +1482,7 @@ struct ContainerCleanupState {
     secret_writebacks: Vec<SecretWriteback>,
     secret_broker: Option<Arc<dyn pc::SecretBroker>>,
     memory: tokio::sync::Mutex<Option<Vec<StagedMemoryMount>>>,
+    memory_reconciliation_ack: pc::MemoryReconciliationAck,
     writeback_done: tokio::sync::Mutex<bool>,
     remove_done: tokio::sync::Mutex<bool>,
 }
@@ -1718,15 +1497,74 @@ impl ContainerCleanupState {
             secret_writebacks: Vec::new(),
             secret_broker,
             memory: tokio::sync::Mutex::new(None),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             writeback_done: tokio::sync::Mutex::new(true),
             remove_done: tokio::sync::Mutex::new(false),
         }
+    }
+
+    fn physical_cleanup_only() -> Self {
+        Self {
+            staging: std::sync::Mutex::new(None),
+            secret_writebacks: Vec::new(),
+            secret_broker: None,
+            memory: tokio::sync::Mutex::new(None),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
+            writeback_done: tokio::sync::Mutex::new(true),
+            remove_done: tokio::sync::Mutex::new(false),
+        }
+    }
+
+    fn recovered_native(
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+        reconstructible: bool,
+    ) -> Result<Self, pc::SandboxError> {
+        let secret_writebacks = spec
+            .mounts
+            .iter()
+            .filter_map(secret_writeback_projection)
+            .collect::<Vec<_>>();
+        let recovered_memory = validated_recovered_memory_projections(spec, handle)?;
+        let has_writable_memory = recovered_memory
+            .iter()
+            .any(|projection| projection.access == pc::MountAccess::ReadWrite);
+        if (!secret_writebacks.is_empty() || has_writable_memory) && !reconstructible {
+            return Err(pc::SandboxError::new(
+                "container terminal participants depend on an unrecoverable host-bind attempt",
+            ));
+        }
+        if !secret_writebacks.is_empty() && secret_broker.is_none() {
+            return Err(pc::SandboxError::new(
+                "recovered writable Secret has no credential broker",
+            ));
+        }
+        if recovered_memory.iter().any(|projection| {
+            projection.access == pc::MountAccess::ReadWrite
+                && projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+        }) {
+            return Err(pc::SandboxError::new(
+                "recovered native Memory cannot satisfy write-through consistency",
+            ));
+        }
+        let writeback_done = secret_writebacks.is_empty();
+        Ok(Self {
+            staging: std::sync::Mutex::new(None),
+            secret_writebacks,
+            secret_broker,
+            memory: tokio::sync::Mutex::new(None),
+            memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
+            writeback_done: tokio::sync::Mutex::new(writeback_done),
+            remove_done: tokio::sync::Mutex::new(false),
+        })
     }
 
     async fn write_back_secrets<R: ContainerRuntime>(
         &self,
         runtime: &R,
         container_id: &str,
+        effect: Option<(&pc::SandboxEffectFence, &pc::SandboxHandle)>,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.writeback_done.lock().await;
         if *done {
@@ -1743,11 +1581,28 @@ impl ContainerCleanupState {
                     .map_err(err)?
                 {
                     Some(bytes) => bytes,
-                    None => std::fs::read(&item.staged_path).map_err(|e| {
-                        pc::SandboxError::new(format!("read refreshed credential file: {e}"))
-                    })?,
+                    None => {
+                        let staged_path = item.staged_path.as_ref().ok_or_else(|| {
+                            pc::SandboxError::new(
+                                "native container credential harvest returned no live bytes",
+                            )
+                        })?;
+                        std::fs::read(staged_path).map_err(|e| {
+                            pc::SandboxError::new(format!("read refreshed credential file: {e}"))
+                        })?
+                    }
                 };
-                broker.write_back(&item.reference, bytes).await?;
+                match effect {
+                    Some((authorization, handle)) => {
+                        let writeback = pc::SecretWritebackEffect::new(
+                            item.reference.clone(),
+                            handle.container_physical_incarnation()?,
+                            authorization.clone(),
+                        )?;
+                        broker.write_back_for_effect(&writeback, bytes).await?
+                    }
+                    None => broker.write_back(&item.reference, bytes).await?,
+                }
             }
         }
         *done = true;
@@ -1766,15 +1621,41 @@ impl ContainerCleanupState {
                 .remove_with_handle(container_id, runtime_handle)
                 .await
                 .map_err(err)?;
-            if let Some(memory) = self.memory.lock().await.take() {
-                for mount in memory {
-                    mount.handle.teardown().await;
-                }
-            }
-            if let Some(staging) = self.staging.lock().expect("staging mutex poisoned").take() {
-                staging.remove();
-            }
+            self.release_dependencies().await?;
             *done = true;
+        }
+        Ok(())
+    }
+
+    async fn dispose_once_for_effect<R: ContainerRuntime>(
+        &self,
+        runtime: &R,
+        expectation: ContainerObservationExpectation<'_>,
+        authorization: &pc::SandboxDisposalAuthorization,
+    ) -> Result<(), pc::SandboxError> {
+        let mut done = self.remove_done.lock().await;
+        if !*done {
+            runtime
+                .dispose_authorized(expectation, authorization)
+                .await
+                .map_err(err)?;
+            self.release_dependencies().await?;
+            *done = true;
+        }
+        Ok(())
+    }
+
+    async fn release_dependencies(&self) -> Result<(), pc::SandboxError> {
+        let mut memory = self.memory.lock().await;
+        if let Some(mounts) = memory.as_ref() {
+            for mount in mounts {
+                mount.handle.teardown().await?;
+            }
+            *memory = None;
+        }
+        drop(memory);
+        if let Some(staging) = self.staging.lock().expect("staging mutex poisoned").take() {
+            staging.remove();
         }
         Ok(())
     }
@@ -1790,19 +1671,42 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         if let Some(handle) = &self.adopted_handle {
             return handle.clone();
         }
-        pc::SandboxHandle::container(
-            &self.id,
-            pc::ContainerSandboxHandleV1 {
-                container_id: self.container_id.clone(),
-                outputs_path: self.outputs_path.clone(),
-                base_env: self.base_env.clone(),
-                live_input_projection: self.live_input_projection,
-                continuation_excluded_paths: self.continuation_excluded_paths.clone(),
-                runtime_handle: self.runtime_handle.clone(),
-                sandbox_control_incarnation: self.sandbox_control_incarnation.clone(),
-                control_services: self.control_services.clone(),
-            },
-        )
+        let previous = pc::ContainerSandboxHandleV1 {
+            container_id: self.container_id.clone(),
+            outputs_path: self.outputs_path.clone(),
+            base_env: self.base_env.clone(),
+            live_input_projection: self.live_input_projection,
+            continuation_excluded_paths: self.continuation_excluded_paths.clone(),
+            runtime_handle: self.runtime_handle.clone(),
+            sandbox_control_incarnation: self.sandbox_control_incarnation.clone(),
+            control_services: self.control_services.clone(),
+        };
+        match (&self.adoption_fingerprint, &self.realization_fingerprint) {
+            (Some(adoption_fingerprint), Some(realization_fingerprint)) => {
+                pc::SandboxHandle::container_v2(
+                    &self.id,
+                    pc::ContainerSandboxHandleV2 {
+                        previous,
+                        adoption_fingerprint: adoption_fingerprint.clone(),
+                        realization_fingerprint: realization_fingerprint.clone(),
+                        owned_paths: self
+                            .owned_paths
+                            .lock()
+                            .expect("owned paths lock poisoned")
+                            .clone(),
+                    },
+                )
+                .with_memory_materializations(self.memory_materializations.clone())
+                .expect("container Memory materializations were validated before physical create")
+            }
+            // V1 recovery stays V1. A later Resource reservation cannot use a
+            // raw container locator to fabricate current realization evidence.
+            (None, None) => {
+                debug_assert!(self.memory_materializations.is_empty());
+                pc::SandboxHandle::container(&self.id, previous)
+            }
+            _ => unreachable!("container realization evidence is emitted atomically"),
+        }
     }
 
     async fn spawn(
@@ -1871,42 +1775,103 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             .map_err(err)
     }
 
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        // Publication is a live environment capability. Fence and join it before
-        // any write-back or runtime removal so no task can reopen a channel on a
-        // disposed container incarnation.
-        self.control_publication.close_for_dispose().await;
-        // Writable durable credentials belong to the Session environment and are
-        // harvested exactly once when that environment terminates, not after each
-        // attempt process.
-        self.lifecycle
-            .write_back_secrets(self.runtime.as_ref(), &self.container_id)
-            .await?;
-        // Native remote volumes are snapshots from the same canonical
-        // MemoryMounter used by Docker/Podman. Copy the live Pod tree back into
-        // that staging mount before teardown; the retained mount handle then
-        // performs the existing CAS harvest. A read failure leaves the Pod and
-        // handle live so disposal can be retried without claiming success.
-        {
-            let mut memory = self.lifecycle.memory.lock().await;
-            if let Some(memory) = memory.as_mut() {
-                for mount in memory.iter_mut().filter(|mount| {
-                    mount.native_runtime_volume
-                        && mount.access == pc::MountAccess::ReadWrite
-                        && !mount.writeback_prepared
-                }) {
-                    let files = files::read_files(self, &mount.mount_path).await?;
-                    replace_memory_snapshot(&mount.host_path, &files)?;
-                    mount.writeback_prepared = true;
+    async fn acknowledge_memory_reconciliation(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+        complete_materializations: &[pc::MemoryMaterializationEvidence],
+    ) -> Result<(), pc::SandboxError> {
+        // `SandboxHandle` is the sole durable provider projection and
+        // canonicalizes this slice. Staging order must never become a second
+        // evidence ordering contract.
+        let handle = self.handle();
+        let expected_materializations = handle.memory_materializations()?.unwrap_or(&[]);
+        let mut memory = self.lifecycle.memory.lock().await;
+        self.lifecycle.memory_reconciliation_ack.acknowledge(
+            effect_fence,
+            expected_materializations,
+            complete_materializations,
+            || {
+                if let Some(mounts) = memory.as_mut() {
+                    if mounts
+                        .iter()
+                        .filter_map(|mount| mount.materialization.as_ref())
+                        .any(|materialization| !expected_materializations.contains(materialization))
+                    {
+                        return Err(pc::SandboxError::new(
+                            "Container CopyMount guard differs from its durable Memory evidence",
+                        ));
+                    }
+                    // Dropping a Copy guard is the process-local acknowledgement;
+                    // do not call RunV1 teardown after Host terminal-v2 CAS.
+                    // FUSE remains mounted and staging remains owned until the
+                    // runtime proves physical removal.
+                    mounts.retain(|mount| mount.materialization.is_none());
                 }
-            }
-        }
+                Ok(())
+            },
+        )
+    }
+
+    async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        self.prepare_disposal(None).await?;
         self.lifecycle
             .dispose_once(
                 self.runtime.as_ref(),
                 &self.container_id,
                 self.runtime_handle.as_ref(),
             )
+            .await
+    }
+
+    async fn prepare_disposal_for_effect(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        if self.adoption_fingerprint.is_none() || self.realization_fingerprint.is_none() {
+            return Err(pc::SandboxError::new(
+                "legacy container handle cannot authorize fenced physical disposal",
+            ));
+        }
+        let handle = self.handle();
+        handle.container_physical_incarnation()?;
+        let expected_materializations = handle.memory_materializations()?.unwrap_or(&[]);
+        // This is the provider-local data-preparation gate. Missing, stale,
+        // foreign, or predecessor acknowledgements have zero Secret and
+        // physical effects. Successful Secret write-back remains replayable,
+        // but no runtime removal (and therefore no Kubernetes cleanup
+        // finalizer) is reachable from this method.
+        self.lifecycle
+            .memory_reconciliation_ack
+            .require_for_disposal(expected_materializations, effect_fence)?;
+        self.prepare_disposal(Some(effect_fence)).await?;
+        // Container/Kubernetes install their exact physical gate only at the
+        // later disposal edge. This source-preparation boundary therefore
+        // returns the caller's exact fence without claiming marker evidence.
+        Ok(effect_fence.clone())
+    }
+
+    async fn dispose_for_effect(
+        &self,
+        authorization: &pc::SandboxDisposalAuthorization,
+    ) -> Result<(), pc::SandboxError> {
+        authorization.validate()?;
+        if self.adoption_fingerprint.is_none() || self.realization_fingerprint.is_none() {
+            return Err(pc::SandboxError::new(
+                "legacy container handle cannot authorize fenced physical disposal",
+            ));
+        }
+        // The aggregate persisted the separate disposal-preparation receipt
+        // before invoking this physical edge. Rebuild only the immutable
+        // observation expectation here: Secret, Memory, Artifact, checkpoint,
+        // and Hand I/O must not be repeated after that persistence boundary.
+        let handle = self.handle();
+        handle.container_physical_incarnation()?;
+        let expectation = ContainerObservationExpectation::from_handle_for_effect(
+            &handle,
+            authorization.effect_fence(),
+        )?;
+        self.lifecycle
+            .dispose_once_for_effect(self.runtime.as_ref(), expectation, authorization)
             .await
     }
 }
@@ -1940,9 +1905,9 @@ pub mod podman;
 /// Warm container pool (pre-provisioned reusable capacity): cold-start + reuse. Gated
 /// on `connection` (present under every real backend), which brings the tokio runtime
 /// the pool's off-path replenish spawns onto.
-#[cfg(feature = "connection")]
+#[cfg(any(feature = "connection", test))]
 pub mod pool;
-#[cfg(feature = "connection")]
+#[cfg(any(feature = "connection", test))]
 pub use pool::WarmContainerPool;
 
 #[cfg(test)]

@@ -740,6 +740,23 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
 
 struct AdvisorProfile;
 
+fn native_test_agent_snapshot(
+    agent_id: &str,
+    model_ref: &str,
+    backend_ref: &str,
+    source_revision: u64,
+) -> awaken_runtime_contract::ExecutableAgentSnapshot {
+    let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
+        .model(awaken_runtime_contract::resolved::ModelBinding::new(
+            agent_id,
+            model_ref,
+            backend_ref,
+        ))
+        .build();
+    snapshot.metadata.source.revision = source_revision;
+    snapshot
+}
+
 #[derive(Clone, Copy)]
 enum FrozenTestToolFamily {
     Custom,
@@ -857,15 +874,12 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FrozenTo
             .profiles
             .get(agent_id)
             .filter(|profile| profile.source_revision == source_revision)?;
-        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
-            .model(awaken_runtime_contract::resolved::ModelBinding::new(
-                agent_id,
-                profile.execution_model_ref.as_deref()?,
-                &profile.backend_ref,
-            ))
-            .build();
-        snapshot.metadata.source.revision = source_revision;
-        Some(snapshot)
+        Some(native_test_agent_snapshot(
+            agent_id,
+            profile.execution_model_ref.as_deref()?,
+            &profile.backend_ref,
+            source_revision,
+        ))
     }
 }
 
@@ -921,6 +935,22 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for AdvisorP
                 ..Default::default()
             }
         })
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        let profile =
+            self.session_profile_at_revision_in(workspace_id, agent_id, source_revision)?;
+        Some(native_test_agent_snapshot(
+            agent_id,
+            profile.execution_model_ref.as_deref()?,
+            &profile.backend_ref,
+            source_revision,
+        ))
     }
 }
 

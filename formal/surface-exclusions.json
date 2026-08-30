@@ -104,6 +104,12 @@
       "evidence": ["crates/control/awaken-admin-config-api/tests/openapi_contract.rs"]
     },
     {
+      "path": "crates/control/awaken-config-service/src/config_service/test_support.rs",
+      "boundary": "test_only",
+      "reason": "Shared ConfigService fixtures, fake resolvers, registries, and failure injectors included only by config_service.rs under cfg(test); they own no production authorization, durability, concurrency, or credential boundary.",
+      "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
+    },
+    {
       "path": "crates/control/awaken-config-service/src/lib.rs",
       "boundary": "module_facade",
       "reason": "Config-service module declarations and public re-exports only; authoring and publication decisions live in the referenced implementation modules.",
@@ -378,6 +384,24 @@
       "boundary": "transport_adapter",
       "reason": "Static owner: Worker-side implementation of neutral Session-control ports. Dynamic path: each method forwards the exact Worker identity, claim, and command to WorkerControlClient; authentication and state decisions remain server-side. Evidence: crates/server/awaken-worker-runtime/src/worker_control_client.rs.",
       "evidence": ["crates/server/awaken-worker-runtime/src/worker_control_client.rs"]
+    },
+    {
+      "path": "crates/contract/awaken-provisioning-contract/src/sandbox.rs",
+      "boundary": "module_facade",
+      "reason": "Production code contains only the Sandbox module declarations and re-exports; every detected decision signal is inside the cfg(test) fake and lifecycle tests. Contract and admission owners remain inventoried in foundation.rs and runtime.rs.",
+      "evidence": ["crates/contract/awaken-provisioning-contract/src/sandbox/foundation.rs", "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs"]
+    },
+    {
+      "path": "crates/contract/awaken-session-contract/src/session/run_coordination.rs",
+      "boundary": "projection_dto",
+      "reason": "Defines immutable delegated-Run snapshots, budget-resume delivery and ticket shapes, plus a closed disposition enum; it performs no transition, dispatch, persistence, or authorization decision. Runtime and Session owners consume these values.",
+      "evidence": ["crates/contract/awaken-session-contract/src/session.rs"]
+    },
+    {
+      "path": "crates/control/awaken-credential-vault/src/repo/in_memory.rs",
+      "boundary": "test_support_adapter",
+      "reason": "Every state type and repository implementation is compiled only under cfg(any(test, feature = test-support)) and serves tests or scenario fixtures. Production Credential authority remains the neutral repository contract and external durable adapters.",
+      "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
     }
   ]
 }

@@ -124,6 +124,7 @@ impl ManagementEffect {
 pub enum AuditedConfigWrite {
     Applied,
     Replayed,
+    Conflict { current_revision: Option<u64> },
 }
 
 /// The lifecycle spine (ADR-0031). The richer states (installing/active/
@@ -301,12 +302,15 @@ pub trait ScopedConfigRegistry: Send + Sync {
         config: &AgentConfig,
     ) -> Result<(), ConfigStoreError>;
 
-    /// Atomically persist the audit record and config. Replaying the same call id
-    /// with the same record is a no-op; conflicting reuse fails closed.
+    /// Atomically persist config against a pre-recorded pending audit. The
+    /// separate `record_management_audit_scoped` port is the sole concurrent
+    /// begin authority. A committed exact replay is a no-op; absent or
+    /// conflicting audit identity fails closed.
     async fn put_config_with_audit_scoped(
         &self,
         _scope: &ScopeId,
         _config: &AgentConfig,
+        _expected_revision: u64,
         _audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
         Err(ConfigStoreError(
@@ -318,6 +322,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_revision: u64,
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
@@ -326,7 +331,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
                 "config registry does not support durable external effects".to_string(),
             ));
         }
-        self.put_config_with_audit_scoped(scope, config, audit)
+        self.put_config_with_audit_scoped(scope, config, expected_revision, audit)
             .await
     }
 

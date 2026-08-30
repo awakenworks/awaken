@@ -209,12 +209,11 @@ fn application_resource(resource: ResourceInput) -> Result<DeploymentResource, W
         },
         ResourceInput::MemoryStore {
             memory_store_id,
-            mount_path,
             instructions,
             access,
         } => DeploymentResource::MemoryStore {
             memory_store_id,
-            mount_path,
+            mount_path: None,
             instructions,
             access: access.map(|access| match access {
                 ResourceAccess::ReadOnly => awaken_resource_contract::ResourceAccess::ReadOnly,
@@ -259,12 +258,11 @@ fn wire_resource(resource: DeploymentResource) -> ResourceInput {
         },
         DeploymentResource::MemoryStore {
             memory_store_id,
-            mount_path,
+            mount_path: _,
             instructions,
             access,
         } => ResourceInput::MemoryStore {
             memory_store_id,
-            mount_path,
             instructions,
             access: access.map(|access| match access {
                 awaken_resource_contract::ResourceAccess::ReadOnly => ResourceAccess::ReadOnly,
@@ -523,18 +521,38 @@ fn validate_initial_events(events: &[DeploymentInitialEvent]) -> Result<(), Wire
 }
 
 fn validate_durable_resources(resources: &[ResourceInput]) -> Result<(), WireError> {
-    if resources.iter().any(|resource| {
-        matches!(
-            resource,
-            ResourceInput::GithubRepository {
-                authorization_token: Some(_),
-                ..
-            }
-        )
-    }) {
-        return Err(invalid(
-            "Deployment repository authorization_token cannot be stored durably; bind a vault credential instead",
-        ));
+    let parsed = resources
+        .iter()
+        .map(ResourceInput::to_parsed_input)
+        .collect::<Vec<_>>();
+    let repository_paths = parsed
+        .iter()
+        .filter(|resource| {
+            matches!(
+                resource.target,
+                crate::state::ParsedInputTarget::Repository { .. }
+            )
+        })
+        .map(|resource| resource.mount_path.as_str())
+        .collect::<Vec<_>>();
+    // Validate the complete derived set, including `/workspace/<repo-name>`
+    // defaults, before Deployment persistence. Per-item validation cannot see
+    // equal or ancestor/descendant Repository trees.
+    awaken_provisioning_contract::validate_repository_mount_paths(&repository_paths, &[])
+        .map_err(|error| invalid(error.to_string()))?;
+    for resource in resources {
+        let ResourceInput::GithubRepository {
+            authorization_token,
+            ..
+        } = resource
+        else {
+            continue;
+        };
+        if authorization_token.is_some() {
+            return Err(invalid(
+                "Deployment repository authorization_token cannot be stored durably; bind a vault credential instead",
+            ));
+        }
     }
     Ok(())
 }

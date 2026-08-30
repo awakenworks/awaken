@@ -1348,7 +1348,7 @@ pub async fn build_config_router() -> Router {
     let reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
         catalog_repo.clone(),
         &global,
-        &awaken_runtime_host::authorable_config_sections(),
+        &awaken_runtime_host::platform_plugin_capabilities(),
         // The config plane, to list existing agent ids in the tenant scope.
         plane.clone(),
         platform_workspace.clone(),

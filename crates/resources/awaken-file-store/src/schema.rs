@@ -69,6 +69,11 @@ pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
                  USING deleted::BIGINT",
                 "SELECT 1",
             )?,
+            Migration::new(
+                5,
+                "terminal cleanup association on canonical artifact Files",
+                "ALTER TABLE {prefix}_file ADD COLUMN artifact_idempotency_scope TEXT",
+            )?,
         ],
     )
 }

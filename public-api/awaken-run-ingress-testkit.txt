@@ -1,7 +1,7 @@
 pub mod awaken_run_ingress_testkit
 pub mod awaken_run_ingress_testkit::worker_http
 pub fn awaken_run_ingress_testkit::worker_http::activation(&str) -> awaken_runtime_contract::activation::RunActivation
-pub async fn awaken_run_ingress_testkit::worker_http::ready_worker(&str) -> (alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, awaken_worker_contract::WorkerIdentity)
+pub async fn awaken_run_ingress_testkit::worker_http::ready_worker(&str) -> (alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>, awaken_worker_contract::registry::WorkerIdentity)
 pub async fn awaken_run_ingress_testkit::worker_http::serve(axum::routing::Router) -> core::net::socket_addr::SocketAddr
 pub fn awaken_run_ingress_testkit::worker_http::unix_now_ms() -> u64
 pub struct awaken_run_ingress_testkit::AuthoritativeWallClock

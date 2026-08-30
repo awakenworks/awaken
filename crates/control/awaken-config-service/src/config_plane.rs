@@ -127,10 +127,13 @@ impl ConfigPlane {
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_revision: u64,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, String> {
+        // `record_management_audit` is the sole begin owner. This final port
+        // requires its exact pending row and commits business state atomically.
         self.store
-            .put_config_with_audit_scoped(scope, config, audit)
+            .put_config_with_audit_scoped(scope, config, expected_revision, audit)
             .await
             .map_err(|error| error.to_string())
     }
@@ -139,11 +142,14 @@ impl ConfigPlane {
         &self,
         scope: &ScopeId,
         config: &AgentConfig,
+        expected_revision: u64,
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, String> {
+        // Effects share the same final transaction; this port never creates a
+        // second audit-begin path when the pending row is absent.
         self.store
-            .put_config_with_audit_effect_scoped(scope, config, audit, effect)
+            .put_config_with_audit_effect_scoped(scope, config, expected_revision, audit, effect)
             .await
             .map_err(|error| error.to_string())
     }
@@ -208,6 +214,19 @@ impl ConfigPlane {
     ) -> Result<ConfigWrite, String> {
         self.service
             .put_if_revision(&self.registry_for(scope), config, expected_generation)
+            .await
+    }
+
+    /// Apply the Managed Agent lifecycle archive command without reopening
+    /// historical config bytes to ordinary mutable authoring.
+    pub async fn archive_if_revision(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+        expected_generation: u64,
+    ) -> Result<ConfigWrite, String> {
+        self.service
+            .archive_if_revision(&self.registry_for(scope), config, expected_generation)
             .await
     }
 

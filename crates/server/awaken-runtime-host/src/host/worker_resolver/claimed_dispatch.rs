@@ -3,6 +3,17 @@
 use super::session_realization::WorkerMcpEffects;
 use super::*;
 
+/// Project the already-installed frozen Session facts into claimed-dispatch
+/// ownership. The presence of a remote Control client is a transport detail:
+/// all-in-one execution installs the same complete projection locally.
+const fn canonical_session_projection_is_installed(
+    has_session_affinity: bool,
+    session_dispatch: bool,
+    has_frozen_baseline: bool,
+) -> bool {
+    has_session_affinity && session_dispatch && has_frozen_baseline
+}
+
 pub(super) async fn adopt_bound_sandbox(
     host: &SharedHost,
     encoded: Option<&str>,
@@ -10,12 +21,16 @@ pub(super) async fn adopt_bound_sandbox(
     run_id: &RunId,
     provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     recovery: awaken_run_ingress::WorkerRecoveryMode,
-) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), awaken_run_ingress::Error>
+) -> Result<crate::host::session::SessionEnvironmentAdoptionDisposition, awaken_run_ingress::Error>
 {
+    let provider = host
+        .session_environment_provider(provisioning)
+        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     host.adopt_bound_session_environment(
         expected_sandbox_id,
         encoded,
-        provisioning,
+        provider,
+        None,
         recovery == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
     )
     .await
@@ -28,12 +43,11 @@ impl HostWorkerResolver {
         host: &SharedHost,
         claimed: &awaken_run_ingress::Claimed,
         session_thread_id: &awaken_agent_contract::agent::thread::Id,
-        adopted: Option<crate::session_environment::SessionEnvironment>,
         publication_source: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let substrate = host
-            .session_child_execution_substrate(&session_thread_id.0, adopted, None)
+            .session_child_execution_substrate(&session_thread_id.0, None)
             .await
             .map_err(|error| Self::execution_error(error.to_string()))?;
         let environment = substrate.environment;
@@ -217,14 +231,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     {
         let host = self.host()?;
         Self::require_local_execution(&host)?;
-        self.resolve(
-            &host,
-            thread_id,
-            agent_id.filter(|id| !id.is_empty()),
-            None,
-            None,
-        )
-        .await
+        self.resolve(&host, thread_id, agent_id.filter(|id| !id.is_empty()), None)
+            .await
     }
 
     async fn worker_for_claimed(
@@ -301,16 +309,6 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         } else {
             None
         };
-        // Claimed Sessions realize MCP exclusively through Control's frozen
-        // directive below. The dispatch envelope remains a compatibility carrier
-        // for ordinary Sessions; replaying its MCP stages as well would advance a
-        // second process-local lease fence outside the canonical phase protocol.
-        let dispatched_mcp_stages =
-            if host.session_control.is_some() && claimed.request.session_thread_id.is_some() {
-                None
-            } else {
-                dispatched_mcp_stages
-            };
         install_claimed_session_projection(
             &host,
             claimed,
@@ -318,6 +316,26 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             dispatched_resources.as_ref(),
         )
         .await?;
+        let canonical_session_realization = host
+            .session_slots
+            .read(&thread_id.0, |slot| {
+                canonical_session_projection_is_installed(
+                    claimed.request.session_thread_id.is_some(),
+                    slot.session_dispatch,
+                    slot.baseline.is_some(),
+                )
+            })
+            .unwrap_or(false);
+        // A complete frozen Session projection owns MCP realization regardless
+        // of whether it arrived through remote Control or was installed by the
+        // co-located Runtime. The dispatch envelope remains a compatibility
+        // carrier only for a partial/ordinary slot; replaying it for a canonical
+        // slot would advance a second process-local generation path.
+        let dispatched_mcp_stages = if canonical_session_realization {
+            None
+        } else {
+            dispatched_mcp_stages
+        };
         if let Some(stages) = dispatched_mcp_stages.as_ref() {
             host.register_thread_agent_projection(&thread_id.0, agent_id.unwrap_or("assistant"));
             host.register_thread_backend_projection(
@@ -356,22 +374,29 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             host.session_slots
                 .update(&thread_id.0, |slot| slot.deferred_executor = Some(executor));
         }
-        let (adopted, rebuild_binding) = adopt_bound_sandbox(
-            &host,
-            claimed.sandbox.as_deref(),
-            &thread_id.0,
-            &claimed.lease.run_id,
-            claimed
-                .request
-                .activation
-                .snapshot
-                .resolved_spec
-                .model_binding
-                .provisioning(),
-            claimed.request.placement.recovery,
-        )
-        .await?;
-        let mut adopted = adopted;
+        let _adoption = if canonical_session_realization {
+            // The Control synchronizer merged projection + claim binding before
+            // applying the Resource transition. Re-adopting the stale claim
+            // handle here would create a second owner and rejects a legitimate
+            // RebuildFromCommittedTruth replacement in the same resolve.
+            crate::host::session::SessionEnvironmentAdoptionDisposition::NoBinding
+        } else {
+            adopt_bound_sandbox(
+                &host,
+                claimed.sandbox.as_deref(),
+                &thread_id.0,
+                &claimed.lease.run_id,
+                claimed
+                    .request
+                    .activation
+                    .snapshot
+                    .resolved_spec
+                    .model_binding
+                    .provisioning(),
+                claimed.request.placement.recovery,
+            )
+            .await?
+        };
         let requires_sandbox_stdio_environment =
             dispatched_mcp_stages.as_ref().is_some_and(|stages| {
                 stages
@@ -385,7 +410,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             // final root/child resolver below.
             let frozen_parent =
                 (run_thread_id == thread_id).then_some(&claimed.request.activation.snapshot);
-            host.session_child_execution_substrate(&thread_id.0, adopted.take(), frozen_parent)
+            host.session_child_execution_substrate(&thread_id.0, frozen_parent)
                 .await
                 .map_err(|error| {
                     Self::execution_error(format!(
@@ -399,7 +424,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         }
         if run_thread_id != thread_id {
             return self
-                .recovered_child_worker(&host, claimed, thread_id, adopted.take(), claimed_source)
+                .recovered_child_worker(&host, claimed, thread_id, claimed_source)
                 .await
                 .map_err(|error| {
                     Self::execution_error(format!(
@@ -408,13 +433,31 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     ))
                 });
         }
+        // Complete Session projection installation has already validated the
+        // delivered Run coordinates and retained the immutable publication in
+        // the root slot. That projection may be installed by a co-located
+        // Runtime or through remote Control; transport presence is not an
+        // authority fact. The Run snapshot is a derived execution clone:
+        // Managed coordination and Session tool projection may legitimately
+        // change its descriptors and fingerprint. Reuse the retained
+        // publication for immutable selection while `claimed_runtime_input`
+        // continues to bind Runtime cache/plugins to the exact delivered
+        // execution closure. Compatibility dispatch without a complete frozen
+        // projection still uses the delivered root as its sole authority.
+        let immutable_publication = if canonical_session_realization {
+            host.session_slots
+                .read(&thread_id.0, |slot| slot.published_snapshot.clone())
+                .flatten()
+                .unwrap_or_else(|| claimed.request.activation.snapshot.clone())
+        } else {
+            claimed.request.activation.snapshot.clone()
+        };
         let worker = self
             .resolve_claimed(
                 &host,
                 thread_id,
                 agent_id,
-                claimed.request.activation.snapshot.clone(),
-                adopted.take(),
+                immutable_publication,
                 claimed_runtime_input,
             )
             .await
@@ -424,27 +467,6 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     claimed.lease.run_id.0
                 ))
             })?;
-        if claimed.sandbox.is_none() || rebuild_binding {
-            let Some(environment) = host.session_environment(&thread_id.0).await else {
-                return Ok(worker);
-            };
-            let encoded = serde_json::to_string(&environment.handle())
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-            let outcome = host
-                .dispatch_store()
-                .map_err(|error| Self::execution_error(error.to_string()))?
-                .bind_sandbox(
-                    &awaken_run_ingress::RunClaim::from(&claimed.lease),
-                    &encoded,
-                )
-                .await
-                .map_err(awaken_run_ingress::Error::from)?;
-            if !outcome.applied() {
-                return Err(Self::execution_error(
-                    "sandbox binding was fenced by a replacement claim",
-                ));
-            }
-        }
         Ok(worker)
     }
 
@@ -495,5 +517,38 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     ) -> Result<Vec<(RunId, RunState)>, awaken_run_ingress::Error> {
         crate::host::terminal_reconciliation::reconcile_committed_terminals(self, clock, limit)
             .await
+    }
+}
+
+#[cfg(test)]
+mod canonical_projection_tests {
+    use super::canonical_session_projection_is_installed;
+
+    #[test]
+    fn claimed_dispatch_uses_only_a_complete_session_projection() {
+        // Cause/effect graph: C1 the dispatch is explicitly Session-affine;
+        // C2 the canonical Dispatch projection was installed; C3 its frozen
+        // baseline is present. E1 the retained immutable publication selects
+        // the Session, while E2 the compatibility envelope remains the sole
+        // input. The three facts are conjunctive so a partial or ordinary slot
+        // can never acquire canonical ownership by transport inference.
+        //
+        // | Rule | C1 affinity | C2 dispatch | C3 baseline | Effect |
+        // | P1 | yes | yes | yes | E1 canonical projection |
+        // | P2 | no  | yes | yes | E2 ordinary dispatch |
+        // | P3 | yes | no  | yes | E2 partial projection |
+        // | P4 | yes | yes | no  | E2 partial projection |
+        for (rule, affinity, dispatch, baseline, expected) in [
+            ("P1", true, true, true, true),
+            ("P2", false, true, true, false),
+            ("P3", true, false, true, false),
+            ("P4", true, true, false, false),
+        ] {
+            assert_eq!(
+                canonical_session_projection_is_installed(affinity, dispatch, baseline),
+                expected,
+                "{rule}"
+            );
+        }
     }
 }

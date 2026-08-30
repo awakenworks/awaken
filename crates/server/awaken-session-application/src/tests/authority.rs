@@ -1475,13 +1475,14 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
 /// is bound to this Session or foreign; C7 publication is accepted, permanently
 /// rejected, or unavailable. Effects: E1 foreign/unknown selectors mutate
 /// nothing; E2 one atomic archive fence owns the intent; E3 local effects order
-/// child -> publication receipt CAS -> root finalizer; E4 exact replay returns
-/// the same durable receipt without another effect; E5 a different expectation
-/// conflicts without rewriting the receipt; E6 a foreign Completed outcome
-/// fails before any Runtime effect or root mutation; E7 a permanent rejection is
-/// durable before ordinary cleanup; E8 its exact replay has no second effect; E9
-/// an unavailable dependency retains the command without root cleanup; E10
-/// retry publishes and completes ordinary cleanup.
+/// local effects order child preparation -> publication receipt CAS -> root
+/// preparation -> one aggregate disposal; E4 exact replay returns the same
+/// durable receipt without another effect; E5 a different expectation conflicts
+/// without rewriting the receipt; E6 a foreign Completed outcome fails before
+/// any Runtime effect or root mutation; E7 a permanent rejection is durable
+/// before ordinary root preparation/disposal; E8 its exact replay has no second
+/// effect; E9 an unavailable dependency retains the command without root
+/// cleanup; E10 retry publishes and completes the two-stage cleanup.
 ///
 /// | Rule | scope | binding | replay | expectation | Effect |
 /// |---|---|---|---|---|---|
@@ -1505,6 +1506,12 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
             .expect("profiled Repository publication repository"),
     );
     let mut session = persisted("profiled-publication", false, "idle");
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "profiled-publication-source".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
     session.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
@@ -1587,6 +1594,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
             "cleanup:profiled-publication-child".to_string(),
             "publication".to_string(),
             "cleanup:profiled-publication".to_string(),
+            "dispose".to_string(),
         ],
         "R3/E3"
     );
@@ -1601,7 +1609,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
     );
     assert_eq!(
         runtime.terminal_effect_order.lock().unwrap().len(),
-        3,
+        4,
         "R4/E4 no duplicate effect"
     );
 
@@ -1660,6 +1668,12 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
     // Permanent publication rejection is durable before ordinary root cleanup;
     // exact profiled replay returns the same rejection without a second Git call.
     let mut rejected_session = persisted("profiled-rejected", false, "idle");
+    rejected_session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "profiled-rejected-source".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
     rejected_session.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
@@ -1720,6 +1734,12 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
     runtime.reject_publication.store(false, Ordering::SeqCst);
     runtime.fail_publication_once.store(true, Ordering::SeqCst);
     let mut unavailable_session = persisted("profiled-unavailable", false, "idle");
+    unavailable_session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "profiled-unavailable-source".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
     unavailable_session.resources = awaken_session_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
@@ -1779,8 +1799,15 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup(
 /// | L7 | Idle | delete | none | E6 |
 /// | L8 | Archived | delete | none | E6 |
 /// | L9 | ActivationFailed | delete | none | E6 |
-#[tokio::test]
-async fn terminal_transition_decision_table_is_durable_and_idempotent() {
+#[test]
+fn terminal_transition_decision_table_is_durable_and_idempotent() {
+    // Coverage rationale: the async case below remains the sole L1-L9 oracle.
+    // The shared composed-test executor changes stack placement only and adds
+    // no Session authority, scenario, or alternate transition path.
+    run_composed_async_test(terminal_transition_decision_table_is_durable_and_idempotent_case);
+}
+
+async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // Constraint/Invariant: the Session repository CAS and terminal lifecycle are
     // the only transition authority; replays cannot create another terminal fact.
     // Decision rule: execute L1-L9 and require every accepted, blocked, raced,
@@ -2308,6 +2335,10 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
 /// | A9 | none | Worker admission | preparing | E1/E7 |
 #[tokio::test]
 async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
+    run_activity_fence_decision_table().await;
+}
+
+async fn run_activity_fence_decision_table() {
     // Constraint/Invariant: one monotonic root activity epoch fences all
     // admission/completion and terminal truth dominates every replay. Decision rule:
     // execute A1-A9 to cover completion order, duplicates, terminal state,
@@ -2331,234 +2362,246 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    let (first, second) = tokio::join!(
-        app.begin_activity("activity-oldest-first"),
-        app.begin_activity("activity-oldest-first")
-    );
-    let first = first.expect("A1 first admission");
-    let second = second.expect("A1 concurrent admission");
-    let mut epochs = [first.activity_epoch, second.activity_epoch];
-    epochs.sort_unstable();
-    assert_eq!(epochs, [1, 2], "A1");
-    let active = repo
-        .get("activity-oldest-first")
-        .await
-        .expect("A1 durable Session");
-    assert_eq!(active.execution.as_str(), "running", "A1");
-    assert_eq!(
-        active.active_activity_epochs,
-        std::collections::BTreeSet::from(epochs),
-        "A1"
-    );
-    let first_interval = active
-        .running_interval
-        .clone()
-        .expect("A1 one durable interval");
-    assert_eq!(first_interval.activity_epoch, epochs[0], "A1 joins overlap");
-
-    let oldest_settled = app
-        .settle_activity("activity-oldest-first", epochs[0])
-        .await
-        .expect("A2 oldest completion");
-    assert_eq!(oldest_settled.execution.as_str(), "running", "A2");
-    assert_eq!(oldest_settled.activity_epoch, epochs[1], "A2");
-    assert_eq!(
-        oldest_settled.active_activity_epochs,
-        std::collections::BTreeSet::from([epochs[1]]),
-        "A2"
-    );
-    assert_eq!(
-        oldest_settled.running_interval,
-        Some(first_interval.clone()),
-        "A2"
-    );
-
-    let idle = app
-        .settle_activity("activity-oldest-first", epochs[1])
-        .await
-        .expect("A3 newest completes last");
-    assert_eq!(idle.execution.as_str(), "idle", "A3");
-    assert!(idle.active_activity_epochs.is_empty(), "A3");
-    assert!(idle.running_interval.is_none(), "A3");
-    let pending = repo.pending_lifecycle().await.expect("A3 outbox");
-    let closed = pending
-        .iter()
-        .find(|fact| fact.object_id == "activity-oldest-first")
-        .expect("A3 one interval fact")
-        .runtime_interval
-        .as_ref()
-        .expect("A3 typed interval");
-    assert_eq!(closed.interval_id, first_interval.interval_id, "A3");
-    assert!(closed.ended_at_unix_ms >= closed.started_at_unix_ms, "A3");
-
-    let (first, second) = tokio::join!(
-        app.begin_activity("activity-newest-first"),
-        app.begin_activity("activity-newest-first")
-    );
-    let mut reverse_epochs = [
-        first.expect("A4 first admission").activity_epoch,
-        second.expect("A4 second admission").activity_epoch,
-    ];
-    reverse_epochs.sort_unstable();
-    let newest_settled = app
-        .settle_activity("activity-newest-first", reverse_epochs[1])
-        .await
-        .expect("A4 newest completion");
-    assert_eq!(
-        newest_settled.execution,
-        SessionExecutionState::Running,
-        "A4"
-    );
-    assert_eq!(
-        newest_settled.active_activity_epochs,
-        std::collections::BTreeSet::from([reverse_epochs[0]]),
-        "A4"
-    );
-    let duplicate = app
-        .settle_activity("activity-newest-first", reverse_epochs[1])
-        .await
-        .expect("A6 duplicate completion");
-    assert_eq!(duplicate, newest_settled, "A6 duplicate is an exact no-op");
-    let unknown = app
-        .settle_activity("activity-newest-first", u64::MAX)
-        .await
-        .expect("A6 unknown completion");
-    assert_eq!(unknown, newest_settled, "A6 unknown is an exact no-op");
-    let reverse_idle = app
-        .settle_activity("activity-newest-first", reverse_epochs[0])
-        .await
-        .expect("A5 oldest completes last");
-    assert_eq!(reverse_idle.execution, SessionExecutionState::Idle, "A5");
-    assert!(reverse_idle.active_activity_epochs.is_empty(), "A5");
-    assert!(reverse_idle.running_interval.is_none(), "A5");
-    let pending = repo.pending_lifecycle().await.expect("A5 outbox");
-    assert_eq!(
-        pending
-            .iter()
-            .filter(
-                |fact| fact.object_id == "activity-newest-first" && fact.runtime_interval.is_some()
-            )
-            .count(),
-        1,
-        "A5 exactly one interval fact"
-    );
-
-    let running = app
-        .begin_activity("activity-oldest-first")
-        .await
-        .expect("A7 activity before terminal transition");
-    app.force_terminate_session(
-        "activity-oldest-first",
-        "2026-08-11T00:00:00Z",
-        awaken_session_contract::ManagedLifecycleFact {
-            id: "activity-terminal".into(),
-            object_id: "activity-oldest-first".into(),
-            workspace_id: Some("workspace".into()),
-            event_type: "session.status_terminated".into(),
-            timestamp: 1,
-            runtime_interval: None,
-        },
-    )
-    .await
-    .expect("A7 terminal transition");
-    let terminated = repo
-        .get("activity-oldest-first")
-        .await
-        .expect("A7 durable terminal cleanup");
-    assert!(terminated.active_activity_epochs.is_empty(), "A7/E6");
-    assert!(terminated.running_interval.is_none(), "A7/E6");
-    let fenced = app
-        .settle_activity("activity-oldest-first", running.activity_epoch)
-        .await
-        .expect("A7 terminal settlement is idempotent");
-    assert_eq!(fenced, terminated, "A7");
-    assert_eq!(
-        app.begin_activity("activity-oldest-first").await,
-        Err(SessionActivityError::Terminal),
-        "A7"
-    );
-
-    let mut exhausted = persisted("activity-exhausted", false, "idle");
-    exhausted.activity_epoch = u64::MAX;
-    create(repo.as_ref(), exhausted).await;
-    let exhausted_before = repo
-        .get("activity-exhausted")
-        .await
-        .expect("A8 durable Session before admission");
-    assert_eq!(
-        app.begin_activity("activity-exhausted").await,
-        Err(SessionActivityError::EpochExhausted),
-        "A8"
-    );
-    assert_eq!(
-        repo.get("activity-exhausted")
+    // Keep each decision partition in its own heap-backed state machine. This
+    // preserves one A1-A9 table while preventing unrelated retained snapshots
+    // from consuming the test thread's stack during repository decoding.
+    Box::pin(async {
+        let (first, second) = tokio::join!(
+            app.begin_activity("activity-oldest-first"),
+            app.begin_activity("activity-oldest-first")
+        );
+        let first = first.expect("A1 first admission");
+        let second = second.expect("A1 concurrent admission");
+        let mut epochs = [first.activity_epoch, second.activity_epoch];
+        epochs.sort_unstable();
+        assert_eq!(epochs, [1, 2], "A1");
+        let active = repo
+            .get("activity-oldest-first")
             .await
-            .expect("A8 durable Session"),
-        exhausted_before,
-        "A8"
-    );
-    assert_eq!(
-        app.begin_activity("missing").await,
-        Err(SessionActivityError::NotFound),
-        "A8"
-    );
+            .expect("A1 durable Session");
+        assert_eq!(active.execution.as_str(), "running", "A1");
+        assert_eq!(
+            active.active_activity_epochs,
+            std::collections::BTreeSet::from(epochs),
+            "A1"
+        );
+        let first_interval = active
+            .running_interval
+            .clone()
+            .expect("A1 one durable interval");
+        assert_eq!(first_interval.activity_epoch, epochs[0], "A1 joins overlap");
 
-    create(
-        repo.as_ref(),
-        persisted("activity-preparing", false, "preparing"),
-    )
+        let oldest_settled = app
+            .settle_activity("activity-oldest-first", epochs[0])
+            .await
+            .expect("A2 oldest completion");
+        assert_eq!(oldest_settled.execution.as_str(), "running", "A2");
+        assert_eq!(oldest_settled.activity_epoch, epochs[1], "A2");
+        assert_eq!(
+            oldest_settled.active_activity_epochs,
+            std::collections::BTreeSet::from([epochs[1]]),
+            "A2"
+        );
+        assert_eq!(
+            oldest_settled.running_interval,
+            Some(first_interval.clone()),
+            "A2"
+        );
+
+        let idle = app
+            .settle_activity("activity-oldest-first", epochs[1])
+            .await
+            .expect("A3 newest completes last");
+        assert_eq!(idle.execution.as_str(), "idle", "A3");
+        assert!(idle.active_activity_epochs.is_empty(), "A3");
+        assert!(idle.running_interval.is_none(), "A3");
+        let pending = repo.pending_lifecycle().await.expect("A3 outbox");
+        let closed = pending
+            .iter()
+            .find(|fact| fact.object_id == "activity-oldest-first")
+            .expect("A3 one interval fact")
+            .runtime_interval
+            .as_ref()
+            .expect("A3 typed interval");
+        assert_eq!(closed.interval_id, first_interval.interval_id, "A3");
+        assert!(closed.ended_at_unix_ms >= closed.started_at_unix_ms, "A3");
+
+        let (first, second) = tokio::join!(
+            app.begin_activity("activity-newest-first"),
+            app.begin_activity("activity-newest-first")
+        );
+        let mut reverse_epochs = [
+            first.expect("A4 first admission").activity_epoch,
+            second.expect("A4 second admission").activity_epoch,
+        ];
+        reverse_epochs.sort_unstable();
+        let newest_settled = app
+            .settle_activity("activity-newest-first", reverse_epochs[1])
+            .await
+            .expect("A4 newest completion");
+        assert_eq!(
+            newest_settled.execution,
+            SessionExecutionState::Running,
+            "A4"
+        );
+        assert_eq!(
+            newest_settled.active_activity_epochs,
+            std::collections::BTreeSet::from([reverse_epochs[0]]),
+            "A4"
+        );
+        let duplicate = app
+            .settle_activity("activity-newest-first", reverse_epochs[1])
+            .await
+            .expect("A6 duplicate completion");
+        assert_eq!(duplicate, newest_settled, "A6 duplicate is an exact no-op");
+        let unknown = app
+            .settle_activity("activity-newest-first", u64::MAX)
+            .await
+            .expect("A6 unknown completion");
+        assert_eq!(unknown, newest_settled, "A6 unknown is an exact no-op");
+        let reverse_idle = app
+            .settle_activity("activity-newest-first", reverse_epochs[0])
+            .await
+            .expect("A5 oldest completes last");
+        assert_eq!(reverse_idle.execution, SessionExecutionState::Idle, "A5");
+        assert!(reverse_idle.active_activity_epochs.is_empty(), "A5");
+        assert!(reverse_idle.running_interval.is_none(), "A5");
+        let pending = repo.pending_lifecycle().await.expect("A5 outbox");
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|fact| {
+                    fact.object_id == "activity-newest-first" && fact.runtime_interval.is_some()
+                })
+                .count(),
+            1,
+            "A5 exactly one interval fact"
+        );
+    })
     .await;
-    assert_eq!(
-        app.begin_activity("activity-preparing").await,
-        Err(SessionActivityError::NotReady),
-        "A8/E5"
-    );
-    let still_preparing = repo.get("activity-preparing").await.expect("A8 durable");
-    assert_eq!(still_preparing.activity_epoch, 0, "A8/E5");
-    assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E5");
 
-    let mut worker_preparing = persisted("activity-worker-preparing", false, "preparing");
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
-        &mut worker_preparing.baseline
-    else {
-        unreachable!("fixture is frozen")
-    };
-    baseline.runtime_placement = SessionRuntimePlacement::Worker;
-    create(repo.as_ref(), worker_preparing).await;
-    let admitted = app
-        .begin_activity("activity-worker-preparing")
-        .await
-        .expect("A9 Worker claim must be triggered by the driving event");
-    assert_eq!(admitted.activity_epoch, 1, "A9/E1");
-    assert_eq!(
-        admitted.active_activity_epochs,
-        std::collections::BTreeSet::from([1]),
-        "A9/E7"
-    );
-    assert_eq!(
-        admitted.execution,
-        SessionExecutionState::Preparing,
-        "A9/E7"
-    );
-
-    let mut failed = still_preparing;
-    failed.execution = SessionExecutionState::ActivationFailed;
-    let failed = app
-        .commit_session_snapshot(
-            "workspace",
-            failed,
-            "activity-test-realization-failed",
-            Vec::new(),
+    Box::pin(async {
+        let running = app
+            .begin_activity("activity-oldest-first")
+            .await
+            .expect("A7 activity before terminal transition");
+        app.force_terminate_session(
+            "activity-oldest-first",
+            "2026-08-11T00:00:00Z",
+            awaken_session_contract::ManagedLifecycleFact {
+                id: "activity-terminal".into(),
+                object_id: "activity-oldest-first".into(),
+                workspace_id: Some("workspace".into()),
+                event_type: "session.status_terminated".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
         )
         .await
-        .expect("A7 terminal realization");
-    assert_eq!(
-        app.settle_activity("activity-preparing", 0)
+        .expect("A7 terminal transition");
+        let terminated = repo
+            .get("activity-oldest-first")
             .await
-            .expect("A7 stale settlement"),
-        failed,
-        "A7/E4"
-    );
+            .expect("A7 durable terminal cleanup");
+        assert!(terminated.active_activity_epochs.is_empty(), "A7/E6");
+        assert!(terminated.running_interval.is_none(), "A7/E6");
+        let fenced = app
+            .settle_activity("activity-oldest-first", running.activity_epoch)
+            .await
+            .expect("A7 terminal settlement is idempotent");
+        assert_eq!(fenced, terminated, "A7");
+        assert_eq!(
+            app.begin_activity("activity-oldest-first").await,
+            Err(SessionActivityError::Terminal),
+            "A7"
+        );
+    })
+    .await;
+
+    Box::pin(async {
+        let mut exhausted = persisted("activity-exhausted", false, "idle");
+        exhausted.activity_epoch = u64::MAX;
+        create(repo.as_ref(), exhausted).await;
+        let exhausted_before = repo
+            .get("activity-exhausted")
+            .await
+            .expect("A8 durable Session before admission");
+        assert_eq!(
+            app.begin_activity("activity-exhausted").await,
+            Err(SessionActivityError::EpochExhausted),
+            "A8"
+        );
+        assert_eq!(
+            repo.get("activity-exhausted")
+                .await
+                .expect("A8 durable Session"),
+            exhausted_before,
+            "A8"
+        );
+        assert_eq!(
+            app.begin_activity("missing").await,
+            Err(SessionActivityError::NotFound),
+            "A8"
+        );
+
+        create(
+            repo.as_ref(),
+            persisted("activity-preparing", false, "preparing"),
+        )
+        .await;
+        assert_eq!(
+            app.begin_activity("activity-preparing").await,
+            Err(SessionActivityError::NotReady),
+            "A8/E5"
+        );
+        let still_preparing = repo.get("activity-preparing").await.expect("A8 durable");
+        assert_eq!(still_preparing.activity_epoch, 0, "A8/E5");
+        assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E5");
+
+        let mut worker_preparing = persisted("activity-worker-preparing", false, "preparing");
+        let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+            &mut worker_preparing.baseline
+        else {
+            unreachable!("fixture is frozen")
+        };
+        baseline.runtime_placement = SessionRuntimePlacement::Worker;
+        create(repo.as_ref(), worker_preparing).await;
+        let admitted = app
+            .begin_activity("activity-worker-preparing")
+            .await
+            .expect("A9 Worker claim must be triggered by the driving event");
+        assert_eq!(admitted.activity_epoch, 1, "A9/E1");
+        assert_eq!(
+            admitted.active_activity_epochs,
+            std::collections::BTreeSet::from([1]),
+            "A9/E7"
+        );
+        assert_eq!(
+            admitted.execution,
+            SessionExecutionState::Preparing,
+            "A9/E7"
+        );
+
+        let mut failed = still_preparing;
+        failed.execution = SessionExecutionState::ActivationFailed;
+        let failed = app
+            .commit_session_snapshot(
+                "workspace",
+                failed,
+                "activity-test-realization-failed",
+                Vec::new(),
+            )
+            .await
+            .expect("A7 terminal realization");
+        assert_eq!(
+            app.settle_activity("activity-preparing", 0)
+                .await
+                .expect("A7 stale settlement"),
+            failed,
+            "A7/E4"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -5702,18 +5745,18 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
 /// lease; C2 the binding is new or an idempotent replay; C3 the same epoch
 /// has been renewed monotonically; C4 a replacement owner/epoch has fenced
 /// the Runtime. C1 permits the ordinary root CAS; C3 preserves in-flight
-/// work admitted before renewal; C4 rejects every receipt, including an equal
-/// binding replay, before any aggregate mutation.
+/// work admitted before renewal; C4 rejects a binding change while an equal
+/// durable binding remains a side-effect-free recovery replay.
 ///
 /// | Rule | Asserted lease | Binding | Effect |
 /// |---|---|---|---|
 /// | B1 | exact | new | persist once |
 /// | B2 | exact | equal | idempotent success |
 /// | B3 | shorter same-epoch assertion under live renewal | new/equal | authorized |
-/// | B4 | stale owner/epoch | equal | fenced, no mutation |
+/// | B4 | stale owner/epoch | equal | fenced before replay, no mutation |
 /// | B5 | stale owner/epoch | different | fenced, no mutation |
 /// | B6 | aggregate/assertion both absent | new/equal | legacy CAS path |
-/// | B7 | current lease expired | equal | fenced, no mutation |
+/// | B7 | current lease expired | equal | fenced before replay, no mutation |
 /// | B8 | current lease expired | different | fenced, no mutation |
 #[tokio::test]
 async fn environment_binding_persistence_is_fenced_by_exact_realization() {
@@ -5728,6 +5771,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             binding,
             realization.cloned(),
         )
+        .for_environment("env-7")
     }
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -5744,32 +5788,24 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     create(repo.as_ref(), session).await;
     let sink = RepositoryEnvironmentBindingSink::new(repo.clone());
 
-    let committed = sink
-        .persist(receipt("binding-fence", "sandbox-a", Some(&current)))
-        .await
-        .expect("B1");
-    let revision_after_bind = repo.get("binding-fence").await.expect("B1").revision;
-    let replayed = sink
-        .persist(receipt("binding-fence", "sandbox-a", Some(&current)))
+    let first = receipt("binding-fence", "sandbox-a", Some(&current));
+    let first_intent = first.effect_intent().expect("B1 intent");
+    assert_eq!(
+        sink.authorize(&first_intent).await.expect("B1 authorize"),
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        "B1"
+    );
+    sink.persist(first).await.expect("B1");
+    assert_eq!(
+        sink.authorize(&first_intent).await.expect("B2 authorize"),
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+            binding: "sandbox-a".into(),
+        },
+        "B2"
+    );
+    sink.persist(receipt("binding-fence", "sandbox-a", Some(&current)))
         .await
         .expect("B2");
-    assert_eq!(replayed, committed, "B2 returns exact Store-read authority");
-    assert_eq!(
-        repo.get("binding-fence").await.expect("B2").revision,
-        revision_after_bind,
-        "B2 exact replay performs no root write"
-    );
-    assert!(
-        matches!(
-            committed,
-            awaken_session_contract::SessionEnvironmentState::Resident {
-                effect_id: Some(_),
-                generation: Some(_),
-                ..
-            }
-        ),
-        "B1 returns generated durable authority"
-    );
     let mut renewed_session = persisted("binding-renewed", false, "idle");
     renewed_session.realization = Some(awaken_session_contract::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX,
@@ -5802,14 +5838,16 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         expires_at_unix_ms: u64::MAX,
     };
     let revision_before_stale_replay = repo.get("binding-fence").await.expect("B4").revision;
+    let stale_error = sink
+        .persist(receipt("binding-fence", "sandbox-a", Some(&stale)))
+        .await
+        .expect_err("B4 stale equal-binding replay is fenced");
     assert_eq!(
-        sink.persist(receipt("binding-fence", "sandbox-a", Some(&stale)))
-            .await
-            .expect_err("B4 stale equal-binding replay is fenced")
-            .code,
-        "session_realization_stale",
+        stale_error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
         "B4"
     );
+    assert_eq!(stale_error.code, "session_realization_stale", "B4");
     assert_eq!(
         repo.get("binding-fence").await.expect("B4").revision,
         revision_before_stale_replay,
@@ -5819,6 +5857,11 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .persist(receipt("binding-fence", "sandbox-b", Some(&stale)))
         .await
         .expect_err("B5 stale binding replacement is fenced");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "B5"
+    );
     assert_eq!(error.code, "session_realization_stale", "B5");
     let expired = awaken_session_contract::SessionRealizationLease {
         expires_at_unix_ms: 0,
@@ -5846,14 +5889,16 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect("B7 fixture mutation"),
         awaken_session_contract::SessionMutationResult::Applied { .. }
     ));
+    let expired_error = sink
+        .persist(receipt("binding-fence", "sandbox-a", Some(&expired)))
+        .await
+        .expect_err("B7 expired equal-binding replay is fenced");
     assert_eq!(
-        sink.persist(receipt("binding-fence", "sandbox-a", Some(&expired)))
-            .await
-            .expect_err("B7 expired equal-binding replay is fenced")
-            .code,
-        "session_realization_stale",
+        expired_error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
         "B7"
     );
+    assert_eq!(expired_error.code, "session_realization_stale", "B7");
     assert_eq!(
         sink.persist(receipt("binding-fence", "sandbox-b", Some(&expired)))
             .await
@@ -5873,268 +5918,13 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         Some("sandbox-a"),
         "B4/B5/B7/B8"
     );
-}
-
-/// Binding transition cause/effect graph: C1 aggregate is Unmaterialized;
-/// C2 it is exact generated Resident; C3 it is terminal; C4 it is in a
-/// continuation phase; C5 receipt is Create; C6 receipt is Adopt with the
-/// same/different source binding; C7 receipt source/fingerprint is invalid.
-/// Effects: E1 one typed root mutation; E2 exact no-write replay; E3 fail
-/// closed with byte-identical Store state. The sink
-/// must also return only a nonterminal, exact binding/effect/generated Store
-/// read after CAS.
-///
-/// | Rule | Aggregate | Receipt | Effect |
-/// |---|---|---|---|
-/// | T1 | Unmaterialized | Create/Adopt | E1 generated Resident |
-/// | T2 | exact generated Resident | exact | E2 no write |
-/// | T2A | Resident | Adopt same binding | E1 update effect, preserve generation |
-/// | T3 | Resident | second Create | E3 denied |
-/// | T4 | Resident | Adopt different binding | E3 denied |
-/// | T5 | terminal | any | E3 denied |
-/// | T6 | Suspending/Hibernated/Restoring | any | E3 denied |
-/// | T7 | any | invalid receipt source/fingerprint | E3 denied |
-#[tokio::test]
-async fn environment_binding_sink_uses_only_the_aggregate_typed_transition() {
-    fn receipt(
-        session_id: &str,
-        kind: awaken_session_contract::SessionEnvironmentEffectKind,
-        binding: &str,
-    ) -> awaken_session_contract::SessionEnvironmentReceipt {
-        awaken_session_contract::SessionEnvironmentReceipt::new(session_id, kind, binding, None)
-    }
-
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("session repository"),
-    );
-    create(
-        repo.as_ref(),
-        persisted("binding-transition", false, "idle"),
-    )
-    .await;
-    let sink = RepositoryEnvironmentBindingSink::new(repo.clone());
-    let create_receipt = receipt(
-        "binding-transition",
-        awaken_session_contract::SessionEnvironmentEffectKind::Create,
-        "sandbox-a",
-    );
-    let resident = sink
-        .persist(create_receipt.clone())
-        .await
-        .expect("T1 Create");
-    assert!(matches!(
-        resident,
-        awaken_session_contract::SessionEnvironmentState::Resident {
-            generation: Some(_),
-            ..
-        }
-    ));
-    create(
-        repo.as_ref(),
-        persisted("binding-adopt-unmaterialized", false, "idle"),
-    )
-    .await;
-    assert!(matches!(
-        sink.persist(receipt(
-            "binding-adopt-unmaterialized",
-            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-            "sandbox-adopted",
-        ))
-        .await
-        .expect("T1 Adopt"),
-        awaken_session_contract::SessionEnvironmentState::Resident {
-            generation: Some(_),
-            ..
-        }
-    ));
-    create(
-        repo.as_ref(),
-        persisted("binding-adopt-existing", false, "idle"),
-    )
-    .await;
-    let prior = sink
-        .persist(receipt(
-            "binding-adopt-existing",
-            awaken_session_contract::SessionEnvironmentEffectKind::Create,
-            "sandbox-existing",
-        ))
-        .await
-        .expect("T2A source");
-    let adopt_existing = receipt(
-        "binding-adopt-existing",
-        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-        "sandbox-existing",
-    );
-    let adopted = sink.persist(adopt_existing.clone()).await.expect("T2A");
-    assert_eq!(adopted.binding(), Some("sandbox-existing"), "T2A/E1");
+    let absent = receipt("binding-missing", "sandbox", Some(&current))
+        .effect_intent()
+        .expect("missing intent");
     assert_eq!(
-        adopted.effect_id(),
-        Some(adopt_existing.effect_id.as_str()),
-        "T2A/E1"
-    );
-    assert_eq!(adopted.generation(), prior.generation(), "T2A/E1");
-    let exact_revision = repo.get("binding-transition").await.expect("T2").revision;
-    assert_eq!(
-        sink.persist(create_receipt).await.expect("T2"),
-        resident,
-        "T2 exact Store read"
-    );
-    assert_eq!(
-        repo.get("binding-transition").await.expect("T2").revision,
-        exact_revision,
-        "T2 no root write"
-    );
-    for (rule, denied) in [
-        (
-            "T3",
-            receipt(
-                "binding-transition",
-                awaken_session_contract::SessionEnvironmentEffectKind::Create,
-                "sandbox-b",
-            ),
-        ),
-        (
-            "T4",
-            receipt(
-                "binding-transition",
-                awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-                "sandbox-b",
-            ),
-        ),
-    ] {
-        assert_eq!(
-            sink.persist(denied).await.expect_err(rule).code,
-            "session_environment_binding_denied",
-            "{rule}"
-        );
-        let after = repo.get("binding-transition").await.expect(rule);
-        assert_eq!(after.revision, exact_revision, "{rule}/E3");
-        assert_eq!(after.environment, resident, "{rule}/E3");
-    }
-    let mut invalid_source = receipt(
-        "binding-transition",
-        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-        "sandbox-a",
-    );
-    invalid_source.binding = "tampered-after-signing".into();
-    assert_eq!(
-        sink.persist(invalid_source).await.expect_err("T7").code,
-        "session_environment_binding_denied",
-        "T7"
-    );
-    let after = repo.get("binding-transition").await.expect("T7");
-    assert_eq!(after.revision, exact_revision, "T7/E3");
-    assert_eq!(after.environment, resident, "T7/E3");
-
-    let terminal = persisted("binding-terminal", false, "terminated");
-    create(repo.as_ref(), terminal).await;
-    let terminal_before = repo
-        .get("binding-terminal")
-        .await
-        .expect("T5 fixture Store read");
-    assert_eq!(
-        sink.persist(receipt(
-            "binding-terminal",
-            awaken_session_contract::SessionEnvironmentEffectKind::Create,
-            "sandbox-terminal",
-        ))
-        .await
-        .expect_err("T5")
-        .code,
-        "session_environment_binding_denied"
-    );
-    assert_eq!(
-        repo.get("binding-terminal").await.expect("T5"),
-        terminal_before,
-        "T5/E3"
-    );
-
-    let mut continuation = persisted("binding-continuation", false, "idle");
-    let source_receipt = receipt(
-        "binding-continuation",
-        awaken_session_contract::SessionEnvironmentEffectKind::Create,
-        "sandbox-source",
-    );
-    continuation.environment = awaken_session_contract::SessionEnvironmentState::Resident {
-        binding: source_receipt.binding.clone(),
-        effect_id: Some(source_receipt.effect_id),
-        generation: Some(awaken_session_contract::SandboxGeneration::new(
-            "binding-continuation",
-            1,
-            u64::MAX,
-            "environment",
-            "image",
-        )),
-        idle_since_unix_ms: None,
-    };
-    continuation
-        .environment
-        .begin_suspend("workspace", "binding-continuation", 0, None)
-        .expect("T6 fixture");
-    create(repo.as_ref(), continuation).await;
-    let continuation_before = repo
-        .get("binding-continuation")
-        .await
-        .expect("T6 fixture Store read");
-    assert_eq!(
-        sink.persist(receipt(
-            "binding-continuation",
-            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-            "sandbox-source",
-        ))
-        .await
-        .expect_err("T6")
-        .code,
-        "session_environment_binding_denied"
-    );
-    assert_eq!(
-        repo.get("binding-continuation").await.expect("T6"),
-        continuation_before,
-        "T6/E3"
-    );
-}
-
-#[test]
-fn environment_binding_readback_rejects_terminal_or_ungenerated_authority() {
-    // Cause/effect table: C1 Store read is exact binding+effect; C2 it is
-    // terminal; C3 generation is absent. E1 only C1+!C2+!C3 may publish;
-    // C2 or C3 returns typed denial. This owns the post-CAS/readback race fence,
-    // while the async table above owns mutation/no-mutation effects.
-    let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
-        "binding-readback",
-        awaken_session_contract::SessionEnvironmentEffectKind::Create,
-        "sandbox-readback",
-        None,
-    );
-    let mut session = persisted("binding-readback", false, "idle");
-    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
-        binding: receipt.binding.clone(),
-        effect_id: Some(receipt.effect_id.clone()),
-        generation: None,
-        idle_since_unix_ms: None,
-    };
-    assert_eq!(
-        validate_environment_binding_authority(&session, &receipt)
-            .expect_err("C3")
-            .code,
-        "session_environment_binding_denied"
-    );
-    session
-        .environment
-        .assign_generation(awaken_session_contract::SandboxGeneration::new(
-            "binding-readback",
-            1,
-            u64::MAX,
-            "environment",
-            "image",
-        ));
-    session.execution = awaken_session_contract::SessionExecutionState::Terminated;
-    assert_eq!(
-        validate_environment_binding_authority(&session, &receipt)
-            .expect_err("C2")
-            .code,
-        "session_environment_binding_denied"
+        sink.authorize(&absent).await.expect("missing lookup"),
+        awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned,
+        "missing aggregate is the only Unowned rule"
     );
 }
 
@@ -6378,4 +6168,127 @@ async fn work_dispatch_reconciliation_isolates_each_session_failure() {
         "W2 preserves the retry diagnostic"
     );
 }
-// | S0 | source mismatch | no | none | E0 |
+#[tokio::test]
+async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
+    // Full-scan cause/effect graph: C1 the canonical recovery index has 256
+    // active, nonblocking rows on page one; C2 row 257 both needs WorkQueue
+    // recovery and retains the target MemoryStore; C3 page two succeeds,
+    // returns an error, reports quarantine, or returns a non-advancing cursor.
+    // Effects: E1 successful recovery observes and dispatches row 257; E2 the
+    // purge guard returns its exact Session blocker and therefore grants zero
+    // physical-purge authority; E3 any incomplete or invalid full scan fails
+    // closed before a partial recovery effect or purge decision. The repository
+    // keyset remains the sole row authority; the application owns no cursor or
+    // recovery list.
+    //
+    // | Rule | page one | page two | Effect |
+    // |---|---|---|---|
+    // | F1 | 256 active rows | row 257 succeeds | E1 + E2 |
+    // | F2 | 256 active rows | repository error | E3 |
+    // | F3 | 256 active rows | quarantine | E3 |
+    // | F4 | 256 active rows | non-advancing cursor | E3 |
+    use awaken_resource_contract::ResourcePurgeGuard as _;
+
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("paged Session repository"),
+    );
+    for index in 0..256 {
+        create(
+            repo.as_ref(),
+            persisted(&format!("page-a-active-{index:03}"), true, "idle"),
+        )
+        .await;
+    }
+    let memory_store_id = awaken_resource_contract::MemoryStoreId::from("page-two-memory");
+    let mut blocker = persisted("page-z-blocker", true, "idle");
+    blocker.resources = awaken_session_contract::SessionResourceState::from_active(
+        awaken_session_contract::ResolvedSessionResources::try_new(
+            vec![awaken_session_contract::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::from("page-two-memory"),
+                source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    memory_store_id: memory_store_id.clone(),
+                    config: awaken_resource_contract::MemoryStoreConfigVersion {
+                        memory_store_id: memory_store_id.clone(),
+                        version: awaken_resource_contract::ConfigVersion::INITIAL,
+                        retention_policy: Default::default(),
+                    },
+                },
+                mount_path: "/memory/page-two".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            }],
+            Vec::new(),
+        )
+        .expect("valid page-two MemoryStore binding"),
+    );
+    create(repo.as_ref(), blocker).await;
+    let repository: Arc<dyn ManagedSessionRepository> = repo.clone();
+
+    let failing_recovery = Arc::new(FaultingSessionRepository::new(repository.clone()));
+    failing_recovery.fail_recovery_scan_on_call(2);
+    let incomplete_environments = RecordingEnvironmentSource::default();
+    let incomplete =
+        reconcile_work_dispatches(failing_recovery.as_ref(), &incomplete_environments).await;
+    assert_eq!(incomplete.settled, 0, "F2/E3");
+    assert_eq!(
+        incomplete_environments
+            .dispatch_calls
+            .load(Ordering::SeqCst),
+        0,
+        "F2/E3 page-one rows cannot produce partial effects"
+    );
+    assert_eq!(incomplete.failures.len(), 1, "F2/E3 repository failure");
+
+    let environments = RecordingEnvironmentSource::default();
+    let recovery = reconcile_work_dispatches(repo.as_ref(), &environments).await;
+    assert!(recovery.failures.is_empty(), "F1/E1: {recovery:?}");
+    assert_eq!(recovery.settled, 257, "F1/E1 every page is recovered");
+    assert!(
+        environments
+            .dispatched
+            .lock()
+            .unwrap()
+            .contains("page-z-blocker"),
+        "F1/E1 row 257 remains visible to recovery"
+    );
+
+    let target = awaken_resource_contract::ResourceTarget::new(
+        "workspace",
+        awaken_resource_contract::ResourceKind::MemoryStore,
+        memory_store_id.as_str(),
+    );
+    let guard = SessionResourcePurgeGuard::new(repository.clone(), Arc::new(UnusedFileCatalog));
+    assert_eq!(
+        guard.blockers(&target, None, 0).await.expect("F1 scan"),
+        [awaken_resource_contract::ResourceReference {
+            kind: awaken_resource_contract::ResourceReferenceKind::SessionBinding,
+            reference_id: "page-z-blocker".into(),
+        }],
+        "F1/E2 row 257 blocks physical purge"
+    );
+
+    let failing = Arc::new(FaultingSessionRepository::new(repository.clone()));
+    failing.fail_recovery_scan_on_call(2);
+    let guard = SessionResourcePurgeGuard::new(failing, Arc::new(UnusedFileCatalog));
+    assert!(
+        guard.blockers(&target, None, 0).await.is_err(),
+        "F2/E3 a later-page outage grants zero purge authority"
+    );
+
+    let quarantined = Arc::new(FaultingSessionRepository::new(repository.clone()));
+    quarantined.quarantine_recovery_scan_on_call(2);
+    let guard = SessionResourcePurgeGuard::new(quarantined, Arc::new(UnusedFileCatalog));
+    assert!(
+        guard.blockers(&target, None, 0).await.is_err(),
+        "F3/E3 later-page quarantine grants zero purge authority"
+    );
+
+    let stalled = Arc::new(FaultingSessionRepository::new(repository));
+    stalled.stall_recovery_cursor_on_call(2);
+    let guard = SessionResourcePurgeGuard::new(stalled, Arc::new(UnusedFileCatalog));
+    assert!(
+        guard.blockers(&target, None, 0).await.is_err(),
+        "F4/E3 a non-advancing cursor grants zero purge authority"
+    );
+}

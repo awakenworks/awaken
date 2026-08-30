@@ -4,22 +4,32 @@ pub awaken_resource_worker_http::RepositoryTransportAuthority::Run
 pub awaken_resource_worker_http::RepositoryTransportAuthority::Run::claim: awaken_run_ingress_contract::dispatch::RunClaim
 pub awaken_resource_worker_http::RepositoryTransportAuthority::Run::claim_expires_ms: u64
 pub awaken_resource_worker_http::RepositoryTransportAuthority::TerminalPublication
-pub awaken_resource_worker_http::RepositoryTransportAuthority::TerminalPublication::command: alloc::boxed::Box<awaken_session_contract::terminal_cleanup::SessionRepositoryPublicationCommand>
-pub awaken_resource_worker_http::RepositoryTransportAuthority::TerminalPublication::lease: awaken_session_contract::session_repo::SessionRealizationLease
+pub awaken_resource_worker_http::RepositoryTransportAuthority::TerminalPublication::command: alloc::boxed::Box<awaken_session_contract::terminal_cleanup::repository_publication::SessionRepositoryPublicationCommand>
+pub awaken_resource_worker_http::RepositoryTransportAuthority::TerminalPublication::lease: awaken_session_contract::session_repo::repository_port::SessionRealizationLease
 pub struct awaken_resource_worker_http::ArtifactPublicationRequest
-pub awaken_resource_worker_http::ArtifactPublicationRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
 pub awaken_resource_worker_http::ArtifactPublicationRequest::content_id: alloc::string::String
 pub awaken_resource_worker_http::ArtifactPublicationRequest::effect_id: alloc::string::String
-pub awaken_resource_worker_http::ArtifactPublicationRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
+pub awaken_resource_worker_http::ArtifactPublicationRequest::idempotency_scope: core::option::Option<alloc::string::String>
+pub awaken_resource_worker_http::ArtifactPublicationRequest::identity: core::option::Option<awaken_worker_contract::registry::WorkerIdentity>
 pub awaken_resource_worker_http::ArtifactPublicationRequest::logical_path: alloc::string::String
 pub awaken_resource_worker_http::ArtifactPublicationRequest::mime_type: alloc::string::String
+pub awaken_resource_worker_http::ArtifactPublicationRequest::operation_fence: awaken_run_ingress_contract::ArtifactPublicationFence
 pub awaken_resource_worker_http::ArtifactPublicationRequest::session_id: alloc::string::String
 pub awaken_resource_worker_http::ArtifactPublicationRequest::workspace_id: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_resource_worker_http::ArtifactPublicationRequest
+pub fn awaken_resource_worker_http::ArtifactPublicationRequest::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct awaken_resource_worker_http::ArtifactRecoveryRequest
+pub awaken_resource_worker_http::ArtifactRecoveryRequest::idempotency_scope: alloc::string::String
+pub awaken_resource_worker_http::ArtifactRecoveryRequest::identity: core::option::Option<awaken_worker_contract::registry::WorkerIdentity>
+pub awaken_resource_worker_http::ArtifactRecoveryRequest::session_id: alloc::string::String
+pub awaken_resource_worker_http::ArtifactRecoveryRequest::terminal_effect: awaken_session_contract::terminal_cleanup::effects::SessionTerminalCleanupEffect
+pub awaken_resource_worker_http::ArtifactRecoveryRequest::workspace_id: alloc::string::String
 pub struct awaken_resource_worker_http::HttpArtifactPublisher
 impl awaken_resource_worker_http::HttpArtifactPublisher
 pub fn awaken_resource_worker_http::HttpArtifactPublisher::new(awaken_worker_transport_security::WorkerUpstream) -> Self
-impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_resource_worker_http::HttpArtifactPublisher
-pub fn awaken_resource_worker_http::HttpArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::ResourceOperationFence> for awaken_resource_worker_http::HttpArtifactPublisher
+pub fn awaken_resource_worker_http::HttpArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::ArtifactPublicationFence>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_resource_worker_http::HttpArtifactPublisher::recover<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactRecovery<awaken_run_ingress_contract::ArtifactPublicationFence>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_resource_worker_http::HttpFileContentSource
 impl awaken_resource_worker_http::HttpFileContentSource
 pub fn awaken_resource_worker_http::HttpFileContentSource::new(awaken_worker_transport_security::WorkerUpstream) -> Self
@@ -28,6 +38,8 @@ pub fn awaken_resource_worker_http::HttpFileContentSource::read<'life0, 'life1, 
 pub struct awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder
 impl awaken_resource_contract::execution::MemoryMaterializationReferenceEncoder<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder
 pub fn awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder::encode(&self, &str, &str, awaken_resource_contract::registry::ConfigVersion, awaken_resource_contract::input::ResourceAccess, &awaken_run_ingress_contract::dispatch::RunClaim) -> core::result::Result<alloc::string::String, awaken_resource_contract::execution::MemoryMaterializationReferenceError>
+impl awaken_resource_contract::execution::MemoryMaterializationReferenceEncoder<awaken_session_contract::terminal_cleanup::effects::SessionTerminalMemoryIntent> for awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder
+pub fn awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder::encode(&self, &str, &str, awaken_resource_contract::registry::ConfigVersion, awaken_resource_contract::input::ResourceAccess, &awaken_session_contract::terminal_cleanup::effects::SessionTerminalMemoryIntent) -> core::result::Result<alloc::string::String, awaken_resource_contract::execution::MemoryMaterializationReferenceError>
 pub struct awaken_resource_worker_http::HttpMemoryRepository
 impl awaken_resource_worker_http::HttpMemoryRepository
 pub fn awaken_resource_worker_http::HttpMemoryRepository::new(awaken_worker_transport_security::WorkerUpstream) -> Self
@@ -48,8 +60,8 @@ pub struct awaken_resource_worker_http::HttpMemoryWritebackClient
 pub struct awaken_resource_worker_http::HttpRepositoryBindingVerifier
 impl awaken_resource_worker_http::HttpRepositoryBindingVerifier
 pub fn awaken_resource_worker_http::HttpRepositoryBindingVerifier::new(awaken_worker_transport_security::WorkerUpstream) -> Self
-impl awaken_resource_contract::execution::RepositoryBindingVerifier<(awaken_session_contract::terminal_cleanup::SessionRepositoryPublicationCommand, awaken_session_contract::session_repo::SessionRealizationLease)> for awaken_resource_worker_http::HttpRepositoryBindingVerifier
-pub fn awaken_resource_worker_http::HttpRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::registry::ConfigVersion, core::option::Option<&'life3 (awaken_session_contract::terminal_cleanup::SessionRepositoryPublicationCommand, awaken_session_contract::session_repo::SessionRealizationLease)>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::RepositoryTransport, awaken_resource_contract::execution::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+impl awaken_resource_contract::execution::RepositoryBindingVerifier<(awaken_session_contract::terminal_cleanup::repository_publication::SessionRepositoryPublicationCommand, awaken_session_contract::session_repo::repository_port::SessionRealizationLease)> for awaken_resource_worker_http::HttpRepositoryBindingVerifier
+pub fn awaken_resource_worker_http::HttpRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::registry::ConfigVersion, core::option::Option<&'life3 (awaken_session_contract::terminal_cleanup::repository_publication::SessionRepositoryPublicationCommand, awaken_session_contract::session_repo::repository_port::SessionRealizationLease)>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::RepositoryTransport, awaken_resource_contract::execution::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 impl awaken_resource_contract::execution::RepositoryBindingVerifier<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_resource_worker_http::HttpRepositoryBindingVerifier
 pub fn awaken_resource_worker_http::HttpRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::registry::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::RepositoryTransport, awaken_resource_contract::execution::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_resource_worker_http::HttpSkillBundleSource
@@ -61,35 +73,39 @@ pub struct awaken_resource_worker_http::RepositoryTransportAuthorization
 pub awaken_resource_worker_http::RepositoryTransportAuthorization::authority: awaken_resource_worker_http::RepositoryTransportAuthority
 pub awaken_resource_worker_http::RepositoryTransportAuthorization::input: awaken_session_contract::resource::ResolvedInput
 pub awaken_resource_worker_http::RepositoryTransportAuthorization::session_id: alloc::string::String
-pub awaken_resource_worker_http::RepositoryTransportAuthorization::worker: awaken_worker_contract::WorkerIdentity
+pub awaken_resource_worker_http::RepositoryTransportAuthorization::worker: awaken_worker_contract::registry::WorkerIdentity
 pub awaken_resource_worker_http::RepositoryTransportAuthorization::workspace_id: alloc::string::String
 pub struct awaken_resource_worker_http::WorkerArtifactPublicationService
 impl awaken_resource_worker_http::WorkerArtifactPublicationService
-pub fn awaken_resource_worker_http::WorkerArtifactPublicationService::new(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerArtifactPublicationService::new(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerArtifactPublicationService::with_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>) -> Self
 pub struct awaken_resource_worker_http::WorkerFileContentService
 impl awaken_resource_worker_http::WorkerFileContentService
 pub fn awaken_resource_worker_http::WorkerFileContentService::new(alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
 pub fn awaken_resource_worker_http::WorkerFileContentService::with_recovery(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
-pub fn awaken_resource_worker_http::WorkerFileContentService::with_session_repository(self, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>) -> Self
-pub fn awaken_resource_worker_http::WorkerFileContentService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerFileContentService::with_session_repository(self, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>) -> Self
+pub fn awaken_resource_worker_http::WorkerFileContentService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>) -> Self
 pub struct awaken_resource_worker_http::WorkerMemoryService
 impl awaken_resource_worker_http::WorkerMemoryService
-pub fn awaken_resource_worker_http::WorkerMemoryService::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::registry::LiveResourceBindingVerifier>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerMemoryService::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::registry::LiveResourceBindingVerifier>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerMemoryService::with_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>) -> Self
 pub struct awaken_resource_worker_http::WorkerRepositoryBindingService
 impl awaken_resource_worker_http::WorkerRepositoryBindingService
 pub fn awaken_resource_worker_http::WorkerRepositoryBindingService::new(alloc::sync::Arc<dyn awaken_resource_contract::registry::LiveResourceBindingVerifier>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
 pub fn awaken_resource_worker_http::WorkerRepositoryBindingService::with_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::SessionRealizationControl>) -> Self
 pub fn awaken_resource_worker_http::WorkerRepositoryBindingService::with_transport_authorizer(self, alloc::sync::Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>) -> Self
-pub fn awaken_resource_worker_http::WorkerRepositoryBindingService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerRepositoryBindingService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>) -> Self
 pub struct awaken_resource_worker_http::WorkerSkillBundleService
 impl awaken_resource_worker_http::WorkerSkillBundleService
 pub fn awaken_resource_worker_http::WorkerSkillBundleService::new(alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
-pub fn awaken_resource_worker_http::WorkerSkillBundleService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub fn awaken_resource_worker_http::WorkerSkillBundleService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>) -> Self
 pub const awaken_resource_worker_http::ARTIFACT_METADATA_HEADER: &str
 pub const awaken_resource_worker_http::ARTIFACT_PUBLICATION_PATH: &str
+pub const awaken_resource_worker_http::ARTIFACT_RECOVERY_PATH: &str
 pub trait awaken_resource_worker_http::RepositoryTransportAuthorizer: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_worker_http::RepositoryTransportAuthorizer::authorize<'life0, 'async_trait>(&'life0 self, awaken_resource_worker_http::RepositoryTransportAuthorization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::RepositoryTransport, awaken_resource_contract::execution::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_resource_worker_http::memory_materialization_reference(&str, &str, awaken_resource_contract::registry::ConfigVersion, awaken_resource_contract::input::ResourceAccess, &awaken_run_ingress_contract::dispatch::RunClaim) -> core::result::Result<alloc::string::String, awaken_resource_contract::execution::MemoryMaterializationReferenceError>
+pub fn awaken_resource_worker_http::terminal_memory_materialization_reference(&awaken_session_contract::terminal_cleanup::effects::SessionTerminalMemoryIntent) -> core::result::Result<alloc::string::String, awaken_resource_contract::execution::MemoryMaterializationReferenceError>
 pub fn awaken_resource_worker_http::worker_artifact_publication_router(alloc::sync::Arc<awaken_resource_worker_http::WorkerArtifactPublicationService>) -> axum::routing::Router
 pub fn awaken_resource_worker_http::worker_file_content_router(alloc::sync::Arc<awaken_resource_worker_http::WorkerFileContentService>) -> axum::routing::Router
 pub fn awaken_resource_worker_http::worker_memory_router(alloc::sync::Arc<awaken_resource_worker_http::WorkerMemoryService>) -> axum::routing::Router

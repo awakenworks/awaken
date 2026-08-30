@@ -44,10 +44,12 @@ pub use agent_config::{
     AGENT_TOOLSET_TOOL_IDS, AgentTool, AgentToolConfig, AgentToolDefaultConfig,
     AgentToolPermissionPolicy, AgentToolsetMember, AgentWebSearchUserLocation,
     AgentWebSearchUserLocationKind, CustomToolInputSchema, ObjectSchemaKind, agent_toolset_members,
-    is_agent_toolset_member, resolved_toolsets, toolset_policies, validate_agent_tools,
-    validate_mcp_toolset_pairing,
+    is_agent_toolset_member, is_controlled_modification_member, preserve_runtime_agent_overrides,
+    resolved_toolsets, toolset_policies, validate_agent_tools, validate_mcp_toolset_pairing,
 };
-pub use awaken_agent_contract::stable_fingerprint;
+pub use awaken_agent_contract::{
+    CanonicalJsonHashError, canonical_json_sha256, stable_fingerprint,
+};
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 pub use baseline::{
     CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior,
@@ -100,10 +102,13 @@ pub use dream::{
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
     SandboxCheckpointRequest, SandboxGeneration, SandboxRestoreRequest,
+    SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
     SessionEnvironmentEffectKind, SessionEnvironmentOperation, SessionEnvironmentPhase,
-    SessionEnvironmentReceipt, SessionEnvironmentReceiptError, SessionEnvironmentState,
-    SessionEnvironmentTransitionError, SourceDisposedReceipt, SuspendPhase,
-    checkpoint_source_disposal_authorized,
+    SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
+    SessionEnvironmentReceiptRecoveryAction, SessionEnvironmentState,
+    SessionEnvironmentTransitionError, SourceDisposedReceipt, SourceReleaseDisposal,
+    SourceReleasePreparationEffect, SourceReleasePreparedReceipt, SuspendPhase,
+    checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
 };
 pub use event_batches::{
     MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchError,
@@ -134,8 +139,9 @@ pub use model_resolution::{
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
     ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
-    SessionResourceManifest, repository_transport_credential_target,
-    repository_transport_credential_usage, repository_transport_material_binding,
+    SessionResourceCompatibilityFacts, SessionResourceManifest, SessionResourceTransition,
+    repository_transport_credential_target, repository_transport_credential_usage,
+    repository_transport_material_binding,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
@@ -157,19 +163,23 @@ pub use session::{
     LiveInboxError, LiveInboxSnapshot, McpAttachmentRealizer, OutcomeDrive, OutcomeFailure,
     OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionBudgetResumeDelivery,
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket, SessionEnvironmentBindingSink,
-    SessionInit, SessionModelUsage, SessionRuntime, SessionThreadLiveSubscription, SessionUsage,
-    StepOutcome, ToolPermissionDecision,
+    SessionInit, SessionModelUsage, SessionRuntime, SessionSandboxLayout,
+    SessionThreadLiveSubscription, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-    FailSessionRealization, FrozenAgentPublicationDecision, FrozenSessionProjection,
-    RenewSessionRealization, SessionProjectionInstallMode, SessionProjectionSynchronizer,
-    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlDisposition,
-    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
-    SessionRealizationProgress, SessionRealizationTarget, SessionRepositoryPublicationProjection,
-    SessionTerminalCleanupAssignment, drive_session_realization, frozen_agent_publication_decision,
+    FailSessionRealization, FrozenAgentPublicationDecision, FrozenResourceTransitionUse,
+    FrozenSessionProjection, RenewSessionRealization, SessionProjectionInstallMode,
+    SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
+    SessionRealizationControlDisposition, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationProgress,
+    SessionRealizationTarget, SessionRepositoryPublicationProjection,
+    SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
+    SessionTerminalCleanupWork, drive_session_realization, frozen_agent_publication_decision,
+    frozen_sandbox_layout_publication_decision, legacy_agent_publication_decision,
     project_effective_agent_publication, realization_generation_authorizes,
-    realization_lease_authorizes, realization_lease_is_live_at,
+    realization_lease_authorizes, realization_lease_generation_authorizes,
+    realization_lease_is_live_at,
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
@@ -177,7 +187,7 @@ pub use session_repo::{
     SessionDispositionTransitionError, SessionExecutionState, SessionExecutionStateError,
     SessionExecutionTransitionError, SessionIdempotencyReceipt, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRealizationLease, SessionRecoveryQuarantine, SessionRecoveryScan,
+    SessionRealizationLease, SessionRecoveryCursor, SessionRecoveryQuarantine, SessionRecoveryScan,
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
     SessionRevision, SessionTombstone, VisibleMcpServer,
 };
@@ -186,10 +196,17 @@ pub use skill_execution::{
     validate_skill_bundle,
 };
 pub use terminal_cleanup::{
-    SessionCleanupCommand, SessionCleanupCompletion, SessionCleanupError, SessionCleanupOperation,
-    SessionRepositoryPublicationCleanup, SessionRepositoryPublicationCommand,
-    SessionRepositoryPublicationEffect, SessionRepositoryPublicationIntent,
-    SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
-    VerifiedSessionCleanupReceipt,
+    SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,
+    SessionCleanupError, SessionCleanupOperation, SessionCleanupPreparation,
+    SessionCleanupRepositoryPreparation, SessionMemoryReconciliationError,
+    SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
+    SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
+    SessionRepositoryPublicationRejection, SessionTerminalCleanupAction,
+    SessionTerminalCleanupDisposalEffect, SessionTerminalCleanupDriveOutcome,
+    SessionTerminalCleanupEffect, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
+    drive_session_terminal_cleanup, terminal_memory_reconciliation_intent,
+    terminal_memory_reconciliation_intents,
+    terminal_memory_reconciliation_intents_from_materializations,
+    validate_continuation_memory_materializations, validate_continuation_memory_reconciliation,
 };
 pub use tool_configuration::SessionToolConfiguration;

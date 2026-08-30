@@ -24,16 +24,17 @@ impl SessionApplication {
     /// active/terminal marker into the Session root would create a second truth.
     #[cfg(test)]
     pub(crate) async fn reconcile_outcome_continuations(&self) -> OutcomeReconciliation {
-        let candidates = match self.session_repository().reconcilable_sessions().await {
-            Ok(scan) => SessionRecoveryCandidates::from(scan),
-            Err(error) => {
-                let mut report = OutcomeReconciliation::default();
-                report
-                    .failures
-                    .push(("<repository>".into(), repository_failure(error).to_string()));
-                return report;
-            }
-        };
+        let candidates =
+            match super::scan_all_reconcilable_sessions(self.session_repository()).await {
+                Ok(scan) => SessionRecoveryCandidates::from(scan),
+                Err(error) => {
+                    let mut report = OutcomeReconciliation::default();
+                    report
+                        .failures
+                        .push(("<repository>".into(), repository_failure(error).to_string()));
+                    return report;
+                }
+            };
         self.reconcile_outcome_continuations_from(&candidates).await
     }
 

@@ -75,14 +75,53 @@ fn sh(script: String) -> pc::Command {
     c
 }
 
+fn fence(operation_id: &str) -> pc::SandboxEffectFence {
+    pc::SandboxEffectFence::new(
+        operation_id,
+        "session-recovery-owner",
+        "session-recovery-runtime",
+        1,
+        u64::MAX,
+    )
+    .unwrap()
+}
+
+fn authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDisposalAuthorization {
+    let fingerprint = format!("session-recovery-preparation:{}", prepared.operation_id);
+    let preparation = pc::SandboxDisposalPreparation::new(prepared.clone(), fingerprint).unwrap();
+    let operation_id = preparation.operation_id().unwrap();
+    let successor = pc::SandboxEffectFence::new(
+        operation_id,
+        prepared.owner.clone(),
+        prepared.runtime_incarnation.clone(),
+        prepared.epoch,
+        prepared.expires_at_unix_ms,
+    )
+    .unwrap();
+    preparation.authorize(successor).unwrap()
+}
+
 /// Host A realizes + (if it can exec) writes an artifact; host B (a fresh provider over
 /// the same durable root) adopts the serialized handle and recovers the sandbox.
 async fn cross_node_adopt(tier: Tier, can_exec: bool) {
+    // Cause/effect decision table: C1 Host A creates under one live aggregate
+    // fence; C2 its V2 handle is serialized; C3 Host B presents the exact same
+    // spec, handle, and realization fence; C4 a distinct terminal operation is
+    // authorized by the same lease generation. R1 C1+C2+C3 => Host B adopts
+    // the exact Ready incarnation and reads Host A's durable bytes. R2
+    // R1+C4 => fenced disposal publishes the one Removed tombstone and reaps
+    // the exact root. Legacy/V1 adoption remains deliberately non-destructive
+    // and is not a substitute recovery authority.
     let base = tempfile::tempdir().unwrap();
+    let sandbox_spec = spec(tier, "t-xnode");
+    let realization_fence = fence("cross-node-create");
 
     // ── Host A: realize the sandbox, optionally write a durable artifact, persist. ──
     let host_a = provider(tier, base.path());
-    let sandbox_a = host_a.create(&spec(tier, "t-xnode")).await.unwrap();
+    let sandbox_a = host_a
+        .create_for_effect(&sandbox_spec, &realization_fence)
+        .await
+        .unwrap();
     assert_eq!(sandbox_a.id(), "t-xnode");
 
     if can_exec {
@@ -105,7 +144,7 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
     let host_b = provider(tier, base.path());
     let sandbox_b = host_b
-        .adopt(&recovered)
+        .adopt_for_effect(&sandbox_spec, &recovered, &realization_fence)
         .await
         .unwrap_or_else(|e| panic!("{tier:?}: a second host must adopt the handle: {e:?}"));
 
@@ -131,7 +170,18 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
         );
     }
 
-    sandbox_b.dispose().await.unwrap();
+    // Cross-node disposal rule: the aggregate-authorized preparation call
+    // binds the exact recovered filesystem participant without deleting it;
+    // only the subsequent physical-disposal call may remove that participant.
+    let terminal = fence("cross-node-terminal");
+    sandbox_b
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .unwrap();
+    sandbox_b
+        .dispose_for_effect(&authorization(&terminal))
+        .await
+        .unwrap();
     assert!(matches!(
         sandbox_b.status().await.unwrap(),
         pc::SandboxStatus::Terminated

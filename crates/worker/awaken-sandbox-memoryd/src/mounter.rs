@@ -193,7 +193,9 @@ impl MemoryMounter for MemoryStoreMounter {
                     host_path.display()
                 ))
             })?;
-            return Ok(Box::new(FuseMount { handle }));
+            return Ok(Box::new(FuseMount {
+                handle: Arc::new(std::sync::Mutex::new(handle)),
+            }));
         }
 
         // No FUSE (macOS / CI / unprivileged container): copy the store out now and
@@ -201,21 +203,25 @@ impl MemoryMounter for MemoryStoreMounter {
         let snapshot = copy::materialize(&*self.fs, store_id, host_path)
             .await
             .map_err(sandbox_err)?;
+        let materialization_heads = snapshot.materialization_heads();
         Ok(Box::new(CopyMount {
             fs: self.fs.clone(),
             store_id: store_id.to_string(),
             host_path: host_path.to_path_buf(),
             writable: access == MountAccess::ReadWrite,
-            snapshot,
+            materialization_heads,
+            snapshot: tokio::sync::Mutex::new(snapshot),
         }))
     }
 
     async fn reconcile_recovered_copy(
         &self,
-        store_id: &str,
+        operation_reference: &str,
+        evidence: &awaken_provisioning_contract::MemoryMaterializationEvidence,
         files: &[(String, Vec<u8>)],
         access: MountAccess,
     ) -> Result<(), SandboxError> {
+        evidence.validate()?;
         if access != MountAccess::ReadWrite {
             return Ok(());
         }
@@ -244,18 +250,16 @@ impl MemoryMounter for MemoryStoreMounter {
                 }
                 std::fs::write(destination, bytes).map_err(sandbox_err)?;
             }
-            let mut snapshot = copy::snapshot(&*self.fs, store_id)
-                .await
+            let mut snapshot = copy::CopySnapshot::from_materialization_heads(&evidence.heads)
                 .map_err(sandbox_err)?;
-            let report = copy::harvest(&*self.fs, store_id, &root, &mut snapshot)
+            let report = copy::harvest(&*self.fs, operation_reference, &root, &mut snapshot)
                 .await
                 .map_err(sandbox_err)?;
             if !report.conflicts.is_empty() {
-                tracing::warn!(
-                    store = %store_id,
-                    conflicts = ?report.conflicts,
-                    "recovered memory copy preserved concurrent durable heads"
-                );
+                return Err(sandbox_err(format!(
+                    "recovered Memory copy preserved {} concurrent durable head conflict(s)",
+                    report.conflicts.len()
+                )));
             }
             Ok(())
         }
@@ -268,7 +272,7 @@ impl MemoryMounter for MemoryStoreMounter {
 /// A live FUSE mount; teardown unmounts (draining open fds).
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 struct FuseMount {
-    handle: crate::fuse::MemoryMountHandle,
+    handle: Arc<std::sync::Mutex<crate::fuse::MemoryMountHandle>>,
 }
 
 #[cfg(all(feature = "fuse", target_os = "linux"))]
@@ -278,11 +282,20 @@ impl MemoryMount for FuseMount {
         Realization::Fuse
     }
 
-    async fn teardown(self: Box<Self>) {
+    async fn teardown(&self) -> Result<(), SandboxError> {
         // `unmount` blocks briefly (drains fds, joins the session); keep it off the
-        // async worker.
-        let handle = self.handle;
-        let _ = tokio::task::spawn_blocking(move || handle.unmount()).await;
+        // async worker. The handle stays in the guard so a task failure remains
+        // retryable; `MemoryMountHandle::unmount` is itself idempotent.
+        let handle = self.handle.clone();
+        tokio::task::spawn_blocking(move || {
+            handle
+                .lock()
+                .map_err(|_| sandbox_err("Memory FUSE handle mutex is poisoned"))?
+                .unmount();
+            Ok(())
+        })
+        .await
+        .map_err(|error| sandbox_err(format!("join Memory FUSE teardown: {error}")))?
     }
 }
 
@@ -292,7 +305,8 @@ struct CopyMount {
     store_id: String,
     host_path: PathBuf,
     writable: bool,
-    snapshot: copy::CopySnapshot,
+    materialization_heads: Vec<awaken_provisioning_contract::MemoryMaterializationHead>,
+    snapshot: tokio::sync::Mutex<copy::CopySnapshot>,
 }
 
 #[async_trait::async_trait]
@@ -301,21 +315,26 @@ impl MemoryMount for CopyMount {
         Realization::Copy
     }
 
-    async fn teardown(self: Box<Self>) {
+    fn materialization_heads(
+        &self,
+    ) -> Option<Vec<awaken_provisioning_contract::MemoryMaterializationHead>> {
+        Some(self.materialization_heads.clone())
+    }
+
+    async fn teardown(&self) -> Result<(), SandboxError> {
         if self.writable {
-            let mut snapshot = self.snapshot;
-            match copy::harvest(&*self.fs, &self.store_id, &self.host_path, &mut snapshot).await {
-                Ok(report) if !report.conflicts.is_empty() => tracing::warn!(
-                    store = %self.store_id,
-                    conflicts = ?report.conflicts,
-                    "memory copy harvest preserved concurrent durable heads"
-                ),
-                Err(error) => {
-                    tracing::warn!(store = %self.store_id, %error, "memory copy harvest failed");
-                }
-                Ok(_) => {}
+            let mut snapshot = self.snapshot.lock().await;
+            let report = copy::harvest(&*self.fs, &self.store_id, &self.host_path, &mut snapshot)
+                .await
+                .map_err(sandbox_err)?;
+            if !report.conflicts.is_empty() {
+                return Err(sandbox_err(format!(
+                    "Memory copy harvest preserved {} concurrent durable head conflict(s)",
+                    report.conflicts.len()
+                )));
             }
         }
+        Ok(())
     }
 }
 
@@ -348,15 +367,17 @@ mod tests {
 
         // Agent edits the file; the writable copy guard harvests it back.
         std::fs::write(dir.join("note.md"), "v2").unwrap();
+        let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
             fs: mounter.fs.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),
             writable: true,
-            snapshot,
+            materialization_heads,
+            snapshot: tokio::sync::Mutex::new(snapshot),
         });
         assert_eq!(guard.realization(), Realization::Copy);
-        guard.teardown().await;
+        guard.teardown().await.unwrap();
 
         assert_eq!(
             durable
@@ -374,13 +395,28 @@ mod tests {
 
     #[tokio::test]
     async fn recovered_copy_reconciles_surviving_files_without_a_live_guard() {
+        // Recovered-copy cause/effect rule M1: exact persisted base A + surviving
+        // edits B authorizes the same CAS harvest as a live CopyMount; no fresh
+        // snapshot may replace A at recovery time, and successful writes become
+        // the only durable heads before the Sandbox can be removed.
         let durable = Arc::new(VolatileMemoryRepository::new());
-        durable.create("s", "/note.md", "before").await.unwrap();
+        let original = durable.create("s", "/note.md", "before").await.unwrap();
         let mounter = MemoryStoreMounter::copy_only(durable.clone());
+        let evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "s",
+            "/workspace/memory",
+            vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                path: original.path,
+                id: original.id,
+                content_sha256: original.content_sha256,
+            }],
+        )
+        .unwrap();
 
         mounter
             .reconcile_recovered_copy(
                 "s",
+                &evidence,
                 &[
                     ("note.md".into(), b"after".to_vec()),
                     ("nested/new.md".into(), b"new".to_vec()),
@@ -422,14 +458,16 @@ mod tests {
 
         // A read-only edit on disk must NOT propagate back.
         std::fs::write(dir.join("note.md"), "tampered").unwrap();
+        let materialization_heads = snapshot.materialization_heads();
         let guard: Box<dyn MemoryMount> = Box::new(CopyMount {
             fs: mounter.fs.clone(),
             store_id: "s".into(),
             host_path: dir.clone(),
             writable: false,
-            snapshot,
+            materialization_heads,
+            snapshot: tokio::sync::Mutex::new(snapshot),
         });
-        guard.teardown().await;
+        guard.teardown().await.unwrap();
 
         assert_eq!(
             durable
@@ -506,8 +544,8 @@ mod tests {
             "alpha cannot read beta's memory"
         );
 
-        ga.teardown().await;
-        gb.teardown().await;
+        ga.teardown().await.unwrap();
+        gb.teardown().await.unwrap();
         std::fs::remove_dir_all(&dir_a).ok();
         std::fs::remove_dir_all(&dir_b).ok();
     }
@@ -534,7 +572,7 @@ mod tests {
 
         // An edit is harvested back on teardown.
         std::fs::write(dir.join("note.md"), "v2").unwrap();
-        guard.teardown().await;
+        guard.teardown().await.unwrap();
         assert_eq!(
             durable
                 .get_by_path("s", "/note.md")
@@ -567,7 +605,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
 
         std::fs::write(dir.join("note.md"), "v2").unwrap();
-        guard.teardown().await;
+        guard.teardown().await.unwrap();
         assert_eq!(
             durable
                 .get_by_path("s", "/note.md")
@@ -604,7 +642,7 @@ mod tests {
             !dir.join("deleted.md").exists(),
             "a memory deleted from store truth cannot resurrect on remount"
         );
-        guard.teardown().await;
+        guard.teardown().await.unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 

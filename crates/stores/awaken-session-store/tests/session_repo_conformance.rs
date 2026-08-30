@@ -255,16 +255,58 @@ fn complete_terminal_cleanup(value: &mut PersistedSession) {
         .terminal_cleanup
         .command_for(&session_id, &session_id)
         .expect("requested cleanup exposes its exact root command");
-    let completion = awaken_session_contract::SessionCleanupCompletion::new(&command, Vec::new());
-    let verified = completion
-        .verify(&command)
-        .expect("exact completion becomes a verified receipt");
+    install_legacy_completion_wire(value, &command);
     assert!(
         value
-            .terminal_cleanup
-            .complete(&session_id, &[verified])
+            .normalize_legacy_terminal_cleanup("conformance fixture released")
             .expect("complete cleanup operation")
     );
+}
+
+/// Storage conformance needs a historical Completed aggregate, not a second
+/// Runtime authoring port. Cause/effect decision rule L1: exact frozen command
+/// plus canonical persisted v1 bytes may normalize; malformed/foreign bytes are
+/// rejected by the contract decoder/normalizer and cannot make a row deletable.
+fn install_legacy_completion_wire(
+    session: &mut PersistedSession,
+    command: &awaken_session_contract::SessionCleanupCommand,
+) {
+    let receipt_fingerprint = awaken_session_contract::stable_fingerprint(&(
+        "session-terminal-cleanup-thread-receipt-v1",
+        command.session_id.as_str(),
+        command.thread_id.as_str(),
+        command.effect_id.as_str(),
+        Vec::<(&str, &str)>::new(),
+    ));
+    let completion = json!({
+        "session_id": command.session_id,
+        "thread_id": command.thread_id,
+        "effect_id": command.effect_id,
+        "artifact_receipts": [],
+        "receipt_fingerprint": receipt_fingerprint,
+    });
+    let mut encoded = serde_json::to_value(&*session).unwrap();
+    let cleanup = encoded
+        .get_mut("terminal_cleanup")
+        .expect("PersistedSession wire contains terminal_cleanup");
+    let cleanup = if cleanup.get("state").and_then(serde_json::Value::as_str)
+        == Some("repository_publication")
+    {
+        cleanup
+            .get_mut("cleanup")
+            .expect("publication wire contains its cleanup")
+    } else {
+        cleanup
+    };
+    cleanup
+        .as_object_mut()
+        .expect("cleanup wire is an object")
+        .entry("completions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("legacy completions wire is an object")
+        .insert(command.thread_id.clone(), completion);
+    *session = serde_json::from_value(encoded).unwrap();
 }
 
 // ── The universal port contract, trait-generic over any backend ──────────────────

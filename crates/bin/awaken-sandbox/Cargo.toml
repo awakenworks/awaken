@@ -19,6 +19,10 @@ path = "src/lib.rs"
 #               bridges its stdio to a dialed socket (the image ENTRYPOINT; the CLI argv
 #               arrives as the container Cmd = `command_of(spec)`).
 #   - hand    : the neutral tool-execution endpoint (ADR-0044/0045).
+#   - repository-publish-noreplace: internal atomic filesystem effect consumed by
+#               the container Repository adapter through the configured Hand binary.
+#   - read-tree-nofollow: descriptor-relative regular-file snapshot consumed by
+#               the container terminal participant adapter.
 [[bin]]
 name = "awaken-sandbox"
 path = "src/main.rs"
@@ -39,6 +43,8 @@ hand = [
 
 [dependencies]
 awaken-sandbox-control.workspace = true
+awaken-sandbox-fs.workspace = true
+tar = "0.4"
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",

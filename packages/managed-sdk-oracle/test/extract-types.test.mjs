@@ -72,6 +72,10 @@ test('current wire contract extracts recursive Session shape and event vocabular
   assert.equal(wire.session.nested.agent.optional.includes('multiagent'), false);
   assert.equal(wire.session.required.includes('preparation'), false);
   assert.equal(wire.session.optional.includes('preparation'), false);
+  assert.deepEqual(wire.resource_params.memory_store.required, ['memory_store_id', 'type']);
+  assert.deepEqual(wire.resource_params.memory_store.optional, ['access', 'instructions']);
+  assert.ok(wire.resource_params.file.optional.includes('mount_path'));
+  assert.ok(wire.resource_params.github_repository.required.includes('authorization_token'));
   for (const shape of [wire.session, wire.session.nested.agent]) {
     assert.equal(
       new Set([...shape.required, ...shape.optional]).size,

@@ -15,13 +15,13 @@
     },
     {
       "id": "eval-c2",
-      "prompt": "Draft an agent id 'eval-c2' with the bash and read tools. Require human approval before any bash command, and always deny shell deletes (rm).",
+      "prompt": "Draft an agent id 'eval-c2' with the bash and read tools. Apply controlled modifications so bash requires human approval.",
       "criteria": [
         { "kind": "persisted" },
         { "kind": "has_tool", "tool_id": "bash" },
         { "kind": "permission_gated" },
         { "kind": "permission_uses_real_lowercase_tool_ids" },
-        { "kind": "permission_denies_tool_term", "tool_id": "bash", "term": "rm" }
+        { "kind": "permission_requires_approval", "tool_id": "bash" }
       ]
     },
     {

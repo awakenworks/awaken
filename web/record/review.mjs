@@ -121,7 +121,13 @@ const checks = [
     assert.match(source, /arrayContaining\(\["read", "written"\]\)/);
   }],
   ["runtime tool identity", () => {
-    assert.match(requiredProof("03-tools-permissions.mjs"), /bash\(command/);
+    const source = requiredProof("03-tools-permissions.mjs");
+    assert.match(source, /event\.type === "agent\.tool_use" && event\.name === "bash"/);
+    assert.match(source, /evaluated_permission\)\.toBe\("ask"\)/);
+    assert.match(source, /event\.type === "agent\.tool_result" && event\.tool_use_id === bashUseId/);
+    assert.match(source, /deniedResult\?\.is_error\)\.toBe\(true\)/);
+    assert.match(source, /latestIdle\?\.stop_reason\?\.type/);
+    assert.match(source, /not\.toContain\("AWAKEN_APPROVAL_PROOF"\)/);
     assert.doesNotMatch(requiredProof("06-ai-state-machine.mjs"), /\bRead\(|\bWrite\(/);
   }],
   ["credential safety", () => {
@@ -196,7 +202,8 @@ const checks = [
   ["MCP override proof", () => {
     const tools = requiredProof("20-tool-presentation.mjs");
     assert.match(tools, /mcp__issues__create_issue/);
-    assert.match(tools, /config\.tools\)\.toEqual\(\["read"\]\)/);
+    assert.match(tools, /config\.tools\)\.toEqual\(typedAgentTools\(\["read"\]\)\)/);
+    assert.doesNotMatch(tools, /config\.tools\)\.toEqual\(\["read"\]\)/);
     assert.match(tools, /config\.mcp_servers/);
   }],
   ["Memory effect proof", () => {

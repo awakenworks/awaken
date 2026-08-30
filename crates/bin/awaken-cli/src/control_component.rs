@@ -101,7 +101,7 @@ pub(super) async fn control_component_for_process(
         platform_plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
             web_search_providers,
         ),
-        assistant_plugins: awaken_runtime_host::authorable_config_sections_with_web_search(
+        assistant_plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
             web_search_providers,
         ),
         runtimes,

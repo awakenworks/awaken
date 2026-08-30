@@ -778,20 +778,38 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .collect()
     }
 
-    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+    async fn reconcilable_sessions_page(
+        &self,
+        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
+    ) -> Result<SessionRecoveryScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
+        let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
+            .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
         let mut scan = SessionRecoveryScan::default();
-        let rows = sqlx::query(
+        let mut rows = sqlx::query(
             "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                     session.revision, work.observed_revision \
              FROM managed_session_reconciliation_work work \
              JOIN managed_session session ON session.session_id = work.session_id \
-             ORDER BY session.session_id LIMIT $1",
+             WHERE ($1::text IS NULL OR session.session_id > $1) \
+             ORDER BY session.session_id LIMIT $2",
         )
-        .bind(RECOVERY_BATCH_SIZE)
+        .bind(after.map(awaken_session_contract::SessionRecoveryCursor::session_id))
+        .bind(RECOVERY_BATCH_SIZE + 1)
         .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
+        let has_more = rows.len() > page_size;
+        rows.truncate(page_size);
+        if has_more {
+            let session_id = rows
+                .last()
+                .ok_or_else(|| storage("recovery lookahead produced an empty page"))?
+                .try_get::<String, _>("session_id")
+                .map_err(storage)?;
+            scan.next_cursor =
+                Some(awaken_session_contract::SessionRecoveryCursor::after_session_id(session_id));
+        }
         for row in rows {
             let session_id: String = row.try_get("session_id").map_err(storage)?;
             let encoded = EncodedSessionRow {

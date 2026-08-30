@@ -790,14 +790,31 @@ impl SessionRuntime for RehydrateFake {
         Ok(self.delegated.lock().unwrap().clone())
     }
 
-    async fn execute_terminal_cleanup(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.ended.lock().unwrap().push(command.thread_id.clone());
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            Vec::new(),
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        self.ended
+            .lock()
+            .unwrap()
+            .push(effect.command.thread_id.clone());
+        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(crate::test_support::complete_terminal_cleanup_disposal(
+            &effect,
         ))
     }
 
@@ -847,15 +864,13 @@ impl SessionRuntime for RehydrateFake {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        workspace_id: &str,
-        _resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
+        transition: &awaken_session_contract::SessionResourceTransition,
     ) -> Result<(), RunError> {
         self.order.lock().unwrap().push("resources");
         self.restored.lock().unwrap().push((
             thread.to_string(),
-            workspace_id.to_string(),
-            inputs.clone(),
+            transition.desired().workspace_id.clone(),
+            transition.desired().resources.clone(),
         ));
         Ok(())
     }

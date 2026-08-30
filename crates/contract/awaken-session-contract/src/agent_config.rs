@@ -157,6 +157,14 @@ impl AgentToolsetMember {
             Self::WebSearch => "web_search",
         }
     }
+
+    /// Whether the controlled-modification authoring projection requires human
+    /// approval for this capability. This versioned member enum is the single
+    /// owner; UI capability metadata and Assistant authoring only project it.
+    #[must_use]
+    pub const fn controlled_modification(self) -> bool {
+        matches!(self, Self::Bash | Self::Write | Self::Edit)
+    }
 }
 
 const AGENT_TOOLSET_MEMBERS: [AgentToolsetMember; 8] = [
@@ -172,16 +180,17 @@ const AGENT_TOOLSET_MEMBERS: [AgentToolsetMember; 8] = [
 
 /// The official Managed Agent toolset's versioned membership. It lives beside
 /// the wire value so every adapter normalizes the same closed set.
-pub const AGENT_TOOLSET_TOOL_IDS: [&str; 8] = [
-    AgentToolsetMember::Bash.as_str(),
-    AgentToolsetMember::Read.as_str(),
-    AgentToolsetMember::Write.as_str(),
-    AgentToolsetMember::Edit.as_str(),
-    AgentToolsetMember::Glob.as_str(),
-    AgentToolsetMember::Grep.as_str(),
-    AgentToolsetMember::WebFetch.as_str(),
-    AgentToolsetMember::WebSearch.as_str(),
-];
+pub const AGENT_TOOLSET_TOOL_IDS: [&str; 8] = agent_toolset_member_ids();
+
+const fn agent_toolset_member_ids() -> [&'static str; 8] {
+    let mut ids = [""; 8];
+    let mut index = 0;
+    while index < AGENT_TOOLSET_MEMBERS.len() {
+        ids[index] = AGENT_TOOLSET_MEMBERS[index].as_str();
+        index += 1;
+    }
+    ids
+}
 
 /// Allocation-free traversal of the complete versioned Runtime capability
 /// projection. Keeping the iterator beside the closed array prevents adapters
@@ -200,6 +209,54 @@ fn bounded_agent_toolset_members() -> core::array::IntoIter<AgentToolsetMember, 
 #[must_use]
 pub fn is_agent_toolset_member(name: &str) -> bool {
     agent_toolset_members().any(|member| member == name)
+}
+
+/// Preserve Agent overrides that the closed Managed wire cannot represent.
+/// `current` is the version-fenced durable authority; `replacement` contains the
+/// caller's complete wire-authored canonical policy. This function never creates
+/// an opaque override from wire input and never changes its bytes.
+pub fn preserve_runtime_agent_overrides(
+    current: &[awaken_agent_contract::ToolsetPolicy],
+    replacement: &mut Vec<awaken_agent_contract::ToolsetPolicy>,
+) {
+    use awaken_agent_contract::ToolsetSource;
+
+    let Some(current_agent) = current
+        .iter()
+        .find(|toolset| toolset.source == ToolsetSource::Agent)
+    else {
+        return;
+    };
+    let opaque = current_agent
+        .overrides
+        .iter()
+        .filter(|entry| !is_agent_toolset_member(&entry.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if opaque.is_empty() {
+        return;
+    }
+    if let Some(replacement_agent) = replacement
+        .iter_mut()
+        .find(|toolset| toolset.source == ToolsetSource::Agent)
+    {
+        replacement_agent.overrides.extend(opaque);
+    } else {
+        replacement.push(awaken_agent_contract::ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: current_agent.default,
+            overrides: opaque,
+        });
+    }
+}
+
+#[must_use]
+pub fn is_controlled_modification_member(name: &str) -> bool {
+    AGENT_TOOLSET_MEMBERS
+        .iter()
+        .copied()
+        .find(|member| member.as_str() == name)
+        .is_some_and(AgentToolsetMember::controlled_modification)
 }
 
 fn valid_domain(value: &str, allow_path: bool) -> bool {
@@ -694,6 +751,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opaque_runtime_override_preservation_has_one_closed_member_owner() {
+        // Cause/effect table:
+        // | rule | current opaque | replacement Agent | effect |
+        // | O1   | yes            | present           | append exact opaque only |
+        // | O2   | yes            | absent            | add Agent owner with current default |
+        // | O3   | no             | either            | replacement unchanged |
+        // Canonical members remain wire-owned and MCP policies are never touched.
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+
+        let default = ToolExecutionPolicy {
+            enabled: false,
+            permission: ToolPermissionRequirement::AlwaysAllow,
+        };
+        let canonical = ToolPolicyOverride::new("read", ToolExecutionPolicy::default());
+        let opaque = ToolPolicyOverride::with_optional_configuration(
+            "agent_run",
+            ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+            Some(serde_json::json!({ "runtime": "exact" })),
+        );
+        let current = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default,
+            overrides: vec![canonical, opaque.clone()],
+        }];
+        let mcp = ToolsetPolicy {
+            source: ToolsetSource::Mcp {
+                server_name: "docs".into(),
+            },
+            default: ToolExecutionPolicy::default(),
+            overrides: Vec::new(),
+        };
+        let mut present = vec![
+            ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default,
+                overrides: vec![ToolPolicyOverride::new(
+                    "write",
+                    ToolExecutionPolicy::default(),
+                )],
+            },
+            mcp.clone(),
+        ];
+        preserve_runtime_agent_overrides(&current, &mut present);
+        assert_eq!(present[0].overrides.len(), 2, "O1 canonical is not revived");
+        assert_eq!(present[0].overrides[1], opaque, "O1 exact opaque");
+        assert_eq!(present[1], mcp, "O1 MCP unchanged");
+
+        let mut absent = vec![mcp.clone()];
+        preserve_runtime_agent_overrides(&current, &mut absent);
+        assert_eq!(absent[0], mcp, "O2 MCP unchanged");
+        assert_eq!(absent[1].source, ToolsetSource::Agent, "O2");
+        assert_eq!(absent[1].default, default, "O2");
+        assert_eq!(absent[1].overrides, vec![opaque], "O2");
+
+        let mut unchanged = vec![mcp.clone()];
+        preserve_runtime_agent_overrides(
+            &[ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default,
+                overrides: vec![ToolPolicyOverride::new(
+                    "read",
+                    ToolExecutionPolicy::default(),
+                )],
+            }],
+            &mut unchanged,
+        );
+        assert_eq!(unchanged, vec![mcp], "O3");
+    }
+
+    #[test]
     fn effective_mcp_pairing_covers_the_complete_bijection_table() {
         // This is shared by Agent authoring and Session-local replacements.
         // The table covers absence, exact pairing, missing, dangling, and both
@@ -743,6 +876,17 @@ mod tests {
             ],
             "T1"
         );
+        // Controlled-modification cause/effect table: bash/write/edit -> ask
+        // authoring metadata; every other official member -> ordinary metadata;
+        // unknown ids -> false. All adapters project this one closed enum fact.
+        assert_eq!(
+            agent_toolset_members()
+                .filter(|name| is_controlled_modification_member(name))
+                .collect::<Vec<_>>(),
+            vec!["bash", "write", "edit"],
+            "T1 controlled projection"
+        );
+        assert!(!is_controlled_modification_member("parallel_web_search"));
         let policies = toolset_policies(&[AgentTool::AgentToolset20260401 {
             configs: vec![AgentToolConfig {
                 name: "web_search".into(),

@@ -8,10 +8,10 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    CreateFileRecordOutcome, FileApplicationService, FileCatalog, FileCatalogError, FileRecord,
-    FileStore, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES, ResourceKind,
-    ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository, ResourceReference,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    ArtifactPublication, CreateFileRecordOutcome, FileApplicationService, FileCatalog,
+    FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES,
+    ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository,
+    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
@@ -71,20 +71,59 @@ impl FileApplication {
             .map_err(file_catalog_error)
     }
 
+    pub async fn list_including_deleted(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        self.catalog
+            .list_files_including_deleted(workspace_id, scope_id)
+            .await
+            .map_err(file_catalog_error)
+    }
+
     pub async fn create(
         &self,
         command: CreateFileCommand<'_>,
     ) -> Result<FileRecord, ResourcePurgeError> {
-        if let Some(key) = command.idempotency_key.as_deref()
-            && let Some(existing) = self
-                .catalog
-                .list_files(command.workspace_id, command.scope_id.as_deref())
-                .await
-                .map_err(file_catalog_error)?
+        self.create_with_artifact_scope(command, None).await
+    }
+
+    async fn create_with_artifact_scope(
+        &self,
+        command: CreateFileCommand<'_>,
+        artifact_idempotency_scope: Option<String>,
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        if let Some(key) = command.idempotency_key.as_deref() {
+            let records = if artifact_idempotency_scope.is_some() {
+                self.catalog
+                    .list_files_including_deleted(command.workspace_id, command.scope_id.as_deref())
+                    .await
+            } else {
+                self.catalog
+                    .list_files(command.workspace_id, command.scope_id.as_deref())
+                    .await
+            }
+            .map_err(file_catalog_error)?;
+            if let Some(mut existing) = records
                 .into_iter()
                 .find(|record| record.harvest_key.as_deref() == Some(key))
-        {
-            return Ok(existing);
+            {
+                if let Some(scope) = artifact_idempotency_scope.as_deref() {
+                    // `create_file` is the single CAS owner for terminal
+                    // association. Reusing its existing row here keeps the
+                    // decision ahead of quota/blob/reference effects, including
+                    // when the only durable evidence is a tombstone.
+                    existing.artifact_idempotency_scope = Some(scope.to_string());
+                    return self
+                        .catalog
+                        .create_file(existing)
+                        .await
+                        .map(|outcome| outcome.record().clone())
+                        .map_err(file_catalog_error);
+                }
+                return Ok(existing);
+            }
         }
 
         let active = self
@@ -111,6 +150,7 @@ impl FileApplication {
             scope_id: command.scope_id,
             logical_path: command.logical_path,
             harvest_key: command.idempotency_key,
+            artifact_idempotency_scope,
             deleted: false,
         };
         let candidate_reference = logical_file_reference(&candidate);
@@ -133,9 +173,11 @@ impl FileApplication {
                 self.reclamation
                     .remove_reference(&candidate_reference)
                     .await?;
-                self.reclamation
-                    .add_reference(logical_file_reference(&record))
-                    .await?;
+                if !record.deleted {
+                    self.reclamation
+                        .add_reference(logical_file_reference(&record))
+                        .await?;
+                }
                 Ok(record)
             }
         }
@@ -193,6 +235,30 @@ impl FileApplication {
             logical_path: None,
             idempotency_key: Some(idempotency_key),
         })
+        .await
+    }
+
+    pub async fn create_artifact(
+        &self,
+        publication: &ArtifactPublication<()>,
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        publication
+            .verify()
+            .map_err(|error| ResourcePurgeError::Invalid(error.to_string()))?;
+        self.create_with_artifact_scope(
+            CreateFileCommand {
+                workspace_id: &publication.workspace_id,
+                filename: publication.logical_path.clone(),
+                mime_type: publication.mime_type.clone(),
+                bytes: &publication.bytes,
+                downloadable: true,
+                expires_at: None,
+                scope_id: Some(publication.session_id.clone()),
+                logical_path: Some(publication.logical_path.clone()),
+                idempotency_key: Some(publication.effect_id.clone()),
+            },
+            publication.idempotency_scope.clone(),
+        )
         .await
     }
 
@@ -269,6 +335,14 @@ impl FileApplicationService for FileApplication {
         FileApplication::list(self, workspace_id, scope_id).await
     }
 
+    async fn list_including_deleted(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        FileApplication::list_including_deleted(self, workspace_id, scope_id).await
+    }
+
     async fn create_uploaded_file_with_expiry(
         &self,
         workspace_id: &str,
@@ -309,28 +383,9 @@ impl FileApplicationService for FileApplication {
 
     async fn create_artifact(
         &self,
-        workspace_id: &str,
-        session_id: &str,
-        logical_path: String,
-        mime_type: String,
-        bytes: &[u8],
-        idempotency_key: String,
+        publication: &ArtifactPublication<()>,
     ) -> Result<FileRecord, ResourcePurgeError> {
-        FileApplication::create(
-            self,
-            CreateFileCommand {
-                workspace_id,
-                filename: logical_path.clone(),
-                mime_type,
-                bytes,
-                downloadable: true,
-                expires_at: None,
-                scope_id: Some(session_id.to_string()),
-                logical_path: Some(logical_path),
-                idempotency_key: Some(idempotency_key),
-            },
-        )
-        .await
+        FileApplication::create_artifact(self, publication).await
     }
 
     async fn bytes(
@@ -393,6 +448,7 @@ fn validate_file_capacity(file_size: u64, active_size: u64) -> Result<(), Resour
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_resource_contract::{content_id, harvest_idempotency_key};
 
     fn application() -> FileApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -404,6 +460,25 @@ mod tests {
                     .expect("resource reclamation"),
             ),
         )
+    }
+
+    fn artifact_publication(
+        logical_path: &str,
+        bytes: &[u8],
+        idempotency_scope: Option<&str>,
+    ) -> ArtifactPublication<()> {
+        let content_id = content_id(bytes);
+        ArtifactPublication {
+            effect_id: harvest_idempotency_key("session-a", logical_path, &content_id),
+            workspace_id: "workspace-a".into(),
+            session_id: "session-a".into(),
+            logical_path: logical_path.into(),
+            mime_type: "text/plain".into(),
+            content_id,
+            bytes: bytes.to_vec(),
+            idempotency_scope: idempotency_scope.map(str::to_owned),
+            fence: None,
+        }
     }
 
     #[test]
@@ -462,6 +537,82 @@ mod tests {
             .unwrap();
         assert_ne!(distinct.id, first.id, "E2");
         assert_eq!(distinct.blob_id, first.blob_id, "E2");
+    }
+
+    #[tokio::test]
+    async fn terminal_scope_associates_a_tombstone_before_capacity_and_blob_effects() {
+        // Cause/effect decision table:
+        // C1 canonical ordinary artifact is already tombstoned; C2 Workspace is
+        // now at its active-byte limit; C3 terminal request has the same v1
+        // harvest key and a new cleanup scope; C4 a caller substitutes a
+        // noncanonical key. R1 => FileCatalog atomically
+        // associates the existing tombstone before capacity/blob/reference
+        // effects, preserves `deleted`, and creates no active replacement. R2
+        // => reject C4 before touching the catalog or blob store.
+        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        let app = FileApplication::new(
+            files.clone(),
+            files.clone(),
+            Arc::new(
+                awaken_resource_store::SqliteResourceStore::in_memory()
+                    .expect("resource reclamation"),
+            ),
+        );
+        let ordinary_publication = artifact_publication("report.txt", b"report", None);
+        let ordinary = app
+            .create_artifact(&ordinary_publication)
+            .await
+            .expect("ordinary artifact");
+        app.delete("workspace-a", &ordinary.id, 7)
+            .await
+            .expect("tombstone ordinary artifact");
+        files
+            .create_file(FileRecord {
+                id: "file_capacity_filler".into(),
+                workspace_id: "workspace-a".into(),
+                blob_id: "capacity-filler".into(),
+                filename: "capacity.bin".into(),
+                mime_type: "application/octet-stream".into(),
+                size_bytes: MAX_WORKSPACE_FILE_BYTES,
+                created_at: "2026-01-02T00:00:00Z".into(),
+                expires_at: None,
+                downloadable: false,
+                scope_id: None,
+                logical_path: None,
+                harvest_key: None,
+                artifact_idempotency_scope: None,
+                deleted: false,
+            })
+            .await
+            .expect("fill active-byte capacity");
+
+        let terminal_publication =
+            artifact_publication("report.txt", b"report", Some("cleanup-current"));
+        let terminal = app
+            .create_artifact(&terminal_publication)
+            .await
+            .expect("R1 associates before capacity validation");
+        assert_eq!(terminal.id, ordinary.id, "R1 preserves File identity");
+        assert!(terminal.deleted, "R1 does not resurrect the tombstone");
+        assert_eq!(
+            terminal.artifact_idempotency_scope.as_deref(),
+            Some("cleanup-current"),
+            "R1 persists the exact terminal association"
+        );
+        assert_eq!(
+            app.list("workspace-a", Some("session-a"))
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "R1 creates no active replacement"
+        );
+        let mut substituted = terminal_publication;
+        substituted.effect_id = "substituted-key".into();
+        assert!(
+            app.create_artifact(&substituted).await.is_err(),
+            "R2 rejects a substituted harvest identity"
+        );
     }
 
     #[tokio::test]

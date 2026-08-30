@@ -179,18 +179,23 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         "authenticated ACP MCP requires explicit VirtualOnly authorization for its generation-scoped relay capability",
                     ));
                 }
-                if is_acp
-                    && realization_kind == CredentialRealizationKind::WorkerRelay
-                    && !self
+                if is_acp && realization_kind == CredentialRealizationKind::WorkerRelay {
+                    let provider = self
                         .host
-                        .session_provider
+                        .projected_session_environment_provider(
+                            &request.generation.session_id,
+                            None,
+                        )
+                        .map_err(crate::managed_adapter_error::to_run_error)?;
+                    if !provider
                         .capabilities()
                         .supports_secret_egress_without_bypass()
-                {
-                    return Err(RunError::classified(
-                        "mcp_holder_unsupported",
-                        "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before Worker relay materialization",
-                    ));
+                    {
+                        return Err(RunError::classified(
+                            "mcp_holder_unsupported",
+                            "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before Worker relay materialization",
+                        ));
+                    }
                 }
                 let injector = self.credentials.as_ref().ok_or_else(|| {
                     RunError::unavailable_classified(

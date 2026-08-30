@@ -37,6 +37,7 @@ awaken-ext-background-task.workspace = true
 awaken-memory-store = { workspace = true, optional = true }
 awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
+awaken-sandbox-fs = { workspace = true }
 # The container tier (podman/docker/k8s), for realizing the session-scoped execution
 # environment selected by worker configuration.
 awaken-sandbox-container = { workspace = true }

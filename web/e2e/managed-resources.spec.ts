@@ -6,6 +6,7 @@ import { FILES_HEADERS, MANAGED_HEADERS, MEMORY_HEADERS, SKILLS_HEADERS } from "
 import { SyntheticModelDirectory } from "./synthetic-model";
 import { logicalApiPath, workspaceApiPath } from "./workspace";
 import { skillFilesFromTar } from "../src/surfaces/skills";
+import { typedAgentTools } from "../test-support/agent-tools.mjs";
 
 const syntheticModels = new SyntheticModelDirectory();
 
@@ -300,8 +301,10 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
 
 test("Tool presentation: alias a tool in the editor and persist it", async ({ page, request }) => {
   const agent = `tools-agent-${Date.now()}`;
-  // Seed an agent with a static tool selected, so the override target picker has one.
-  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, system: "hi", tools: ["read"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
+  // Tool-presentation decision rule: C1 canonical Agent ToolSet enables `read`
+  // and C2 the override targets that member. Effects: E1 Managed validation has
+  // one tool-policy authority and E2 the editor persists the alias for `read`.
+  await request.put(await workspaceApiPath(request, `/v1/config/agents/${agent}`), { data: { id: agent, system: "hi", tools: typedAgentTools(["read"]), plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
 
   await page.goto(`/w/default/agents/${agent}`);
   await openBuild(page, "Tools & permissions");

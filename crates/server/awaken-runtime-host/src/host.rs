@@ -107,6 +107,10 @@ mod placement;
 pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
+pub(crate) use session::{
+    BoundEnvironmentPreparationMode, CanonicalSessionProjection,
+    SessionEnvironmentAdoptionDisposition,
+};
 mod session_ctx;
 mod terminal_reconciliation;
 #[cfg(test)]
@@ -127,6 +131,27 @@ pub use types::{
     HostOutcomeReport, HostResume,
 };
 pub(crate) use worker_resolver::HostWorkerResolver;
+
+/// One injected transport adapter encodes both ordinary Run-scoped and
+/// terminal Session-scoped Memory operations. The generic Resource ports stay
+/// authoritative; this private intersection trait only permits one trait
+/// object to carry both implementations through Runtime composition.
+pub(crate) trait RuntimeMemoryReferenceEncoder:
+    awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_run_ingress::RunClaim>
+    + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+        awaken_session_contract::SessionTerminalMemoryIntent,
+    >
+{
+}
+
+impl<T> RuntimeMemoryReferenceEncoder for T where
+    T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+            awaken_run_ingress::RunClaim,
+        > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+            awaken_session_contract::SessionTerminalMemoryIntent,
+        >
+{
+}
 
 /// The protocol-neutral, thread-keyed session substrate shared by every adapter.
 pub struct SharedHost {
@@ -215,13 +240,7 @@ pub struct SharedHost {
     pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
     /// Optional Resource-transport encoder installed by a remote Worker. The
     /// runtime knows only the neutral Resources contract, never an HTTP wire type.
-    pub(crate) memory_reference_encoder: Option<
-        Arc<
-            dyn awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                    awaken_run_ingress::RunClaim,
-                >,
-        >,
-    >,
+    pub(crate) memory_reference_encoder: Option<Arc<dyn RuntimeMemoryReferenceEncoder>>,
     /// Sole adapter for opaque credentials owned by this Worker process. Control
     /// and Session code retain only exact non-secret references.
     pub(crate) worker_credential_resolver:
@@ -295,8 +314,11 @@ pub struct SharedHost {
     /// Sole Runtime-to-Resources artifact command edge. Embedded deployments
     /// install the local application adapter; database-less Workers install the
     /// claim-fenced HTTP client.
-    pub(crate) artifact_publisher:
-        Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>,
+    pub(crate) artifact_publisher: Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<
+                awaken_run_ingress::ArtifactPublicationFence,
+            >,
+    >,
     /// Durable workspace ownership projection for content-addressed resources.
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.

@@ -62,11 +62,12 @@ impl AgentSandbox for SessionEnvironment {
             // be read-only. Late ACP config therefore lives in the one writable,
             // Session-owned workspace rather than the creation-time /acp-config
             // mount used by the legacy one-shot source.
-            Self::Container { .. } => "/workspace/.acp-config".to_string(),
-            Self::Namespace { .. } => "/workspace/.acp-config".to_string(),
+            Self::Container { .. } | Self::Namespace { .. } => {
+                pc::WorkspaceLayout::ACP_CONFIG_ROOT.to_string()
+            }
             Self::Workdir(sandbox) => sandbox
                 .workspace_path()
-                .join(".acp-config")
+                .join(pc::WorkspaceLayout::ACP_CONFIG_SUBDIR)
                 .to_string_lossy()
                 .into_owned(),
         }
@@ -74,16 +75,19 @@ impl AgentSandbox for SessionEnvironment {
 
     fn config_home_logical(&self) -> String {
         match self {
-            Self::Container { .. } => "/workspace/.acp-config".to_string(),
-            Self::Namespace { .. } => "/workspace/.acp-config".to_string(),
-            Self::Workdir(_) => ".acp-config".to_string(),
+            Self::Container { .. } | Self::Namespace { .. } => {
+                pc::WorkspaceLayout::ACP_CONFIG_ROOT.to_string()
+            }
+            Self::Workdir(_) => pc::WorkspaceLayout::ACP_CONFIG_SUBDIR.to_string(),
         }
     }
 
     fn workspace_cwd(&self) -> String {
         match self {
             Self::Workdir(sandbox) => sandbox.workspace_path().to_string_lossy().into_owned(),
-            Self::Namespace { .. } | Self::Container { .. } => "/workspace".to_string(),
+            Self::Namespace { .. } | Self::Container { .. } => {
+                pc::WorkspaceLayout::ROOT.to_string()
+            }
         }
     }
 

@@ -103,17 +103,12 @@ pub(super) async fn install_claimed_session_projection(
             "Control resume projection conflicts with the claimed resource snapshot",
         ));
     }
-    let session_publication =
-        (claimed.request.thread_id() == thread_id).then_some(&claimed.request.activation.snapshot);
     HostWorkerResolver::drive_session_realization(
         host,
         control.as_ref(),
         &thread_id.0,
         directive,
-        Some(&claim),
-        session_publication,
-        claimed.request.placement.recovery
-            == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        Some(claimed),
     )
     .await
 }
