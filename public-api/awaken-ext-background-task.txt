@@ -37,11 +37,8 @@ impl awaken_ext_background_task::BackgroundTaskLifecycle
 pub const fn awaken_ext_background_task::BackgroundTaskLifecycle::is_terminal(&self) -> bool
 pub enum awaken_ext_background_task::BackgroundWait
 pub awaken_ext_background_task::BackgroundWait::ExternalInput
-pub awaken_ext_background_task::BackgroundWait::Remote(awaken_ext_background_task::RemoteContinuation)
+pub awaken_ext_background_task::BackgroundWait::Remote(awaken_runtime_contract::tool::ToolTaskHandle)
 pub awaken_ext_background_task::BackgroundWait::Resource
-pub enum awaken_ext_background_task::RemoteProtocol
-pub awaken_ext_background_task::RemoteProtocol::A2a
-pub awaken_ext_background_task::RemoteProtocol::Mcp
 pub enum awaken_ext_background_task::TaskClaim
 pub awaken_ext_background_task::TaskClaim::Acquired(awaken_ext_background_task::TaskFence)
 pub awaken_ext_background_task::TaskClaim::EndedAttemptsExhausted
@@ -110,13 +107,6 @@ pub struct awaken_ext_background_task::BackgroundTaskWaitCandidate
 pub awaken_ext_background_task::BackgroundTaskWaitCandidate::fence: awaken_ext_background_task::TaskFence
 pub awaken_ext_background_task::BackgroundTaskWaitCandidate::renew_lease: bool
 pub awaken_ext_background_task::BackgroundTaskWaitCandidate::wait: awaken_ext_background_task::BackgroundWait
-pub struct awaken_ext_background_task::RemoteContinuation
-pub awaken_ext_background_task::RemoteContinuation::poll_interval_ms: core::option::Option<u64>
-pub awaken_ext_background_task::RemoteContinuation::protocol: awaken_ext_background_task::RemoteProtocol
-pub awaken_ext_background_task::RemoteContinuation::server_binding: alloc::string::String
-pub awaken_ext_background_task::RemoteContinuation::task_id: alloc::string::String
-impl awaken_ext_background_task::RemoteContinuation
-pub fn awaken_ext_background_task::RemoteContinuation::validate(&self) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
 pub struct awaken_ext_background_task::TaskAttempt
 pub awaken_ext_background_task::TaskAttempt::epoch: u64
 pub awaken_ext_background_task::TaskAttempt::lease_expires_at_ms: u64

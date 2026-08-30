@@ -11,8 +11,8 @@ mod tools;
 
 pub use model::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, RemoteContinuation,
-    RemoteProtocol, TaskAttempt, TaskClaim, TaskExecutionPolicy, TaskFence,
+    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskAttempt, TaskClaim,
+    TaskExecutionPolicy, TaskFence,
 };
 pub use plugin::{
     BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin, config_schema,
