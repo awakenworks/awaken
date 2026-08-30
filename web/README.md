@@ -1,17 +1,16 @@
 # Awaken Console (`web/`)
 
-The management-plane web console (design: `docs/design/web-ui.md`). Two-scope
-shell — Workspace supplies (catalog, credentials, MCP, access), Project runs
-(sessions, vaults, bindings via the `/projects/{id}` ingress).
+The embedded management-plane web console. Product startup is owned by the root
+[quickstart](../README.md#try-awaken); this file only describes Console
+development.
 
 ```sh
 pnpm install
 # Production-shaped local run: the console is compiled into the binary.
-AWAKEN_HTTP_ADDR=127.0.0.1:38080 \
-  cargo run -p awaken-cli --bin awaken -- start
+cargo run -p awaken-cli --bin awaken -- all-in-one --port 38080 --no-browser
 
 # Frontend hot reload while developing the console:
-AWAKEN_HTTP_ADDR=127.0.0.1:38080 cargo run -p awaken-cli --bin awaken &
+cargo run -p awaken-cli --bin awaken -- all-in-one --port 38080 --no-browser &
 pnpm dev            # http://127.0.0.1:3002 (proxies /v1)
 
 pnpm typecheck && pnpm lint && pnpm build

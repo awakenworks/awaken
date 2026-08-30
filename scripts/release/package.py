@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-PACKAGE_FILES = ("README.md", "LICENSE")
+PACKAGE_FILES = ("README.md", "LICENSE", "deploy/compose.yaml")
 
 
 def workspace_version(repository: Path = REPOSITORY) -> str:
@@ -174,13 +174,15 @@ class ReleaseContractTests(unittest.TestCase):
 
     # Cause/effect graph: C1 target is Windows vs Unix, C2 payload is executable.
     # E1 selects ZIP+awaken.exe for Windows; E2 selects tar.gz+awaken for Unix;
-    # E3 always includes README/LICENSE under one versioned root. R1/R2 cover the
+    # E3 always includes README/LICENSE/Compose under one versioned root. R1/R2 cover the
     # two mutually exclusive platform rules and assert every package effect.
     def test_archive_platform_decision_table(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "README.md").write_text("readme", encoding="utf-8")
             (root / "LICENSE").write_text("license", encoding="utf-8")
+            (root / "deploy").mkdir()
+            (root / "deploy" / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
             binary = root / "binary"
             binary.write_bytes(b"executable")
             output = root / "dist"
@@ -199,6 +201,7 @@ class ReleaseContractTests(unittest.TestCase):
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/LICENSE",
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/README.md",
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken",
+                    "awaken-v1.0.0-x86_64-unknown-linux-gnu/deploy/compose.yaml",
                 ],
             )
 
@@ -211,6 +214,7 @@ class ReleaseContractTests(unittest.TestCase):
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/LICENSE",
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/README.md",
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/awaken.exe",
+                        "awaken-v1.0.0-x86_64-pc-windows-msvc/deploy/compose.yaml",
                     ],
                 )
 

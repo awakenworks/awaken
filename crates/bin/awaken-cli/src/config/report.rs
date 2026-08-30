@@ -1,6 +1,7 @@
 //! Redacted rendering of the resolved deployment configuration.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use awaken_runtime_host::DispatchBackend;
 
@@ -142,6 +143,113 @@ impl ResolvedDeployment {
         }
         report
     }
+
+    /// Perform startup prerequisites that can be checked without mutating the
+    /// deployment. Provider and model validation remains Console-owned because
+    /// it requires authenticated product state after startup.
+    pub async fn doctor_report(&self, json: bool) -> String {
+        let data_directory = data_directory_readiness(&self.data_dir);
+        let listener = match tokio::net::TcpListener::bind(&self.bind).await {
+            Ok(listener) => {
+                drop(listener);
+                Readiness::ready(format!("{} is available", self.bind))
+            }
+            Err(error) => Readiness::blocked(format!("{}: {error}", self.bind)),
+        };
+        let ready = data_directory.ready && listener.ready;
+        if json {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "ready": ready,
+                "configuration": {
+                    "status": "ready",
+                    "path": self.config_path,
+                    "exists": self.config_file_exists,
+                },
+                "data_directory": data_directory.as_json(),
+                "listener": listener.as_json(),
+                "next": if ready {
+                    "start Awaken, then validate a model or provider in Console"
+                } else {
+                    "resolve blocked checks, then run awaken doctor again"
+                },
+            }))
+            .expect("doctor report is serializable");
+        }
+
+        format!(
+            "Awaken doctor\n\n  configuration       ready ({config})\n  data directory      {data_status} ({data_detail})\n  listener            {listener_status} ({listener_detail})\n\nResult: {result}\nNext: {next}\n",
+            config = self.config_path.display(),
+            data_status = data_directory.status,
+            data_detail = data_directory.detail,
+            listener_status = listener.status,
+            listener_detail = listener.detail,
+            result = if ready { "ready to start" } else { "blocked" },
+            next = if ready {
+                "start Awaken, then validate a model or provider in Console"
+            } else {
+                "resolve blocked checks, then run `awaken doctor` again"
+            },
+        )
+    }
+}
+
+struct Readiness {
+    ready: bool,
+    status: &'static str,
+    detail: String,
+}
+
+impl Readiness {
+    fn ready(detail: String) -> Self {
+        Self {
+            ready: true,
+            status: "ready",
+            detail,
+        }
+    }
+
+    fn ready_to_create(detail: String) -> Self {
+        Self {
+            ready: true,
+            status: "ready_to_create",
+            detail,
+        }
+    }
+
+    fn blocked(detail: String) -> Self {
+        Self {
+            ready: false,
+            status: "blocked",
+            detail,
+        }
+    }
+
+    fn as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status,
+            "detail": self.detail,
+        })
+    }
+}
+
+fn data_directory_readiness(path: &Path) -> Readiness {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Readiness::ready(format!("{} exists", path.display())),
+        Ok(_) => Readiness::blocked(format!("{} is not a directory", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let existing_parent = path.ancestors().skip(1).find(|parent| parent.exists());
+            match existing_parent.and_then(|parent| std::fs::metadata(parent).ok()) {
+                Some(metadata) if metadata.is_dir() => Readiness::ready_to_create(format!(
+                    "{} will be created under an existing directory",
+                    path.display()
+                )),
+                _ => {
+                    Readiness::blocked(format!("{} has no usable parent directory", path.display()))
+                }
+            }
+        }
+        Err(error) => Readiness::blocked(format!("{}: {error}", path.display())),
+    }
 }
 
 const fn identity_mode_name(mode: awaken_control::ManagementIdentityMode) -> &'static str {
@@ -158,5 +266,54 @@ fn render_store_backend(backend: &awaken_control::StoreBackend) -> String {
             format!("sqlite ({})", path.display())
         }
         awaken_control::StoreBackend::Postgres(_) => "postgres (URL redacted)".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn doctor_covers_storage_and_listener_readiness_without_creating_state() {
+        // Cause/effect graph: resolved config + data-path metadata + bind result
+        // -> independent readiness details -> one overall result. Constraints:
+        // diagnostics must not create the absent directory and must not retain
+        // the test-bound listener.
+        // Decision table: R1 existing directory + free listener -> ready; R2
+        // absent child with existing parent + free listener -> ready_to_create;
+        // R3 non-directory data path -> blocked; R4 occupied listener -> blocked.
+        let directory = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
+        deployment.bind = "127.0.0.1:0".to_owned();
+
+        let ready: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(ready["ready"], true, "R1");
+        assert_eq!(ready["data_directory"]["status"], "ready", "R1");
+
+        let absent = directory.path().join("new").join("data");
+        deployment.data_dir = absent.clone();
+        let creatable: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(creatable["ready"], true, "R2");
+        assert_eq!(
+            creatable["data_directory"]["status"], "ready_to_create",
+            "R2"
+        );
+        assert!(!absent.exists(), "doctor remains read-only");
+
+        let file = directory.path().join("not-a-directory");
+        std::fs::write(&file, b"fixture").unwrap();
+        deployment.data_dir = file;
+        let blocked_storage: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(blocked_storage["ready"], false, "R3");
+        assert_eq!(blocked_storage["data_directory"]["status"], "blocked", "R3");
+
+        deployment.data_dir = directory.path().to_path_buf();
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        deployment.bind = occupied.local_addr().unwrap().to_string();
+        let blocked_listener: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(blocked_listener["ready"], false, "R4");
+        assert_eq!(blocked_listener["listener"]["status"], "blocked", "R4");
     }
 }

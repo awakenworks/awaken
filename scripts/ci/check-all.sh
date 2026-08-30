@@ -94,6 +94,8 @@ run static "file-limits self-test" python3 scripts/ci/check_file_limits.py --sel
 run static "file-limits" python3 scripts/ci/check_file_limits.py
 run static "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
 run static "release-package self-test" python3 scripts/release/package.py --self-test
+run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test
+run static "product release contract" python3 scripts/ci/check_product_release.py
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
 run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test

@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-authorization-contract"
-version = "1.0.0-dev"
+version = "1.0.0"
 
 [[package]]
 name = "awaken-authz-enforce"
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-ext-background-task"
-version = "1.0.0-dev"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
@@ -2128,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-sandbox-control"
-version = "1.0.0-dev"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-sqlite-runtime"
-version = "1.0.0-dev"
+version = "1.0.0"
 dependencies = [
  "rusqlite",
  "tempfile",

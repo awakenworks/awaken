@@ -1,0 +1,11 @@
+services:
+  awaken:
+    image: ghcr.io/awakenworks/awaken:${AWAKEN_VERSION:-v1.0.0}
+    ports:
+      - "8080:8080"
+    volumes:
+      - awaken-data:/var/lib/awaken
+    restart: unless-stopped
+
+volumes:
+  awaken-data:

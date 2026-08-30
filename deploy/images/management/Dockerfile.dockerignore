@@ -1,0 +1,4 @@
+*
+!.awaken-management.bin
+!container.toml
+!entrypoint.sh

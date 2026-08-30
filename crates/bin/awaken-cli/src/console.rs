@@ -23,6 +23,10 @@ pub enum Command {
         json: bool,
         config_path: Option<std::path::PathBuf>,
     },
+    Doctor {
+        json: bool,
+        config_path: Option<std::path::PathBuf>,
+    },
     DoctorAcp {
         json: bool,
     },
@@ -83,25 +87,25 @@ fn parse_control_args(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_doctor_args(args: &[String]) -> Result<Command, String> {
-    let Some((subject, options)) = args.split_first() else {
-        return Err("doctor requires the 'acp' subject".to_owned());
-    };
-    if subject != "acp" {
-        return Err(format!(
-            "unknown doctor subject {subject:?}; expected 'acp'"
-        ));
-    }
-    if options.iter().any(|arg| is_help(arg)) {
-        return Ok(Command::Help);
-    }
-    let mut json = false;
-    for option in options {
-        match option.as_str() {
-            "--json" => json = true,
-            other => return Err(format!("unexpected doctor acp argument {other:?}")),
+    if args.first().is_some_and(|subject| subject == "acp") {
+        let options = &args[1..];
+        if options.iter().any(|arg| is_help(arg)) {
+            return Ok(Command::Help);
         }
+        let mut json = false;
+        for option in options {
+            match option.as_str() {
+                "--json" => json = true,
+                other => return Err(format!("unexpected doctor acp argument {other:?}")),
+            }
+        }
+        return Ok(Command::DoctorAcp { json });
     }
-    Ok(Command::DoctorAcp { json })
+    parse_config_args(args).map(|command| match command {
+        Command::Config { json, config_path } => Command::Doctor { json, config_path },
+        Command::Help => Command::Help,
+        _ => unreachable!("config parser returns only Config or Help"),
+    })
 }
 
 fn parse_service_args(args: &[String]) -> Result<ServiceArgs, String> {
@@ -249,7 +253,7 @@ fn is_help(value: &str) -> bool {
 
 pub fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor [--json]                 Check configuration, storage, and listener readiness\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
     );
 }
 
@@ -289,7 +293,9 @@ mod tests {
         // R1 no command -> the canonical all-in-one role; R2 each service name ->
         // exactly that service role; R3 Control IAM suffix -> the matching report;
         // R4 retired overlapping names -> reject instead of preserving a second
-        // command path; R5 service options -> stay attached to the selected role.
+        // command path; R5 service options -> stay attached to the selected role;
+        // R6 bare/configured doctor -> deployment checks; R7 doctor acp -> the
+        // existing runtime-specific diagnostic owner; invalid mixtures -> reject.
         assert_eq!(
             parse_args(Vec::new()).unwrap(),
             Command::AllInOne(ServiceArgs::default())
@@ -394,6 +400,26 @@ mod tests {
             parse_args(["doctor".into(), "acp".into(), "--json".into()]).unwrap(),
             Command::DoctorAcp { json: true }
         );
+        assert_eq!(
+            parse_args(["doctor".into()]).unwrap(),
+            Command::Doctor {
+                json: false,
+                config_path: None,
+            }
+        );
+        assert_eq!(
+            parse_args([
+                "doctor".into(),
+                "--json".into(),
+                "--config=/etc/awaken/config.toml".into(),
+            ])
+            .unwrap(),
+            Command::Doctor {
+                json: true,
+                config_path: Some("/etc/awaken/config.toml".into()),
+            }
+        );
+        assert!(parse_args(["doctor".into(), "providers".into()]).is_err());
     }
 
     #[test]

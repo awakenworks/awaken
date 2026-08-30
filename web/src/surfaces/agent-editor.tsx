@@ -58,7 +58,7 @@ import {
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
-import { hasSurface } from "../lib/navigation/paths";
+import { hasSurface, quickstartSessionPath } from "../lib/navigation/paths";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
@@ -339,7 +339,7 @@ export default function AgentEditorSurface() {
   }, [savedId, dirty, wsId, nav, parentAgentId]);
   useEffect(() => {
     if (quickRunSessionId && !dirty && !resourcesDirty) {
-      nav(`/w/${wsId}/sessions/${quickRunSessionId}`);
+      nav(quickstartSessionPath(wsId, quickRunSessionId));
       setQuickRunSessionId(null);
     }
   }, [quickRunSessionId, dirty, resourcesDirty, wsId, nav]);
