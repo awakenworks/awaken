@@ -22,6 +22,18 @@ struct CanonicalizationEvidence<'a> {
     child_pending: &'a std::collections::HashMap<String, Pending>,
 }
 
+/// Maximum number of wire events that the canonical one-Message encoder can
+/// emit. An Assistant message contributes at most one thinking marker, one
+/// visible message, and one tool event per content block; every other role
+/// contributes no more than one event per block. Keeping this bound beside the
+/// canonicalizer prevents recovery from probing every Session event ordinal
+/// for every source message.
+pub(super) fn message_projection_ordinal_bound(
+    message: &awaken_agent_contract::agent::message::Message,
+) -> usize {
+    message.content.len().saturating_add(2)
+}
+
 impl ManagedState {
     /// Derive the public terminal error from the Session root's one durable
     /// activation-failure fact. A missing/empty cause violates the application
@@ -237,12 +249,45 @@ impl ManagedState {
             let response_coordinates = Self::assistant_response_coordinates(&snapshot.messages, &run_ids);
             let public_owner_thread_id = public_thread_id(&record.session.id, thread_id);
             let event_count = record.events.len();
+            let event_roles = record
+                .events
+                .iter()
+                .map(|event| event.kind.type_str())
+                .collect::<std::collections::HashSet<_>>();
             for (message_index, (message, source_commit_cursor)) in snapshot
                 .messages
                 .iter()
                 .zip(snapshot.message_commit_cursors.iter().copied())
                 .enumerate()
             {
+                // Generic ids are opaque hashes, but their source ordinal is
+                // bounded by this one Message's encoder output, not by the
+                // Session-wide event count. Build the small reverse index once
+                // and use O(1) lookups below. The former event-by-event
+                // `0..=event_count` search was cubic across a growing transcript
+                // and held the shared Session projection lock long enough to
+                // starve unrelated Worker heartbeats.
+                let ordinal_bound = message_projection_ordinal_bound(message);
+                let mut generic_source_ordinals =
+                    std::collections::HashMap::with_capacity(
+                        ordinal_bound.saturating_mul(event_roles.len()),
+                    );
+                for role in &event_roles {
+                    for ordinal in 0..ordinal_bound {
+                        generic_source_ordinals.insert(
+                            managed_multiagent_event_id(
+                                &record.session.id,
+                                thread_id,
+                                role,
+                                ManagedMultiagentEventProvenance::Message {
+                                    message_id: &message.id.0,
+                                    ordinal,
+                                },
+                            ),
+                            ordinal,
+                        );
+                    }
+                }
                 for event in &record.events {
                     let tool_source_ordinal = decode_managed_tool_event_id(&event.id)
                         .filter(|identity| {
@@ -255,17 +300,8 @@ impl ManagedState {
                                     || matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == identity.call_id)
                             })
                         });
-                    let generic_source_ordinal = (0..=event_count).find(|ordinal| {
-                        event.id == managed_multiagent_event_id(
-                                &record.session.id,
-                                thread_id,
-                                event.kind.type_str(),
-                                ManagedMultiagentEventProvenance::Message {
-                                    message_id: &message.id.0,
-                                    ordinal: *ordinal,
-                                },
-                            )
-                    });
+                    let generic_source_ordinal =
+                        generic_source_ordinals.get(&event.id).copied();
                     let assistant_source_ordinal = response_coordinates
                         .get(&message.id.0)
                         .and_then(|(run_id, step, response)| {
