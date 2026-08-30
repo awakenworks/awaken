@@ -694,6 +694,7 @@ pub const awaken_provisioning_contract::RESERVED_ENV_KEYS: &[&str]
 pub trait awaken_provisioning_contract::BlobSource: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::BlobSource::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<alloc::vec::Vec<u8>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_provisioning_contract::MemoryMount: core::marker::Send + core::marker::Sync
+pub fn awaken_provisioning_contract::MemoryMount::materialization_heads(&self) -> core::option::Option<alloc::vec::Vec<awaken_provisioning_contract::MemoryMaterializationHead>>
 pub fn awaken_provisioning_contract::MemoryMount::realization(&self) -> awaken_provisioning_contract::Realization
 pub fn awaken_provisioning_contract::MemoryMount::teardown<'async_trait>(alloc::boxed::Box<Self>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait
 pub trait awaken_provisioning_contract::MemoryMounter: core::marker::Send + core::marker::Sync
