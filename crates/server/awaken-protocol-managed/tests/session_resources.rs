@@ -3513,7 +3513,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
         .await;
     assert!(format!("{result:?}").contains("injected activation failure"));
     assert_eq!(applied.lock().unwrap().len(), 2);
-    let resources = state.list_resources(&id).unwrap();
+    let (_, resources) = state.list_resources(&id).unwrap();
     assert_eq!(resources.len(), 1, "accepted desired resource is queryable");
     assert_eq!(
         serde_json::to_value(&resources[0]).unwrap()["mount_path"],
@@ -3564,12 +3564,14 @@ enum ResourceCasRule {
     SettlementConflictsExhausted,
     RollbackSettlementConflictOnce,
     ConcurrentUnattemptedResourceChange,
+    PrepareConflictsExhausted,
 }
 
 /// Resource commands use the repository root CAS as their only serializer.
 /// The cases are generated from this cause graph:
 ///
-/// item command + prepare CAS conflict -> reject the stale read before I/O;
+/// item command + unrelated prepare CAS conflict -> retry against the same
+/// Resource generation;
 /// durable Prepared + attempt fence + runtime effect + root-only conflict ->
 /// settle the same Resource revision on the latest aggregate; a changed or
 /// exhausted fence leaves durable pending work for recovery. Runtime failure
@@ -3578,13 +3580,14 @@ enum ResourceCasRule {
 /// | Rule | Runtime | Intent CAS | Attempt CAS | Settlement CAS | Result | Runtime applies | Durable Resource |
 /// |------|---------|------------|-------------|----------------|--------|-----------------|------------------|
 /// | C1 | success | apply | apply | apply | success | 1 | Active |
-/// | C2 | success | conflict once | - | - | conflict | 0 | unchanged |
+/// | C2 | success | conflict once then apply | apply | apply | success | 1 | Active |
 /// | C3 | success | apply | conflict once | apply | success | 1 | Active |
 /// | C4 | success | apply | apply | conflict once | success | 1 | Active |
 /// | C5 | success | apply | conflict x3 | - | conflict | 0 | unattempted pending |
 /// | C6 | success | apply | apply | conflict x3 | conflict | 1 | attempted pending |
 /// | C7 | fail then rollback | apply | apply | conflict once | runtime error | 2 | Failed/no pending |
 /// | C8 | success | another unattempted intent wins | - | - | conflict | 0 | winner pending |
+/// | C9 | success | conflict x3 | - | - | conflict | 0 | unchanged |
 #[tokio::test]
 async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_lock() {
     for (index, rule) in [
@@ -3596,6 +3599,7 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
         ResourceCasRule::SettlementConflictsExhausted,
         ResourceCasRule::RollbackSettlementConflictOnce,
         ResourceCasRule::ConcurrentUnattemptedResourceChange,
+        ResourceCasRule::PrepareConflictsExhausted,
     ]
     .into_iter()
     .enumerate()
@@ -3635,6 +3639,7 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
             repo.conflict_on_next(3);
         }
         ResourceCasRule::ConcurrentUnattemptedResourceChange => repo.resource_change_on_next(1),
+        ResourceCasRule::PrepareConflictsExhausted => repo.conflicts_on_next(&[1, 2, 3]),
     }
 
     let result = state
@@ -3653,21 +3658,13 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
 
     match rule {
         ResourceCasRule::NoConflict
+        | ResourceCasRule::PrepareConflictOnce
         | ResourceCasRule::AttemptConflictOnce
         | ResourceCasRule::SettlementConflictOnce => {
             assert!(result.is_ok(), "C{}: {result:?}", index + 1);
             assert_eq!(apply_count, 1, "C{}", index + 1);
             assert!(durable.resources.pending.is_none(), "C{}", index + 1);
             assert_eq!(durable.resources.active.inputs().len(), 1, "C{}", index + 1);
-        }
-        ResourceCasRule::PrepareConflictOnce => {
-            assert!(
-                matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
-                "C2: {result:?}"
-            );
-            assert_eq!(apply_count, 0, "C2");
-            assert!(durable.resources.pending.is_none(), "C2");
-            assert!(durable.resources.active.inputs().is_empty(), "C2");
         }
         ResourceCasRule::AttemptConflictsExhausted => {
             assert!(
@@ -3712,20 +3709,30 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
                 "C8 loser absent"
             );
         }
+        ResourceCasRule::PrepareConflictsExhausted => {
+            assert!(
+                matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                "C9: {result:?}"
+            );
+            assert_eq!(apply_count, 0, "C9");
+            assert!(durable.resources.pending.is_none(), "C9");
+            assert!(durable.resources.active.inputs().is_empty(), "C9");
+        }
     }
 }
 
 #[tokio::test]
-async fn file_item_race_loser_is_http_409_without_overwriting_the_winner() {
-    // Cause/effect graph: C1 create/delete reads root revision R; C2 another
-    // valid root mutation commits R+1 before the item intent; C3 the item verb
-    // carries R into the canonical Manifest CAS. E1 the item command is the
-    // sole loser and returns 409; E2 the winner remains durable; E3 the stale
-    // File add/delete is absent and Runtime never realizes it.
+async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races() {
+    // Cause/effect graph: C1 create/delete reads Resource generation G; C2 a
+    // concurrent Resource mutation commits G+1, or an unrelated root mutation
+    // advances only the Session revision; C3 the item verb carries G into the
+    // canonical Manifest CAS. E1 a true Resource loser returns 409 without
+    // overwrite; E2 an unrelated root loser retries and succeeds; E3 every
+    // concurrent fact remains durable.
     //
     // | Rule | Item | Concurrent winner | Item result | Durable File |
     // | F1 | create | Resource generation | 409 | absent |
-    // | F2 | delete | metadata root fact | 409 | retained |
+    // | F2 | delete | metadata/lease root fact | success | deleted |
     let runtime = AcceptingFake::default();
     let inner = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
@@ -3786,28 +3793,28 @@ async fn file_item_race_loser_is_http_409_without_overwriting_the_winner() {
     let resource_id = file["id"].as_str().unwrap();
 
     repo.metadata_change_on_next(1, "concurrent", "winner");
-    let (status, error) = call(
+    let (status, deleted) = call(
         &app,
         "DELETE",
         &format!("/v1/sessions/{id}/resources/{resource_id}"),
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "F2: {error}");
+    assert_eq!(status, StatusCode::OK, "F2/E2: {deleted}");
     let durable = repo.get(id).await.unwrap();
     assert_eq!(
         durable.metadata.get("concurrent").map(String::as_str),
         Some("winner")
     );
     assert!(
-        durable.resources.desired().inputs().iter().any(|input| {
-            matches!(
+        durable.resources.desired().inputs().iter().all(|input| {
+            !matches!(
                 &input.source,
                 awaken_session_contract::ResolvedInputSource::File { file_id }
                     if file_id.as_str() == "file-delete-race"
             )
         }),
-        "F2 stale File delete cannot erase the winner's root"
+        "F2/E2 Resource delete rebases over the unrelated root fact"
     );
 }
 
@@ -4027,15 +4034,23 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
 #[tokio::test]
 async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     // Cause/effect graph: C1 complete manifest valid/invalid; C2 key
-    // absent/same/different payload; C3 If-Match current/stale; C4 Runtime
-    // realization succeeds. Effects: E1 one desired generation is persisted;
-    // E2 Runtime receives the whole set once; E3 exact replay returns the
-    // original command revision; E4 key mismatch or stale CAS is 409; E5 a
-    // collision fails before Runtime. Decision table exercised here: M1
-    // valid+new-key+current+C4 => E1+E2; M2 same-key+same-payload => E3 and no
-    // generation; M3 same-key+different => E4; M4 duplicate mount => E5; M0
-    // PUT on the Anthropic-compatible collection => 405, because only the
-    // explicitly namespaced Awaken extension owns complete replacement.
+    // absent/same/different payload; C3 Resource If-Match current/stale; C4
+    // Runtime realization succeeds. Effects: E1 GET and PUT expose the one
+    // Resource generation ETag; E2 one desired generation is persisted and
+    // realized; E3 exact replay wins before a stale precondition and returns
+    // current truth without another generation; E4 key mismatch or a new
+    // command based on a stale Resource generation is 409; E5 invalid input
+    // fails before Runtime. Session-root revisions are intentionally absent
+    // from this table: lease/metadata changes are covered by W1 below.
+    //
+    // | Rule | Manifest | Key | Resource ETag | Result | Effect |
+    // |---|---|---|---|---|---|
+    // | M0 | valid | new | current | wrong protocol URI | 405 |
+    // | M1 | valid | new | current | accepted | E1 + E2 |
+    // | M2 | same | same | stale | replay | E3 |
+    // | M3 | changed | same | any | reject | E4 mismatch |
+    // | M4 | invalid | new | any | reject | E5 |
+    // | M5 | valid | new | stale | reject | E4 precondition |
     // FMECA: sequenced delete/add could expose partial sets or duplicate mounts
     // (severity 8, occurrence 6, detection 5); one root CAS plus whole-manifest
     // validation eliminates both intermediate states.
@@ -4055,6 +4070,15 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         ]
     });
     let before = applied.lock().unwrap().len();
+    let (status, initial_headers, listed) =
+        call_with_headers(&app, "GET", &compatibility_uri, None, &[]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "initial Resource manifest: {listed}"
+    );
+    let initial_etag = initial_headers["etag"].to_str().unwrap().to_string();
+    assert_eq!(initial_etag, "\"0\"", "M1/E1");
     let (status, _, rejected) = call_with_headers(
         &app,
         "PUT",
@@ -4069,13 +4093,17 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         "PUT",
         &uri,
         Some(manifest.clone()),
-        &[("idempotency-key", "manifest-1")],
+        &[
+            ("idempotency-key", "manifest-1"),
+            ("if-match", initial_etag.as_str()),
+        ],
     )
     .await;
     assert_eq!(status, StatusCode::OK, "M1: {first}");
-    assert_eq!(first["phase"], "active", "M1/E1");
-    assert_eq!(first["resources"].as_array().unwrap().len(), 2, "M1/E1");
+    assert_eq!(first["phase"], "active", "M1/E2");
+    assert_eq!(first["resources"].as_array().unwrap().len(), 2, "M1/E2");
     let first_etag = first_headers["etag"].to_str().unwrap().to_string();
+    assert_eq!(first_etag, "\"1\"", "M1/E1");
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M1/E2");
 
     let (status, replay_headers, replay) = call_with_headers(
@@ -4083,7 +4111,10 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
         "PUT",
         &uri,
         Some(manifest),
-        &[("idempotency-key", "manifest-1")],
+        &[
+            ("idempotency-key", "manifest-1"),
+            ("if-match", initial_etag.as_str()),
+        ],
     )
     .await;
     assert_eq!(status, StatusCode::OK, "M2: {replay}");
@@ -4100,6 +4131,19 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "M3/E4: {mismatch}");
 
+    let (status, _, stale) = call_with_headers(
+        &app,
+        "PUT",
+        &uri,
+        Some(json!({ "resources": [] })),
+        &[
+            ("idempotency-key", "manifest-stale-resource-generation"),
+            ("if-match", initial_etag.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "M5/E4: {stale}");
+
     let (status, _, collision) = call_with_headers(
         &app,
         "PUT",
@@ -4114,21 +4158,24 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "M4/E5: {collision}");
     assert_eq!(applied.lock().unwrap().len(), before + 1, "M4/E5");
 
-    let (status, listed) = call(&app, "GET", &compatibility_uri, None).await;
+    let (status, final_headers, listed) =
+        call_with_headers(&app, "GET", &compatibility_uri, None, &[]).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(final_headers["etag"], first_etag, "M1/E1");
     assert_eq!(listed["data"].as_array().unwrap().len(), 2, "M1/E1");
 }
 
 #[tokio::test]
-async fn whole_manifest_root_loser_compensates_its_applied_repository() {
+async fn whole_manifest_resource_loser_compensates_its_applied_repository() {
     // Cause/effect graph: C1 whole-manifest lowering creates an Applied
-    // Session-owned Repository; C2 a concurrent root fact wins after the read;
-    // C3 expected_revision prevents rebase/overwrite; C4 the winner does not
-    // reference the candidate Repository. Effects: E1 Conflict is preserved;
-    // E2 winner metadata remains; E3 the Applied Repository is tombstoned.
+    // Session-owned Repository; C2 a concurrent Resource generation wins after
+    // the read; C3 expected_resource_revision prevents rebase/overwrite; C4 the
+    // winner does not reference the candidate Repository. Effects: E1 Conflict
+    // is preserved; E2 winner Resource intent remains; E3 the Applied candidate
+    // Repository is tombstoned.
     //
     // | Rule | Participant | Root race | Root reference | Result | Repository |
-    // | W1 | Applied | winner R+1 | absent | Conflict | Deleted |
+    // | W1 | Applied | Resource G+1 | absent | Conflict | Deleted |
     let runtime = AcceptingFake::default();
     let inner = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
@@ -4141,7 +4188,7 @@ async fn whole_manifest_root_loser_compensates_its_applied_repository() {
     let request =
         serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
     let id = state.create_session(request, None).await.unwrap().id;
-    let read_revision = repo.get(&id).await.unwrap().revision;
+    let read_revision = repo.get(&id).await.unwrap().resources.revision;
     let remote_url = "https://github.com/awaken/manifest-race.git";
     let normalized_mount = "manifest-race";
     let initial_branch = Some("main".to_string());
@@ -4155,7 +4202,7 @@ async fn whole_manifest_root_loser_compensates_its_applied_repository() {
             &initial_commit,
         ))
     );
-    repo.metadata_change_on_next(1, "manifest-winner", "durable");
+    repo.resource_change_on_next(1);
     let result = state
         .replace_resource_manifest(
             &id,
@@ -4177,14 +4224,8 @@ async fn whole_manifest_root_loser_compensates_its_applied_repository() {
         matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
         "W1/E1: {result:?}"
     );
-    assert_eq!(
-        repo.get(&id)
-            .await
-            .unwrap()
-            .metadata
-            .get("manifest-winner")
-            .map(String::as_str),
-        Some("durable"),
+    assert!(
+        repo.get(&id).await.unwrap().resources.pending.is_some(),
         "W1/E2"
     );
     assert_eq!(
@@ -4196,6 +4237,66 @@ async fn whole_manifest_root_loser_compensates_its_applied_repository() {
         ResourceState::Deleted,
         "W1/E3"
     );
+}
+
+#[tokio::test]
+async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
+    // Cause/effect graph: C1 the caller fences the Resource generation; C2 a
+    // concurrent Runtime-lease/metadata mutation advances only the Session root;
+    // C3 no Resource generation changed; C4 bounded root CAS retry succeeds.
+    // Effects: E1 the Resource command is accepted exactly once; E2 the
+    // unrelated root fact is preserved; E3 the Resource generation advances
+    // once. This is the production renewal race: root churn must not starve a
+    // semantically independent Resource write.
+    //
+    // | Rule | Resource base | Concurrent root fact | Root CAS | Result |
+    // |---|---|---|---|---|
+    // | W2 | current G | metadata/lease only | loses once | rebase + E1-E3 |
+    let runtime = AcceptingFake::default();
+    let applied = runtime.applied.clone();
+    let inner = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
+    let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
+    let state = ManagedState::new(runtime)
+        .with_session_repo(repo.clone())
+        .with_resource_registry(resource_registry());
+    let request =
+        serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+    let resource_revision = repo.get(&id).await.unwrap().resources.revision;
+    repo.metadata_change_on_next(1, "realization-lease", "renewed");
+
+    let result = state
+        .replace_resource_manifest(
+            &id,
+            serde_json::from_value(json!({
+                "resources": [{
+                    "type": "file",
+                    "file_id": "file-context",
+                    "mount_path": "/context.txt"
+                }]
+            }))
+            .unwrap(),
+            Some("manifest-root-rebase".into()),
+            Some(resource_revision),
+            "manifest-root-rebase-request".into(),
+        )
+        .await
+        .expect("W2 unrelated root mutation is a retryable implementation race");
+
+    assert_eq!(result.desired_revision, resource_revision + 1, "W2/E3");
+    let durable = repo.get(&id).await.unwrap();
+    assert_eq!(
+        durable
+            .metadata
+            .get("realization-lease")
+            .map(String::as_str),
+        Some("renewed"),
+        "W2/E2"
+    );
+    assert_eq!(durable.resources.active.inputs().len(), 1, "W2/E1");
+    assert_eq!(applied.lock().unwrap().len(), 1, "W2/E1 exactly once");
 }
 
 #[tokio::test]

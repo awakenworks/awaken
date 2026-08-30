@@ -245,7 +245,7 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
             "running-manifest",
             ReplaceSessionResourceManifest {
                 resources: desired.clone(),
-                expected_session_revision: None,
+                expected_resource_revision: None,
                 idempotency_key: Some("manifest-safe-boundary".into()),
                 request_fingerprint: "manifest-safe-boundary-hash".into(),
             },
@@ -329,7 +329,7 @@ async fn assert_managed_and_frozen_resource_policy_rules(
     let command = |resources| ReplaceSessionResourceManifest {
         request_fingerprint: awaken_session_contract::stable_fingerprint(&resources),
         resources,
-        expected_session_revision: None,
+        expected_resource_revision: None,
         idempotency_key: None,
     };
 
@@ -366,7 +366,7 @@ async fn assert_file_resource_and_credential_policy_rules(
     let command = |resources| ReplaceSessionResourceManifest {
         request_fingerprint: awaken_session_contract::stable_fingerprint(&resources),
         resources,
-        expected_session_revision: None,
+        expected_resource_revision: None,
         idempotency_key: None,
     };
     app.replace_session_resource_manifest(

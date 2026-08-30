@@ -49,7 +49,10 @@ impl OwnedRepositoryRetirement {
 #[derive(Clone, Debug)]
 pub struct ReplaceSessionResourceManifest {
     pub resources: ResolvedSessionResources,
-    pub expected_session_revision: Option<SessionRevision>,
+    /// Optimistic fence for the Resource sub-aggregate, not the Session root.
+    /// Runtime realization lease renewals advance the root revision without
+    /// changing this generation and therefore must not starve Resource writes.
+    pub expected_resource_revision: Option<u64>,
     pub idempotency_key: Option<String>,
     pub request_fingerprint: String,
 }
@@ -737,8 +740,7 @@ impl SessionApplication {
                 .await
             {
                 Err(SessionResourceManifestError::Conflict)
-                    if command.expected_session_revision.is_none()
-                        && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                    if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
                 {
                     continue;
                 }
@@ -769,8 +771,8 @@ impl SessionApplication {
             return Err(SessionResourceManifestError::Terminal);
         }
         if command
-            .expected_session_revision
-            .is_some_and(|expected| expected != session.revision)
+            .expected_resource_revision
+            .is_some_and(|expected| expected != session.resources.revision)
         {
             return Err(SessionResourceManifestError::Conflict);
         }
