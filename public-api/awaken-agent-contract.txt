@@ -603,6 +603,9 @@ pub fn awaken_agent_contract::event::fold_step(&[awaken_agent_contract::agent::m
 pub fn awaken_agent_contract::event::terminal(&awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
 pub fn awaken_agent_contract::event::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
 pub mod awaken_agent_contract::fingerprint
+pub enum awaken_agent_contract::fingerprint::CanonicalJsonHashError
+pub awaken_agent_contract::fingerprint::CanonicalJsonHashError::Serialize(alloc::string::String)
+pub fn awaken_agent_contract::fingerprint::canonical_json_sha256(&str, &impl serde_core::ser::Serialize) -> core::result::Result<alloc::string::String, awaken_agent_contract::fingerprint::CanonicalJsonHashError>
 pub fn awaken_agent_contract::fingerprint::collision_resistant_fingerprint(&str, &[&[u8]]) -> alloc::string::String
 pub fn awaken_agent_contract::fingerprint::collision_resistant_fingerprint_digest(&str) -> core::option::Option<&str>
 pub fn awaken_agent_contract::fingerprint::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
@@ -878,12 +881,14 @@ pub trait awaken_agent_contract::thread::read::committed_thread_view::CommittedT
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::open_wait_for_thread(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::awaiting::ResumeTicket)>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::transcript_slice(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptSlice, awaken_agent_contract::thread::read::transcript::TranscriptError>
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::transcript_snapshot(&self, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::transcript::TranscriptView) -> awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
 pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::verify_transcript_snapshot(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::select_open_wait(&awaken_agent_contract::agent::thread::Id, core::option::Option<&awaken_agent_contract::agent::run::Record>, core::option::Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>) -> core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::awaiting::ResumeTicket)>
 pub mod awaken_agent_contract::thread::read::lifecycle
 pub enum awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursorCodecError
 pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursorCodecError::OffsetOutOfRange
@@ -1045,6 +1050,8 @@ pub fn awaken_agent_contract::event::agent::AgentEvent::fact(awaken_agent_contra
 pub enum awaken_agent_contract::AgentSkillKind
 pub awaken_agent_contract::AgentSkillKind::Anthropic
 pub awaken_agent_contract::AgentSkillKind::Custom
+pub enum awaken_agent_contract::CanonicalJsonHashError
+pub awaken_agent_contract::CanonicalJsonHashError::Serialize(alloc::string::String)
 pub enum awaken_agent_contract::EventScope
 pub awaken_agent_contract::EventScope::All
 pub awaken_agent_contract::EventScope::Run(awaken_agent_contract::agent::run::Id)
@@ -1317,6 +1324,7 @@ pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 sel
 pub fn awaken_agent_contract::StreamSink::send_observation<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Observation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_agent_contract::archive_thread_command() -> awaken_agent_contract::agent::state::Command
 pub fn awaken_agent_contract::archived_thread_commit_cursor(&[awaken_agent_contract::agent::state::Command], &[u64]) -> core::option::Option<u64>
+pub fn awaken_agent_contract::canonical_json_sha256(&str, &impl serde_core::ser::Serialize) -> core::result::Result<alloc::string::String, awaken_agent_contract::fingerprint::CanonicalJsonHashError>
 pub fn awaken_agent_contract::classify_run_lifecycle_event(&awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind
 pub fn awaken_agent_contract::classify_run_lifecycle_record(&awaken_agent_contract::audit::kind::Kind, &awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> core::option::Option<awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind>
 pub fn awaken_agent_contract::collision_resistant_fingerprint(&str, &[&[u8]]) -> alloc::string::String
