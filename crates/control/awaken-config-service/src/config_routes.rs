@@ -5,6 +5,7 @@
 
 use awaken_agent_config::ConfigWrite;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
+use awaken_session_contract::preserve_runtime_agent_overrides;
 use awaken_tenancy::{ExecutionWorkspace, ScopeId, WorkspaceScope};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -363,17 +364,60 @@ pub(crate) async fn get_config(
     }
 }
 
+fn take_agent_permission_preset(
+    body: &mut Value,
+) -> Result<Option<awaken_session_contract::AgentPermissionPreset>, String> {
+    body.as_object_mut()
+        .and_then(|body| body.remove("permission_preset"))
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("invalid permission_preset: {error}"))
+}
+
+fn apply_authoring_permission_preset(
+    config: &mut awaken_agent_config::AgentConfig,
+    preset: Option<awaken_session_contract::AgentPermissionPreset>,
+    allowed_runtime_override_ids: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(preset) = preset else {
+        return Ok(());
+    };
+    awaken_session_contract::apply_agent_permission_preset(
+        awaken_session_contract::AgentPermissionPresetTarget {
+            tool_ids: &mut config.tool_ids,
+            toolsets: &mut config.toolsets,
+            mcp_servers: &config.mcp_servers,
+            plugin_ids: &mut config.plugin_ids,
+            plugin_config: &mut config.plugin_config,
+            allowed_runtime_override_ids,
+        },
+        preset,
+    )
+}
+
 pub(crate) async fn validate(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     let Ok(scope) = request_scope(scope) else {
         return workspace_not_found();
     };
-    let config = match agent_config_from_managed(id, &body) {
+    let permission_preset = match take_agent_permission_preset(&mut body) {
+        Ok(preset) => preset,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "valid": false,
+                    "issues": [{ "path": "permission_preset", "message": error, "severity": "error" }],
+                })),
+            );
+        }
+    };
+    let mut config = match agent_config_from_managed(id, &body) {
         Ok(config) => config,
         Err(error) => {
             return (
@@ -385,6 +429,20 @@ pub(crate) async fn validate(
             );
         }
     };
+    let allowed_runtime_override_ids = plane.runtime_agent_override_ids(&scope, &config);
+    if let Err(error) = apply_authoring_permission_preset(
+        &mut config,
+        permission_preset,
+        &allowed_runtime_override_ids,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "valid": false,
+                "issues": [{ "path": "permission_preset", "message": error, "severity": "error" }],
+            })),
+        );
+    }
     let result = match publication_workspace(&scope, execution.as_ref()) {
         Some(workspace) => {
             plane
@@ -412,39 +470,72 @@ pub(crate) async fn put_config(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     let Ok(scope) = request_scope(scope) else {
         return workspace_not_found();
     };
-    let config = match agent_config_from_managed(id.clone(), &body) {
+    let permission_preset = match take_agent_permission_preset(&mut body) {
+        Ok(preset) => preset,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error })));
+        }
+    };
+    let mut config = match agent_config_from_managed(id.clone(), &body) {
         Ok(config) => config,
         Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     };
-    if let Some(expected) = body.get("generation").and_then(Value::as_u64) {
-        return match plane.put_if_revision(&scope, &config, expected).await {
-            Ok(ConfigWrite::Applied { revision }) => (
-                StatusCode::OK,
-                Json(json!({ "id": id, "generation": revision })),
-            ),
-            Ok(ConfigWrite::Conflict { current_revision }) => (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "config generation conflict",
-                    "current_revision": current_revision,
-                })),
-            ),
-            Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
-        };
+    let current = match plane.get_versioned(&scope, &id).await {
+        Ok(current) => current,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": error })),
+            );
+        }
+    };
+    let observed_revision = current.as_ref().map_or(0, |revision| revision.revision);
+    if let Some(expected) = body.get("generation").and_then(Value::as_u64)
+        && expected != observed_revision
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "config generation conflict",
+                "current_revision": (observed_revision != 0).then_some(observed_revision),
+            })),
+        );
     }
-    match plane.put(&scope, &config).await {
-        Ok(()) => match plane.get_versioned(&scope, &id).await {
-            Ok(Some(current)) => (
-                StatusCode::OK,
-                Json(json!({ "id": id, "generation": current.revision })),
-            ),
-            _ => (StatusCode::OK, Json(json!({ "id": id }))),
-        },
+    let allowed_runtime_override_ids = plane.runtime_agent_override_ids(&scope, &config);
+    if let Some(current) = &current {
+        preserve_runtime_agent_overrides(
+            &current.config.toolsets,
+            &mut config.toolsets,
+            &allowed_runtime_override_ids,
+        );
+    }
+    if let Err(error) = apply_authoring_permission_preset(
+        &mut config,
+        permission_preset,
+        &allowed_runtime_override_ids,
+    ) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": error })));
+    }
+    match plane
+        .put_if_revision(&scope, &config, observed_revision)
+        .await
+    {
+        Ok(ConfigWrite::Applied { revision }) => (
+            StatusCode::OK,
+            Json(json!({ "id": id, "generation": revision })),
+        ),
+        Ok(ConfigWrite::Conflict { current_revision }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "config generation conflict",
+                "current_revision": current_revision,
+            })),
+        ),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
     }
 }
@@ -635,6 +726,274 @@ mod publication_projection_tests {
     use crate::config_service::resource_prompt_tests::{
         agent_config, failing_scoped_plane, test_service,
     };
+
+    #[tokio::test]
+    async fn config_get_controlled_put_preserves_runtime_only_policy_under_one_revision_fence() {
+        // Cause/effect table for the Console GET -> controlled PUT round trip:
+        // | rule | current opaque/collision | catalog + role | effect |
+        // | O1   | agent_run ask             | delegation + roster | retain exact |
+        // | O2   | delete + custom_dynamic   | client/regular       | prune both |
+        // | O3   | O1/O2                     | stale revision       | 409; zero write |
+        // The closed wire never gains another member table; the versioned current
+        // config supplies bytes, but only the catalog's AgentDelegation semantic
+        // role may cross the projection. A same-name custom/dynamic descriptor
+        // cannot inherit historical permission. The observed revision fences CAS.
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        use awaken_runtime_contract::resolved::ToolDescriptor;
+
+        let plane = ConfigPlane::new(
+            Arc::new(test_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![
+                ToolDescriptor::pinned(
+                    "managed",
+                    "agent_run",
+                    "Run an exact roster Agent",
+                    json!({"type": "object"}),
+                )
+                .with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation),
+                ToolDescriptor::pinned(
+                    "dynamic",
+                    "custom_dynamic",
+                    "Current dynamic tool",
+                    json!({"type": "object"}),
+                ),
+            ])),
+        );
+        let scope = ScopeId::from("workspace-console");
+        let mut seeded = agent_config("opaque-agent");
+        let runtime_only = ToolPolicyOverride::new(
+            "agent_run",
+            ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+        );
+        seeded.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: false,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: vec![
+                runtime_only.clone(),
+                ToolPolicyOverride::new("delete", ToolExecutionPolicy::default()),
+                ToolPolicyOverride::new("custom_dynamic", ToolExecutionPolicy::default()),
+            ],
+        }];
+        seeded.multiagent = Some(awaken_agent_config::MultiagentConfig {
+            agents: vec![awaken_agent_config::MultiagentTarget::SelfReference],
+        });
+        plane.put(&scope, &seeded).await.unwrap();
+
+        let (status, Json(mut wire)) = get_config(
+            State(plane.clone()),
+            Path(seeded.id.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "O1 GET");
+        assert_eq!(wire["generation"], 1, "O1");
+        assert!(
+            !wire["tools"].to_string().contains("agent_run"),
+            "O1 closed wire"
+        );
+        wire["tools"] = json!([
+            {
+                "type": "agent_toolset_20260401",
+                "default_config": {
+                    "enabled": false,
+                    "permission_policy": { "type": "always_allow" }
+                },
+                "configs": [{
+                    "name": "write",
+                    "enabled": true,
+                    "permission_policy": { "type": "always_ask" }
+                }]
+            },
+            {
+                "type": "custom",
+                "name": "delete",
+                "description": "Client-owned collision",
+                "input_schema": { "type": "object" }
+            }
+        ]);
+        let (status, Json(saved)) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(wire.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "O1 PUT: {saved}");
+        assert_eq!(saved["generation"], 2, "O1");
+        let current = plane
+            .get_versioned(&scope, &seeded.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let agent = current
+            .config
+            .toolsets
+            .iter()
+            .find(|toolset| toolset.source == ToolsetSource::Agent)
+            .unwrap();
+        assert_eq!(
+            agent
+                .overrides
+                .iter()
+                .find(|entry| entry.name == "agent_run")
+                .unwrap(),
+            &runtime_only,
+            "O1 exact opaque bytes"
+        );
+        assert_eq!(
+            agent.policy_for("write").permission,
+            ToolPermissionRequirement::AlwaysAsk,
+            "O1 controlled policy"
+        );
+        assert!(
+            agent
+                .overrides
+                .iter()
+                .all(|entry| !matches!(entry.name.as_str(), "delete" | "custom_dynamic")),
+            "O2 retired/client/dynamic collisions are pruned"
+        );
+        let publication = plane.publish(&scope, &seeded.id).await.unwrap();
+        let verdict = publication
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .tool_policy("agent_run")
+            .expect("O1 Runtime policy");
+        assert!(verdict.enabled, "O1 Runtime enabled");
+        assert_eq!(
+            verdict.permission,
+            ToolPermissionRequirement::AlwaysAsk,
+            "O1 Runtime ask"
+        );
+
+        wire["generation"] = json!(1);
+        let (status, _) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(wire),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "O3");
+        assert_eq!(
+            plane
+                .get_versioned(&scope, &seeded.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            2,
+            "O2 zero write"
+        );
+    }
+
+    #[tokio::test]
+    async fn controlled_preset_is_transient_and_server_projected_once() {
+        // Cause/effect graph: C1 Web submits one transient preset; C2 its wire
+        // draft selected read/write/bash; C3 an unknown preset is submitted.
+        // Effects: E1 the server-owned domain
+        // transform keeps Bash enabled but requires confirmation; E2 read is
+        // allow and write is ask; E3 no preset marker or legacy permission
+        // section is stored; E4 C3 is rejected without another write.
+        // R1=C1+C2=>E1-E3; R2=C3=>400+E4.
+        use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
+
+        let plane = ConfigPlane::new(
+            Arc::new(test_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let scope = ScopeId::from("workspace-preset");
+        let seeded = agent_config("preset-agent");
+        plane.put(&scope, &seeded).await.unwrap();
+        let (status, Json(mut wire)) = get_config(
+            State(plane.clone()),
+            Path(seeded.id.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        wire["tools"] = json!(["read", "write", "bash"]);
+        wire["permission_preset"] = json!("controlled_modifications");
+        let (status, Json(result)) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(wire),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "R1: {result}");
+        let stored = plane
+            .get_versioned(&scope, &seeded.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .config;
+        let agent = stored
+            .toolsets
+            .iter()
+            .find(|toolset| toolset.source == ToolsetSource::Agent)
+            .unwrap();
+        for (name, enabled, permission) in [
+            ("bash", true, ToolPermissionRequirement::AlwaysAsk),
+            ("read", true, ToolPermissionRequirement::AlwaysAllow),
+            ("write", true, ToolPermissionRequirement::AlwaysAsk),
+        ] {
+            let policy = agent.policy_for(name);
+            assert_eq!(
+                (policy.enabled, policy.permission),
+                (enabled, permission),
+                "{name}"
+            );
+        }
+        let serialized = serde_json::to_value(&stored).unwrap().to_string();
+        assert!(!serialized.contains("permission_preset"), "E3 transient");
+        assert!(
+            !stored.plugin_config.contains_key("permission"),
+            "E3 legacy"
+        );
+
+        let (status, Json(mut invalid)) = get_config(
+            State(plane.clone()),
+            Path(seeded.id.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "R2 setup");
+        invalid["permission_preset"] = json!("read_only");
+        let (status, Json(error)) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(invalid),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "R2/E4: {error}");
+        assert_eq!(
+            plane
+                .get_versioned(&scope, &seeded.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .config,
+            stored,
+            "R2/E4 no write"
+        );
+    }
 
     // Causal decision table: present in trusted scope => exact value;
     // absent/cross-scope => 404; repository failure => 500.

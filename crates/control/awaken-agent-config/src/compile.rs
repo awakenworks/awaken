@@ -6,7 +6,7 @@ use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_tool_pattern::tool_id_match;
 
-use crate::config::{AgentConfig, AgentKind};
+use crate::config::{AgentConfig, AgentKind, MultiagentConfig};
 
 mod agent_bindings;
 mod executable_projection;
@@ -206,12 +206,10 @@ fn compile_with_models(
     // need to repeat `agent_run` in `tool_ids`, and a target-less Agent cannot
     // accidentally publish the delegation tool. The semantic role, not a concrete
     // builtin id, joins the config domain to the extension catalog.
-    let has_delegation_targets = config.multiagent.as_ref().is_some_and(|multiagent| {
-        multiagent
-            .agents
-            .iter()
-            .any(|target| target.advisor_model().is_none())
-    });
+    let has_delegation_targets = config
+        .multiagent
+        .as_ref()
+        .is_some_and(MultiagentConfig::has_delegation_target);
     if has_delegation_targets {
         let mut delegation = tools
             .iter()
@@ -238,12 +236,10 @@ fn compile_with_models(
         descriptors.retain(|tool| tool.kind != ToolKind::AgentDelegation);
     }
 
-    let has_advisor = config.multiagent.as_ref().is_some_and(|multiagent| {
-        multiagent
-            .agents
-            .iter()
-            .any(|target| target.advisor_model().is_some())
-    });
+    let has_advisor = config
+        .multiagent
+        .as_ref()
+        .is_some_and(MultiagentConfig::has_advisor_target);
     if has_advisor {
         if !seen.insert(awaken_runtime_contract::resolved::ADVISOR_TOOL_ID.into()) {
             return Err(CompileError::InvalidBinding {

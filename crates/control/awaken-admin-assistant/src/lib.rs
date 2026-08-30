@@ -29,7 +29,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_config::{
-    AgentConfig, ManagementAuditRecord, ModelSelection, MultiagentConfig, ToolOverride,
+    AgentConfig, AgentConfigRevision, AuditedConfigWrite, ManagementAuditEntry,
+    ManagementAuditRecord, ModelSelection, MultiagentConfig, ToolOverride,
 };
 use awaken_environment_contract::{
     CreateEnvironmentCommand, EnvironmentAuthor, EnvironmentConfig, EnvironmentNetworking,
@@ -43,7 +44,7 @@ use awaken_runtime_contract::tool::{
 };
 use serde::{Deserialize, Serialize};
 
-/// The five management tool ids. They are namespaced `admin_*` and are only ever
+/// The six management tool ids. They are namespaced `admin_*` and are only ever
 /// nameable in the reserved scope (the fence is the scope-keyed catalog projection,
 /// ADR-0052 D3 — enforced in the host, not here).
 pub const CAPABILITIES_TOOL: &str = "admin_get_platform_capabilities";
@@ -79,7 +80,7 @@ pub fn admin_tool_ids() -> Vec<String> {
 }
 
 /// The seed [`AgentConfig`] for the management assistant (ADR-0052 D1/D3/D4): an
-/// **ordinary** config — instructions + the five admin tool ids + an `Auto` model
+/// **ordinary** config — instructions + the six admin tool ids + an `Auto` model
 /// binding — with the native backend (no sandbox). The host publishes it into the
 /// reserved scope through the ordinary publish path, so it becomes a compiled,
 /// content-addressed `ExecutableAgentSnapshot` like any agent (no builder bypass).
@@ -149,14 +150,16 @@ report the Environment id, summarize placement/packages/networking, and direct t
 to Run ▸ Environments to review or edit it.
 
 AUTHORING RULES:
-- Plugin sections (e.g. `state_machine`, `permission`, `compact`, `memory`) MUST conform \
+- Plugin sections (e.g. `state_machine`, `compact`, `memory`) MUST conform \
 EXACTLY to that plugin's `config_schema` from step 1. Read the schema; match its field \
 names, nesting, and enums precisely — do not guess the shape.
 - `tool_overrides` shape each per entry: `target` is the tool's id; set `alias` to rename \
 it for the model and/or `description` to re-describe it. Use it when the operator asks to \
 rename or re-explain a tool.
-- Permissions: prefer least privilege. If the operator wants approval or bans, put it in \
-the `permission` section (a `default_behavior` of `ask`/`deny`, and/or ordered `rules`).
+- Permissions: prefer least privilege. For controlled repository modification, set \
+`permission_preset` to `controlled_modifications`; this authors the typed Agent Toolset \
+and requires approval for the canonical controlled-modification members. Never author \
+`plugin_config.permission`.
 - State Machine: first state the operator's intent, then encode only generic mechanisms from \
 the advertised schema. Tool `on_violation` gates BEFORE execution; `when` advances AFTER the \
 result. If an operation must remain repeatable after moving to its destination state, INCLUDE \
@@ -214,6 +217,16 @@ pub trait ResourceInventory: Send + Sync {
 pub trait DraftValidator: Send + Sync {
     /// `Ok(())` if the draft compiles; `Err(message)` with the compile error.
     async fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
+
+    /// Runtime-only Agent override ids proven by the same scoped catalog and
+    /// semantic-role inputs used by the compile dry-run. The default is empty
+    /// for validators that expose no catalog authority.
+    async fn runtime_agent_override_ids(
+        &self,
+        _draft: &AgentConfig,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        Ok(std::collections::BTreeSet::new())
+    }
 }
 
 /// Neutral assistant-tool DTO for one Agent input. The host ACL maps this leaf
@@ -240,35 +253,35 @@ pub struct InputSpec {
 /// in a whole agent — config plus its mounted resources.
 #[async_trait]
 pub trait DraftStore: Send + Sync {
-    /// Persist an UNPUBLISHED draft agent config (same effect as the editor's Save).
-    async fn put(&self, draft: &AgentConfig) -> Result<(), String>;
-    /// Commit the draft and mark its pre-recorded audit intent as business-complete
-    /// in one store transaction. A stable call-id replay is a business no-op.
-    async fn put_audited(&self, draft: &AgentConfig, audit: &AdminAuditEvent)
-    -> Result<(), String>;
     /// Atomically commit the draft/audit and, when present, journal replacement
     /// resource bindings for idempotent application to the separate resource store.
     async fn put_audited_with_resources(
         &self,
         draft: &AgentConfig,
+        expected_revision: u64,
         audit: &AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
-    ) -> Result<(), String> {
-        self.put_audited(draft, audit).await?;
-        if let Some(resources) = resources {
-            self.put_resources(&draft.id, resources)
-                .await
-                .map_err(|error| format!("resources could not be bound: {error}"))?;
-        }
+    ) -> Result<(), String>;
+    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<AuditedConfigWrite, String>;
+    async fn get_audit(
+        &self,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String>;
+    /// Drive already-journaled external effects after a committed response-loss
+    /// replay. Stores without an external effect journal have nothing to do.
+    async fn reconcile_pending_effects(&self) -> Result<(), String> {
         Ok(())
     }
-    async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<(), String>;
-    /// Read a persisted draft agent config back by id (`None` if absent).
-    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String>;
-    /// Replace the whole set of resource bindings for `agent_id` (data-plane store).
-    async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String>;
-    /// Read back the agent's resource bindings (empty when none are bound).
-    async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String>;
+    /// Read a persisted draft and the revision that must fence any derived write.
+    async fn get_versioned(&self, id: &str) -> Result<Option<AgentConfigRevision>, String>;
+    /// Read-only projection for tools that never derive a write from the value.
+    async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
+        Ok(self
+            .get_versioned(id)
+            .await?
+            .map(|revision| revision.config))
+    }
 }
 
 /// A structured record of one mutating management operation (ADR-0052 D6). Read-only
@@ -336,9 +349,9 @@ pub struct PluginInfo {
     pub config_schema: Option<serde_json::Value>,
 }
 
-// ---- The five descriptors --------------------------------------------------------
+// ---- The six descriptors ---------------------------------------------------------
 
-/// The five management tool descriptors (D3). These are handed to the host's
+/// The six management tool descriptors (D3). These are handed to the host's
 /// scope-keyed catalog so they are nameable **only** in the reserved scope; a config
 /// in any other scope that names one hits `UnknownTool` at compile (fail-closed).
 #[must_use]
@@ -404,10 +417,15 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                         "type": "object",
                         "description": "Typed tool_search result limit and automatic/disabled/custom prompt policy."
                     },
+                    "permission_preset": {
+                        "type": "string",
+                        "enum": ["controlled_modifications"],
+                        "description": "Typed Agent Toolset preset: canonical controlled-modification members require approval. Not persisted as a separate preset."
+                    },
                     "plugin_config": {
                         "type": "object",
                         "description": "Per-plugin config sections keyed by plugin id \
-                                        (permission/state_machine/compact/memory)."
+                                        (state_machine/compact/memory). Permission is authored through typed Toolsets."
                     },
                     "context_policy": { "type": "object" },
                       "mcp_servers": {
@@ -502,7 +520,7 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
             PATCH_TOOL,
             "Incrementally refine a SAVED draft: apply only the fields present in \
              `patch` (same flat field set as admin_draft_agent — instructions, model, \
-             tools, tool_exposure, tool_discovery, plugin_config, mcp_servers, \
+             tools, permission_preset, tool_exposure, tool_discovery, plugin_config, mcp_servers, \
              skills, multiagent, metadata, resources) \
              to the stored draft, re-validate, and save. plugin_config sections merge by \
              key; a present `resources` array REPLACES the whole binding set (an absent \
@@ -679,17 +697,24 @@ impl RawTool for DraftEnvironment {
                 ));
             }
         };
-        let audit_event = audit(
+        let (audit_event, committed) = audit(
             &self.store,
             &self.audit,
             CREATE_ENV_TOOL,
             &call.call_id,
-            format!(
-                "draft environment `{}` placement={:?}",
-                args.name, args.placement
-            ),
+            mutating_audit_summary(
+                CREATE_ENV_TOOL,
+                &format!(
+                    "draft environment `{}` placement={:?}",
+                    args.name, args.placement
+                ),
+                &call.arguments,
+            )?,
         )
         .await?;
+        if committed {
+            return already_applied_output(call.call_id, &self.store, &audit_event).await;
+        }
         let id = match self
             .author
             .create_environment(CreateEnvironmentCommand {
@@ -703,7 +728,9 @@ impl RawTool for DraftEnvironment {
             .await
         {
             Ok(id) => id,
-            Err(e) => return Ok(ToolOutput::error(call.call_id, e)),
+            Err(e) => {
+                return error_or_committed(call.call_id, &self.store, &audit_event, e).await;
+            }
         };
         Ok(ToolOutput::ok(
             call.call_id,
@@ -753,19 +780,150 @@ async fn audit(
     tool: &str,
     call_id: &str,
     summary: impl Into<String>,
-) -> Result<AdminAuditEvent, ToolError> {
+) -> Result<(AdminAuditEvent, bool), ToolError> {
     let operation_id = current_tool_operation_id().unwrap_or_else(|| call_id.to_string());
     let event = AdminAuditEvent {
         tool: tool.to_string(),
         call_id: operation_id,
         summary: summary.into(),
     };
-    store
-        .record_audit(&event)
+    let begin = match store.record_audit(&event).await {
+        Ok(begin) => begin,
+        Err(error) => {
+            let existing =
+                store
+                    .get_audit(&event.tool, &event.call_id)
+                    .await
+                    .map_err(|read_error| {
+                        ToolError::Execution(format!(
+                            "durable audit failed: {error}; compatibility read failed: {read_error}"
+                        ))
+                    })?;
+            if let Some(existing) = existing
+                && is_legacy_audit_for(&existing.record, &event)
+            {
+                if existing.business_committed {
+                    return Ok((event, true));
+                }
+                return Err(ToolError::Execution(
+                    "legacy durable audit is pending without a request fingerprint; retry cannot safely infer its complete arguments"
+                        .into(),
+                ));
+            }
+            return Err(ToolError::Execution(format!(
+                "durable audit failed: {error}"
+            )));
+        }
+    };
+    match begin {
+        AuditedConfigWrite::Applied => {
+            sink.record(event.clone());
+            Ok((event, false))
+        }
+        AuditedConfigWrite::Replayed => {
+            let existing = store
+                .get_audit(&event.tool, &event.call_id)
+                .await
+                .map_err(|error| {
+                    ToolError::Execution(format!("durable audit read failed: {error}"))
+                })?
+                .ok_or_else(|| {
+                    ToolError::Execution(
+                        "durable audit replay was reported without an audit entry".into(),
+                    )
+                })?;
+            if existing.record != event {
+                return Err(ToolError::Execution(
+                    "stable audit call id was reused with different content".into(),
+                ));
+            }
+            Ok((event, existing.business_committed))
+        }
+        AuditedConfigWrite::Conflict { current_revision } => Err(ToolError::Execution(format!(
+            "durable audit begin conflicted unexpectedly (current revision: {current_revision:?})"
+        ))),
+    }
+}
+
+const MUTATING_TOOL_ARGUMENTS_DOMAIN: &str = "awaken.admin-assistant.tool-arguments.v1";
+const REQUEST_SHA256_SEPARATOR: &str = "; request_sha256=";
+
+fn is_legacy_audit_for(existing: &AdminAuditEvent, request: &AdminAuditEvent) -> bool {
+    existing.tool == request.tool
+        && existing.call_id == request.call_id
+        && fingerprinted_summary(&existing.summary).is_none()
+        && fingerprinted_summary(&request.summary)
+            .is_some_and(|(target, _)| target == existing.summary)
+}
+
+fn fingerprinted_summary(summary: &str) -> Option<(&str, &str)> {
+    let (target, digest) = summary.rsplit_once(REQUEST_SHA256_SEPARATOR)?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some((target, digest))
+}
+
+fn mutating_audit_summary(
+    tool: &str,
+    target_summary: &str,
+    arguments: &serde_json::Value,
+) -> Result<String, ToolError> {
+    let request_sha256 =
+        awaken_session_contract::canonical_json_sha256(MUTATING_TOOL_ARGUMENTS_DOMAIN, arguments)
+            .map_err(|error| {
+            ToolError::Execution(format!(
+                "canonicalize `{tool}` arguments for durable audit: {error}"
+            ))
+        })?;
+    Ok(format!(
+        "{target_summary}{REQUEST_SHA256_SEPARATOR}{}",
+        request_sha256
+            .strip_prefix("sha256:")
+            .unwrap_or(&request_sha256)
+    ))
+}
+
+async fn already_applied_output(
+    call_id: String,
+    store: &Arc<dyn DraftStore>,
+    audit: &AdminAuditEvent,
+) -> Result<ToolOutput, ToolError> {
+    store.reconcile_pending_effects().await.map_err(|error| {
+        ToolError::Execution(format!(
+            "committed operation effect recovery failed: {error}"
+        ))
+    })?;
+    Ok(ToolOutput::ok(
+        call_id,
+        serde_json::json!({
+            "status": "already_applied",
+            "operation_id": audit.call_id,
+            "note": "The exact audited management operation was already committed."
+        })
+        .to_string(),
+    ))
+}
+
+/// Resolve an error against the durable business outcome one last time. A retry may
+/// be preparing concurrently with the original attempt; if that attempt committed,
+/// its durable audit wins over a stale local validation/read failure.
+async fn error_or_committed(
+    call_id: String,
+    store: &Arc<dyn DraftStore>,
+    audit: &AdminAuditEvent,
+    message: impl Into<String>,
+) -> Result<ToolOutput, ToolError> {
+    let existing = store
+        .get_audit(&audit.tool, &audit.call_id)
         .await
-        .map_err(|error| ToolError::Execution(format!("durable audit failed: {error}")))?;
-    sink.record(event.clone());
-    Ok(event)
+        .map_err(|error| ToolError::Execution(format!("durable audit read failed: {error}")))?;
+    if existing.is_some_and(|entry| entry.business_committed) {
+        already_applied_output(call_id, store, audit).await
+    } else {
+        Ok(ToolOutput::error(call_id, message.into()))
+    }
 }
 
 /// Size-bound every plugin-config section (D4): never let a draft absorb an unbounded
@@ -793,20 +951,45 @@ fn plugin_ids_of(plugin_config: &BTreeMap<String, serde_json::Value>) -> Vec<Str
 /// config plus a short pointer line. Fail-closed: a validation error does NOT persist.
 async fn validate_persist_emit(
     call_id: String,
-    config: AgentConfig,
+    mut config: AgentConfig,
+    expected_revision: u64,
     validator: &Arc<dyn DraftValidator>,
     store: &Arc<dyn DraftStore>,
     audit: &AdminAuditEvent,
     resources: Option<Vec<InputSpec>>,
 ) -> Result<ToolOutput, ToolError> {
-    if let Err(error) = validator.validate(&config).await {
-        return Ok(ToolOutput::error(
+    if let Err(error) = ensure_typed_mcp_policies(&mut config) {
+        return error_or_committed(
             call_id,
+            store,
+            audit,
+            format!("draft cannot be saved: {error}"),
+        )
+        .await;
+    }
+    let config = match config.canonicalize_mutable_authoring() {
+        Ok(config) => config,
+        Err(error) => {
+            return error_or_committed(
+                call_id,
+                store,
+                audit,
+                format!("draft cannot be saved: {error}"),
+            )
+            .await;
+        }
+    };
+    if let Err(error) = validator.validate(&config).await {
+        return error_or_committed(
+            call_id,
+            store,
+            audit,
             format!("draft does not validate, not saved: {error}"),
-        ));
+        )
+        .await;
     }
     if let Err(error) = store
-        .put_audited_with_resources(&config, audit, resources)
+        .put_audited_with_resources(&config, expected_revision, audit, resources)
         .await
     {
         return Ok(ToolOutput::error(
@@ -870,6 +1053,8 @@ struct DraftArgs {
     #[serde(default)]
     tool_discovery: awaken_runtime_contract::resolved::ToolDiscoverySettings,
     #[serde(default)]
+    permission_preset: Option<awaken_session_contract::AgentPermissionPreset>,
+    #[serde(default)]
     plugin_config: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
@@ -891,6 +1076,33 @@ struct DraftAgent {
     audit: Arc<dyn AuditSink>,
 }
 
+fn ensure_typed_mcp_policies(config: &mut AgentConfig) -> Result<(), String> {
+    awaken_session_contract::ensure_typed_mcp_toolset_policies(
+        &mut config.toolsets,
+        &config.mcp_servers,
+        config.plugin_config.contains_key("permission"),
+    )
+}
+
+async fn apply_permission_preset(
+    config: &mut AgentConfig,
+    preset: awaken_session_contract::AgentPermissionPreset,
+    validator: &dyn DraftValidator,
+) -> Result<(), String> {
+    let allowed_runtime_override_ids = validator.runtime_agent_override_ids(config).await?;
+    awaken_session_contract::apply_agent_permission_preset(
+        awaken_session_contract::AgentPermissionPresetTarget {
+            tool_ids: &mut config.tool_ids,
+            toolsets: &mut config.toolsets,
+            mcp_servers: &config.mcp_servers,
+            plugin_ids: &mut config.plugin_ids,
+            plugin_config: &mut config.plugin_config,
+            allowed_runtime_override_ids: &allowed_runtime_override_ids,
+        },
+        preset,
+    )
+}
+
 #[async_trait]
 impl RawTool for DraftAgent {
     fn id(&self) -> &str {
@@ -903,16 +1115,23 @@ impl RawTool for DraftAgent {
                 Ok(args) => args,
                 Err(output) => return Ok(output),
             };
-        let audit_event = audit(
+        let (audit_event, committed) = audit(
             &self.store,
             &self.audit,
             CREATE_DRAFT_TOOL,
             &call.call_id,
-            format!("draft agent `{}`", args.id),
+            mutating_audit_summary(
+                CREATE_DRAFT_TOOL,
+                &format!("draft agent `{}`", args.id),
+                &call.arguments,
+            )?,
         )
         .await?;
+        if committed {
+            return already_applied_output(call.call_id, &self.store, &audit_event).await;
+        }
         if let Err(error) = check_plugin_config_size(&args.plugin_config) {
-            return Ok(ToolOutput::error(call.call_id, error));
+            return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
         }
         // `model` pins a concrete id; absent → Auto (resolve at publish, ADR-0052 D5).
         let model_binding = args
@@ -923,7 +1142,7 @@ impl RawTool for DraftAgent {
         let resources = args.resources;
         let mcp_servers = args.mcp_servers;
         let skills = args.skills;
-        let config = AgentConfig {
+        let mut config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
             max_steps: args
@@ -956,9 +1175,16 @@ impl RawTool for DraftAgent {
             // author a per-agent strategy yet (default = model-derived window).
             compaction: None,
         };
+        if let Some(preset) = args.permission_preset
+            && let Err(error) =
+                apply_permission_preset(&mut config, preset, self.validator.as_ref()).await
+        {
+            return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
+        }
         validate_persist_emit(
             call.call_id,
             config,
+            0,
             &self.validator,
             &self.store,
             &audit_event,
@@ -1004,6 +1230,8 @@ struct PatchFields {
     #[serde(default)]
     tool_discovery: Option<awaken_runtime_contract::resolved::ToolDiscoverySettings>,
     #[serde(default)]
+    permission_preset: Option<awaken_session_contract::AgentPermissionPreset>,
+    #[serde(default)]
     plugin_config: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
@@ -1039,30 +1267,45 @@ impl RawTool for PatchAgent {
                 Ok(args) => args,
                 Err(output) => return Ok(output),
             };
-        let audit_event = audit(
+        let (audit_event, committed) = audit(
             &self.store,
             &self.audit,
             PATCH_TOOL,
             &call.call_id,
-            format!("patch agent `{}`", args.id),
+            mutating_audit_summary(
+                PATCH_TOOL,
+                &format!("patch agent `{}`", args.id),
+                &call.arguments,
+            )?,
         )
         .await?;
+        if committed {
+            return already_applied_output(call.call_id, &self.store, &audit_event).await;
+        }
         // Read the persisted draft; a patch targets an existing draft (fail-closed).
-        let mut config = match self.store.get(&args.id).await {
-            Ok(Some(c)) => c,
+        let revision = match self.store.get_versioned(&args.id).await {
+            Ok(Some(revision)) => revision,
             Ok(None) => {
-                return Ok(ToolOutput::error(
+                return error_or_committed(
                     call.call_id,
+                    &self.store,
+                    &audit_event,
                     format!("no saved draft `{}` to patch", args.id),
-                ));
+                )
+                .await;
             }
             Err(e) => {
-                return Ok(ToolOutput::error(
+                return error_or_committed(
                     call.call_id,
+                    &self.store,
+                    &audit_event,
                     format!("could not read draft `{}`: {e}", args.id),
-                ));
+                )
+                .await;
             }
         };
+        let expected_revision = revision.revision;
+        let mut config = revision.config;
         // Apply only the fields present in the patch.
         let patch = args.patch;
         if let Some(v) = patch.instructions {
@@ -1119,13 +1362,20 @@ impl RawTool for PatchAgent {
         }
         // Re-derive plugin_ids from the merged plugin_config so the two never drift.
         config.plugin_ids = plugin_ids_of(&config.plugin_config);
+        if let Some(preset) = patch.permission_preset
+            && let Err(error) =
+                apply_permission_preset(&mut config, preset, self.validator.as_ref()).await
+        {
+            return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
+        }
         if let Err(error) = check_plugin_config_size(&config.plugin_config) {
-            return Ok(ToolOutput::error(call.call_id, error));
+            return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
         }
         let resources = patch.resources;
         validate_persist_emit(
             call.call_id,
             config,
+            expected_revision,
             &self.validator,
             &self.store,
             &audit_event,

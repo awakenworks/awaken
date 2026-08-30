@@ -66,7 +66,7 @@ pub enum AdminCriterion {
     ToolOverrideHasDescription { target: String },
     PermissionGated,
     PermissionUsesRealLowercaseToolIds,
-    PermissionDeniesToolTerm { tool_id: String, term: String },
+    PermissionRequiresApproval { tool_id: String },
     HasPlugin { plugin_id: String },
     StateMachineHasTransitions,
     StateMachineHasReminder,
@@ -91,8 +91,8 @@ impl AdminCriterion {
             }
             Self::PermissionGated => "permission:gated".into(),
             Self::PermissionUsesRealLowercaseToolIds => "permission:real_lowercase_tool_ids".into(),
-            Self::PermissionDeniesToolTerm { tool_id, term } => {
-                format!("permission:denies:{tool_id}:{term}")
+            Self::PermissionRequiresApproval { tool_id } => {
+                format!("permission:asks:{tool_id}")
             }
             Self::HasPlugin { plugin_id } => format!("plugin:{plugin_id}"),
             Self::StateMachineHasTransitions => "state_machine:has_transitions".into(),
@@ -112,9 +112,7 @@ impl AdminCriterion {
         };
         match self {
             Self::Persisted => true,
-            Self::HasTool { tool_id } => string_array(config, "tools")
-                .iter()
-                .any(|candidate| *candidate == tool_id),
+            Self::HasTool { tool_id } => has_tool(config, tool_id),
             Self::ToolOverrideAlias { target, alias } => {
                 tool_override(config, target)
                     .and_then(|value| value.get("alias"))
@@ -125,39 +123,30 @@ impl AdminCriterion {
                 .and_then(|value| value.get("description"))
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty()),
-            Self::PermissionGated => permission(config).is_some_and(|permission| {
-                matches!(
-                    permission.get("default_behavior").and_then(Value::as_str),
-                    Some("ask" | "deny")
-                ) || rules(permission).any(|rule| {
-                    matches!(
-                        rule.get("behavior").and_then(Value::as_str),
-                        Some("ask" | "deny")
-                    )
-                })
-            }),
-            Self::PermissionUsesRealLowercaseToolIds => permission(config).is_some_and(|value| {
-                let heads = rules(value)
-                    .filter_map(|rule| rule.get("pattern").and_then(Value::as_str))
-                    .map(pattern_head)
-                    .filter(|head| *head != "*" && !head.starts_with("mcp__"))
+            Self::PermissionGated => agent_tool_configs(config).any(is_always_ask),
+            Self::PermissionUsesRealLowercaseToolIds => {
+                let names = agent_tool_configs(config)
+                    .filter_map(|entry| entry.get("name").and_then(Value::as_str))
                     .collect::<Vec<_>>();
-                !heads.is_empty()
-                    && heads.iter().all(|head| {
-                        ["bash", "read", "write", "edit", "glob", "grep"].contains(head)
+                !names.is_empty()
+                    && names.iter().all(|name| {
+                        [
+                            "bash",
+                            "read",
+                            "write",
+                            "edit",
+                            "glob",
+                            "grep",
+                            "web_fetch",
+                            "web_search",
+                        ]
+                        .contains(name)
                     })
-            }),
-            Self::PermissionDeniesToolTerm { tool_id, term } => {
-                permission(config).is_some_and(|value| {
-                    rules(value).any(|rule| {
-                        rule.get("behavior").and_then(Value::as_str) == Some("deny")
-                            && rule
-                                .get("pattern")
-                                .and_then(Value::as_str)
-                                .is_some_and(|pattern| {
-                                    pattern_head(pattern) == tool_id && pattern.contains(term)
-                                })
-                    })
+            }
+            Self::PermissionRequiresApproval { tool_id } => {
+                agent_tool_configs(config).any(|entry| {
+                    entry.get("name").and_then(Value::as_str) == Some(tool_id)
+                        && is_always_ask(entry)
                 })
             }
             Self::HasPlugin { plugin_id } => string_array(config, "plugins")
@@ -579,20 +568,39 @@ fn plugin_config<'a>(config: &'a Value, plugin_id: &str) -> Option<&'a Value> {
     config.get("plugin_config")?.get(plugin_id)
 }
 
-fn permission(config: &Value) -> Option<&Value> {
-    plugin_config(config, "permission")
-}
-
-fn rules(value: &Value) -> impl Iterator<Item = &Value> {
-    value
-        .get("rules")
+fn agent_tool_configs(config: &Value) -> impl Iterator<Item = &Value> {
+    config
+        .get("tools")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|tool| tool.get("type").and_then(Value::as_str) == Some("agent_toolset_20260401"))
+        .flat_map(|toolset| {
+            toolset
+                .get("configs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
 }
 
-fn pattern_head(pattern: &str) -> &str {
-    pattern.split('(').next().unwrap_or(pattern).trim()
+fn is_always_ask(config: &Value) -> bool {
+    config
+        .get("permission_policy")
+        .and_then(|policy| policy.get("type"))
+        .and_then(Value::as_str)
+        == Some("always_ask")
+}
+
+fn has_tool(config: &Value, tool_id: &str) -> bool {
+    string_array(config, "tools").contains(&tool_id)
+        || agent_tool_configs(config).any(|entry| {
+            entry.get("name").and_then(Value::as_str) == Some(tool_id)
+                && entry
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true)
+        })
 }
 
 fn has_transitions(value: &Value) -> bool {
@@ -656,14 +664,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn typed_criteria_preserve_the_old_golden_checks() {
+    fn typed_criteria_check_the_canonical_toolset_projection() {
         let config = json!({
             "id": "eval-c2",
-            "tools": ["bash", "read"],
-            "plugins": ["permission", "state_machine", "compact"],
+            "tools": [{
+                "type": "agent_toolset_20260401",
+                "configs": [
+                    {"name": "bash", "enabled": true, "permission_policy": {"type": "always_ask"}},
+                    {"name": "read", "enabled": true, "permission_policy": {"type": "always_allow"}}
+                ]
+            }],
+            "plugins": ["state_machine", "compact"],
             "compaction": {"window": 80000},
             "plugin_config": {
-                "permission": {"rules": [{"pattern": "bash(command ~ '*rm*')", "behavior": "deny"}]},
                 "state_machine": {"transitions": [{"on_violation": {"action": "warn", "reason": "read first"}}]},
                 "compact": {"instructions": "Keep key findings and all open questions."}
             }
@@ -671,9 +684,8 @@ mod tests {
         for criterion in [
             AdminCriterion::PermissionGated,
             AdminCriterion::PermissionUsesRealLowercaseToolIds,
-            AdminCriterion::PermissionDeniesToolTerm {
+            AdminCriterion::PermissionRequiresApproval {
                 tool_id: "bash".into(),
-                term: "rm".into(),
             },
             AdminCriterion::StateMachineHasTransitions,
             AdminCriterion::StateMachineHasReminder,

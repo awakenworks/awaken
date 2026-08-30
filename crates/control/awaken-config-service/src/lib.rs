@@ -36,8 +36,8 @@ pub use binding_resolver::{
     PublicationResolutionError, ResolvedPublicationModels,
 };
 pub use capabilities::{
-    LocalRuntimeCapability, PolicyCapability, RuntimeCapability, RuntimeCapabilitySource,
-    capabilities_router, capabilities_router_with_source, sandbox_execution_policy_capability,
+    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, capabilities_router,
+    capabilities_router_with_source, sandbox_execution_policy_capability,
     static_runtime_capabilities,
 };
 pub use config_plane::ConfigPlane;
