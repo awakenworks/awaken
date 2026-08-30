@@ -5,16 +5,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { managedSessionPresentationPhase } from "@awaken/managed-session-projection";
 import { useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { TranscriptView } from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
 import SessionIntegrations from "../components/session/SessionIntegrations";
 import SessionThreads from "../components/session/SessionThreads";
-import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
-import type { Session } from "../lib/api/types";
+import type { Environment, Page, Session, SessionAgent } from "../lib/api/types";
+import { mcpToolsetPolicySummary, type McpToolsetPolicySummary } from "../lib/agent-toolsets";
 import { useApp } from "../lib/app-state";
+import { sessionDisplayTitle } from "../lib/presentation";
 import { sessionErrorText } from "../lib/session-log";
 import { useSessionLog } from "../lib/useSessionLog";
 
@@ -25,16 +27,124 @@ function modelText(m: unknown): string {
   return "";
 }
 
+/** Runtime is a derived execution coordinate, never caller-authored metadata.
+ * Managed model ids preserve an ACP/A2A backend even when the Session API keeps
+ * metadata empty, so the UI must not mislabel those runs as native. */
+export function sessionRuntime(session: Session | undefined): string | null {
+  const model = modelText(session?.agent.model);
+  const acp = model.match(/^(acp:[^@/;]+)/)?.[1]
+    ?? model.match(/(?:^|;)executor=(acp:[^;]+)/)?.[1];
+  if (acp) return acp;
+  if (model.startsWith("a2a:")) return "A2A remote";
+  return session ? "native" : null;
+}
+
+export function sessionEnvironmentName(
+  environmentId: string | null | undefined,
+  environments: Environment[] | undefined,
+  defaultLabel: string,
+): string {
+  if (!environmentId) return defaultLabel;
+  return environments?.find((environment) => environment.id === environmentId)?.name || environmentId;
+}
+
+interface MonetaryAmount {
+  amount: string;
+  currency: string;
+}
+
+/** Managed Agents currently prices in USD minor units. Keep the wire integer as
+ * text until display so a cost never gains binary floating-point rounding. */
+export function managedMoneyLabel(value: MonetaryAmount | null | undefined): string | null {
+  if (!value || !/^-?\d+$/.test(value.amount)) return null;
+  const negative = value.amount.startsWith("-");
+  const digits = negative ? value.amount.slice(1) : value.amount;
+  const padded = digits.padStart(3, "0");
+  const major = padded.slice(0, -2).replace(/^0+(?=\d)/, "");
+  const minor = padded.slice(-2);
+  return `${value.currency} ${negative ? "-" : ""}${major}.${minor}`;
+}
+
+export function outcomeTone(result: string): "ok" | "warn" | "danger" | "neutral" {
+  if (result === "satisfied") return "ok";
+  if (result === "failed" || result === "max_iterations_reached") return "danger";
+  if (result === "running" || result === "evaluating" || result === "needs_revision") return "warn";
+  return "neutral";
+}
+
+export interface SessionMcpPolicy extends McpToolsetPolicySummary {
+  name: string;
+}
+
+export interface SessionConfigDestination {
+  kind: "instructions" | "tools" | "integrations" | "knowledge" | "orchestration";
+  href: string;
+  count?: number;
+}
+
+/** Route runtime evidence back to the one configuration aggregate that owns it.
+ * These links intentionally target the current draft: the Managed Session
+ * snapshot remains the authority for this run, while edits can only affect a
+ * later publication and new Sessions. */
+export function sessionConfigDestinations(
+  workspaceId: string,
+  agent: SessionAgent | undefined,
+): SessionConfigDestination[] {
+  if (!agent?.id) return [];
+  const root = `/w/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agent.id)}`;
+  const destinations: SessionConfigDestination[] = [
+    { kind: "instructions", href: `${root}?stage=build&section=instructions` },
+  ];
+  if ((agent.tools?.length ?? 0) > 0) {
+    destinations.push({ kind: "tools", href: `${root}?stage=build&section=tools`, count: agent.tools?.length });
+  }
+  if ((agent.mcp_servers?.length ?? 0) > 0) {
+    destinations.push({ kind: "integrations", href: `${root}?stage=build&section=integrations`, count: agent.mcp_servers?.length });
+  }
+  if ((agent.skills?.length ?? 0) > 0) {
+    destinations.push({ kind: "knowledge", href: `${root}?stage=build&section=knowledge`, count: agent.skills?.length });
+  }
+  if ((agent.multiagent?.agents?.length ?? 0) > 0) {
+    destinations.push({ kind: "orchestration", href: `${root}?stage=advanced&section=orchestration`, count: agent.multiagent?.agents?.length });
+  }
+  return destinations;
+}
+
+/** Project the immutable Agent snapshot already returned by the Managed Session
+ * API. This is read-only execution evidence, not another configuration source. */
+export function sessionMcpPolicies(agent: SessionAgent | undefined): SessionMcpPolicy[] {
+  return (agent?.mcp_servers ?? []).map((server) => ({
+    name: server.name,
+    ...mcpToolsetPolicySummary(agent?.tools ?? [], server.name),
+  }));
+}
+
+const SESSION_VIEWS = ["chat", "collaboration", "inputs", "artifacts", "integrations", "trace"] as const;
+type SessionView = typeof SESSION_VIEWS[number];
+
+export function sessionViewFromSearch(view: string | null, event: string | null): SessionView {
+  if (event) return "trace";
+  return SESSION_VIEWS.includes(view as SessionView) ? view as SessionView : "chat";
+}
+
 export default function SessionDetailSurface() {
   const app = useApp();
   const { ws: wsId = "default", sid = "" } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const qc = useQueryClient();
   const confirm = useConfirm();
   const toast = useToast();
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
-  const [view, setView] = useState<"chat" | "collaboration" | "inputs" | "artifacts" | "integrations" | "trace">("chat");
+  const selectedEventId = searchParams.get("event")?.trim() || undefined;
+  const view = sessionViewFromSearch(searchParams.get("view"), selectedEventId ?? null);
+  const setView = (next: SessionView) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === "chat") params.delete("view"); else params.set("view", next);
+    if (next !== "trace") params.delete("event");
+    setSearchParams(params, { replace: true });
+  };
   const [controlResult, setControlResult] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -43,6 +153,11 @@ export default function SessionDetailSurface() {
     queryKey: ["session", wsId, sid],
     queryFn: () => api.get<Session>(base),
     refetchInterval: 15_000,
+  });
+  const environments = useQuery({
+    queryKey: ["environments", wsId],
+    queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
+    staleTime: 30_000,
   });
   // One hook owns merge/reducer/admission, SSE, mutation identity, and pending
   // transport state for every detail control and view.
@@ -54,9 +169,26 @@ export default function SessionDetailSurface() {
   const runtime = sessionLog.runtime;
   const admission = sessionLog.admission;
   const effectiveStatus = managedSessionPresentationPhase(runtime, session.data?.status);
-  const needsRecovery = runtime.pendingToolIds.size > 0
-    || runtime.resolvingToolIds.size > 0
-    || runtime.resolvingInputIds.size > 0;
+  const runtimeName = sessionRuntime(session.data);
+  const mcpPolicies = sessionMcpPolicies(session.data?.agent);
+  const configDestinations = sessionConfigDestinations(wsId, session.data?.agent);
+  const environmentName = sessionEnvironmentName(
+    session.data?.environment_id,
+    environments.data?.data,
+    app.t("Default", "默认"),
+  );
+  const outcomes = session.data?.outcome_evaluations ?? [];
+  const budgetLabel = managedMoneyLabel(session.data?.budget?.max_list_cost);
+  const costLabel = managedMoneyLabel(session.data?.usage?.list_cost);
+  const inputTokens = session.data?.usage?.input_tokens;
+  const outputTokens = session.data?.usage?.output_tokens;
+  const hasUsageEvidence = budgetLabel != null || costLabel != null
+    || inputTokens != null || outputTokens != null || outcomes.length > 0;
+  // A committed tool request waiting for an external resolution is recoverable
+  // work. Inputs and tool replies that are currently resolving are ordinary
+  // active turns, so presenting their interrupt as "Recover run" falsely tells
+  // the operator that healthy work is stuck.
+  const needsRecovery = runtime.pendingToolIds.size > 0;
 
   const rename = useMutation({
     mutationFn: (title: string) => api.post<Session>(base, { title }),
@@ -112,17 +244,21 @@ export default function SessionDetailSurface() {
 
   return (
     <>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <span>
-          <Link to={`/w/${wsId}/sessions`}>‹ {app.t("Sessions", "会话")}</Link>{" "}
-          <code style={{ marginLeft: 8 }}>{sid}</code>{" "}
-          {session.data?.title && <strong style={{ marginLeft: 6 }}>{session.data.title}</strong>}
-          {session.data?.archived_at && (
-            <Pill tone="neutral" style={{ marginLeft: 8 }}>
-              {app.t("archived", "已归档")}
-            </Pill>
-          )}
-        </span>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ minWidth: 0 }}>
+          <Link to={`/w/${wsId}/sessions`}>‹ {app.t("Sessions", "会话")}</Link>
+          <div className="row" style={{ marginTop: 6 }}>
+            <h2 style={{ margin: 0, fontSize: 20 }}>
+              {sessionDisplayTitle(session.data?.title, session.data?.agent.id, app.locale)}
+            </h2>
+            {session.data?.archived_at && (
+              <Pill tone="neutral">
+                {app.t("archived", "已归档")}
+              </Pill>
+            )}
+          </div>
+          <TechnicalId value={sid} />
+        </div>
         <span className="row">
           <Button
             variant="ghost"
@@ -188,11 +324,12 @@ export default function SessionDetailSurface() {
           {view === "collaboration" && <SessionThreads base={base} workspaceId={wsId} />}
           {view === "inputs" && <SessionFiles base={base} sid={sid} view="inputs" />}
           {view === "artifacts" && <SessionFiles base={base} sid={sid} view="artifacts" />}
-          {view === "integrations" && <SessionIntegrations session={session.data} />}
+          {view === "integrations" && <SessionIntegrations session={session.data} workspaceId={wsId} />}
           {view === "trace" && (
             <TraceView
               log={sessionLog.log}
               loadError={sessionLog.projectionError ? null : sessionLog.loadError}
+              selectedEventId={selectedEventId}
             />
           )}
         </div>
@@ -200,17 +337,70 @@ export default function SessionDetailSurface() {
         <aside className="session-detail-aside" style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
           <Card style={{ padding: "12px 14px" }}>
             <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
-              Agent
+              {app.t("Effective configuration", "本次生效配置")}
             </h2>
             {session.data ? (
               <>
                 <div className="row">
-                  <Pill tone="agent">{session.data.agent.id}</Pill>
+                  <Pill tone="agent" title={session.data.agent.id}>{session.data.agent.name || session.data.agent.id}</Pill>
+                  {session.data.agent.version != null && (
+                    <Pill tone="neutral">{app.t("revision", "修订")} {session.data.agent.version}</Pill>
+                  )}
                   {modelText(session.data.agent.model) && <code>{modelText(session.data.agent.model)}</code>}
                 </div>
                 <div className="mut" style={{ marginTop: 8, fontSize: 12 }}>
                   {app.t("Tools", "工具")} {session.data.agent.tools?.length ?? 0} · Skills {session.data.agent.skills?.length ?? 0} · MCP {session.data.agent.mcp_servers?.length ?? 0}
                 </div>
+                <p className="hint" style={{ margin: "10px 0 0" }}>
+                  {app.t(
+                    "This immutable snapshot is pinned to this Session. The links below open the current Agent draft; changes affect only future Sessions after publication.",
+                    "这是固定到本次 Session 的不可变快照。下方链接打开当前 Agent 草稿；修改只有重新发布后才会影响新的 Session。",
+                  )}
+                </p>
+                <nav className="session-config-links" aria-label={app.t("Open current Agent configuration", "打开当前 Agent 配置")}>
+                  {configDestinations.map((destination) => {
+                    const labels = {
+                      instructions: app.t("Model & instructions", "模型与指令"),
+                      tools: app.t("Tools & permissions", "工具与权限"),
+                      integrations: app.t("MCP integrations", "MCP 集成"),
+                      knowledge: app.t("Skills & knowledge", "技能与知识"),
+                      orchestration: app.t("Orchestration", "编排"),
+                    };
+                    return (
+                      <Link key={destination.kind} to={destination.href}>
+                        {labels[destination.kind]}{destination.count == null ? "" : ` · ${destination.count}`} →
+                      </Link>
+                    );
+                  })}
+                </nav>
+                {mcpPolicies.length > 0 && (
+                  <div style={{ borderTop: "1px solid var(--line)", marginTop: 10, paddingTop: 10 }}>
+                    <strong style={{ fontSize: 12 }}>
+                      {app.t("Effective MCP policy", "实际 MCP 策略")}
+                    </strong>
+                    <div className="mut" style={{ fontSize: 11, marginTop: 3 }}>
+                      {app.t("Frozen for this Session", "已固化到本次会话")}
+                    </div>
+                    {mcpPolicies.map((policy) => (
+                      <div className="row" key={policy.name} style={{ marginTop: 7, gap: 5 }}>
+                        <strong style={{ fontSize: 12 }}>{policy.name}</strong>
+                        <Pill tone={policy.enabled ? "ok" : "neutral"}>
+                          {policy.enabled ? app.t("enabled", "已启用") : app.t("disabled", "已停用")}
+                        </Pill>
+                        <Pill tone={policy.permission === "always_allow" ? "ok" : "warn"}>
+                          {policy.permission === "always_allow"
+                            ? app.t("allow by default", "默认允许")
+                            : app.t("ask by default", "默认询问")}
+                        </Pill>
+                        {policy.namedOverrides > 0 && (
+                          <span className="mut" style={{ fontSize: 11 }}>
+                            {policy.namedOverrides} {app.t("overrides", "项覆盖")}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             ) : (
               <span className="mut">…</span>
@@ -228,17 +418,49 @@ export default function SessionDetailSurface() {
               <span>{app.t("Resolving inputs", "处理中输入")} {runtime.resolvingInputIds.size}</span>
               <span>{app.t("Can send message", "允许发送消息")} {admission.canSendMessage ? app.t("yes", "是") : app.t("no", "否")}</span>
               {runtime.latestError && <span className="err">{app.t("Last error", "最近错误")} {sessionErrorText(runtime.latestError)}</span>}
-              <span>{app.t("Environment", "运行环境")} {session.data?.environment_id ?? app.t("Default", "默认")}</span>
+              <span>
+                {app.t("Environment", "运行环境")} <strong title={session.data?.environment_id ?? undefined}>{environmentName}</strong>
+              </span>
               {/* Runtime provenance: which backend actually executed this run (native vs an
                   ACP CLI), read off the session metadata the environment stamped at create. */}
               <span className="row" style={{ gap: 6, alignItems: "center" }}>
                 {app.t("Runtime", "运行时")}
-                <Pill tone={session.data?.metadata?.["awaken.runtime"] ? "agent" : "neutral"}>
-                  {session.data?.metadata?.["awaken.runtime"] ?? app.t("Awaken native", "Awaken 原生")}
+                <Pill tone={runtimeName && runtimeName !== "native" ? "agent" : "neutral"}>
+                  {runtimeName === "native" ? app.t("Awaken native", "Awaken 原生") : runtimeName ?? "—"}
                 </Pill>
               </span>
             </div>
           </Card>
+          {hasUsageEvidence && (
+            <Card style={{ padding: "12px 14px" }}>
+              <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
+                {app.t("Outcome & usage", "结果与用量")}
+              </h2>
+              <div className="mut" style={{ fontSize: 12, display: "grid", gap: 5 }}>
+                {budgetLabel && <span>{app.t("Cost limit", "费用上限")} <strong>{budgetLabel}</strong></span>}
+                {costLabel && <span>{app.t("Tracked cost", "累计费用")} <strong>{costLabel}</strong></span>}
+                {(inputTokens != null || outputTokens != null) && (
+                  <span>
+                    {app.t("Tokens", "Token")} <strong>{inputTokens ?? 0}</strong> {app.t("in", "输入")} · <strong>{outputTokens ?? 0}</strong> {app.t("out", "输出")}
+                  </span>
+                )}
+              </div>
+              {outcomes.length > 0 && (
+                <div className="session-outcome-list" aria-label={app.t("Defined outcomes", "已定义结果")}>
+                  {outcomes.map((outcome) => (
+                    <div key={outcome.outcome_id}>
+                      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <strong>{outcome.description}</strong>
+                        <Pill tone={outcomeTone(outcome.result)}>{outcome.result.replaceAll("_", " ")}</Pill>
+                      </div>
+                      {outcome.explanation && <p className="hint">{outcome.explanation}</p>}
+                      <TechnicalId value={outcome.outcome_id} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          )}
         </aside>
       </div>
     </>

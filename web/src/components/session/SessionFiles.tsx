@@ -22,6 +22,14 @@ const KIND_TONE: Record<SessionResource["type"], "agent" | "info" | "ok"> = {
   github_repository: "ok",
 };
 
+export function sessionResourceAccess(resource: {
+  type: SessionResource["type"];
+  access?: "read_write" | "read_only" | null;
+}) {
+  if (resource.type === "file") return "read_only";
+  return resource.type === "memory_store" ? resource.access ?? undefined : undefined;
+}
+
 function resourceView(resource: SessionResource): {
   key: string;
   identity: string;
@@ -100,14 +108,22 @@ export default function SessionFiles({
             {mounts.map((resource) => {
               const item = resourceView(resource);
               return (
-                <div key={item.key} className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-                  <span className="row" style={{ gap: 8 }}>
-                    <Pill tone={KIND_TONE[resource.type]}>{resource.type}</Pill>
-                    <code style={{ fontSize: 12 }}>
+                <div key={item.key} className="row" style={{ justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span className="row" style={{ gap: 8, minWidth: 0, flexWrap: "wrap" }}>
+                    <Pill tone={KIND_TONE[resource.type]}>{
+                      resource.type === "file" ? app.t("File", "文件")
+                        : resource.type === "memory_store" ? app.t("Memory", "记忆")
+                          : app.t("Repository", "代码仓")
+                    }</Pill>
+                    <code style={{ fontSize: 12, overflowWrap: "anywhere" }}>
                       {item.mountPath ?? app.t("not mounted", "未挂载")}
                     </code>
                   </span>
-                  <span className="mut mono" style={{ fontSize: 11 }}>{item.identity}</span>
+                  {sessionResourceAccess(resource) && <Pill tone="neutral">{
+                    sessionResourceAccess(resource) === "read_only"
+                      ? app.t("Read only", "只读")
+                      : app.t("Read and write", "可读写")
+                  }</Pill>}
                 </div>
               );
             })}

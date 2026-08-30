@@ -53,6 +53,14 @@ export interface TraceSpan {
   error?: boolean;
 }
 
+export interface ToolDiagnostic {
+  name: string;
+  calls: number;
+  completed: number;
+  failures: number;
+  medianDurationMs?: number;
+}
+
 function spanKind(type: string): SpanKind {
   switch (type) {
     case "agent.message":
@@ -113,4 +121,40 @@ export function traceSpans(log: SessionEvent[]): TraceSpan[] {
       error: ev.type === "session.error" || (kind === "tool_result" && "is_error" in ev && ev.is_error === true),
     };
   });
+}
+
+/** Aggregate committed tool evidence without inventing completion or latency.
+ * A result belongs only to its exact tool-use id; missing/invalid timestamps are
+ * excluded from the median while the call remains visible as incomplete. */
+export function toolDiagnostics(log: SessionEvent[]): ToolDiagnostic[] {
+  const results = pairToolResults(log);
+  const rows = new Map<string, { calls: number; completed: number; failures: number; durations: number[] }>();
+  for (const event of log) {
+    if (event.type !== "agent.tool_use" && event.type !== "agent.custom_tool_use") continue;
+    const name = "name" in event && typeof event.name === "string" && event.name.trim()
+      ? event.name
+      : "unknown tool";
+    const row = rows.get(name) ?? { calls: 0, completed: 0, failures: 0, durations: [] };
+    row.calls += 1;
+    const result = results.get(event.id);
+    if (result) {
+      row.completed += 1;
+      if ("is_error" in result && result.is_error === true) row.failures += 1;
+      const duration = spanDurationMs(event.processed_at, result.processed_at);
+      if (duration != null) row.durations.push(duration);
+    }
+    rows.set(name, row);
+  }
+  return [...rows.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, row]) => {
+      const durations = [...row.durations].sort((left, right) => left - right);
+      const middle = Math.floor(durations.length / 2);
+      const medianDurationMs = durations.length === 0
+        ? undefined
+        : durations.length % 2 === 1
+          ? durations[middle]
+          : Math.round((durations[middle - 1]! + durations[middle]!) / 2);
+      return { name, calls: row.calls, completed: row.completed, failures: row.failures, medianDurationMs };
+    });
 }

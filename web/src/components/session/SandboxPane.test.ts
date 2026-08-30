@@ -1,19 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { UIMessage } from "ai";
 import {
+  draftPreviewAccessRequest,
   draftPreviewRequest,
   draftPreviewSignature,
-  previewApplicationScope,
+  previewToolView,
   selectDraftPreviewAttempt,
   uiMessageText,
 } from "./SandboxPane";
+import {
+  agUiMessageText,
+  inspectProtocolSse,
+  protocolEventType,
+  previewToolLabel,
+} from "./ProtocolDebugger";
 
 describe("AI SDK Live Preview helpers", () => {
-  it("maps the selected workspace to an opaque application scope", () => {
-    expect(previewApplicationScope("project-42")).toBe("console:project-42");
-    expect(previewApplicationScope("")).toBe("console:default");
-  });
-
   it("projects only AI SDK text parts into transcript text", () => {
     const message = {
       id: "m1",
@@ -25,6 +27,76 @@ describe("AI SDK Live Preview helpers", () => {
       ],
     } as UIMessage;
     expect(uiMessageText(message)).toBe("hello world");
+  });
+
+  it("gives preview tool disclosures an explicit localized accessible name", () => {
+    expect(previewToolLabel("write", false)).toBe("Tool write");
+    expect(previewToolLabel("write", true)).toBe("工具 write");
+  });
+
+  it("projects AI SDK tool states into the shared conversation language", () => {
+    expect(previewToolView({
+      type: "tool-write",
+      toolCallId: "tool-1",
+      state: "output-available",
+      input: { file_path: "report.md" },
+      output: { ok: true },
+    } as never, false)).toEqual({
+      name: "write",
+      tone: "done",
+      statusLabel: "done",
+      input: '{\n  "file_path": "report.md"\n}',
+      output: '{\n  "ok": true\n}',
+    });
+    expect(previewToolView({
+      type: "tool-write",
+      toolCallId: "tool-2",
+      state: "output-error",
+      input: { file_path: "report.md" },
+      errorText: "permission denied",
+    } as never, true)).toMatchObject({
+      name: "write",
+      tone: "error",
+      statusLabel: "失败",
+      output: "permission denied",
+    });
+  });
+});
+
+describe("cross-protocol Live Preview", () => {
+  it("binds both frontend protocols to one short-lived Session token", () => {
+    expect(draftPreviewAccessRequest("thread-1", "session-1")).toEqual({
+      protocols: ["ai-sdk", "ag-ui"],
+      operations: ["thread.run", "thread.messages.read"],
+      thread_bindings: [{ external_thread_id: "thread-1", managed_session_id: "session-1" }],
+      expires_in_seconds: 900,
+    });
+  });
+
+  it("labels protocol lifecycle frames without inventing a type", () => {
+    expect(protocolEventType({ type: "RUN_STARTED", runId: "run-1" })).toBe("RUN_STARTED");
+    expect(protocolEventType({ delta: "hello" })).toBe("data");
+  });
+
+  it("reassembles SSE records across transport chunk boundaries", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"RUN_STA'));
+        controller.enqueue(encoder.encode('RTED"}\n\ndata: {"type":"RUN_FINISHED"}\n\n'));
+        controller.close();
+      },
+    });
+    const frames: unknown[] = [];
+    await inspectProtocolSse(stream, (frame) => frames.push(frame));
+    expect(frames).toEqual([{ type: "RUN_STARTED" }, { type: "RUN_FINISHED" }]);
+  });
+
+  it("projects only visible AG-UI text content", () => {
+    expect(agUiMessageText({ id: "u1", role: "user", content: [
+      { type: "text", text: "hello" },
+      { type: "image", source: { type: "url", value: "https://example.test/x.png" } },
+    ] })).toBe("hello");
   });
 });
 

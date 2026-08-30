@@ -132,6 +132,22 @@ export function gateManagedSessionAdmissionWhileSending(
     : admission;
 }
 
+/** A worker-backed Session is initially reported as `rescheduling` until its
+ * first user.message realizes the runtime. The API accepts that message. Only
+ * a successfully loaded, proven-empty history may open this one transition;
+ * established recovery and unresolved projection states remain fail-closed. */
+export function isInitialManagedSessionPreparation(
+  historyLoaded: boolean,
+  historyLength: number,
+  runtime: ManagedSessionRuntimeProjection,
+  sessionStatus: ManagedSessionStatus | undefined,
+): boolean {
+  return historyLoaded
+    && historyLength === 0
+    && runtime.phase === "unknown"
+    && sessionStatus === "rescheduling";
+}
+
 /**
  * Project any synchronous receipts, then keep the mutation pending until the
  * authoritative list reconciliation finishes. Missing optional `data` cannot
@@ -257,8 +273,18 @@ export function useSessionLog(
   const loadError = projectionError
     ?? (events.error instanceof Error ? events.error : null);
   const runtime = useMemo(() => projectManagedSessionRuntime(log), [log]);
-  const projectedAdmission = managedSessionAdmission(runtime, sessionStatus, loadError == null);
-  const presentation = managedSessionPresentationPhase(runtime, sessionStatus);
+  const initialPreparation = isInitialManagedSessionPreparation(
+    events.isSuccess && loadError == null,
+    log.length,
+    runtime,
+    sessionStatus,
+  );
+  const projectedAdmission = initialPreparation
+    ? { canSendMessage: true, canResolveTools: false, canInterrupt: false }
+    : managedSessionAdmission(runtime, sessionStatus, loadError == null);
+  const presentation = initialPreparation
+    ? "idle"
+    : managedSessionPresentationPhase(runtime, sessionStatus);
 
   const applyPending = () => {
     try {

@@ -1,6 +1,6 @@
 // Workspace · Sessions: the scoped session list (GET /v1/sessions,
-// tenant-scoped via ws()), Anthropic-console style — mono ids, status pills, one
-// primary action. Tenancy fences the list by the active workspace (ADR-0051);
+// tenant-scoped via ws()). Human titles stay primary; technical ids remain
+// available on demand. Tenancy fences the list by the active workspace (ADR-0051);
 // archive marks a row without removing it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +11,7 @@ import {
 import { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import {
   BUILTIN_LOCAL_ENVIRONMENT_ID,
   api,
@@ -28,6 +28,7 @@ import type {
   Session,
   Vault,
 } from "../lib/api/types";
+import { entityDisplayName, identifierLabel, sessionDisplayTitle } from "../lib/presentation";
 import { useApp } from "../lib/app-state";
 import { visibleAgents } from "../lib/visible-agents";
 import EnvironmentsSurface from "./environments";
@@ -96,7 +97,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
       .some(([key, packages]) => key !== "type" && Array.isArray(packages) && packages.length > 0);
   return (
     <>
-      <Modal title={<>{app.t("New session", "新建会话")} · {wsId}</>} onClose={onClose}>
+      <Modal title={<>{app.t("New session", "新建会话")} · {app.workspaceName}</>} onClose={onClose}>
         <div className="field">
           <label className="row" style={{ justifyContent: "space-between" }}>
             <span>Agent</span>
@@ -104,11 +105,11 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               {app.t("Manage ↗", "管理 ↗")}
             </button>
           </label>
-          <select className="input mono" aria-label="Agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
+          <select className="input" aria-label="Agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
             <option value="">{app.t("Select a published Agent…", "选择已发布的 Agent…")}</option>
             {visibleAgents(agents.data?.data).filter((a) => a.published).map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name || a.id}{a.name ? ` · ${a.id}` : ""}
+                {entityDisplayName(a.name, identifierLabel(a.id))}
               </option>
             ))}
           </select>
@@ -124,7 +125,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             </button>
           </label>
           <select
-            className="input mono"
+            className="input"
             aria-label={app.t("Environment", "运行环境")}
             value={environmentId}
             onChange={(e) => setEnvironmentId(e.target.value)}
@@ -134,7 +135,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               !environment.archived_at && environment.id !== BUILTIN_LOCAL_ENVIRONMENT_ID
             )).map((e) => (
               <option key={e.id} value={e.id}>
-                {e.name} · {e.id}
+                {entityDisplayName(e.name, identifierLabel(e.id))}
               </option>
             ))}
           </select>
@@ -200,7 +201,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
           </Button>
           <Button
             variant="primary"
-            disabled={create.isPending || !agent}
+            disabled={create.isPending || !agent || !environmentId}
             onClick={() => {
               const mcpServers = mcp
                 .filter((server) => server.name && server.url)
@@ -291,12 +292,11 @@ export default function SessionsSurface() {
         </Button>
       </div>
       {sessions.error instanceof Error && <div className="err">{sessions.error.message}</div>}
-      <Card style={{ padding: 0 }}>
+      <Card className="responsive-table-card" style={{ padding: 0 }}>
         <table className="table">
           <thead>
             <tr>
-              <th>Session</th>
-              <th>{app.t("Title", "标题")}</th>
+              <th>{app.t("Session", "会话")}</th>
               <th>Agent</th>
               <th>{app.t("Status", "状态")}</th>
               <th />
@@ -305,15 +305,17 @@ export default function SessionsSurface() {
           <tbody>
             {rows.map((s) => (
               <tr key={s.id} data-click="true" onClick={() => nav(`/w/${wsId}/sessions/${s.id}`)}>
-                <td className="mono">{s.id}</td>
-                <td>{s.title || <span className="mut">(untitled)</span>}</td>
-                <td>
-                  <Pill tone="agent">{s.agent.id}</Pill>
+                <td data-label={app.t("Session", "会话")}>
+                  <strong>{sessionDisplayTitle(s.title, s.agent.id, app.locale)}</strong>
+                  <TechnicalId value={s.id} />
                 </td>
-                <td>
+                <td data-label="Agent">
+                  <Pill tone="agent">{entityDisplayName(s.agent.name, identifierLabel(s.agent.id))}</Pill>
+                </td>
+                <td data-label={app.t("Status", "状态")}>
                   <StatusPill session={s} />
                 </td>
-                <td style={{ textAlign: "right" }}>
+                <td className="responsive-table-actions" style={{ textAlign: "right" }}>
                   {!s.archived_at && (
                     <Button
                       variant="ghost"
@@ -332,12 +334,12 @@ export default function SessionsSurface() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="mut">
+                <td colSpan={4} className="mut">
                   {sessions.isLoading
                     ? "…"
                     : filter === "all"
-                      ? app.t("No sessions yet.", "还没有会话。")
-                      : app.t("None in this state.", "该状态下没有会话。")}
+                      ? app.t("No Sessions yet. Publish an Agent, then use New session to give it real work.", "还没有 Session。请先发布 Agent，再通过“新建会话”交付真实工作。")
+                      : app.t("No Sessions in this state. Switch to All to review the complete history.", "该状态下没有 Session。切换到“全部”可查看完整历史。")}
                 </td>
               </tr>
             )}

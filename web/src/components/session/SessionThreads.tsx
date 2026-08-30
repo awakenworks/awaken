@@ -10,6 +10,7 @@ import type {
 } from "../../lib/api/types";
 import { api } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
+import { statusLabel } from "../../lib/presentation";
 import { Button, Card, EmptyState, Pill, usageTotal, useConfirm, useToast } from "../ui";
 
 function eventText(event: SessionEvent): string {
@@ -135,7 +136,7 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
                 <strong>{agentLabel(primary)}</strong>
                 <span className="mono mut">{primary.id}</span>
               </div>
-              <Pill tone={statusTone(primary.status)}>{primary.status}</Pill>
+              <Pill tone={statusTone(primary.status)}>{statusLabel(primary.status, app.locale)}</Pill>
             </div>
           )}
           <div className="thread-children">
@@ -156,7 +157,7 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
                   </div>
                 </div>
                 <div className="thread-node-metrics">
-                  <Pill tone={statusTone(thread.status)}>{thread.status}</Pill>
+                  <Pill tone={statusTone(thread.status)}>{statusLabel(thread.status, app.locale)}</Pill>
                   <span>{app.t("Tokens", "Token")} {usageTotal(thread.usage ?? undefined) || "—"}</span>
                   <span>{app.t("Duration", "耗时")} {thread.stats?.duration_seconds !== undefined ? `${thread.stats.duration_seconds.toFixed(1)}s` : "—"}</span>
                   <span>{app.t("Updated", "更新时间")} {new Date(thread.updated_at).toLocaleTimeString()}</span>
