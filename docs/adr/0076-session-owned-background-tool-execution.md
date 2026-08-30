@@ -157,6 +157,12 @@ tools, suppresses duplicate terminal delivery through the process supervisor,
 honors the exact persisted concurrency/resource claim, and retains the exact
 Session Environment generation through `BackgroundRuns`.
 
+The supervisor holds one mutually exclusive process slot per task: `Active`
+atomically becomes `Completed` under one lock. It does not synchronize parallel
+active/completed maps. A completion whose fence no longer matches durable Thread
+State is retired before the current attempt is reconciled, so stale local
+evidence cannot suppress a newer post-commit launch.
+
 Completion is intentionally not a post-terminal database write. It remains a
 fenced process-local projection until the extension's `StepStart` hook folds it
 into the next ordinary Run commit. A process loss therefore leaves the durable
