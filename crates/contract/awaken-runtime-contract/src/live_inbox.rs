@@ -624,6 +624,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offer_racing_close_has_one_exact_owner_for_the_message() {
+        // Cause/effect decision table: offer and close start concurrently.
+        // R1 offer linearizes first -> Accepted and close returns that one
+        // leftover; R2 close linearizes first -> offer reports Closed and close
+        // returns no leftover. Constraint: the message is owned by exactly one
+        // outcome and can be neither duplicated nor silently accepted after
+        // the attempt closed.
+        for _ in 0..64 {
+            let inbox = LiveInbox::new();
+            let barrier = Arc::new(tokio::sync::Barrier::new(3));
+            let offer = {
+                let inbox = inbox.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    inbox.offer(msg("raced"))
+                })
+            };
+            let close = {
+                let inbox = inbox.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    inbox.close()
+                })
+            };
+            barrier.wait().await;
+            let offered = offer.await.expect("offer task");
+            let leftovers = close.await.expect("close task");
+            match offered {
+                Offer::Accepted(id) => {
+                    assert_eq!(leftovers.len(), 1, "R1");
+                    assert_eq!(leftovers[0].id, id, "R1 exact owner");
+                }
+                Offer::Closed => assert!(leftovers.is_empty(), "R2"),
+            }
+            assert!(inbox.is_closed());
+            assert!(inbox.list().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn waiter_sees_close_as_a_change() {
         let inbox = LiveInbox::new();
         let seen = inbox.version();

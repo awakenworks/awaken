@@ -4,11 +4,16 @@
 //! changes nothing.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error as CommitError,
+};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -24,6 +29,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use tokio_util::sync::CancellationToken;
 
 const FP: &str = "catalog-a";
 
@@ -49,6 +55,24 @@ impl LlmExecutor for EchoUserLlm {
             usage: None,
             stop_reason: None,
         })
+    }
+}
+
+#[derive(Clone)]
+struct RejectSecondCommit {
+    inner: MemoryCommitCoordinator,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl CommitCoordinator for RejectSecondCommit {
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            return Err(CommitError::Rejected(
+                "simulated boundary-fold commit loss".into(),
+            ));
+        }
+        self.inner.commit(commit).await
     }
 }
 
@@ -179,6 +203,123 @@ async fn a_requested_pause_awaits_the_run_at_the_next_boundary() {
     assert!(
         committed.iter().any(|m| m.role == Role::Assistant),
         "the response committed before awaiting"
+    );
+}
+
+#[tokio::test]
+async fn pause_preempts_queued_input_but_commits_the_complete_fold_before_awaiting() {
+    // Cause/effect decision rule B1: pause=true + queued input=true + commit
+    // succeeds -> Await wins over Continue, while both the completed assistant
+    // response and the re-identified queued input enter the same durable
+    // boundary outcome. Constraint: pause changes disposition, not input
+    // ownership; no queued item may be omitted merely because Await won.
+    let runtime = runtime();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer(queued("Queued before pause."));
+    let pause = PauseSignal::new();
+    pause.request();
+
+    let state = runtime
+        .execute(
+            activation("r-pause-input", "Work."),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_live_inbox(inbox.clone())
+                .with_pause(pause),
+        )
+        .await
+        .expect("pause boundary commits then awaits");
+    assert_eq!(state, RunState::Awaiting);
+    let committed = commit.committed_messages(&ThreadId("thread-1".into()));
+    assert!(
+        committed
+            .iter()
+            .any(|message| message.id.0 == "r-pause-input-inbox-0"
+                && message.text_content() == "Queued before pause."),
+        "B1 commits the full fold before Await"
+    );
+    assert!(
+        committed
+            .iter()
+            .any(|message| message.role == Role::Assistant),
+        "B1 commits the completed response before Await"
+    );
+    assert!(inbox.list().is_empty(), "B1 consumes the exact fold once");
+}
+
+#[tokio::test]
+async fn cancellation_preempts_pause_and_leaves_input_for_attempt_close() {
+    // Decision table B2: cancel=true + pause=true + queued input=true before
+    // executor entry -> terminal Cancelled; the safe boundary is not entered,
+    // so the process-local item remains for the attempt owner's existing
+    // close/re-route policy. Constraint: cancellation cannot be rewritten as a
+    // durable pause and LiveInbox cannot become a second durable ingress.
+    let runtime = runtime();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer(queued("route on close"));
+    let pause = PauseSignal::new();
+    pause.request();
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let state = runtime
+        .execute(
+            activation("r-cancel-pause", "Work."),
+            RuntimeRunContext::new()
+                .with_commit(commit)
+                .with_live_inbox(inbox.clone())
+                .with_pause(pause)
+                .with_cancellation(cancellation),
+        )
+        .await
+        .expect("cancellation commits terminal truth");
+    assert_eq!(
+        state,
+        RunState::Ended(awaken_runtime_contract::EndCause::Cancelled)
+    );
+    assert_eq!(inbox.list().len(), 1, "B2 boundary did not consume input");
+    assert_eq!(inbox.close().len(), 1, "B2 attempt owner routes leftovers");
+}
+
+#[tokio::test]
+async fn failed_commit_after_boundary_drain_does_not_invent_a_retry_queue() {
+    // Crash-window rule B3: initial input commit succeeds; the next natural-end
+    // boundary drains queued input; its following ThreadCommit fails. Effect:
+    // the Runtime returns the commit error, the best-effort inbox stays drained,
+    // and the rejected fold is absent from durable truth. Constraint: lossless
+    // delivery belongs to durable Session ingress, not restoration into a
+    // second LiveInbox acknowledgement/retry mechanism.
+    let durable = MemoryCommitCoordinator::new();
+    let commit = Arc::new(RejectSecondCommit {
+        inner: durable.clone(),
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer(queued("best effort"));
+
+    let error = runtime()
+        .execute(
+            activation("r-commit-loss", "Start."),
+            RuntimeRunContext::new()
+                .with_commit(commit)
+                .with_live_inbox(inbox.clone()),
+        )
+        .await
+        .expect_err("B3 rejects the boundary-fold commit");
+    assert!(
+        error
+            .to_string()
+            .contains("simulated boundary-fold commit loss")
+    );
+    assert!(inbox.list().is_empty(), "B3 drain is a point of no return");
+    assert!(
+        durable
+            .committed_messages(&ThreadId("thread-1".into()))
+            .iter()
+            .all(|message| message.id.0 != "r-commit-loss-inbox-0"),
+        "B3 rejected input never becomes durable truth"
     );
 }
 
