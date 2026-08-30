@@ -1,6 +1,7 @@
 //! G6 warm pool against a REAL Docker daemon: pre-warm empty environments,
 //! prove one is bound to a matching Session and execs its ACP process
-//! (cold-start paid off-path), and that shutdown reaps every warm container.
+//! (cold-start paid off-path), and that capacity shutdown reaps only unused
+//! warm containers.
 //!
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
 //! Run with: `cargo test -p awaken-sandbox-container --features docker --test pool_docker`
@@ -12,7 +13,8 @@ use std::time::Duration;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::docker::DockerRuntime;
 use awaken_sandbox_container::{
-    AgentContainerProvider, ContainerEnvironmentProvider, ContainerProvider, WarmContainerPool,
+    ContainerEnvironmentCapacity, ContainerEnvironmentProvider, ContainerProvider,
+    RuntimeAgentProcess, WarmContainerPool,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -42,7 +44,10 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
-        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        // Warm-capacity admission owns one safe row: mount-less + Ephemeral.
+        // Retained Sessions require their own receipt-fenced physical identity
+        // and must never be rebound from anonymous capacity.
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Ephemeral,
         lease_ttl_secs: None,
         control_services: Default::default(),
     }
@@ -60,6 +65,14 @@ fn docker_available() -> bool {
 
 #[tokio::test]
 async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_session() {
+    /* Warm-capacity ownership table WD1. Causes: C1 capacity is unused/in the
+     * ready set; C2 one Environment is checked out; C3 its agent process reaches
+     * terminal; C4 capacity shutdown runs; C5 the Session owner explicitly
+     * disposes the checked-out Environment. Effects: E1 checkout removes only
+     * that Environment from capacity; E2 C3 changes no Environment ownership;
+     * E3 C4 drains only unused capacity and preserves the checked-out physical
+     * Environment; E4 only C5 removes it. Rules: W1 C1+C2=>E1;
+     * W2 C2+C3=>E2; W3 C2+C4=>E3; W4 C2+C5=>E4. */
     if !docker_available() {
         eprintln!("skipping: no reachable Docker daemon");
         return;
@@ -86,17 +99,28 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
     // A matching session is handed a WARM agent (no create on the request path); the
     // ready count drops by one immediately (checked before any await lets the
     // off-path replenish run on this current-thread runtime).
-    let session = AgentContainerProvider::open_agent(&pool, &session_spec)
+    let environment = ContainerEnvironmentProvider::create_environment(&pool, &session_spec)
         .await
-        .expect("open_agent hands out a warm agent");
+        .expect("canonical Environment checkout hands out warm capacity");
     assert_eq!(
         pool.ready_len(&session_spec),
         1,
         "handing out a session consumed one warm agent"
     );
+    let RuntimeAgentProcess {
+        process,
+        mut channel,
+    } = environment
+        .spawn_agent_process(pc::Command {
+            argv: agent_argv(),
+            cwd: String::new(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("canonical Environment starts its agent process");
 
     // The agent exec is fully usable over its own stdio channel.
-    let mut channel = session.channel;
     channel.write_all(b"hello\n").await.expect("write prompt");
     channel.flush().await.ok();
     let mut buf = vec![0u8; 512];
@@ -114,20 +138,28 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
         }
     }
     drop(channel);
+    assert_eq!(process.wait().await.unwrap().code, Some(0), "W2");
 
-    // Teardown reaps EVERY warm container (and stops replenishment) — no leak.
-    pool.shutdown().await;
+    // Capacity teardown reaps only never-used entries and stops replenishment.
+    ContainerEnvironmentCapacity::shutdown_capacity(&pool).await;
     assert_eq!(
         pool.ready_len(&session_spec),
         0,
-        "shutdown disposed every warm container"
+        "W3 capacity shutdown disposed every unused warm container"
     );
-    assert_eq!(session.process.wait().await.unwrap().code, Some(0));
+    assert_eq!(
+        pc::Sandbox::status(environment.as_ref()).await.unwrap(),
+        pc::SandboxStatus::Ready,
+        "W3 checked-out Environment remains owned by its Session"
+    );
 
     assert!(
         got.contains("warm reply") && got.contains("turn_end"),
         "the warm agent served the session over the real wire: {got:?}"
     );
+    pc::Sandbox::dispose(environment.as_ref())
+        .await
+        .expect("W4 explicit Session cleanup removes the checked-out Environment");
 }
 
 /// A spec that declares a mount is NOT pooled — it is created fresh so its

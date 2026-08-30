@@ -19,7 +19,7 @@ use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, KillContainerOptions,
-    RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
+    ListContainersOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{BuildImageOptions, CreateImageOptions, PruneImagesOptions, PushImageOptions};
@@ -30,31 +30,68 @@ use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
 use crate::net::TcpAgentTransport;
+use crate::runtime::{
+    ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
+    ExistingRealizationRecovery, PhysicalIncarnation, RebuildContinuityEvidence,
+    existing_realization_decision, legacy_unfenced_fingerprint, sandbox_observation,
+};
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
+    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
+    ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
     PackageImageProvisioner, RUNTIME_OWNER_LABEL, RuntimeAgentProcess, RuntimeError,
-    RuntimeRestoreTarget, restoration_metadata, restoration_plan_fingerprint,
-    restore_container_name, runtime_container_name,
+    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
+    SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
+    SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
+    SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
+    restoration_metadata, restoration_plan_fingerprint, restore_container_name,
+    runtime_container_name, sandbox_scope_identity,
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-fn abandoned_created_container(
+fn docker_realization(
     info: &ContainerInspectResponse,
-    runtime_owner: &str,
-) -> Option<String> {
-    let labels = info.config.as_ref()?.labels.as_ref()?;
-    let created = info.state.as_ref()?.status == Some(ContainerStateStatusEnum::CREATED);
-    (created
-        && labels
-            .get(MANAGED_SANDBOX_LABEL)
-            .is_some_and(|value| value == "1")
-        && labels
-            .get(RUNTIME_OWNER_LABEL)
-            .is_some_and(|value| value == runtime_owner))
-    .then(|| info.id.clone())
-    .flatten()
-    .filter(|id| !id.is_empty())
+) -> Result<ExistingRealization, RuntimeError> {
+    let labels = info
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .ok_or_else(|| backend("Docker scope query returned a container without labels"))?;
+    if labels.get(MANAGED_SANDBOX_LABEL).map(String::as_str) != Some("1") {
+        return Err(backend(
+            "Docker scope query returned a non-Awaken container",
+        ));
+    }
+    let locator = info
+        .id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| backend("Docker scope query returned a container without an id"))?;
+    let phase = match info.state.as_ref().and_then(|state| state.status) {
+        Some(ContainerStateStatusEnum::CREATED) => ExistingRealizationPhase::Creating,
+        Some(ContainerStateStatusEnum::RUNNING) => ExistingRealizationPhase::Ready,
+        Some(ContainerStateStatusEnum::EXITED) => ExistingRealizationPhase::Terminal,
+        _ => ExistingRealizationPhase::Indeterminate,
+    };
+    Ok(ExistingRealization {
+        locator: locator.clone(),
+        incarnation: PhysicalIncarnation {
+            identity: locator,
+            version: None,
+        },
+        adoption_fingerprint: labels.get(SANDBOX_ADOPTION_LABEL).cloned(),
+        fingerprint: labels.get(SANDBOX_REALIZATION_LABEL).cloned(),
+        fence: container_effect_fence_from_values(
+            labels.get(SANDBOX_EFFECT_LABEL).map(String::as_str),
+            labels.get(SANDBOX_EFFECT_OWNER_LABEL).map(String::as_str),
+            labels.get(SANDBOX_EFFECT_RUNTIME_LABEL).map(String::as_str),
+            labels.get(SANDBOX_EFFECT_EPOCH_LABEL).map(String::as_str),
+            labels.get(SANDBOX_EFFECT_EXPIRY_LABEL).map(String::as_str),
+        )?,
+        attempt_id: labels.get(SANDBOX_ATTEMPT_LABEL).cloned(),
+        recovery: ExistingRealizationRecovery::CurrentAttemptOnly,
+        phase,
+    })
 }
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
@@ -66,6 +103,16 @@ fn docker_backend(error: bollard::errors::Error) -> RuntimeError {
         bollard::errors::Error::DockerStreamError { error } => RuntimeError::Backend(error),
         other => backend(other),
     }
+}
+
+fn docker_not_found(error: &bollard::errors::Error) -> bool {
+    matches!(
+        error,
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 404,
+            ..
+        }
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -340,6 +387,13 @@ mod cgroup_host_config_tests {
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            egress_identity: crate::EgressRealizationIdentity {
+                network: crate::NetworkMode::Open,
+                proxy_endpoint: None,
+                capability_ttl_secs: None,
+                issuer_revision: None,
+                ephemeral_capability: false,
+            },
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
             filesystem_continuity: pc::FilesystemContinuity::Retained,
@@ -456,6 +510,13 @@ mod cgroup_host_config_tests {
         // policy is planned but never enforced — a fail-open egress leak.
         let denied = rt.host_config(&ContainerPlan {
             network: crate::NetworkMode::None,
+            egress_identity: crate::EgressRealizationIdentity {
+                network: crate::NetworkMode::None,
+                proxy_endpoint: None,
+                capability_ttl_secs: None,
+                issuer_revision: None,
+                ephemeral_capability: false,
+            },
             ..plan()
         });
         assert_eq!(denied.network_mode.as_deref(), Some("none"));
@@ -494,6 +555,7 @@ fn signal_name(signal: pc::Signal) -> &'static str {
 pub struct DockerRuntime {
     docker: Docker,
     agent_port: u16,
+    realization_namespace: ContainerRealizationNamespace,
     owner_id: String,
     /// Serialize the cache-probe/build sequence so concurrent sessions with the
     /// same Environment cannot race two identical immutable image builds.
@@ -507,24 +569,45 @@ pub struct DockerRuntime {
 impl DockerRuntime {
     /// Connect using the local defaults (unix socket / named pipe / env).
     pub fn connect_local(agent_port: u16) -> Result<Self, RuntimeError> {
+        let realization_namespace =
+            ContainerRealizationNamespace::from_stable_parts(["legacy-docker-runtime"])
+                .map_err(backend)?;
+        Self::connect_local_for_realization(realization_namespace, agent_port)
+    }
+
+    /// Connect with the stable deployment namespace used by durable Sessions.
+    pub fn connect_local_for_realization(
+        realization_namespace: ContainerRealizationNamespace,
+        agent_port: u16,
+    ) -> Result<Self, RuntimeError> {
         let docker = Docker::connect_with_local_defaults().map_err(backend)?;
-        Ok(Self {
+        Ok(Self::with_client_for_realization(
             docker,
+            realization_namespace,
             agent_port,
-            owner_id: crate::runtime_owner_id(),
-            package_builds: tokio::sync::Mutex::new(()),
-            package_registry: None,
-            package_registry_credentials: None,
-            package_cache_ttl: None,
-            package_build_timeout: crate::packages::PACKAGE_BUILD_TIMEOUT,
-        })
+        ))
     }
 
     /// Wrap an already-built client.
+    #[must_use]
     pub fn with_client(docker: Docker, agent_port: u16) -> Self {
+        let realization_namespace =
+            ContainerRealizationNamespace::from_stable_parts(["legacy-docker-runtime"])
+                .expect("constant legacy Docker namespace is valid");
+        Self::with_client_for_realization(docker, realization_namespace, agent_port)
+    }
+
+    /// Wrap a client with the durable Session realization namespace.
+    #[must_use]
+    pub fn with_client_for_realization(
+        docker: Docker,
+        realization_namespace: ContainerRealizationNamespace,
+        agent_port: u16,
+    ) -> Self {
         Self {
             docker,
             agent_port,
+            realization_namespace,
             owner_id: crate::runtime_owner_id(),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
@@ -567,8 +650,6 @@ impl DockerRuntime {
         exposed_ports.insert(self.port_key(), HashMap::new());
         Config {
             image: Some(plan.image.clone()),
-            // A Session environment owns PID 1 and execs every attempt into the
-            // resulting namespaces. Never inherit an image entrypoint.
             entrypoint: Some(Vec::new()),
             cmd: Some(plan.command.clone()),
             env: Some(env),
@@ -745,6 +826,58 @@ impl DockerRuntime {
         format!("{}/tcp", self.agent_port)
     }
 
+    async fn existing_realizations(
+        &self,
+        scope: &str,
+    ) -> Result<Vec<ExistingRealization>, RuntimeError> {
+        let scope_identity = sandbox_scope_identity(self.realization_namespace.as_str(), scope)?;
+        let filters = [(
+            "label".to_string(),
+            vec![
+                format!("{MANAGED_SANDBOX_LABEL}=1"),
+                format!("{SANDBOX_SCOPE_LABEL}={scope_identity}"),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        let listed = self
+            .docker
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                filters,
+                ..Default::default()
+            }))
+            .await
+            .map_err(backend)?;
+        let mut observed = Vec::with_capacity(listed.len());
+        for summary in listed {
+            let locator = summary
+                .id
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| backend("Docker scope query returned a container without an id"))?;
+            let inspected = self
+                .docker
+                .inspect_container(&locator, None)
+                .await
+                .map_err(backend)?;
+            observed.push(docker_realization(&inspected)?);
+        }
+        Ok(observed)
+    }
+
+    async fn create_decision(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+    ) -> Result<ExistingRealizationDecision, RuntimeError> {
+        existing_realization_decision(
+            context,
+            realization_fingerprint,
+            RebuildContinuityEvidence::Unavailable,
+            &self.existing_realizations(context.scope).await?,
+        )
+    }
+
     async fn live_inputs_root(&self, container_id: &str) -> Result<PathBuf, RuntimeError> {
         self.docker
             .inspect_container(container_id, None)
@@ -818,6 +951,15 @@ impl DockerRuntime {
 
 #[async_trait]
 impl ContainerRuntime for DockerRuntime {
+    fn realization_configuration(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
+        Ok(std::collections::BTreeMap::from([
+            ("backend".into(), "docker".into()),
+            ("agent_port".into(), self.agent_port.to_string()),
+        ]))
+    }
+
     async fn probe_ready(&self) -> Result<(), RuntimeError> {
         self.ping().await
     }
@@ -954,83 +1096,168 @@ impl ContainerRuntime for DockerRuntime {
             .map_err(|_| backend("package image preparation exceeded its deadline"))?
     }
 
+    async fn preflight_create_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        _plan: &ContainerPlan,
+        realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+    ) -> Result<(), RuntimeError> {
+        self.create_decision(context, realization_fingerprint)
+            .await
+            .map(drop)
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
-        // Stable discovery and runtime-incarnation labels support diagnostics and
-        // adoption. Neither label authorizes destruction.
+        let fingerprint = legacy_unfenced_fingerprint(id);
+        let attempt = crate::ContainerCreateAttempt::fresh();
+        let intent = ContainerRealizationIntent::Create;
+        let context = ContainerRealizationContext::new(id, &fingerprint, None, &intent, &attempt);
+        self.create_for_effect(&context, plan, &fingerprint).await
+    }
+
+    async fn create_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+    ) -> Result<String, RuntimeError> {
+        // Stable namespace+scope and immutable fingerprint are recovery
+        // evidence. The process incarnation remains a diagnostic/liveness label
+        // and never participates in identity or deletion authorization.
         let mut labels = HashMap::new();
         labels.insert(MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
         labels.insert(RUNTIME_OWNER_LABEL.to_string(), self.owner_id.clone());
+        labels.insert(
+            SANDBOX_SCOPE_LABEL.to_string(),
+            sandbox_scope_identity(self.realization_namespace.as_str(), context.scope)?,
+        );
+        labels.insert(
+            SANDBOX_ADOPTION_LABEL.to_string(),
+            context.adoption_fingerprint.to_string(),
+        );
+        labels.insert(
+            SANDBOX_REALIZATION_LABEL.to_string(),
+            realization_fingerprint.to_string(),
+        );
+        labels.insert(
+            SANDBOX_ATTEMPT_LABEL.to_string(),
+            context.attempt.as_str().to_owned(),
+        );
+        labels.extend(
+            container_effect_label_values(context.effect_fence)
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value)),
+        );
         let config = self.container_config(plan, labels);
-        let name = runtime_container_name(&self.owner_id, id);
-        let created = match self
-            .docker
-            .create_container(
-                Some(CreateContainerOptions {
-                    name: name.clone(),
-                    platform: None,
-                }),
-                config.clone(),
-            )
-            .await
-        {
-            Ok(created) => created,
-            Err(error) => {
-                // Docker can commit `create` and then have the caller's future
-                // cancelled before `start` returns. The next exact Session retry
-                // sees 409 forever unless it reconciles that never-started effect.
-                // A running/exited container or a different runtime owner is not
-                // authorized here and remains a hard conflict.
-                let abandoned = self
-                    .docker
-                    .inspect_container(&name, None)
-                    .await
-                    .ok()
-                    .and_then(|info| abandoned_created_container(&info, &self.owner_id));
-                let Some(abandoned) = abandoned else {
-                    return Err(backend(error));
-                };
-                self.docker
-                    .remove_container(
-                        &abandoned,
-                        Some(RemoveContainerOptions {
-                            force: true,
-                            ..Default::default()
-                        }),
-                    )
-                    .await
-                    .map_err(backend)?;
-                self.docker
-                    .create_container(
-                        Some(CreateContainerOptions {
-                            name,
-                            platform: None,
-                        }),
-                        config,
-                    )
-                    .await
-                    .map_err(backend)?
+        let name = runtime_container_name(self.realization_namespace.as_str(), context.scope)?;
+        let mut decision = self
+            .create_decision(context, Some(realization_fingerprint))
+            .await?;
+        for _ in 0..4 {
+            match decision {
+                ExistingRealizationDecision::Create => {
+                    let created = match self
+                        .docker
+                        .create_container(
+                            Some(CreateContainerOptions {
+                                name: name.clone(),
+                                platform: None,
+                            }),
+                            config.clone(),
+                        )
+                        .await
+                    {
+                        Ok(created) => created,
+                        Err(error) => {
+                            let after = self
+                                .create_decision(context, Some(realization_fingerprint))
+                                .await
+                                .map_err(RuntimeError::after_mutation)?;
+                            if after == ExistingRealizationDecision::Create {
+                                return Err(backend(error).after_mutation());
+                            }
+                            decision = after;
+                            continue;
+                        }
+                    };
+                    if let Err(error) = self
+                        .docker
+                        .start_container(&created.id, None::<StartContainerOptions<String>>)
+                        .await
+                    {
+                        let after = self
+                            .create_decision(context, Some(realization_fingerprint))
+                            .await
+                            .map_err(RuntimeError::after_mutation)?;
+                        if let ExistingRealizationDecision::ReuseReady(observed) = &after {
+                            return Ok(observed.incarnation.identity.clone());
+                        }
+                        if after == ExistingRealizationDecision::Create {
+                            return Err(backend(error).after_mutation());
+                        }
+                        decision = after;
+                        continue;
+                    }
+                    return Ok(created.id);
+                }
+                ExistingRealizationDecision::ConvergeCreating(observed) => {
+                    if let Err(error) = self
+                        .docker
+                        .start_container(
+                            &observed.incarnation.identity,
+                            None::<StartContainerOptions<String>>,
+                        )
+                        .await
+                    {
+                        let after = self
+                            .create_decision(context, Some(realization_fingerprint))
+                            .await
+                            .map_err(RuntimeError::after_mutation)?;
+                        if let ExistingRealizationDecision::ReuseReady(observed) = &after {
+                            return Ok(observed.incarnation.identity.clone());
+                        }
+                        if after == ExistingRealizationDecision::Create {
+                            return Err(backend(error).after_mutation());
+                        }
+                        decision = after;
+                        continue;
+                    }
+                    return Ok(observed.incarnation.identity);
+                }
+                ExistingRealizationDecision::ReuseReady(observed) => {
+                    return Ok(observed.incarnation.identity);
+                }
+                ExistingRealizationDecision::ReplaceExact(observed) => {
+                    let removal = self
+                        .docker
+                        .remove_container(
+                            &observed.incarnation.identity,
+                            Some(RemoveContainerOptions {
+                                force: observed.phase != ExistingRealizationPhase::Terminal,
+                                ..Default::default()
+                            }),
+                        )
+                        .await;
+                    let after = self
+                        .create_decision(context, Some(realization_fingerprint))
+                        .await
+                        .map_err(RuntimeError::after_mutation)?;
+                    if after == ExistingRealizationDecision::Create {
+                        decision = after;
+                    } else if removal.is_err() {
+                        return Err(backend(removal.unwrap_err()).after_mutation());
+                    } else {
+                        decision = after;
+                    }
+                }
+                ExistingRealizationDecision::ValidateExisting(_) => {
+                    return Err(backend(
+                        "Docker create reached a fingerprint-deferred decision",
+                    ));
+                }
             }
-        };
-        if let Err(error) = self
-            .docker
-            .start_container(&created.id, None::<StartContainerOptions<String>>)
-            .await
-        {
-            // `create` succeeded but `start` did not. Remove the named container
-            // before returning so a retry can reuse the stable Session name.
-            let _ = self
-                .docker
-                .remove_container(
-                    &created.id,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
-                .await;
-            return Err(backend(error));
         }
-        Ok(created.id)
+        Err(backend("Docker exact realization did not converge").after_mutation())
     }
 
     async fn recover_restore_target(
@@ -1107,10 +1334,6 @@ impl ContainerRuntime for DockerRuntime {
             .await
         {
             Ok(created) => {
-                // A failed start is still one durable named restore target. Do
-                // not unlink it here: returning its identity lets the provider
-                // retain the exact host bind, then the completion observation
-                // fails until a read-first retry starts this same container.
                 let _ = self
                     .docker
                     .start_container(&created.id, None::<StartContainerOptions<String>>)
@@ -1215,6 +1438,44 @@ impl ContainerRuntime for DockerRuntime {
             pc::HostBindRestorationHandle::for_restore(staging_root.to_string_lossy().into_owned())
                 .map_err(|error| backend(error.to_string()))?,
         )))
+    }
+
+    async fn observe(
+        &self,
+        expectation: crate::ContainerObservationExpectation<'_>,
+    ) -> Result<pc::SandboxObservation, RuntimeError> {
+        if expectation.runtime_handle.is_some() {
+            return Err(backend(
+                "Docker observation received foreign runtime continuation evidence",
+            ));
+        }
+        let expected_incarnation = expectation
+            .realization_fingerprint
+            .map(|_| expectation.container_id);
+        let inspected = match self
+            .docker
+            .inspect_container(expectation.container_id, None)
+            .await
+        {
+            Ok(inspected) => inspected,
+            Err(error) if docker_not_found(&error) => {
+                return sandbox_observation(
+                    expected_incarnation,
+                    expectation.adoption_fingerprint,
+                    expectation.realization_fingerprint,
+                    expectation.effect_fence,
+                    &[],
+                );
+            }
+            Err(error) => return Err(backend(error)),
+        };
+        sandbox_observation(
+            expected_incarnation,
+            expectation.adoption_fingerprint,
+            expectation.realization_fingerprint,
+            expectation.effect_fence,
+            &[docker_realization(&inspected)?],
+        )
     }
 
     async fn spawn(
@@ -1471,6 +1732,20 @@ impl ContainerRuntime for DockerRuntime {
             .await
             .map_err(backend)
     }
+
+    async fn remove_exact_incarnation(
+        &self,
+        container_id: &str,
+        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        _authorization: &pc::SandboxDisposalAuthorization,
+    ) -> Result<(), RuntimeError> {
+        if runtime_handle.is_some() {
+            return Err(backend(
+                "Docker exact removal received foreign continuation evidence",
+            ));
+        }
+        self.remove(container_id).await
+    }
 }
 
 #[async_trait]
@@ -1522,138 +1797,27 @@ impl PackageImageProvisioner for DockerRuntime {
 }
 
 #[cfg(test)]
-mod creation_reconciliation_tests {
+mod observation_error_tests {
     use super::*;
 
-    fn inspected(
-        status: ContainerStateStatusEnum,
-        managed: bool,
-        owner: &str,
-    ) -> ContainerInspectResponse {
-        let mut labels = HashMap::new();
-        if managed {
-            labels.insert(MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
-        }
-        labels.insert(RUNTIME_OWNER_LABEL.to_string(), owner.to_string());
-        ContainerInspectResponse {
-            id: Some("container-1".into()),
-            state: Some(bollard::models::ContainerState {
-                status: Some(status),
-                ..Default::default()
-            }),
-            config: Some(bollard::models::ContainerConfig {
-                labels: Some(labels),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
     #[test]
-    fn only_the_same_runtime_unstarted_effect_is_reconcilable() {
-        // Cause/effect matrix for a cancelled Docker create:
-        // C1 managed label, C2 exact runtime incarnation, C3 never started.
-        // Only C1+C2+C3 may be removed and recreated. Running/exited effects,
-        // foreign owners and non-Awaken containers remain hard conflicts.
-        assert_eq!(
-            abandoned_created_container(
-                &inspected(ContainerStateStatusEnum::CREATED, true, "runtime-a"),
-                "runtime-a",
-            ),
-            Some("container-1".into()),
-        );
-        for candidate in [
-            inspected(ContainerStateStatusEnum::RUNNING, true, "runtime-a"),
-            inspected(ContainerStateStatusEnum::EXITED, true, "runtime-a"),
-            inspected(ContainerStateStatusEnum::CREATED, true, "runtime-b"),
-            inspected(ContainerStateStatusEnum::CREATED, false, "runtime-a"),
-        ] {
-            assert_eq!(abandoned_created_container(&candidate, "runtime-a"), None);
-        }
-    }
-
-    /* Docker restore-evidence table. C1=all immutable labels and plan; C2=no
-     * restore labels; C3=partial tuple; C4=complete but mismatched tuple/plan.
-     * E1=exact physical id; E2=ordinary None; E3=fail closed. Rules:
-     * D1 C1=>E1; D2 C2=>E2; D3 C3|C4=>E3. */
-    #[test]
-    fn docker_restore_labels_are_observed_as_one_atomic_exact_tuple() {
-        let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
-            "effect-a",
-            "generation-a",
-            "checkpoint-a",
-            "digest-a",
-            "spec-a",
-            "exclusions-a",
-        )
-        .unwrap();
-        let ordinary = inspected(ContainerStateStatusEnum::RUNNING, true, "runtime-a");
-        assert_eq!(
-            DockerRuntime::restoration_evidence_from_info(&ordinary).unwrap(),
-            None,
-            "D2/E2"
-        );
-
-        let mut exact = ordinary.clone();
-        exact
-            .config
-            .as_mut()
-            .unwrap()
-            .labels
-            .as_mut()
-            .unwrap()
-            .extend(
-                restoration_metadata(&evidence)
-                    .into_iter()
-                    .map(|(key, value)| (key.to_string(), value.to_string())),
-            );
-        exact
-            .config
-            .as_mut()
-            .unwrap()
-            .labels
-            .as_mut()
-            .unwrap()
-            .insert(crate::RESTORE_PLAN_LABEL.into(), "plan-a".into());
-        assert_eq!(
-            DockerRuntime::exact_restoration_id(&exact, "plan-a", &evidence).unwrap(),
-            "container-1",
-            "D1/E1"
-        );
-
-        let mut partial = ordinary;
-        partial
-            .config
-            .as_mut()
-            .unwrap()
-            .labels
-            .as_mut()
-            .unwrap()
-            .insert(
-                crate::RESTORE_EFFECT_LABEL.into(),
-                evidence.effect_id().into(),
-            );
+    fn only_an_exact_not_found_response_proves_absence() {
+        // Cause/effect table: C1 Docker response is 404/other HTTP/backend
+        // failure. R1 only 404 is absence evidence; R2 every other failure is
+        // indeterminate and must not authorize a replacement.
+        let not_found = bollard::errors::Error::DockerResponseServerError {
+            status_code: 404,
+            message: "missing".into(),
+        };
+        let unavailable = bollard::errors::Error::DockerResponseServerError {
+            status_code: 503,
+            message: "unavailable".into(),
+        };
+        assert!(docker_not_found(&not_found), "R1");
+        assert!(!docker_not_found(&unavailable), "R2");
         assert!(
-            DockerRuntime::restoration_evidence_from_info(&partial).is_err(),
-            "D3/E3 partial"
-        );
-
-        let mismatched = pc::SandboxRestorationEvidence::from_exact_parts(
-            evidence.effect_id(),
-            evidence.generation_id(),
-            evidence.checkpoint_id(),
-            "digest-a-different",
-            evidence.sandbox_spec_fingerprint(),
-            evidence.checkpoint_exclusions_fingerprint(),
-        )
-        .unwrap();
-        assert!(
-            DockerRuntime::exact_restoration_id(&exact, "plan-a", &mismatched).is_err(),
-            "D3/E3 mismatch"
-        );
-        assert!(
-            DockerRuntime::exact_restoration_id(&exact, "plan-b", &evidence).is_err(),
-            "D3/E3 plan mismatch"
+            !docker_not_found(&bollard::errors::Error::RequestTimeoutError),
+            "R2"
         );
     }
 }

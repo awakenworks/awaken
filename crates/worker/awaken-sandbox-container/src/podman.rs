@@ -8,8 +8,6 @@
 //! `IsolatedRoot`), reached over the published agent port via [`crate::net`] — the
 //! same dial the Docker adapter uses. Compile-verified here; running needs `podman`.
 
-#[cfg(test)]
-use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -27,10 +25,22 @@ use crate::net::TcpAgentTransport;
 
 mod command;
 mod realization;
+use crate::runtime::{
+    ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
+    ExistingRealizationRecovery, PhysicalIncarnation, RebuildContinuityEvidence,
+    container_state_observation, existing_realization_decision, legacy_unfenced_fingerprint,
+    sandbox_observation,
+};
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, PackageImageProvisioner, RUNTIME_OWNER_LABEL,
-    RuntimeAgentProcess, RuntimeError, RuntimeRestoreTarget, podman_run_argv, restoration_metadata,
-    restoration_plan_fingerprint, restore_container_name, runtime_container_name,
+    ContainerCreateAttempt, ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
+    ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
+    PackageImageProvisioner, RUNTIME_OWNER_LABEL, RuntimeAgentProcess, RuntimeError,
+    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
+    SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
+    SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
+    SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
+    podman_run_argv, restoration_metadata, restoration_plan_fingerprint, restore_container_name,
+    runtime_container_name, sandbox_scope_identity,
 };
 use command::podman_command;
 #[cfg(test)]
@@ -190,6 +200,7 @@ pub struct PodmanRuntime {
     bin: String,
     agent_port: u16,
     exec: Arc<dyn CommandExec>,
+    realization_namespace: ContainerRealizationNamespace,
     owner_id: String,
     package_builds: tokio::sync::Mutex<()>,
     package_registry: Option<String>,
@@ -206,6 +217,75 @@ struct PodmanMount {
     destination: String,
 }
 
+#[derive(serde::Deserialize)]
+struct PodmanContainerSummary {
+    #[serde(rename = "Id", alias = "ID", alias = "id")]
+    id: String,
+    #[serde(rename = "State", alias = "state")]
+    state: String,
+    #[serde(rename = "Labels", alias = "labels", default)]
+    labels: std::collections::HashMap<String, String>,
+}
+
+fn podman_realizations(encoded: &str) -> Result<Vec<ExistingRealization>, RuntimeError> {
+    let summaries: Vec<PodmanContainerSummary> =
+        serde_json::from_str(if encoded.is_empty() { "[]" } else { encoded }).map_err(backend)?;
+    summaries
+        .into_iter()
+        .map(|summary| {
+            if summary.id.is_empty()
+                || summary
+                    .labels
+                    .get(MANAGED_SANDBOX_LABEL)
+                    .map(String::as_str)
+                    != Some("1")
+            {
+                return Err(backend(
+                    "Podman query returned a non-Awaken container or empty id",
+                ));
+            }
+            let phase = match summary.state.to_ascii_lowercase().as_str() {
+                "created" | "configured" => ExistingRealizationPhase::Creating,
+                "running" => ExistingRealizationPhase::Ready,
+                "exited" | "stopped" => ExistingRealizationPhase::Terminal,
+                _ => ExistingRealizationPhase::Indeterminate,
+            };
+            let locator = summary.id;
+            Ok(ExistingRealization {
+                locator: locator.clone(),
+                incarnation: PhysicalIncarnation {
+                    identity: locator,
+                    version: None,
+                },
+                adoption_fingerprint: summary.labels.get(SANDBOX_ADOPTION_LABEL).cloned(),
+                fingerprint: summary.labels.get(SANDBOX_REALIZATION_LABEL).cloned(),
+                fence: container_effect_fence_from_values(
+                    summary.labels.get(SANDBOX_EFFECT_LABEL).map(String::as_str),
+                    summary
+                        .labels
+                        .get(SANDBOX_EFFECT_OWNER_LABEL)
+                        .map(String::as_str),
+                    summary
+                        .labels
+                        .get(SANDBOX_EFFECT_RUNTIME_LABEL)
+                        .map(String::as_str),
+                    summary
+                        .labels
+                        .get(SANDBOX_EFFECT_EPOCH_LABEL)
+                        .map(String::as_str),
+                    summary
+                        .labels
+                        .get(SANDBOX_EFFECT_EXPIRY_LABEL)
+                        .map(String::as_str),
+                )?,
+                attempt_id: summary.labels.get(SANDBOX_ATTEMPT_LABEL).cloned(),
+                recovery: ExistingRealizationRecovery::CurrentAttemptOnly,
+                phase,
+            })
+        })
+        .collect()
+}
+
 impl PodmanRuntime {
     /// Use `podman` from `PATH`.
     #[must_use]
@@ -213,13 +293,36 @@ impl PodmanRuntime {
         Self::with_bin(agent_port, "podman")
     }
 
+    /// Use `podman` with the stable deployment namespace of durable Sessions.
+    #[must_use]
+    pub fn for_realization(
+        realization_namespace: ContainerRealizationNamespace,
+        agent_port: u16,
+    ) -> Self {
+        Self::with_bin_for_realization(realization_namespace, agent_port, "podman")
+    }
+
     /// Use the deployment-selected Podman executable.
     #[must_use]
     pub fn with_bin(agent_port: u16, bin: impl Into<String>) -> Self {
+        let realization_namespace =
+            ContainerRealizationNamespace::from_stable_parts(["legacy-podman-runtime"])
+                .expect("constant legacy Podman namespace is valid");
+        Self::with_bin_for_realization(realization_namespace, agent_port, bin)
+    }
+
+    /// Use the deployment-selected executable with a durable Session namespace.
+    #[must_use]
+    pub fn with_bin_for_realization(
+        realization_namespace: ContainerRealizationNamespace,
+        agent_port: u16,
+        bin: impl Into<String>,
+    ) -> Self {
         Self {
             bin: bin.into(),
             agent_port,
             exec: Arc::new(OsCommandExec),
+            realization_namespace,
             owner_id: crate::runtime_owner_id(),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
@@ -231,11 +334,16 @@ impl PodmanRuntime {
 
     /// Wire a scripted executor (tests) instead of forking a real `podman`.
     #[cfg(test)]
-    fn with_exec(agent_port: u16, exec: Arc<dyn CommandExec>) -> Self {
+    fn with_exec(
+        realization_namespace: ContainerRealizationNamespace,
+        agent_port: u16,
+        exec: Arc<dyn CommandExec>,
+    ) -> Self {
         Self {
             bin: "podman".into(),
             agent_port,
             exec,
+            realization_namespace,
             owner_id: crate::runtime_owner_id(),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
@@ -356,6 +464,39 @@ impl PodmanRuntime {
             )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    async fn existing_realizations(
+        &self,
+        scope: &str,
+    ) -> Result<Vec<ExistingRealization>, RuntimeError> {
+        let scope_identity = sandbox_scope_identity(self.realization_namespace.as_str(), scope)?;
+        let encoded = self
+            .run(&[
+                "ps".into(),
+                "--all".into(),
+                "--filter".into(),
+                format!("label={MANAGED_SANDBOX_LABEL}=1"),
+                "--filter".into(),
+                format!("label={SANDBOX_SCOPE_LABEL}={scope_identity}"),
+                "--format".into(),
+                "json".into(),
+            ])
+            .await?;
+        podman_realizations(&encoded)
+    }
+
+    async fn create_decision(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+    ) -> Result<ExistingRealizationDecision, RuntimeError> {
+        existing_realization_decision(
+            context,
+            realization_fingerprint,
+            RebuildContinuityEvidence::Unavailable,
+            &self.existing_realizations(context.scope).await?,
+        )
     }
 
     /// Probe the binary (for tests / health checks): `Ok` iff `podman` responds.
@@ -507,6 +648,15 @@ impl PodmanRuntime {
 
 #[async_trait]
 impl ContainerRuntime for PodmanRuntime {
+    fn realization_configuration(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
+        Ok(std::collections::BTreeMap::from([
+            ("backend".into(), "podman".into()),
+            ("agent_port".into(), self.agent_port.to_string()),
+        ]))
+    }
+
     async fn probe_ready(&self) -> Result<(), RuntimeError> {
         self.ping().await
     }
@@ -611,13 +761,142 @@ impl ContainerRuntime for PodmanRuntime {
             .map_err(|_| backend("package image preparation exceeded its deadline"))?
     }
 
+    async fn preflight_create_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        _plan: &ContainerPlan,
+        realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+    ) -> Result<(), RuntimeError> {
+        self.create_decision(context, realization_fingerprint)
+            .await
+            .map(drop)
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
-        let name = runtime_container_name(&self.owner_id, id);
-        // Idempotent: clear any stale container of this scope first.
-        let _ = self.run(&["rm".into(), "-f".into(), name.clone()]).await;
-        let args = self.container_run_args(&name, plan, std::iter::empty());
-        self.run(&args).await?;
-        Ok(name)
+        let fingerprint = legacy_unfenced_fingerprint(id);
+        let attempt = ContainerCreateAttempt::fresh();
+        let intent = ContainerRealizationIntent::Create;
+        let context = ContainerRealizationContext::new(id, &fingerprint, None, &intent, &attempt);
+        self.create_for_effect(&context, plan, &fingerprint).await
+    }
+
+    async fn create_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+    ) -> Result<String, RuntimeError> {
+        let name = runtime_container_name(self.realization_namespace.as_str(), context.scope)?;
+        let mut args = podman_run_argv(&name, plan, &plan.rootfs);
+        // Publish the agent's internal port to an ephemeral 127.0.0.1 host port so
+        // `open_channel` can dial it (inserted after `--name <name>`, before the image).
+        if let Some(i) = args.iter().position(|a| a == &name) {
+            args.splice(
+                i + 1..i + 1,
+                [
+                    "--label".to_string(),
+                    format!("{RUNTIME_OWNER_LABEL}={}", self.owner_id),
+                    "--label".to_string(),
+                    format!(
+                        "{SANDBOX_SCOPE_LABEL}={}",
+                        sandbox_scope_identity(self.realization_namespace.as_str(), context.scope)?
+                    ),
+                    "--label".to_string(),
+                    format!("{SANDBOX_ADOPTION_LABEL}={}", context.adoption_fingerprint),
+                    "--label".to_string(),
+                    format!("{SANDBOX_REALIZATION_LABEL}={realization_fingerprint}"),
+                    "--label".to_string(),
+                    format!("{SANDBOX_ATTEMPT_LABEL}={}", context.attempt.as_str()),
+                    "-p".to_string(),
+                    format!("127.0.0.1::{}", self.agent_port),
+                ],
+            );
+        }
+        if let Some(i) = args.iter().position(|arg| arg == &name) {
+            let labels = container_effect_label_values(context.effect_fence)
+                .into_iter()
+                .flat_map(|(key, value)| ["--label".to_owned(), format!("{key}={value}")])
+                .collect::<Vec<_>>();
+            args.splice(i + 1..i + 1, labels);
+        }
+        let mut decision = self
+            .create_decision(context, Some(realization_fingerprint))
+            .await?;
+        for _ in 0..4 {
+            match decision {
+                ExistingRealizationDecision::Create => match self.run(&args).await {
+                    Ok(created) if !created.trim().is_empty() => return Ok(created),
+                    Ok(_) => {
+                        decision = self
+                            .create_decision(context, Some(realization_fingerprint))
+                            .await
+                            .map_err(RuntimeError::after_mutation)?;
+                    }
+                    Err(error) => {
+                        let after = self
+                            .create_decision(context, Some(realization_fingerprint))
+                            .await
+                            .map_err(RuntimeError::after_mutation)?;
+                        if after == ExistingRealizationDecision::Create {
+                            return Err(error.after_mutation());
+                        }
+                        decision = after;
+                    }
+                },
+                ExistingRealizationDecision::ConvergeCreating(observed) => {
+                    if let Err(error) = self
+                        .run(&["start".into(), observed.incarnation.identity.clone()])
+                        .await
+                    {
+                        let after = self
+                            .create_decision(context, Some(realization_fingerprint))
+                            .await
+                            .map_err(RuntimeError::after_mutation)?;
+                        if let ExistingRealizationDecision::ReuseReady(observed) = &after {
+                            return Ok(observed.incarnation.identity.clone());
+                        }
+                        if after == ExistingRealizationDecision::Create {
+                            return Err(error.after_mutation());
+                        }
+                        decision = after;
+                        continue;
+                    }
+                    return Ok(observed.incarnation.identity);
+                }
+                ExistingRealizationDecision::ReuseReady(observed) => {
+                    return Ok(observed.incarnation.identity);
+                }
+                ExistingRealizationDecision::ReplaceExact(observed) => {
+                    // Only the shared fingerprint+Session-fence decision can
+                    // authorize force removal, and the target is the immutable
+                    // observed container id rather than the reusable name.
+                    let removal = self
+                        .run(&[
+                            "rm".into(),
+                            "--force".into(),
+                            observed.incarnation.identity.clone(),
+                        ])
+                        .await;
+                    let after = self
+                        .create_decision(context, Some(realization_fingerprint))
+                        .await
+                        .map_err(RuntimeError::after_mutation)?;
+                    if after == ExistingRealizationDecision::Create {
+                        decision = after;
+                    } else if let Err(error) = removal {
+                        return Err(error.after_mutation());
+                    } else {
+                        decision = after;
+                    }
+                }
+                ExistingRealizationDecision::ValidateExisting(_) => {
+                    return Err(backend(
+                        "Podman create reached a fingerprint-deferred decision",
+                    ));
+                }
+            }
+        }
+        Err(backend("Podman exact realization did not converge").after_mutation())
     }
 
     async fn recover_restore_target(
@@ -748,6 +1027,40 @@ impl ContainerRuntime for PodmanRuntime {
         )))
     }
 
+    async fn observe(
+        &self,
+        expectation: crate::ContainerObservationExpectation<'_>,
+    ) -> Result<pc::SandboxObservation, RuntimeError> {
+        if expectation.runtime_handle.is_some() {
+            return Err(backend(
+                "Podman observation received foreign runtime continuation evidence",
+            ));
+        }
+        let expected_incarnation = expectation
+            .realization_fingerprint
+            .map(|_| expectation.container_id);
+        // `ps --all` returns a successful empty JSON set only for absence.
+        // Daemon/authorization/transport failures remain `run` errors and can
+        // never be collapsed into Gone as the old `inspect` path did.
+        let encoded = self
+            .run(&[
+                "ps".into(),
+                "--all".into(),
+                "--filter".into(),
+                format!("id={}", expectation.container_id),
+                "--format".into(),
+                "json".into(),
+            ])
+            .await?;
+        sandbox_observation(
+            expected_incarnation,
+            expectation.adoption_fingerprint,
+            expectation.realization_fingerprint,
+            expectation.effect_fence,
+            &podman_realizations(&encoded)?,
+        )
+    }
+
     async fn spawn(
         &self,
         container_id: &str,
@@ -818,19 +1131,17 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
-        match self
+        let encoded = self
             .run(&[
-                "inspect".into(),
-                "-f".into(),
-                "{{.State.Running}}".into(),
-                container_id.into(),
+                "ps".into(),
+                "--all".into(),
+                "--filter".into(),
+                format!("id={container_id}"),
+                "--format".into(),
+                "json".into(),
             ])
-            .await
-        {
-            Ok(s) if s.trim() == "true" => Ok(ContainerState::Running),
-            // Not running or not found → gone (adoption reconciles this to an orphan).
-            _ => Ok(ContainerState::Gone),
-        }
+            .await?;
+        container_state_observation(container_id, &podman_realizations(&encoded)?)
     }
 
     async fn wait(&self, container_id: &str) -> Result<pc::ExitStatus, RuntimeError> {
@@ -922,6 +1233,20 @@ impl ContainerRuntime for PodmanRuntime {
         self.run(&["rm".into(), "-f".into(), container_id.into()])
             .await
             .map(|_| ())
+    }
+
+    async fn remove_exact_incarnation(
+        &self,
+        container_id: &str,
+        runtime_handle: Option<&pc::ContainerContinuationHandle>,
+        _authorization: &pc::SandboxDisposalAuthorization,
+    ) -> Result<(), RuntimeError> {
+        if runtime_handle.is_some() {
+            return Err(backend(
+                "Podman exact removal received foreign continuation evidence",
+            ));
+        }
+        self.remove(container_id).await
     }
 }
 
