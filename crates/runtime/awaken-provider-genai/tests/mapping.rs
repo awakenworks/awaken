@@ -285,6 +285,7 @@ fn anthropic_signed_thinking_round_trip_preserves_order_and_signature() {
         captured_raw_body: None,
         response_id: None,
     })
+    .expect("known provider stop reason maps")
     .output;
     assert_eq!(neutral.blocks.len(), 4, "R1/E1 no scalar duplicate");
     assert!(
@@ -584,7 +585,7 @@ fn non_streaming_reasoning_precedes_the_public_answer() {
         response_id: None,
     };
 
-    let mapped = from_genai_response(response);
+    let mapped = from_genai_response(response).expect("known provider stop reason maps");
     assert!(
         matches!(
             mapped.output.blocks.first(),
@@ -844,10 +845,10 @@ fn classify_error_numeric_status_and_precedence_boundaries() {
 #[test]
 fn genai_stop_reasons_map_onto_neutral_stop_reasons() {
     // Test design — Causes: every known SDK stop-reason class plus Other is
-    // projected. Effects: known classes map exactly and Other remains None.
+    // projected. Effects: known classes map exactly and Other is rejected.
     // Constraints/invariants: unknown provider reasons cannot be guessed into a
-    // terminal class. Decision rule S1-S6: enumerate closed known partition and
-    // one unknown fallback=>the table below.
+    // terminal class. Decision rules S1-S5 enumerate the known partition; S6 is
+    // the fail-closed unknown fallback below.
     use awaken_provider_genai::map_stop_reason;
     use awaken_runtime_contract::llm::StopReason;
     use genai::chat::StopReason as GenaiStopReason;
@@ -855,28 +856,33 @@ fn genai_stop_reasons_map_onto_neutral_stop_reasons() {
     let cases = [
         (
             GenaiStopReason::Completed("end_turn".to_string()),
-            Some(StopReason::NaturalEnd),
+            StopReason::NaturalEnd,
         ),
         (
             GenaiStopReason::MaxTokens("max_tokens".to_string()),
-            Some(StopReason::MaxTokens),
+            StopReason::MaxTokens,
         ),
         (
             GenaiStopReason::ToolCall("tool_use".to_string()),
-            Some(StopReason::ToolUse),
+            StopReason::ToolUse,
         ),
         (
             GenaiStopReason::StopSequence("stop_sequence".to_string()),
-            Some(StopReason::StopSequence),
+            StopReason::StopSequence,
         ),
         (
             GenaiStopReason::ContentFilter("SAFETY".to_string()),
-            Some(StopReason::ContentFilter),
+            StopReason::ContentFilter,
         ),
-        // A provider-specific reason the SDK cannot classify stays unknown.
-        (GenaiStopReason::Other("load".to_string()), None),
     ];
     for (genai_reason, expected) in cases {
-        assert_eq!(map_stop_reason(&genai_reason), expected);
+        assert_eq!(
+            map_stop_reason(&genai_reason).expect("S1-S5: known stop reason"),
+            expected
+        );
     }
+    let error = map_stop_reason(&GenaiStopReason::Other("load".to_string()))
+        .expect_err("S6: unclassified stop reason fails closed");
+    assert_eq!(error.code(), "provider_error", "S6");
+    assert!(error.is_retryable(), "S6");
 }
