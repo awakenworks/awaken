@@ -2,8 +2,9 @@
 
 use super::*;
 use awaken_sandbox_control::{
-    PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublishError,
-    SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
+    PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublicationLease,
+    SandboxControlPublicationSlot, SandboxControlPublishError, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 #[cfg(target_os = "linux")]
 use awaken_sandbox_control::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
@@ -104,7 +105,6 @@ fn unlink_if_identity(path: &std::path::Path, expected: SocketIdentity) {
 
 #[derive(Clone)]
 struct NamespaceControlPublicationState {
-    generation: u64,
     cancel: CancellationToken,
     task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     socket: PathBuf,
@@ -140,61 +140,51 @@ struct ActiveNamespaceControlPublication {
 
 #[derive(Default)]
 pub(super) struct NamespaceControlPublicationRegistry {
-    next_generation: std::sync::atomic::AtomicU64,
-    disposed: std::sync::atomic::AtomicBool,
-    active: std::sync::Mutex<Option<ActiveNamespaceControlPublication>>,
+    slot: SandboxControlPublicationSlot<ActiveNamespaceControlPublication>,
 }
 
 impl NamespaceControlPublicationRegistry {
     fn reserve(
         &self,
         socket: PathBuf,
-    ) -> Result<NamespaceControlPublicationState, SandboxControlPublishError> {
-        if self.disposed.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(SandboxControlPublishError);
-        }
-        let mut active = self.active.lock().map_err(|_| SandboxControlPublishError)?;
-        if self.disposed.load(std::sync::atomic::Ordering::Acquire) || active.is_some() {
-            return Err(SandboxControlPublishError);
-        }
+    ) -> Result<
+        (
+            SandboxControlPublicationLease,
+            NamespaceControlPublicationState,
+        ),
+        SandboxControlPublishError,
+    > {
         let state = NamespaceControlPublicationState {
-            generation: self
-                .next_generation
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                .wrapping_add(1),
             cancel: CancellationToken::new(),
             task: Arc::new(tokio::sync::Mutex::new(None)),
             socket,
         };
-        *active = Some(ActiveNamespaceControlPublication {
+        let lease = self.slot.reserve(ActiveNamespaceControlPublication {
             state: state.clone(),
             #[cfg(target_os = "linux")]
             owned_socket: None,
-        });
-        Ok(state)
+        })?;
+        Ok((lease, state))
     }
 
-    fn owns(&self, generation: u64) -> bool {
-        !self.disposed.load(std::sync::atomic::Ordering::Acquire)
-            && self.active.lock().is_ok_and(|active| {
-                active
-                    .as_ref()
-                    .is_some_and(|active| active.state.generation == generation)
-            })
+    fn owns(&self, lease: &SandboxControlPublicationLease) -> bool {
+        self.slot.owns(lease)
     }
 
     #[cfg(target_os = "linux")]
     fn record_owned_socket(
         &self,
+        lease: &SandboxControlPublicationLease,
         state: &NamespaceControlPublicationState,
         identity: SocketIdentity,
     ) -> Result<(), SandboxControlPublishError> {
-        self.record_owned_socket_with(state, identity, || {})
+        self.record_owned_socket_with(lease, state, identity, || {})
     }
 
     #[cfg(target_os = "linux")]
     fn record_owned_socket_with(
         &self,
+        lease: &SandboxControlPublicationLease,
         state: &NamespaceControlPublicationState,
         identity: SocketIdentity,
         while_active_locked: impl FnOnce(),
@@ -202,54 +192,46 @@ impl NamespaceControlPublicationRegistry {
         // Generation admission and inode ownership become visible in one active
         // critical section. Disposal can observe neither an ownerless active
         // generation nor an owned inode after clearing that generation.
-        let mut active = self.active.lock().map_err(|_| SandboxControlPublishError)?;
-        let current = active.as_mut().ok_or(SandboxControlPublishError)?;
-        if self.disposed.load(std::sync::atomic::Ordering::Acquire)
-            || current.state.generation != state.generation
-            || state.cancel.is_cancelled()
-        {
-            return Err(SandboxControlPublishError);
-        }
-        while_active_locked();
-        current.owned_socket = Some(identity);
-        Ok(())
-    }
-
-    fn release_reservation(&self, generation: u64) {
-        if let Ok(mut active) = self.active.lock()
-            && active
-                .as_ref()
-                .is_some_and(|active| active.state.generation == generation)
-        {
-            *active = None;
-        }
-    }
-
-    fn cleanup_owned_if_active(&self, state: &NamespaceControlPublicationState) {
-        if let Ok(mut active) = self.active.lock()
-            && active
-                .as_ref()
-                .is_some_and(|current| current.state.generation == state.generation)
-        {
-            #[cfg(target_os = "linux")]
-            if let Some(identity) = active.as_ref().and_then(|active| active.owned_socket) {
-                unlink_if_identity(&state.socket, identity);
+        self.slot.with_current_mut(lease, |current| {
+            if state.cancel.is_cancelled() {
+                return Err(SandboxControlPublishError);
             }
-            *active = None;
+            while_active_locked();
+            current.owned_socket = Some(identity);
+            Ok(())
+        })?
+    }
+
+    fn release_reservation(&self, lease: &SandboxControlPublicationLease) {
+        self.slot.release(lease);
+    }
+
+    fn cleanup_owned_if_active(
+        &self,
+        lease: &SandboxControlPublicationLease,
+        state: &NamespaceControlPublicationState,
+    ) {
+        if self
+            .slot
+            .with_current_mut(lease, |active| {
+                #[cfg(target_os = "linux")]
+                if let Some(identity) = active.owned_socket.take() {
+                    unlink_if_identity(&state.socket, identity);
+                }
+            })
+            .is_ok()
+        {
+            self.slot.release(lease);
         }
     }
 
     pub(super) async fn close_for_dispose(&self) {
-        self.disposed
-            .store(true, std::sync::atomic::Ordering::Release);
-        let state = self
-            .active
-            .lock()
-            .ok()
-            .and_then(|active| active.as_ref().map(|active| active.state.clone()));
-        if let Some(state) = state {
-            state.close_task().await;
-            self.cleanup_owned_if_active(&state);
+        if let Some(mut active) = self.slot.close() {
+            active.state.close_task().await;
+            #[cfg(target_os = "linux")]
+            if let Some(identity) = active.owned_socket.take() {
+                unlink_if_identity(&active.state.socket, identity);
+            }
         }
     }
 }
@@ -258,6 +240,7 @@ impl NamespaceControlPublicationRegistry {
 struct OwnedNamespaceControlListener {
     listener: tokio::net::UnixListener,
     registry: Arc<NamespaceControlPublicationRegistry>,
+    lease: SandboxControlPublicationLease,
     state: NamespaceControlPublicationState,
 }
 
@@ -268,19 +251,22 @@ impl Drop for OwnedNamespaceControlListener {
         // descriptor alive prevents its inode from being recycled between the
         // ownership check and unlink; a replacement path therefore cannot be
         // mistaken for this generation even when the task exits unexpectedly.
-        self.registry.cleanup_owned_if_active(&self.state);
+        self.registry
+            .cleanup_owned_if_active(&self.lease, &self.state);
     }
 }
 
 struct NamespaceControlPublication {
     registry: Arc<NamespaceControlPublicationRegistry>,
+    lease: SandboxControlPublicationLease,
     state: NamespaceControlPublicationState,
 }
 
 impl Drop for NamespaceControlPublication {
     fn drop(&mut self) {
         self.state.abort_task();
-        self.registry.cleanup_owned_if_active(&self.state);
+        self.registry
+            .cleanup_owned_if_active(&self.lease, &self.state);
     }
 }
 
@@ -288,7 +274,8 @@ impl Drop for NamespaceControlPublication {
 impl PublishedSandboxControlService for NamespaceControlPublication {
     async fn close(&self) {
         self.state.close_task().await;
-        self.registry.cleanup_owned_if_active(&self.state);
+        self.registry
+            .cleanup_owned_if_active(&self.lease, &self.state);
     }
 }
 
@@ -354,27 +341,23 @@ async fn publish_namespace_control_service(
     if socket.parent() != Some(control_directory.as_path()) {
         return Err(SandboxControlPublishError);
     }
-    let state = sandbox.control_publication.reserve(socket.clone())?;
+    let (lease, state) = sandbox.control_publication.reserve(socket.clone())?;
     let (listener, identity) = match bind_namespace_control_listener(&socket).await {
         Ok(bound) => bound,
         Err(error) => {
             // Reservation never implies filesystem ownership. A bind failure
             // cannot unlink an ambient live socket it did not create.
-            sandbox
-                .control_publication
-                .release_reservation(state.generation);
+            sandbox.control_publication.release_reservation(&lease);
             return Err(error);
         }
     };
     if sandbox
         .control_publication
-        .record_owned_socket(&state, identity)
+        .record_owned_socket(&lease, &state, identity)
         .is_err()
     {
         unlink_if_identity(&socket, identity);
-        sandbox
-            .control_publication
-            .release_reservation(state.generation);
+        sandbox.control_publication.release_reservation(&lease);
         return Err(SandboxControlPublishError);
     }
     let task_cancel = state.cancel.clone();
@@ -382,6 +365,7 @@ async fn publish_namespace_control_service(
     let owned_listener = OwnedNamespaceControlListener {
         listener,
         registry: sandbox.control_publication.clone(),
+        lease: lease.clone(),
         state: state.clone(),
     };
     let task = tokio::spawn(async move {
@@ -421,15 +405,18 @@ async fn publish_namespace_control_service(
     });
     {
         let mut task_slot = state.task.lock().await;
-        if state.cancel.is_cancelled() || !sandbox.control_publication.owns(state.generation) {
+        if state.cancel.is_cancelled() || !sandbox.control_publication.owns(&lease) {
             task.abort();
-            sandbox.control_publication.cleanup_owned_if_active(&state);
+            sandbox
+                .control_publication
+                .cleanup_owned_if_active(&lease, &state);
             return Err(SandboxControlPublishError);
         }
         *task_slot = Some(task);
     }
     Ok(Box::new(NamespaceControlPublication {
         registry: sandbox.control_publication.clone(),
+        lease,
         state,
     }))
 }
@@ -513,22 +500,25 @@ mod tests {
         let registry = Arc::new(NamespaceControlPublicationRegistry::default());
 
         let foreign = tokio::net::UnixListener::bind(&socket).unwrap();
-        let reservation = registry.reserve(socket.clone()).unwrap();
+        let (reservation, _) = registry.reserve(socket.clone()).unwrap();
         assert!(
             bind_namespace_control_listener(&socket).await.is_err(),
             "N1"
         );
-        registry.release_reservation(reservation.generation);
+        registry.release_reservation(&reservation);
         assert!(socket.exists(), "N1/E1");
         drop(foreign);
         std::fs::remove_file(&socket).unwrap();
 
-        let first = registry.reserve(socket.clone()).unwrap();
+        let (first_lease, first) = registry.reserve(socket.clone()).unwrap();
         let (listener, identity) = bind_namespace_control_listener(&socket).await.unwrap();
-        registry.record_owned_socket(&first, identity).unwrap();
+        registry
+            .record_owned_socket(&first_lease, &first, identity)
+            .unwrap();
         let owned_listener = OwnedNamespaceControlListener {
             listener,
             registry: registry.clone(),
+            lease: first_lease.clone(),
             state: first.clone(),
         };
         std::fs::remove_file(&socket).unwrap();
@@ -541,16 +531,16 @@ mod tests {
         drop(owned_listener);
         assert!(socket.exists(), "N3/E3");
 
-        let second = registry.reserve(socket.clone()).unwrap();
+        let (second_lease, second) = registry.reserve(socket.clone()).unwrap();
         let replacement_identity = socket_identity(&socket).unwrap();
         registry
-            .record_owned_socket(&second, replacement_identity)
+            .record_owned_socket(&second_lease, &second, replacement_identity)
             .unwrap();
-        registry.cleanup_owned_if_active(&first);
-        assert!(registry.owns(second.generation), "N4/E4");
+        registry.cleanup_owned_if_active(&first_lease, &first);
+        assert!(registry.owns(&second_lease), "N4/E4");
         assert!(socket.exists(), "N4/E4");
         drop(replacement);
-        registry.cleanup_owned_if_active(&second);
+        registry.cleanup_owned_if_active(&second_lease, &second);
     }
 
     #[tokio::test]
@@ -560,7 +550,7 @@ mod tests {
          */
         let registry = NamespaceControlPublicationRegistry::default();
         let directory = tempfile::tempdir().unwrap();
-        let state = registry
+        let (_, state) = registry
             .reserve(directory.path().join("control.sock"))
             .unwrap();
         registry.close_for_dispose().await;
@@ -577,8 +567,8 @@ mod tests {
     async fn inode_registration_and_disposal_share_one_active_critical_section() {
         /* Registration/disposal race table:
          * C1=the generation has bound an inode; C2=registration pauses while
-         * holding the active lock; C3=dispose starts and marks the registry
-         * irreversible. E1=dispose cannot clear an ownerless generation;
+         * holding the active lock; C3=dispose attempts the absorbing close.
+         * E1=dispose cannot clear an ownerless generation;
          * E2=after registration releases, dispose sees and unlinks that exact
          * dev+ino; E3=no stale socket remains. Rule N8 C1+C2+C3=>E1+E2+E3.
          */
@@ -587,14 +577,15 @@ mod tests {
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let identity = socket_identity(&socket).unwrap();
         let registry = Arc::new(NamespaceControlPublicationRegistry::default());
-        let state = registry.reserve(socket.clone()).unwrap();
+        let (lease, state) = registry.reserve(socket.clone()).unwrap();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let recording = tokio::task::spawn_blocking({
             let registry = registry.clone();
+            let lease = lease.clone();
             let state = state.clone();
             move || {
-                registry.record_owned_socket_with(&state, identity, || {
+                registry.record_owned_socket_with(&lease, &state, identity, || {
                     entered_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
                 })
@@ -608,9 +599,7 @@ mod tests {
             let registry = registry.clone();
             async move { registry.close_for_dispose().await }
         });
-        while !registry.disposed.load(std::sync::atomic::Ordering::Acquire) {
-            tokio::task::yield_now().await;
-        }
+        tokio::task::yield_now().await;
         assert!(!disposal.is_finished(), "N8/E1");
         release_tx.send(()).unwrap();
         recording.await.unwrap().unwrap();
@@ -629,7 +618,7 @@ mod tests {
          */
         let registry = Arc::new(NamespaceControlPublicationRegistry::default());
         let directory = tempfile::tempdir().unwrap();
-        let state = registry
+        let (_, state) = registry
             .reserve(directory.path().join("control.sock"))
             .unwrap();
         let release = Arc::new(tokio::sync::Notify::new());

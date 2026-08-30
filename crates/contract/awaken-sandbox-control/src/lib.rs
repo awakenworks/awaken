@@ -195,6 +195,113 @@ pub trait SandboxControlServicePublisher: Send + Sync {
 #[error("Sandbox control service publication is unavailable")]
 pub struct SandboxControlPublishError;
 
+/// Opaque identity of one process-local Sandbox control publication.
+///
+/// Identity is allocation-backed rather than numeric, so an exhausted counter
+/// cannot wrap and let a stale publisher match a later publication.
+#[derive(Clone)]
+pub struct SandboxControlPublicationLease(Arc<()>);
+
+/// One provider-neutral publication slot shared by Sandbox implementations.
+///
+/// The slot owns only local lifecycle serialization: vacant -> active -> vacant,
+/// or any open state -> permanently closed. Provider-specific channel, socket,
+/// and cleanup state remains in `T`; durable Session authority stays outside
+/// this contract.
+pub struct SandboxControlPublicationSlot<T> {
+    state: std::sync::Mutex<PublicationSlotState<T>>,
+}
+
+enum PublicationSlotState<T> {
+    Open(Option<(SandboxControlPublicationLease, T)>),
+    Closed,
+}
+
+impl<T> Default for SandboxControlPublicationSlot<T> {
+    fn default() -> Self {
+        Self {
+            state: std::sync::Mutex::new(PublicationSlotState::Open(None)),
+        }
+    }
+}
+
+impl<T> SandboxControlPublicationSlot<T> {
+    /// Reserve the sole open slot for `value`.
+    pub fn reserve(
+        &self,
+        value: T,
+    ) -> Result<SandboxControlPublicationLease, SandboxControlPublishError> {
+        let mut state = self.state.lock().map_err(|_| SandboxControlPublishError)?;
+        let PublicationSlotState::Open(active) = &mut *state else {
+            return Err(SandboxControlPublishError);
+        };
+        if active.is_some() {
+            return Err(SandboxControlPublishError);
+        }
+        let lease = SandboxControlPublicationLease(Arc::new(()));
+        *active = Some((lease.clone(), value));
+        Ok(lease)
+    }
+
+    /// Whether `lease` still owns the sole active slot.
+    #[must_use]
+    pub fn owns(&self, lease: &SandboxControlPublicationLease) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            matches!(
+                &*state,
+                PublicationSlotState::Open(Some((current, _)))
+                    if Arc::ptr_eq(&current.0, &lease.0)
+            )
+        })
+    }
+
+    /// Mutate provider-local state only while `lease` is the current owner.
+    pub fn with_current_mut<R>(
+        &self,
+        lease: &SandboxControlPublicationLease,
+        update: impl FnOnce(&mut T) -> R,
+    ) -> Result<R, SandboxControlPublishError> {
+        let mut state = self.state.lock().map_err(|_| SandboxControlPublishError)?;
+        let PublicationSlotState::Open(Some((current, value))) = &mut *state else {
+            return Err(SandboxControlPublishError);
+        };
+        if !Arc::ptr_eq(&current.0, &lease.0) {
+            return Err(SandboxControlPublishError);
+        }
+        Ok(update(value))
+    }
+
+    /// Release only the exact current lease. A stale lease is inert.
+    pub fn release(&self, lease: &SandboxControlPublicationLease) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let PublicationSlotState::Open(active) = &mut *state else {
+            return;
+        };
+        if active
+            .as_ref()
+            .is_some_and(|(current, _)| Arc::ptr_eq(&current.0, &lease.0))
+        {
+            *active = None;
+        }
+    }
+
+    /// Permanently close the slot and return its active provider state, if any.
+    /// Poison recovery is deliberate here: disposal must remain absorbing even
+    /// after another local task panicked while holding the mutex.
+    pub fn close(&self) -> Option<T> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match std::mem::replace(&mut *state, PublicationSlotState::Closed) {
+            PublicationSlotState::Open(Some((_, value))) => Some(value),
+            PublicationSlotState::Open(None) | PublicationSlotState::Closed => None,
+        }
+    }
+}
+
 /// Stable framing failures. Payload bytes and serde diagnostics are omitted so
 /// a credential-bearing response cannot enter an error or log accidentally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -357,6 +464,32 @@ mod tests {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             SandboxControlResponse::Unavailable
         }
+    }
+
+    #[test]
+    fn publication_slot_has_one_unforgeable_owner_and_absorbing_close() {
+        /* Publication-slot decision table:
+         * C1=vacant open slot; C2=current lease; C3=stale predecessor lease;
+         * C4=close. E1=C1 reserves exactly once; E2=C2 alone may mutate or
+         * release; E3=C3 cannot clear a replacement; E4=C4 returns the active
+         * value and permanently rejects reserve. Rules PS1 C1=>E1;
+         * PS2 C2=>E2; PS3 C3=>E3; PS4 C4=>E4. Allocation identity, rather
+         * than a wrapping number, makes PS3 hold for arbitrarily many cycles.
+         */
+        let slot = SandboxControlPublicationSlot::default();
+        let first = slot.reserve(1_u8).expect("PS1/E1");
+        assert!(slot.reserve(2).is_err(), "PS1 only one active value");
+        slot.with_current_mut(&first, |value| *value = 3)
+            .expect("PS2/E2 current mutates");
+        slot.release(&first);
+
+        let second = slot.reserve(4).expect("PS1 replacement");
+        slot.release(&first);
+        assert!(slot.owns(&second), "PS3/E3 stale release is inert");
+        assert_eq!(slot.close(), Some(4), "PS4/E4 returns active value");
+        assert!(!slot.owns(&second), "PS4/E4 no active owner");
+        assert!(slot.reserve(5).is_err(), "PS4/E4 close is absorbing");
+        assert_eq!(slot.close(), None, "PS4/E4 close is idempotent");
     }
 
     #[tokio::test]

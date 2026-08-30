@@ -5,8 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_sandbox_control::{
-    PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
-    SandboxControlServiceKind, SandboxControlServicePublisher, serve_one_after_first_byte,
+    PublishedSandboxControlService, SandboxControlPublicationLease, SandboxControlPublicationSlot,
+    SandboxControlPublishError, SandboxControlService, SandboxControlServiceKind,
+    SandboxControlServicePublisher, serve_one_after_first_byte,
 };
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
@@ -20,7 +21,6 @@ const CONTROL_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(1)
 
 #[derive(Clone)]
 struct ContainerControlPublicationState {
-    generation: u64,
     cancel: CancellationToken,
     task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -79,71 +79,53 @@ async fn open_channel<R: ContainerRuntime + 'static>(
 
 #[derive(Default)]
 pub(crate) struct ContainerControlPublicationRegistry {
-    next_generation: std::sync::atomic::AtomicU64,
-    disposed: std::sync::atomic::AtomicBool,
-    active: std::sync::Mutex<Option<ContainerControlPublicationState>>,
+    slot: SandboxControlPublicationSlot<ContainerControlPublicationState>,
 }
 
 impl ContainerControlPublicationRegistry {
-    fn acquire(&self) -> Result<ContainerControlPublicationState, SandboxControlPublishError> {
-        if self.disposed.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(SandboxControlPublishError);
-        }
-        let mut active = self.active.lock().map_err(|_| SandboxControlPublishError)?;
-        if self.disposed.load(std::sync::atomic::Ordering::Acquire) || active.is_some() {
-            return Err(SandboxControlPublishError);
-        }
+    fn acquire(
+        &self,
+    ) -> Result<
+        (
+            SandboxControlPublicationLease,
+            ContainerControlPublicationState,
+        ),
+        SandboxControlPublishError,
+    > {
         let state = ContainerControlPublicationState {
-            generation: self
-                .next_generation
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                .wrapping_add(1),
             cancel: CancellationToken::new(),
             task: Arc::new(tokio::sync::Mutex::new(None)),
         };
-        *active = Some(state.clone());
-        Ok(state)
+        let lease = self.slot.reserve(state.clone())?;
+        Ok((lease, state))
     }
 
-    fn owns(&self, generation: u64) -> bool {
-        !self.disposed.load(std::sync::atomic::Ordering::Acquire)
-            && self.active.lock().is_ok_and(|active| {
-                active
-                    .as_ref()
-                    .is_some_and(|state| state.generation == generation)
-            })
+    fn owns(&self, lease: &SandboxControlPublicationLease) -> bool {
+        self.slot.owns(lease)
     }
 
-    fn release(&self, generation: u64) {
-        if let Ok(mut active) = self.active.lock()
-            && active
-                .as_ref()
-                .is_some_and(|state| state.generation == generation)
-        {
-            *active = None;
-        }
+    fn release(&self, lease: &SandboxControlPublicationLease) {
+        self.slot.release(lease);
     }
 
     pub(crate) async fn close_for_dispose(&self) {
-        self.disposed
-            .store(true, std::sync::atomic::Ordering::Release);
-        let state = self.active.lock().ok().and_then(|active| active.clone());
+        let state = self.slot.close();
         if let Some(state) = state {
             state.close_task().await;
-            self.release(state.generation);
         }
     }
 }
 
 struct ContainerControlPublication {
     registry: Arc<ContainerControlPublicationRegistry>,
+    lease: SandboxControlPublicationLease,
     state: ContainerControlPublicationState,
 }
 
 impl Drop for ContainerControlPublication {
     fn drop(&mut self) {
         self.state.abort_task();
-        self.registry.release(self.state.generation);
+        self.registry.release(&self.lease);
     }
 }
 
@@ -151,7 +133,7 @@ impl Drop for ContainerControlPublication {
 impl PublishedSandboxControlService for ContainerControlPublication {
     async fn close(&self) {
         self.state.close_task().await;
-        self.registry.release(self.state.generation);
+        self.registry.release(&self.lease);
     }
 }
 
@@ -167,9 +149,9 @@ impl<R: ContainerRuntime + 'static> SandboxControlServicePublisher for Container
         {
             return Err(SandboxControlPublishError);
         }
-        let state = self.control_publication.acquire()?;
+        let (lease, state) = self.control_publication.acquire()?;
         let binding = self.sandbox_control_incarnation.clone().ok_or_else(|| {
-            self.control_publication.release(state.generation);
+            self.control_publication.release(&lease);
             SandboxControlPublishError
         })?;
         let first = open_channel(
@@ -181,9 +163,9 @@ impl<R: ContainerRuntime + 'static> SandboxControlServicePublisher for Container
         )
         .await;
         let first = match first {
-            Ok(channel) if self.control_publication.owns(state.generation) => channel,
+            Ok(channel) if self.control_publication.owns(&lease) => channel,
             Ok(_) | Err(_) => {
-                self.control_publication.release(state.generation);
+                self.control_publication.release(&lease);
                 return Err(SandboxControlPublishError);
             }
         };
@@ -254,15 +236,16 @@ impl<R: ContainerRuntime + 'static> SandboxControlServicePublisher for Container
         });
         {
             let mut task_slot = state.task.lock().await;
-            if state.cancel.is_cancelled() || !self.control_publication.owns(state.generation) {
+            if state.cancel.is_cancelled() || !self.control_publication.owns(&lease) {
                 task.abort();
-                self.control_publication.release(state.generation);
+                self.control_publication.release(&lease);
                 return Err(SandboxControlPublishError);
             }
             *task_slot = Some(task);
         }
         Ok(Box::new(ContainerControlPublication {
             registry: self.control_publication.clone(),
+            lease,
             state,
         }))
     }
@@ -281,12 +264,12 @@ mod tests {
          * attempts fail. Rules: P1 C1=>E1; P2 C2=>E2; P3 C3=>E3.
          */
         let registry = ContainerControlPublicationRegistry::default();
-        let first = registry.acquire().unwrap();
+        let (first, _) = registry.acquire().unwrap();
         assert!(registry.acquire().is_err(), "P1/E1");
-        registry.release(first.generation);
-        let second = registry.acquire().unwrap();
-        registry.release(first.generation);
-        assert!(registry.owns(second.generation), "P2/E2");
+        registry.release(&first);
+        let (second, _) = registry.acquire().unwrap();
+        registry.release(&first);
+        assert!(registry.owns(&second), "P2/E2");
         registry.close_for_dispose().await;
         assert!(registry.acquire().is_err(), "P3/E3");
     }
@@ -301,7 +284,7 @@ mod tests {
          * Rule P4 C1+C2+C3+C4=>E1+E2.
          */
         let registry = Arc::new(ContainerControlPublicationRegistry::default());
-        let state = registry.acquire().unwrap();
+        let (_, state) = registry.acquire().unwrap();
         let release = Arc::new(tokio::sync::Notify::new());
         *state.task.lock().await = Some(tokio::spawn({
             let release = release.clone();
