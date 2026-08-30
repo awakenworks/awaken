@@ -330,6 +330,8 @@ pub enum McpAttachmentError {
     StaleGeneration,
     #[error("MCP realization claim does not match")]
     StaleRealizationClaim,
+    #[error("quiescence receipt does not match the exact active MCP generation set")]
+    QuiescenceSetMismatch,
     #[error("invalid MCP attachment transition")]
     InvalidTransition,
     #[error("MCP attachment counter is exhausted")]
@@ -944,6 +946,8 @@ fn exact_mut<'a>(
     Ok(&mut attachments[index])
 }
 
+mod quiescence;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,7 +1155,11 @@ mod tests {
         )
     }
 
-    fn draft(name: &str, url: &str, credential: Option<CredentialAccess>) -> McpAttachmentDraft {
+    pub(super) fn draft(
+        name: &str,
+        url: &str,
+        credential: Option<CredentialAccess>,
+    ) -> McpAttachmentDraft {
         McpAttachmentDraft {
             name: name.into(),
             target: McpTarget::parse_http(url).unwrap(),

@@ -18,6 +18,16 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 "MCP realization request is incomplete",
             ));
         }
+        if !self
+            .host
+            .session_slots
+            .mcp_realization_admitted(&request.generation.session_id)
+        {
+            return Err(RunError::unavailable_classified(
+                "session_environment_quiescing",
+                "MCP staging is closed while the Session Environment quiesces",
+            ));
+        }
         let now_unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
@@ -49,8 +59,24 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 && existing.request.stage_idempotency_key == request.stage_idempotency_key
                 && existing.receipt.receipt_fingerprint == request_fingerprint;
             if exact_replay {
-                if existing.state != crate::session_slot::McpProjectionState::Removed {
-                    return Ok(existing.receipt);
+                match existing.state {
+                    crate::session_slot::McpProjectionState::Staged
+                    | crate::session_slot::McpProjectionState::Active => {
+                        return Ok(existing.receipt);
+                    }
+                    crate::session_slot::McpProjectionState::Staging => {
+                        return Err(RunError::unavailable_classified(
+                            "mcp_generation_staging",
+                            "MCP generation staging is still owned by an earlier attempt",
+                        ));
+                    }
+                    crate::session_slot::McpProjectionState::Draining => {
+                        return Err(RunError::unavailable_classified(
+                            "mcp_generation_draining",
+                            "MCP generation cleanup has not completed",
+                        ));
+                    }
+                    crate::session_slot::McpProjectionState::Removed => {}
                 }
                 if !self.host.forget_exact_removed_mcp_projection(&request) {
                     return Err(RunError::classified(
@@ -304,8 +330,15 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 },
             },
         };
-        let (native_wiring, mcp_process) = if is_acp {
-            (None, None)
+        let receipt = awaken_session_contract::McpRealizationReceipt {
+            generation: request.generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+            actual_realization_kind,
+            receipt_fingerprint: request_fingerprint,
+        };
+        let (native_wiring, mcp_process, projection_already_inserted) = if is_acp {
+            (None, None, false)
         } else if let Some(target) = sandbox_stdio.as_ref() {
             let session_id = &request.generation.session_id;
             let environment = match self.host.session_environment(session_id).await {
@@ -377,35 +410,109 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         format!("sandbox stdio MCP home could not be materialized: {error}"),
                     )
                 })?;
-            let (process, channel) = environment
-                .spawn_agent(awaken_provisioning_contract::Command {
-                    argv,
-                    cwd: environment.workspace_cwd(),
-                    env: vec![awaken_provisioning_contract::EnvVar {
-                        name: "HOME".into(),
-                        value: awaken_provisioning_contract::EnvValue::Inline { value: mcp_home },
-                        visibility: awaken_provisioning_contract::EnvVisibility::Process,
-                    }],
-                    stdio: awaken_provisioning_contract::Stdio::Piped,
+            let staging = crate::session_slot::McpStagingActivity::default();
+            self.host
+                .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+                    request: projection_request.clone(),
+                    receipt: receipt.clone(),
+                    server: Some(server.clone()),
+                    native_wiring: None,
+                    mcp_process: None,
+                    staging: Some(staging.clone()),
+                    drain: Arc::new(tokio::sync::Mutex::new(())),
+                    state: crate::session_slot::McpProjectionState::Staging,
                 })
-                .await
-                .map_err(|error| {
-                    RunError::classified(
-                        "mcp_sandbox_spawn_failed",
-                        format!("sandbox stdio MCP process could not start: {error}"),
-                    )
-                })?;
-            let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> = Arc::from(process);
-            match crate::mcp::connect_sandbox_stdio(&server, channel).await {
-                Ok(wiring) => (Some(wiring), Some(process)),
-                Err(error) => {
-                    let _ = process
-                        .signal(awaken_provisioning_contract::Signal::Term)
+                .map_err(to_run_error)?;
+            let host = self.host.clone();
+            let generation = request.generation.clone();
+            let command = awaken_provisioning_contract::Command {
+                argv,
+                cwd: environment.workspace_cwd(),
+                env: vec![awaken_provisioning_contract::EnvVar {
+                    name: "HOME".into(),
+                    value: awaken_provisioning_contract::EnvValue::Inline { value: mcp_home },
+                    visibility: awaken_provisioning_contract::EnvVisibility::Process,
+                }],
+                stdio: awaken_provisioning_contract::Stdio::Piped,
+            };
+            // Create the guard before constructing/spawning the Future. Tokio
+            // may drop a spawned task during shutdown before its first poll;
+            // keeping the guard in the Future's captured state makes that drop
+            // finish the already-installed Staging owner as well.
+            let staging_activity = staging.guard();
+            let staging_server = server.clone();
+            let stage = tokio::spawn(async move {
+                let _staging_activity = staging_activity;
+                let (process, channel) = match environment.spawn_agent(command).await {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        staging.finish();
+                        let cleanup = host.drain_mcp_projection(&generation).await;
+                        if let Err(cleanup) = cleanup {
+                            return Err(to_run_error(cleanup));
+                        }
+                        return Err(RunError::classified(
+                            "mcp_sandbox_spawn_failed",
+                            format!("sandbox stdio MCP process could not start: {error}"),
+                        ));
+                    }
+                };
+                let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> =
+                    Arc::from(process);
+                match host.attach_staging_mcp_process(&generation, process.clone()) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        // A concurrent canonical drain owns this tracked process
+                        // and is waiting on the staging activity barrier.
+                        staging.finish();
+                        return Err(RunError::unavailable_classified(
+                            "mcp_generation_draining",
+                            "MCP generation began draining while its process was spawning",
+                        ));
+                    }
+                    Err(owner_error) => {
+                        let reap = awaken_run_executor_acp::Supervisor::reap(
+                            process.as_ref(),
+                            std::time::Duration::from_secs(5),
+                        )
                         .await;
-                    let _ = process.wait().await;
-                    return Err(to_run_error(error));
+                        staging.finish();
+                        if let Err(error) = reap {
+                            return Err(RunError::unavailable_classified(
+                                "mcp_generation_process_reap_failed",
+                                format!(
+                                    "unadopted MCP process could not be reaped after owner transition: {error}"
+                                ),
+                            ));
+                        }
+                        return Err(to_run_error(owner_error));
+                    }
+                }
+                match crate::mcp::connect_sandbox_stdio(&staging_server, channel).await {
+                    Ok(wiring) => {
+                        let completed = host.complete_staging_mcp_projection(&generation, wiring);
+                        staging.finish();
+                        completed.map_err(to_run_error)
+                    }
+                    Err(error) => {
+                        staging.finish();
+                        host.drain_mcp_projection(&generation)
+                            .await
+                            .map_err(to_run_error)?;
+                        Err(to_run_error(error))
+                    }
+                }
+            });
+            match stage.await {
+                Ok(result) => result?,
+                Err(error) => {
+                    return Err(RunError::unavailable_classified(
+                        "mcp_staging_task_failed",
+                        format!("owned MCP staging task did not complete: {error}"),
+                    ));
                 }
             }
+            (None, None, true)
         } else {
             (
                 Some(
@@ -414,6 +521,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         .map_err(to_run_error)?,
                 ),
                 None,
+                false,
             )
         };
         // Staging is the sole route-creation boundary.  Runtime construction is
@@ -442,35 +550,24 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             } else {
                 None
             };
-        let receipt = awaken_session_contract::McpRealizationReceipt {
-            generation: request.generation.clone(),
-            realization_id: request.realization_id.clone(),
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind,
-            receipt_fingerprint: request_fingerprint,
-        };
-        let cleanup_process = mcp_process.clone();
-        if let Err(error) =
-            self.host
-                .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
-                    request: projection_request,
-                    receipt: receipt.clone(),
-                    server: Some(server),
-                    native_wiring,
-                    mcp_process,
-                    state: crate::session_slot::McpProjectionState::Staged,
-                })
+        if !projection_already_inserted
+            && let Err(error) =
+                self.host
+                    .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
+                        request: projection_request,
+                        receipt: receipt.clone(),
+                        server: Some(server),
+                        native_wiring,
+                        mcp_process,
+                        staging: None,
+                        drain: Arc::new(tokio::sync::Mutex::new(())),
+                        state: crate::session_slot::McpProjectionState::Staged,
+                    })
         {
             // A route is private and not yet visible, but retaining its bearer
             // after the exact projection failed to stage would still be a leak.
             if let Some(relay) = staged_relay {
                 relay.remove_route(&request.generation);
-            }
-            if let Some(process) = cleanup_process {
-                let _ = process
-                    .signal(awaken_provisioning_contract::Signal::Term)
-                    .await;
-                let _ = process.wait().await;
             }
             return Err(to_run_error(error));
         }

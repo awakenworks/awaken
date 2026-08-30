@@ -21,6 +21,8 @@ struct ContinuationRuntime {
     restores: AtomicUsize,
     deletes: AtomicUsize,
     checkpoint_scopes: Mutex<Vec<(String, u64)>>,
+    expected_mcp_generations: Mutex<Vec<Vec<awaken_session_contract::McpGenerationRef>>>,
+    quiescence_mcp_override: Mutex<Option<Vec<awaken_session_contract::McpGenerationRef>>>,
     restore_requests: Mutex<Vec<awaken_session_contract::SandboxRestoreRequest>>,
     terminal_restore_targets: Mutex<Vec<awaken_session_contract::SandboxRestoreRequest>>,
     terminal_restore_disposals: AtomicUsize,
@@ -98,6 +100,7 @@ impl SessionRuntime for ContinuationRuntime {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_contract::SandboxGeneration,
+        expected_mcp_generations: &[awaken_session_contract::McpGenerationRef],
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.quiesces.fetch_add(1, Ordering::SeqCst);
         self.source_tuples.lock().unwrap().push((
@@ -106,14 +109,25 @@ impl SessionRuntime for ContinuationRuntime {
             source_binding.into(),
             generation.id.clone(),
         ));
+        self.expected_mcp_generations
+            .lock()
+            .unwrap()
+            .push(expected_mcp_generations.to_vec());
         if self.fail_quiesce_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected quiescence crash"));
         }
+        let mcp_generations = self
+            .quiescence_mcp_override
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| expected_mcp_generations.to_vec());
         Ok(awaken_session_contract::QuiescenceReceipt {
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id.clone(),
             activity_epoch: operation.activity_epoch,
             live_environment_effects: 0,
+            mcp_generations,
         })
     }
 
@@ -302,6 +316,61 @@ fn generated_session(id: &str) -> PersistedSession {
     session
 }
 
+fn add_acknowledged_active_mcp(
+    session: &mut PersistedSession,
+    name: &str,
+    generation: u64,
+) -> awaken_session_contract::McpGenerationRef {
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        epoch: 7,
+        expires_at_unix_ms: u64::MAX,
+    };
+    session.realization = Some(lease.clone());
+    let attachment_id = awaken_session_contract::McpAttachmentId(name.into());
+    session
+        .mcp
+        .desired_names
+        .get_or_insert_with(Default::default)
+        .insert(name.into());
+    session
+        .mcp
+        .attachments
+        .push(awaken_session_contract::SessionMcpAttachment {
+            attachment_id: attachment_id.clone(),
+            name: name.into(),
+            generation: awaken_session_contract::McpGeneration(generation),
+            target: awaken_session_contract::McpTarget::parse_http(format!(
+                "https://{name}.example.test/mcp"
+            ))
+            .unwrap(),
+            prompts_as_skills: false,
+            origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+            credential: None,
+            selected_plaintext_holder: None,
+            state: awaken_session_contract::McpAttachmentState::Active,
+            publication_acknowledged: true,
+            realization: Some(awaken_session_contract::McpRealizationClaim {
+                realization_id: format!("realize-{name}-{generation}"),
+                runtime_incarnation: lease.runtime_incarnation.clone(),
+                lease_epoch: lease.epoch,
+                lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+                stage_idempotency_key: format!("stage-{name}-{generation}"),
+            }),
+            attempts: 1,
+            last_error: None,
+        });
+    awaken_session_contract::McpGenerationRef {
+        session_id: session.session_id.clone(),
+        attachment_id,
+        generation: awaken_session_contract::McpGeneration(generation),
+        runtime_incarnation: lease.runtime_incarnation,
+        lease_epoch: lease.epoch,
+        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+    }
+}
+
 pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> PersistedSession {
     let mut session = generated_session(id);
     let generation = session.environment.generation().unwrap().clone();
@@ -396,6 +465,316 @@ async fn due_idle_environment_suspends_once_in_order() {
         ],
         "R19/R20 exact physical source tuple survives every suspend phase"
     );
+}
+
+#[tokio::test]
+async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut session = generated_session("suspend-with-mcp");
+    let generation = add_acknowledged_active_mcp(&mut session, "browser", 3);
+    create(repo.as_ref(), session).await;
+    let runtime = Arc::new(ContinuationRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    // Cause/effect decision table:
+    // | Rule | Durable Active set | Phase | Effect |
+    // | D1 | exact browser generation | Quiescing | pass exact set to Runtime; CAS clears only publication ack |
+    // | D2 | same durable generation | Hibernated | direct/scan realization is NotReady and performs no effect |
+    // | D3 | same durable generation | restored Resident | existing Stage -> Publish -> ack protocol reprojects it |
+    // This prevents an empty/partial process-local projection from becoming the
+    // desired ownership authority, while H22 in the Runtime-host suite proves
+    // the same exact Stage rebuilds a quiescence-created Removed tombstone.
+    app.reconcile_environment_continuation("suspend-with-mcp", 2_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.expected_mcp_generations.lock().unwrap().as_slice(),
+        [vec![generation.clone()]],
+        "D1 exact active set"
+    );
+    let hibernated = repo.get("suspend-with-mcp").await.unwrap();
+    assert!(
+        matches!(
+            hibernated.environment,
+            awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+        ),
+        "D1"
+    );
+    assert!(
+        !hibernated.mcp.attachments[0].publication_acknowledged,
+        "D1 quiescence CAS requires reprojection"
+    );
+
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        renew_existing_lease: false,
+        reassign_existing_lease: false,
+    };
+    assert!(
+        matches!(
+            awaken_session_contract::SessionRealizationControl::begin_session_realization(
+                &app,
+                awaken_session_contract::BeginSessionRealization {
+                    session_id: "suspend-with-mcp".into(),
+                    target: target.clone(),
+                },
+            )
+            .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+        ),
+        "D2 direct realization gate"
+    );
+    let scan = app.reconcile_session_realizations().await;
+    assert!(scan.settled.is_empty(), "D2 scan gate");
+    assert!(scan.failures.is_empty(), "D2 scan gate");
+    assert!(
+        !repo.get("suspend-with-mcp").await.unwrap().mcp.attachments[0].publication_acknowledged,
+        "D2 no early publication"
+    );
+
+    app.ensure_environment_resident("suspend-with-mcp", 2_000)
+        .await
+        .unwrap();
+    let staged = awaken_session_contract::SessionRealizationControl::begin_session_realization(
+        &app,
+        awaken_session_contract::BeginSessionRealization {
+            session_id: "suspend-with-mcp".into(),
+            target,
+        },
+    )
+    .await
+    .expect("D3 restored Resident may reproject");
+    let awaken_session_contract::SessionRealizationAction::Stage {
+        prepare_session,
+        mcp_stages,
+    } = staged.action
+    else {
+        panic!("D3 expected Stage")
+    };
+    assert!(!prepare_session, "D3 reuses the restored Environment");
+    assert_eq!(mcp_stages.len(), 1, "D3 exact Stage");
+    let request = &mcp_stages[0];
+    assert_eq!(request.generation, generation, "D3 exact Stage");
+    let receipt = awaken_session_contract::McpRealizationReceipt {
+        generation: request.generation.clone(),
+        realization_id: request.realization_id.clone(),
+        selected_plaintext_holder: request.selected_plaintext_holder.clone(),
+        actual_realization_kind: None,
+        receipt_fingerprint: request.fingerprint(),
+    };
+    let published =
+        awaken_session_contract::SessionRealizationControl::activate_session_realization(
+            &app,
+            awaken_session_contract::ActivateSessionRealization {
+                session_id: "suspend-with-mcp".into(),
+                lease: staged.lease.clone(),
+                prepared_resource_revision: None,
+                mcp_receipts: vec![receipt],
+            },
+        )
+        .await
+        .expect("D3 staged generation is publishable");
+    let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
+        published.action
+    else {
+        panic!("D3 expected Publish")
+    };
+    assert_eq!(
+        publish.as_slice(),
+        std::slice::from_ref(&generation),
+        "D3 exact Publish"
+    );
+    assert!(drain.is_empty(), "D3");
+    let completed =
+        awaken_session_contract::SessionRealizationControl::acknowledge_session_realization(
+            &app,
+            awaken_session_contract::AcknowledgeSessionRealization {
+                session_id: "suspend-with-mcp".into(),
+                lease: staged.lease,
+                published: vec![generation],
+                drained: Vec::new(),
+            },
+        )
+        .await
+        .expect("D3 publication acknowledgement");
+    assert!(
+        matches!(
+            completed.action,
+            awaken_session_contract::SessionRealizationAction::Complete
+        ),
+        "D3"
+    );
+    assert!(
+        repo.get("suspend-with-mcp").await.unwrap().mcp.attachments[0].publication_acknowledged,
+        "D3 reacknowledged"
+    );
+}
+
+#[tokio::test]
+async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
+    // Cause graph: an Active generation needs reprojection (C1), while the
+    // Environment is Suspending, Hibernated, or Restoring (C2). Both a direct
+    // phase command and the recovery scan (C3) must share one gate. Effect E1:
+    // NotReady/no settled scan/no aggregate mutation and therefore no early
+    // Stage or Publish. Resident-after-restore -> Stage is covered by D3 above.
+    //
+    // | Rule | Environment | Direct begin | Recovery scan | Effect |
+    // |---|---|---|---|---|
+    // | G1 | Suspending | NotReady | skip | E1 |
+    // | G2 | Hibernated | NotReady | skip | E1 |
+    // | G3 | Restoring | NotReady | skip | E1 |
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    for (rule, mut session) in [
+        ("G1", generated_session("gate-suspending")),
+        ("G2", hibernated_session("gate-hibernated", 100_000)),
+        ("G3", hibernated_session("gate-restoring", 100_000)),
+    ] {
+        add_acknowledged_active_mcp(&mut session, "browser", 3);
+        session.mcp.attachments[0].publication_acknowledged = false;
+        let session_id = session.session_id.clone();
+        let activity_epoch = session.activity_epoch;
+        let realization = session.realization.clone();
+        match rule {
+            "G1" => {
+                session
+                    .environment
+                    .begin_suspend("workspace", &session_id, activity_epoch, realization)
+                    .unwrap();
+            }
+            "G3" => {
+                session
+                    .environment
+                    .begin_restore(
+                        "workspace",
+                        &session_id,
+                        activity_epoch + 1,
+                        realization,
+                        1_000,
+                    )
+                    .unwrap();
+            }
+            _ => {}
+        }
+        create(repo.as_ref(), session).await;
+    }
+    let runtime = Arc::new(ContinuationRuntime::default());
+    let app = application_with_runtime(
+        runtime,
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        renew_existing_lease: false,
+        reassign_existing_lease: false,
+    };
+    for (rule, session_id) in [
+        ("G1", "gate-suspending"),
+        ("G2", "gate-hibernated"),
+        ("G3", "gate-restoring"),
+    ] {
+        let before = repo.get(session_id).await.unwrap();
+        assert!(
+            matches!(
+                awaken_session_contract::SessionRealizationControl::begin_session_realization(
+                    &app,
+                    awaken_session_contract::BeginSessionRealization {
+                        session_id: session_id.into(),
+                        target: target.clone(),
+                    },
+                )
+                .await,
+                Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            ),
+            "{rule}/E1 direct"
+        );
+        assert_eq!(repo.get(session_id).await.unwrap(), before, "{rule}/E1");
+    }
+    let scan = app.reconcile_session_realizations().await;
+    assert!(scan.settled.is_empty(), "G1-G3/E1 scan");
+    assert!(scan.failures.is_empty(), "G1-G3/E1 scan");
+    for (rule, session_id) in [
+        ("G1", "gate-suspending"),
+        ("G2", "gate-hibernated"),
+        ("G3", "gate-restoring"),
+    ] {
+        assert!(
+            !repo.get(session_id).await.unwrap().mcp.attachments[0].publication_acknowledged,
+            "{rule}/E1 no publication"
+        );
+    }
+}
+
+#[tokio::test]
+async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
+    // Cause graph: a committed Quiescing root owns two exact Active MCP
+    // generations (C1); Runtime returns a partial, foreign, or duplicate set
+    // (C2). Effect E1: receipt rejection leaves both Environment phase and MCP
+    // publication truth byte-for-byte unchanged; no Uploading CAS is emitted.
+    //
+    // | Rule | Runtime generation set | Effect |
+    // |---|---|---|
+    // | X1 | partial | E1 |
+    // | X2 | foreign | E1 |
+    // | X3 | duplicate | E1 |
+    for rule in ["X1", "X2", "X3"] {
+        let session_id = format!("quiescence-{rule}");
+        let mut session = generated_session(&session_id);
+        add_acknowledged_active_mcp(&mut session, "alpha", 1);
+        add_acknowledged_active_mcp(&mut session, "beta", 2);
+        session
+            .environment
+            .begin_suspend(
+                "workspace",
+                &session_id,
+                session.activity_epoch,
+                session.realization.clone(),
+            )
+            .unwrap();
+        let expected = session
+            .mcp
+            .active_generation_refs(&session_id)
+            .expect("valid fixture Active set");
+        let asserted = match rule {
+            "X1" => expected[..1].to_vec(),
+            "X2" => {
+                let mut foreign = expected.clone();
+                foreign[0].session_id = "foreign-session".into();
+                foreign
+            }
+            "X3" => vec![expected[0].clone(), expected[0].clone()],
+            _ => unreachable!(),
+        };
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        create(repo.as_ref(), session).await;
+        let before = repo.get(&session_id).await.unwrap();
+        let runtime = Arc::new(ContinuationRuntime::default());
+        *runtime.quiescence_mcp_override.lock().unwrap() = Some(asserted);
+        let app = application_with_runtime(
+            runtime,
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        assert!(
+            app.reconcile_environment_continuation(&session_id, 2_000)
+                .await
+                .is_err(),
+            "{rule}/E1"
+        );
+        assert_eq!(repo.get(&session_id).await.unwrap(), before, "{rule}/E1");
+    }
 }
 
 // Cause/effect design: C5=upload failure after Quiescing committed. FMECA crash
@@ -725,12 +1104,16 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
     let generation = session.environment.generation().unwrap().clone();
     session
         .environment
-        .record_quiescence(&awaken_session_contract::QuiescenceReceipt {
-            effect_id: operation.effect_id,
-            generation_id: generation.id,
-            activity_epoch: 0,
-            live_environment_effects: 0,
-        })
+        .record_quiescence(
+            &awaken_session_contract::QuiescenceReceipt {
+                effect_id: operation.effect_id,
+                generation_id: generation.id,
+                activity_epoch: 0,
+                live_environment_effects: 0,
+                mcp_generations: Vec::new(),
+            },
+            &[],
+        )
         .unwrap();
     create(repo.as_ref(), session).await;
     let runtime = Arc::new(ContinuationRuntime::default());

@@ -23,6 +23,7 @@ use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 
 use crate::mcp::McpTransportMaterial;
 
@@ -36,6 +37,9 @@ struct Route {
     /// key and never persisted as Session desired state.
     capability: String,
     lease_expires_at_unix_ms: u64,
+    /// The existing MCP activity primitive, retained by this unique route
+    /// owner so already-cloned Axum handlers cannot outlive generation drain.
+    call_fence: awaken_ext_mcp::transport::McpCallFence,
 }
 
 type RouteKey = (String, String, u64);
@@ -104,6 +108,7 @@ impl McpRelay {
                 refresh: server.refresh(),
                 capability: uuid::Uuid::new_v4().simple().to_string(),
                 lease_expires_at_unix_ms: generation.lease_expires_at_unix_ms,
+                call_fence: awaken_ext_mcp::transport::McpCallFence::open(),
             },
         );
         true
@@ -131,11 +136,29 @@ impl McpRelay {
         true
     }
 
+    /// Remove an exact route only when it was never published or after its
+    /// shared call fence has proved quiescent. Callers own that ordering; raw
+    /// map removal is deliberately not a cancellation or drain mechanism.
     pub(crate) fn remove_route(&self, generation: &awaken_session_contract::McpGenerationRef) {
         self.routes.lock().unwrap().remove(&route_key(generation));
     }
 
-    /// Remove every bearer-bearing route for a terminal Session.
+    /// Clone the exact route's process-local activity handle. The route stays
+    /// the sole owner; canonical MCP drain closes this shared handle before it
+    /// removes the route and acknowledges `Removed`.
+    pub(crate) fn route_call_fence(
+        &self,
+        generation: &awaken_session_contract::McpGenerationRef,
+    ) -> Option<awaken_ext_mcp::transport::McpCallFence> {
+        self.routes
+            .lock()
+            .expect("MCP relay routes mutex poisoned")
+            .get(&route_key(generation))
+            .map(|route| route.call_fence.clone())
+    }
+
+    /// Remove residual bearer-bearing routes only after canonical per-
+    /// generation drain has succeeded for the whole Session.
     pub(crate) fn remove_routes(&self, thread: &str) {
         self.routes
             .lock()
@@ -199,8 +222,18 @@ async fn forward(
     {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     }
+    let Some(call) = route.call_fence.try_enter() else {
+        return (StatusCode::NOT_FOUND, "draining relay route").into_response();
+    };
     let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    let body = tokio::select! {
+        biased;
+        _ = call.cancelled() => {
+            return (StatusCode::NOT_FOUND, "draining relay route").into_response();
+        }
+        result = axum::body::to_bytes(body, usize::MAX) => result,
+    };
+    let bytes = match body {
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("relay body: {e}")).into_response(),
     };
@@ -231,7 +264,14 @@ async fn forward(
         }
         request
     };
-    let mut upstream = match send(&route).send().await {
+    let first_send = tokio::select! {
+        biased;
+        _ = call.cancelled() => {
+            return (StatusCode::NOT_FOUND, "draining relay route").into_response();
+        }
+        result = send(&route).send() => result,
+    };
+    let mut upstream = match first_send {
         Ok(response) => response,
         Err(error) => {
             return (StatusCode::BAD_GATEWAY, format!("relay upstream: {error}")).into_response();
@@ -248,9 +288,14 @@ async fn forward(
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned),
         };
-        if let Some(awaken_ext_mcp::Credential::Bearer(bearer)) =
-            refresh.0.refresh(&challenge).await
-        {
+        let refreshed_credential = tokio::select! {
+            biased;
+            _ = call.cancelled() => {
+                return (StatusCode::NOT_FOUND, "draining relay route").into_response();
+            }
+            result = refresh.0.refresh(&challenge) => result,
+        };
+        if let Some(awaken_ext_mcp::Credential::Bearer(bearer)) = refreshed_credential {
             let refreshed = {
                 let mut routes = routes.lock().unwrap();
                 let Some(current) = routes.get_mut(&route_key) else {
@@ -273,7 +318,14 @@ async fn forward(
                 // replay. Return its original upstream challenge unchanged.
                 let _ = refreshed;
             } else {
-                upstream = match send(&refreshed).send().await {
+                let retry_send = tokio::select! {
+                    biased;
+                    _ = call.cancelled() => {
+                        return (StatusCode::NOT_FOUND, "draining relay route").into_response();
+                    }
+                    result = send(&refreshed).send() => result,
+                };
+                upstream = match retry_send {
                     Ok(response) => response,
                     Err(error) => {
                         return (StatusCode::BAD_GATEWAY, format!("relay upstream: {error}"))
@@ -290,14 +342,29 @@ async fn forward(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(String::from);
+    if call.is_cancelled() {
+        return (StatusCode::NOT_FOUND, "draining relay route").into_response();
+    }
     // Stream the response body straight through — MCP Streamable HTTP replies as an
     // SSE stream (`text/event-stream`), so buffering would stall long-poll notifications.
+    // The opaque permit moves into the stream state: a cloned Route can no
+    // longer escape drain merely because Axum has already returned headers.
+    let upstream = Box::pin(upstream.bytes_stream());
+    let stream =
+        futures_util::stream::unfold((upstream, call), |(mut upstream, call)| async move {
+            let next = tokio::select! {
+                biased;
+                _ = call.cancelled() => return None,
+                next = upstream.next() => next,
+            };
+            next.map(|item| (item, (upstream, call)))
+        });
     let mut response = Response::builder().status(status);
     if let Some(content_type) = content_type {
         response = response.header(header::CONTENT_TYPE, content_type);
     }
     response
-        .body(Body::from_stream(upstream.bytes_stream()))
+        .body(Body::from_stream(stream))
         .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "relay response build").into_response())
 }
 
@@ -374,6 +441,106 @@ mod tests {
         assert!(!routes.contains_key(&route_key(&old)));
         assert!(routes.contains_key(&route_key(&new)));
         assert!(routes.contains_key(&route_key(&other)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accepted_route_request_is_counted_until_cancellation_drop_settles() {
+        use std::sync::Condvar;
+        use std::task::Poll;
+
+        struct DropGate(Arc<(Mutex<bool>, Condvar)>);
+
+        impl Drop for DropGate {
+            fn drop(&mut self) {
+                let (released, signal) = self.0.as_ref();
+                let mut released = released.lock().expect("relay drop gate mutex");
+                while !*released {
+                    released = signal.wait(released).expect("relay drop gate wait");
+                }
+            }
+        }
+
+        // Cause/effect graph: C1 an exact live Route accepts a request before
+        // drain; C2 close cancels while request-body cleanup is still active;
+        // C3 a later request reaches the same route; C4 cleanup settles.
+        // Effects: E1 the accepted handler remains counted; E2 close cannot
+        // return a false quiescence proof during C2; E3 C3 is rejected before
+        // forwarding/credential use; E4 only C4 releases the final permit.
+        // Decision rules: A1=C1+!C2=>E1; A2=C1+C2+!C4=>E2;
+        // A3=C2+C3=>E3; A4=C1+C2+C4=>E4. The Route remains the unique exact-
+        // generation effect owner; the test does not create another registry.
+        let relay = McpRelay::start().await.unwrap();
+        let generation = generation("relay-drain", "mcp-docs", 1);
+        relay.set_route(
+            &generation,
+            &http_material("docs", "https://example.invalid/mcp", Some("secret".into())),
+        );
+        let key = route_key(&generation);
+        let capability = relay
+            .routes
+            .lock()
+            .unwrap()
+            .get(&key)
+            .unwrap()
+            .capability
+            .clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let drop_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let body = {
+            let started = started.clone();
+            let drop_gate = DropGate(drop_gate.clone());
+            let stream = futures_util::stream::poll_fn(move |_| {
+                let _keep_drop_gate = &drop_gate;
+                started.notify_one();
+                Poll::<Option<Result<axum::body::Bytes, std::io::Error>>>::Pending
+            });
+            Body::from_stream(stream)
+        };
+        let accepted = tokio::spawn(forward(
+            State(relay.routes.clone()),
+            Path((
+                generation.session_id.clone(),
+                generation.attachment_id.0.clone(),
+                generation.generation.0,
+                capability.clone(),
+            )),
+            Request::builder().method("POST").body(body).unwrap(),
+        ));
+        started.notified().await;
+
+        let fence = relay.route_call_fence(&generation).unwrap();
+        let close = tokio::spawn(async move { fence.close_and_wait().await });
+        tokio::task::yield_now().await;
+        assert!(!close.is_finished(), "A2/E2");
+        let rejected = forward(
+            State(relay.routes.clone()),
+            Path((
+                generation.session_id.clone(),
+                generation.attachment_id.0.clone(),
+                generation.generation.0,
+                capability,
+            )),
+            Request::builder()
+                .method("POST")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::NOT_FOUND, "A3/E3");
+        assert!(
+            relay.routes.lock().unwrap().contains_key(&key),
+            "A2 exact Route remains installed while its activity settles"
+        );
+
+        let (released, signal) = drop_gate.as_ref();
+        *released.lock().expect("relay release mutex") = true;
+        signal.notify_all();
+        assert_eq!(
+            accepted.await.unwrap().status(),
+            StatusCode::NOT_FOUND,
+            "A4"
+        );
+        close.await.unwrap();
     }
 
     #[tokio::test]

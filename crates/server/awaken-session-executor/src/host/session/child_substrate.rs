@@ -33,7 +33,10 @@ impl SharedHost {
                     "thread {thread} is already preparing a different sandbox"
                 )));
             }
-            extra.stop_bound_processes().await;
+            extra
+                .stop_bound_processes()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
             adopted = None;
         }
         if let Some(candidate) = prepared {
@@ -52,7 +55,10 @@ impl SharedHost {
                         "thread {thread} is already bound to a different sandbox"
                     )));
                 }
-                adopted.stop_bound_processes().await;
+                adopted
+                    .stop_bound_processes()
+                    .await
+                    .map_err(|error| HostError::internal(error.to_string()))?;
                 existing
             }
             (Some(existing), None) => existing,
