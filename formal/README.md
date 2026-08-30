@@ -263,8 +263,9 @@ production logic.
 - `BackgroundTask.tla` covers the Thread-state-owned background aggregate:
   one fenced owner/epoch/lease, waiting and cancellation, exact heartbeat and
   finish fences, expiry reclaim, NeverReplay indeterminacy, bounded attempts,
-  and terminal owner clearing. The process-local supervisor remains a driver,
-  not a second durable task store.
+  terminal owner clearing, and the retry/loss/stale-fence behavior of the one
+  process-local completion projection before its next ordinary Thread commit.
+  The supervisor remains a driver, not a second durable task or result store.
 - `SandboxControlPublication.tla` covers the provider-neutral control-channel
   publication slot shared by local Namespace and container sandboxes: one live
   owner identity, stale-release fencing, finite identity exhaustion without

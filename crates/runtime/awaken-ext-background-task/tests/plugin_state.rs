@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -38,6 +39,24 @@ fn environment() -> ResolvedExecutionEnv {
     });
     ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())])
         .expect("fixture plugin resolves within its manifest")
+}
+
+fn background_task(id: &str) -> BackgroundTask {
+    BackgroundTask::requested(
+        BackgroundTaskId::new(id).expect("task id"),
+        BackgroundTaskOrigin {
+            thread_id: ThreadId("thread".into()),
+            run_id: RunId("origin".into()),
+            operation_id: format!("operation-{id}"),
+        },
+        BackgroundInvocation {
+            call: ToolCall {
+                call_id: format!("call-{id}"),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({}),
+            },
+        },
+    )
 }
 
 async fn invoke(
@@ -292,25 +311,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         kind: PhaseKind::StepStart,
     };
 
-    let make_task = |id: &str| {
-        BackgroundTask::requested(
-            BackgroundTaskId::new(id).expect("task id"),
-            BackgroundTaskOrigin {
-                thread_id: ThreadId("thread".into()),
-                run_id: RunId("origin".into()),
-                operation_id: format!("operation-{id}"),
-            },
-            BackgroundInvocation {
-                call: ToolCall {
-                    call_id: format!("call-{id}"),
-                    tool_id: "bash".into(),
-                    arguments: serde_json::json!({}),
-                },
-            },
-        )
-    };
-
-    let mut completed = make_task("completed");
+    let mut completed = background_task("completed");
     let completed_fence = completed
         .start(
             supervisor.worker_id(),
@@ -355,7 +356,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     ));
 
     let now = BackgroundTaskSupervisor::now_ms();
-    let mut leased = make_task("leased");
+    let mut leased = background_task("leased");
     leased
         .start(
             "worker-old",
@@ -381,7 +382,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         "C2/E2"
     );
 
-    let mut replacement = make_task("replacement");
+    let mut replacement = background_task("replacement");
     replacement
         .start(
             "worker-old",
@@ -437,4 +438,101 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         supervisor.register(&replacement.id).is_some(),
         "C4/E4 the stale guard no longer suppresses post-commit launch"
     );
+}
+
+#[tokio::test]
+async fn completion_fold_retries_after_commit_loss_and_retires_only_after_durable_end() {
+    // Cause/effect decision table for the completion/result crash window:
+    // R1 matching process completion + durable Running -> stage exact Ended;
+    // R2 caller loses/rejects that staged commit -> durable Running and the
+    // local completion guard remain, so the next StepStart stages the same end;
+    // R3 staged command commits -> the result content is durable and queryable;
+    // R4 a later reconciliation observes durable Ended -> retire only the
+    // process-local guard, never the Thread-state result.
+    // Constraints: Thread State is the sole durable task/result authority and
+    // the supervisor is only a retryable notification/dedup projection.
+    let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+    let plugin = BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+        },
+        supervisor.clone(),
+    );
+    let env = ResolvedExecutionEnv::merge(vec![(plugin.manifest(), plugin.resolve())])
+        .expect("plugin environment");
+    let hook = env
+        .hooks_for(PhaseHookPoint::StepStart)
+        .into_iter()
+        .next()
+        .expect("reconciliation hook");
+    let ctx = PhaseContext {
+        run_id: RunId("reconcile".into()),
+        step: 0,
+        kind: PhaseKind::StepStart,
+    };
+
+    let mut task = background_task("retry-completion");
+    let fence = task
+        .start(
+            supervisor.worker_id(),
+            BackgroundTaskSupervisor::now_ms(),
+            BackgroundTaskSupervisor::lease_ms(),
+            TaskExecutionPolicy {
+                recovery: ToolRecoveryPolicy::replay_safe(),
+                concurrency: ToolConcurrency::Parallel,
+            },
+        )
+        .expect("running claim");
+    assert!(supervisor.register(&task.id).is_some());
+    supervisor.complete(
+        task.id.clone(),
+        BackgroundTaskCompletion {
+            fence,
+            end: BackgroundTaskEnd::Completed {
+                content: vec![ContentBlock::text("result-reference")],
+                is_error: false,
+            },
+        },
+    );
+    let mut durable = Store::new();
+    durable.apply(
+        &task_state_cell(&task.id)
+            .write(&task)
+            .expect("running state"),
+    );
+
+    let rejected = hook.on_phase(&ctx, &[], &durable).await;
+    assert_eq!(rejected.state.len(), 1, "R1");
+    assert!(supervisor.completion(&task.id).is_some(), "R2");
+    assert!(supervisor.register(&task.id).is_none(), "R2 dedup guard");
+
+    let retried = hook.on_phase(&ctx, &[], &durable).await;
+    assert_eq!(retried.state.len(), 1, "R2 retry");
+    durable.apply(&retried.state[0]);
+    let ended = task_state_cell(&task.id)
+        .load(&durable)
+        .expect("typed durable task")
+        .expect("task retained");
+    assert!(
+        matches!(
+            &ended.lifecycle,
+            BackgroundTaskLifecycle::Ended {
+                end: BackgroundTaskEnd::Completed { content, is_error: false }
+            } if content == &vec![ContentBlock::text("result-reference")]
+        ),
+        "R3 exact result retention"
+    );
+
+    let retired = hook.on_phase(&ctx, &[], &durable).await;
+    assert!(retired.state.is_empty(), "R4 has no second durable write");
+    assert!(supervisor.completion(&task.id).is_none(), "R4");
+    assert!(supervisor.register(&task.id).is_some(), "R4 guard retired");
+    assert!(matches!(
+        task_state_cell(&task.id)
+            .load(&durable)
+            .expect("typed retained task")
+            .expect("ended task remains durable")
+            .lifecycle,
+        BackgroundTaskLifecycle::Ended { .. }
+    ));
 }
