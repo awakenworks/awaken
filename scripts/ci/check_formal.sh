@@ -230,7 +230,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness ai_sdk_terminal_category_mapping_is_total_and_exact
   run_kani awaken-provider-genai \
     --harness reasoning_replay_projection_preserves_reasoning_and_complete_responses \
-    --harness reasoning_fold_prepends_exactly_once_and_is_transport_independent
+    --harness reasoning_fold_prepends_exactly_once_and_is_transport_independent \
+    --harness credential_probe_tri_state_is_total_and_fail_safe \
+    --harness unclassified_provider_stop_reason_fails_closed
   run_kani awaken-ext-mcp \
     --harness sensitive_marker_never_projects_payload_publicly \
     --harness sensitivity_markers_can_never_widen_a_redacted_projection \
