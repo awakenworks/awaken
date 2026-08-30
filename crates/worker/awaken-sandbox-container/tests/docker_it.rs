@@ -30,6 +30,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::Open,
+        egress_identity: Default::default(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
         filesystem_continuity: pc::FilesystemContinuity::Retained,

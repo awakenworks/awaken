@@ -78,13 +78,11 @@ pub(crate) async fn read_files<R: ContainerRuntime + 'static>(
     let process = sandbox
         .spawn_agent(pc::Command {
             argv: vec![
-                "sh".into(),
-                "-c".into(),
-                "test ! -d \"$1\" || exec tar -C \"$1\" -cf - -- .".into(),
-                "awaken-read-files".into(),
+                "awaken-sandbox".into(),
+                "read-tree-nofollow".into(),
                 root.into(),
             ],
-            cwd: "/workspace".into(),
+            cwd: pc::WorkspaceLayout::ROOT.into(),
             env: Vec::new(),
             stdio: pc::Stdio::Piped,
         })
@@ -114,7 +112,7 @@ pub(crate) async fn read_files<R: ContainerRuntime + 'static>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use tokio::io::AsyncWriteExt;
@@ -144,9 +142,12 @@ mod tests {
         }
     }
 
+    type RecordedCommands = Arc<Mutex<Vec<Vec<String>>>>;
+
     struct ScanRuntime {
         archive: Vec<u8>,
         code: i32,
+        commands: RecordedCommands,
     }
 
     #[async_trait]
@@ -166,8 +167,9 @@ mod tests {
         async fn spawn_agent(
             &self,
             _container_id: &str,
-            _command: pc::MaterializedCommand,
+            command: pc::MaterializedCommand,
         ) -> Result<crate::RuntimeAgentProcess, crate::RuntimeError> {
+            self.commands.lock().unwrap().push(command.argv);
             let (channel, mut writer) = tokio::io::duplex(self.archive.len().max(1));
             let archive = self.archive.clone();
             tokio::spawn(async move {
@@ -241,26 +243,36 @@ mod tests {
         }
     }
 
-    fn sandbox(archive: Vec<u8>, code: i32) -> ContainerSandbox<ScanRuntime> {
-        ContainerSandbox {
-            runtime: Arc::new(ScanRuntime { archive, code }),
+    fn sandbox(archive: Vec<u8>, code: i32) -> (ContainerSandbox<ScanRuntime>, RecordedCommands) {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let sandbox = ContainerSandbox {
+            runtime: Arc::new(ScanRuntime {
+                archive,
+                code,
+                commands: commands.clone(),
+            }),
             id: "scan-sandbox".into(),
             container_id: "scan-container".into(),
             outputs_path: "/outputs".into(),
             base_env: Vec::new(),
             control_services: Default::default(),
+            sandbox_control_incarnation: None,
+            control_publication: Arc::new(crate::ContainerControlPublicationRegistry::default()),
             blobs: Default::default(),
             file_store: None,
             live_input_projection: false,
             runtime_handle: None,
-            sandbox_control_incarnation: None,
-            control_publication: Arc::new(Default::default()),
             continuation_excluded_paths: Vec::new(),
+            adoption_fingerprint: None,
+            realization_fingerprint: None,
+            memory_materializations: Vec::new(),
+            owned_paths: Mutex::new(Vec::new()),
             adopted_handle: None,
             realized: Vec::new(),
             recovered: false,
-            lifecycle: Arc::new(crate::ContainerCleanupState::recovered(None, None)),
-        }
+            lifecycle: Arc::new(crate::ContainerCleanupState::physical_cleanup_only()),
+        };
+        (sandbox, commands)
     }
 
     fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -328,24 +340,33 @@ mod tests {
 
     #[tokio::test]
     async fn read_files_drives_attached_exec_and_propagates_scan_failures() {
+        // Cause/effect table: C1 absolute canonical root; C2 helper succeeds;
+        // C3 archive is valid. R1 C1+C2+C3 uses the single image-local nofollow
+        // reader and returns sorted bytes; R2 !C1 has zero exec; R3 !C2/!C3
+        // fails rather than treating an incomplete physical read as empty.
         let bytes = archive(&[("result.txt", b"result")]);
+        let (success, commands) = sandbox(bytes, 0);
         assert_eq!(
-            read_files(&sandbox(bytes, 0), "/outputs").await.unwrap(),
+            read_files(&success, "/outputs").await.unwrap(),
             vec![EnvironmentFile {
                 path: "result.txt".into(),
                 bytes: b"result".to_vec(),
             }]
         );
+        assert_eq!(
+            commands.lock().unwrap().as_slice(),
+            &[vec![
+                "awaken-sandbox".to_string(),
+                "read-tree-nofollow".to_string(),
+                "/outputs".to_string(),
+            ]],
+            "R1 direct helper exec has no shell/path interpolation",
+        );
 
-        assert!(
-            read_files(&sandbox(Vec::new(), 0), "relative")
-                .await
-                .is_err()
-        );
-        assert!(
-            read_files(&sandbox(Vec::new(), 17), "/outputs")
-                .await
-                .is_err()
-        );
+        let (unsafe_root, unsafe_commands) = sandbox(Vec::new(), 0);
+        assert!(read_files(&unsafe_root, "relative").await.is_err());
+        assert!(unsafe_commands.lock().unwrap().is_empty(), "R2 zero exec");
+        let (failed_scan, _) = sandbox(Vec::new(), 17);
+        assert!(read_files(&failed_scan, "/outputs").await.is_err());
     }
 }

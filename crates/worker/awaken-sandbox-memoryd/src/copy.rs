@@ -655,25 +655,3 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
-
-
-
-
-
-/// Capture only the durable heads, without writing a projection. Recovery uses
-/// this after reading the surviving sandbox copy so the subsequent harvest keeps
-/// the same compare-and-swap and concurrent-writer behavior as a live guard.
-pub async fn snapshot(fs: &dyn MemoryRepository, store: &str) -> Result<CopySnapshot, FuseError> {
-    let mut snapshot = CopySnapshot::default();
-    for memory in fs.snapshot_heads(store).await? {
-        snapshot.heads.insert(
-            memory.path.clone(),
-            MemoryMaterializationHead {
-                path: memory.path,
-                id: memory.id,
-                content_sha256: memory.content_sha256,
-            },
-        );
-    }
-    Ok(snapshot)
-}

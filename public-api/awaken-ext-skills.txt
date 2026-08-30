@@ -19,8 +19,8 @@ pub struct awaken_ext_skills::CompositeSkillRegistry
 impl awaken_ext_skills::CompositeSkillRegistry
 pub fn awaken_ext_skills::CompositeSkillRegistry::new(alloc::vec::Vec<alloc::sync::Arc<dyn awaken_ext_skills::SkillRegistry>>) -> Self
 impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::CompositeSkillRegistry
-pub fn awaken_ext_skills::CompositeSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::CompositeSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::CompositeSkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::CompositeSkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::CompositeSkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_ext_skills::FixedSkillRegistry
 impl awaken_ext_skills::FixedSkillRegistry
@@ -29,8 +29,8 @@ pub fn awaken_ext_skills::FixedSkillRegistry::insert(&mut self, awaken_ext_skill
 pub fn awaken_ext_skills::FixedSkillRegistry::is_empty(&self) -> bool
 pub fn awaken_ext_skills::FixedSkillRegistry::new() -> Self
 impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::FixedSkillRegistry
-pub fn awaken_ext_skills::FixedSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::FixedSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::FixedSkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::FixedSkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::FixedSkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_ext_skills::ListSkillsTool
 impl awaken_ext_skills::ListSkillsTool
@@ -105,30 +105,30 @@ pub struct awaken_ext_skills::SourceSkillRegistry
 impl awaken_ext_skills::SourceSkillRegistry
 pub fn awaken_ext_skills::SourceSkillRegistry::new(alloc::sync::Arc<dyn awaken_ext_skills::SkillSource>, awaken_ext_skills::SkillProvenance) -> Self
 impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::SourceSkillRegistry
-pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::SourceSkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub const awaken_ext_skills::SKILL_LIST_TOOL_ID: &str
 pub const awaken_ext_skills::SKILL_TOOL_ID: &str
 pub trait awaken_ext_skills::SkillRegistry: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_skills::SkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::SkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::SkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::SkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::SkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::CompositeSkillRegistry
-pub fn awaken_ext_skills::CompositeSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::CompositeSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::CompositeSkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::CompositeSkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::CompositeSkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::FixedSkillRegistry
-pub fn awaken_ext_skills::FixedSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::FixedSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::FixedSkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::FixedSkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::FixedSkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_ext_skills::SkillRegistry for awaken_ext_skills::SourceSkillRegistry
-pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::option::Option<awaken_ext_skills::SkillSpec>
-pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillSpec>
+pub fn awaken_ext_skills::SourceSkillRegistry::get(&self, &str) -> core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>
+pub fn awaken_ext_skills::SourceSkillRegistry::list(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillSpec>, alloc::string::String>
 pub fn awaken_ext_skills::SourceSkillRegistry::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_skills::SkillSpec>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_ext_skills::SkillSource: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_skills::SkillSource::scan(&self) -> alloc::vec::Vec<awaken_ext_skills::SkillFile>
-pub fn awaken_ext_skills::expand_slash_commands(&dyn awaken_ext_skills::SkillRegistry, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_ext_skills::SkillSource::scan(&self) -> core::result::Result<alloc::vec::Vec<awaken_ext_skills::SkillFile>, alloc::string::String>
+pub fn awaken_ext_skills::expand_slash_commands(&dyn awaken_ext_skills::SkillRegistry, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::string::String>
 pub fn awaken_ext_skills::list_skills_tool_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_skills::parse_skill_md(impl core::convert::Into<alloc::string::String>, &str) -> awaken_ext_skills::SkillSpec
 pub fn awaken_ext_skills::render_backend_context(&awaken_ext_skills::SkillSpec, core::option::Option<&str>) -> alloc::string::String

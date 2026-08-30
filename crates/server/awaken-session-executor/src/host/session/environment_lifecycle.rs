@@ -1012,6 +1012,19 @@ impl SharedHost {
                         ..
                     } = &mount.source
                     {
+                        let observed = env.sandbox().realized().iter()
+                            .find(|realized| realized.mount_path == mount.mount_path)
+                            .ok_or_else(|| HostError::internal("recovered Memory mount has no exact provider observation"))?;
+                        if observed.realization == awaken_provisioning_contract::Realization::Fuse {
+                            continue;
+                        }
+                        let handle = env.handle();
+                        let materializations = handle.memory_materializations()
+                            .map_err(|error| HostError::internal(error.to_string()))?
+                            .ok_or_else(|| HostError::internal("legacy Memory handle has no original copy bases"))?;
+                        let evidence = materializations.iter()
+                            .find(|evidence| evidence.store_id == *store_id && evidence.mount_path == mount.mount_path)
+                            .ok_or_else(|| HostError::internal("recovered Memory copy has no exact original bases"))?;
                         let files = env
                             .list_frozen_mount_files(&mount.mount_path)
                             .await
@@ -1019,6 +1032,7 @@ impl SharedHost {
                         mounter
                             .reconcile_recovered_copy(
                                 materialization_reference.as_deref().unwrap_or(store_id),
+                                evidence,
                                 &files,
                                 mount.access,
                             )
