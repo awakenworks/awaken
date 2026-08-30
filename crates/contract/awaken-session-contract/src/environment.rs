@@ -829,6 +829,22 @@ pub enum SessionEnvironmentTransitionError {
 pub enum SessionEnvironmentReceiptError {
     #[error("Session environment receipt does not match its exact effect")]
     Mismatch,
+    #[error("Session environment receipt targets another frozen Environment")]
+    EnvironmentMismatch,
+    #[error("Session environment effect was fenced by another realization owner")]
+    RealizationStale,
+    #[error("Session environment receipt is not valid in the current lifecycle phase")]
+    WrongPhase,
+    #[error("Session environment receipt requires a resident source binding")]
+    RequiresResident,
+    #[error("Session environment receipt does not prove an allowed state transition")]
+    InvalidTransition,
+    #[error("Session environment Resource reservation does not monotonically extend one substrate")]
+    InvalidReservation,
+    #[error(
+        "Session environment Resource reservation does not match the aggregate pending transition"
+    )]
+    ResourceTransitionMismatch,
 }
 
 #[cfg(test)]
@@ -1696,3 +1712,7 @@ mod verification {
         );
     }
 }
+
+mod continuation;
+pub use continuation::{SourceReleasePreparationEffect, SourceReleasePreparedReceipt};
+

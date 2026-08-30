@@ -1402,3 +1402,20 @@ mod tests {
         }
     }
 }
+
+
+
+/// Whether an asserted terminal generation is still the aggregate's exact
+/// owner/epoch. Terminal cleanup may intentionally outlive the ordinary lease
+/// wall-clock expiry after Work retirement; authenticated topology and the
+/// aggregate's monotonic generation, rather than a second timer rule, fence it.
+#[must_use]
+pub fn realization_lease_generation_authorizes(
+    current: &SessionRealizationLease,
+    asserted: &SessionRealizationLease,
+) -> bool {
+    current.owner == asserted.owner
+        && current.runtime_incarnation == asserted.runtime_incarnation
+        && current.epoch == asserted.epoch
+        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
+}
