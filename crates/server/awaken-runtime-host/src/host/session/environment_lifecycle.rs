@@ -422,6 +422,67 @@ impl SharedHost {
         .await
     }
 
+    /// Recover the exact process-local Environment retained when a prior
+    /// realization was revoked before the legacy/direct Session had published
+    /// a durable binding. The caller must own a newly claimed Runtime attempt;
+    /// ordinary direct callers cannot use this transition as realization
+    /// authority.
+    pub(crate) async fn recover_claimed_legacy_environment_after_revocation(
+        &self,
+        thread: &str,
+    ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
+        let retiring = self
+            .session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Retiring(retiring)
+                    if matches!(
+                        (&retiring.cause, &retiring.owned),
+                        (
+                            SessionEnvironmentRetirementCause::RealizationRevocation,
+                            RetiringEnvironmentOwner::Bound(BoundSessionEnvironment {
+                                identity: BoundSessionEnvironmentIdentity::LegacyDirect(
+                                    LegacyDirectEnvironmentProvenance::Direct(_),
+                                ),
+                                ..
+                            }),
+                        )
+                    ) =>
+                {
+                    Some(retiring.clone())
+                }
+                _ => None,
+            })
+            .flatten();
+        let Some(retiring) = retiring else {
+            return Ok(None);
+        };
+        let environment = retiring.owned.environment();
+        match environment.status().await {
+            Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
+                self.session_slots.update(thread, |slot| {
+                    slot.environment_owner.reactivate_retiring(&retiring)
+                })?;
+                Ok(Some(environment))
+            }
+            Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
+                if !self.confirm_terminated_retirement(thread, &retiring) {
+                    return Err(HostError::internal(
+                        "terminated legacy recovery owner lost its exact Retiring fence",
+                    ));
+                }
+                Ok(None)
+            }
+            Ok(status) => Err(HostError::internal(format!(
+                "Session sandbox {} is not ready ({status:?})",
+                environment.handle().sandbox_id,
+            ))),
+            Err(error) => Err(HostError::internal(format!(
+                "could not inspect Session sandbox {}: {error}",
+                environment.handle().sandbox_id,
+            ))),
+        }
+    }
+
     async fn complete_adopted_session_environment_candidate(
         &self,
         thread: &str,
