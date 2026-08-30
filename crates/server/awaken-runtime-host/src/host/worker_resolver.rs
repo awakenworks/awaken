@@ -569,9 +569,14 @@ mod tests {
         assert!(!Arc::ptr_eq(&retried, &model_changed_ctx), "K3/E4");
     }
 
-    /// D1-D5: durable lazy placement is fenced by the current dispatch claim.
-    /// Brain resolution stays sandbox-free; a replacement claim rejects stale
-    /// publication; and a crash gap after dispatch binding is repaired by adoption.
+    /// Cause/effect decision table: D1 durable lazy placement resolves a
+    /// Sandbox-free Brain; D3 a replacement claim fences stale first-use; D4
+    /// dispatch binding succeeds but durable Session binding fails while the
+    /// exact New candidate remains hidden; D5 a later exact claim carries that
+    /// dispatch binding. Effects: D1 creates no Environment; D3 performs no
+    /// stale publication; D4 retains one Candidate Arc; D5 resumes the canonical
+    /// candidate completion, persists once more, and publishes that same Arc
+    /// without provider adoption or a second owner.
     #[tokio::test]
     async fn durable_deferred_sandbox_publication_decision_table() {
         use awaken_run_ingress::{Clock, DispatchQueue};
@@ -657,6 +662,10 @@ mod tests {
             host.session_environment("durable-lazy").await.is_none(),
             "D4"
         );
+        let retained = host
+            .prepared_session_environment("durable-lazy")
+            .expect("D4 exact hidden candidate");
+        assert!(retained.requires_initial_provisioning(), "D4 New candidate");
 
         let adopted = store
             .claim("worker-c", 1_000, now + 4_000, &Default::default())
@@ -669,9 +678,13 @@ mod tests {
             .worker_for_claimed(&adopted)
             .await
             .expect("D5 adopts and repairs Session binding");
+        let resident = host
+            .session_environment("durable-lazy")
+            .await
+            .expect("D5 Resident");
         assert!(
-            host.session_environment("durable-lazy").await.is_some(),
-            "D5"
+            Arc::ptr_eq(&resident, &retained.environment),
+            "D5 same Candidate Arc"
         );
         assert_eq!(
             sink.calls.load(Ordering::SeqCst),
@@ -707,7 +720,7 @@ mod tests {
                 let physical_only = host.upgrade().is_some_and(|host| {
                     host.session_slots
                         .read(thread, |slot| {
-                            slot.environment.is_some() && slot.runtime.is_none()
+                            slot.environment_owner.is_resident() && slot.runtime.is_none()
                         })
                         .unwrap_or(false)
                 });
@@ -1576,7 +1589,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_mode_controls_the_production_adoption_seam() {
+    async fn recovery_mode_requires_provider_confirmed_termination() {
+        // Cause/effect decision table: C1 exact binding adopts Ready; C2 adopt
+        // returns Err, so physical state is unknown; C3 recovery requests
+        // RebuildFromCommittedTruth; C4 continuity is required; C5 the frozen
+        // provider matches. Effects: E1 C1+C5 publishes the adopted wrapper in
+        // the sole slot owner and returns no by-value duplicate; E2 C2+C3 fails
+        // and retains the durable pending owner; E3 C2+C4 also fails. Rules
+        // R19/R20: C1+C5=>E1, C2+C3=>E2, C2+C4=>E3. Only an observed
+        // Terminated status may clear.
         let storage = tempfile::tempdir().expect("storage");
         let thread = "thread-adoption";
         let first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
@@ -1588,6 +1609,10 @@ mod tests {
 
         let replacement =
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        let frozen = test_activation(thread, "run-adoption-publication").snapshot;
+        replacement.session_slots.update(thread, |slot| {
+            slot.published_snapshot = Some(frozen);
+        });
         let run_id = RunId("run-adoption".into());
         let (adopted, rebuild) = adopt_bound_sandbox(
             &replacement,
@@ -1600,7 +1625,12 @@ mod tests {
         .await
         .expect("continuity mode adopts the durable handle");
         assert!(!rebuild);
-        assert_eq!(adopted.unwrap().handle(), handle);
+        assert!(adopted.is_none(), "R20/E1 has no by-value owner duplicate");
+        assert_eq!(
+            replacement.session_environment_handle(thread).await,
+            Some(handle.clone()),
+            "R20/E1 slot is the sole published owner"
+        );
 
         let missing_thread = "thread-missing";
         let missing = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
@@ -1608,18 +1638,38 @@ mod tests {
             missing_thread,
         ))
         .unwrap();
-        let (adopted, rebuild) = adopt_bound_sandbox(
-            &replacement,
-            Some(&missing),
-            missing_thread,
-            &run_id,
-            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
-        )
-        .await
-        .expect("rebuild mode may replace a missing sandbox from committed truth");
-        assert!(adopted.is_none());
-        assert!(rebuild);
+        replacement
+            .install_session_environment_owner_projection(
+                missing_thread,
+                "workspace",
+                &awaken_session_contract::SessionEnvironmentState::Resident {
+                    binding: missing.clone(),
+                    effect_id: None,
+                    generation: None,
+                    idle_since_unix_ms: None,
+                },
+            )
+            .expect("R20/C2 durable pending owner");
+        assert!(
+            adopt_bound_sandbox(
+                &replacement,
+                Some(&missing),
+                missing_thread,
+                &run_id,
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+            )
+            .await
+            .is_err(),
+            "R19/E2 unknown adoption cannot authorize rebuild"
+        );
+        assert_eq!(
+            replacement
+                .durable_session_environment_binding(missing_thread)
+                .as_deref(),
+            Some(missing.as_str()),
+            "R20/E2"
+        );
         assert!(
             adopt_bound_sandbox(
                 &replacement,
@@ -1631,7 +1681,7 @@ mod tests {
             )
             .await
             .is_err(),
-            "continuity mode fails closed when the bound sandbox is gone"
+            "R20/E3 continuity mode fails closed when physical state is unknown"
         );
     }
 
@@ -1643,19 +1693,25 @@ mod tests {
         // host-identity root; E3=missing selected root fails continuity.
         //
         // Decision table: A1 C1+C3(configured)=>E1 (covered by
-        // recovery_mode_controls...); A2 C2+C3(trusted)=>E2; A3 either model
+        // recovery_mode_requires...); A2 C2+C3(trusted)=>E2; A3 either model
         // with its selected root absent=>E3 (covered by that test's missing row).
         let storage = tempfile::tempdir().expect("storage");
         let trusted_root = storage.path().join("trusted-local-sandboxes");
         let thread = "thread-backend-owned-adoption";
-        let provisioning = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
-            credential: awaken_runtime_contract::CredentialRef {
-                id: "local".into(),
-                revision: 1,
-            },
-            model_selection: awaken_runtime_contract::resolved::BackendModelSelection::Default,
-            acp: Default::default(),
-        };
+        let candidate =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
+                ModelBinding::new("local", "", "acp:local"),
+                awaken_runtime_contract::CredentialRef {
+                    id: "local".into(),
+                    revision: 1,
+                },
+                awaken_runtime_contract::resolved::BackendModelSelection::Default,
+                "backend-owned-adoption-v1",
+                "sha256:backend-owned-adoption-v1",
+                Default::default(),
+            )
+            .expect("coherent BackendOwned test candidate");
+        let provisioning = candidate.provisioning().clone();
 
         let mut first =
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
@@ -1685,6 +1741,13 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         replacement.backend_owned_session_provider =
             Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+        let frozen =
+            awaken_runtime_contract::ExecutableAgentSnapshot::builder("backend-owned-adoption")
+                .resolved_model(candidate)
+                .build();
+        replacement.session_slots.update(thread, |slot| {
+            slot.published_snapshot = Some(frozen);
+        });
         let (adopted, rebuild) = adopt_bound_sandbox(
             &replacement,
             Some(&encoded),
@@ -1696,7 +1759,12 @@ mod tests {
         .await
         .expect("A2 adopt from the provisioning-selected provider");
         assert!(!rebuild, "A2");
-        assert_eq!(adopted.expect("A2 adopted").handle(), handle, "A2");
+        assert!(adopted.is_none(), "A2 has no by-value owner duplicate");
+        assert_eq!(
+            replacement.session_environment_handle(thread).await,
+            Some(handle),
+            "A2 sole slot publication"
+        );
     }
 
     #[tokio::test]
@@ -1726,16 +1794,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebuild() {
+        // Cause/effect rule: an exact Resident reports Terminated. Continuity
+        // fails without mutation; explicit rebuild first hides the owner in
+        // Retiring and only the exact frozen provider authorizes its removal.
         let storage = tempfile::tempdir().expect("storage");
         let thread = "thread-dead-resident";
         let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let ctx = host.ctx_for(thread, None).await.expect("resident session");
         let handle = ctx.env.as_ref().expect("eager environment").handle();
         let encoded = serde_json::to_string(&handle).unwrap();
+        let run = RunId("dead-resident-run".into());
+        host.session_slots.update(thread, |slot| {
+            slot.published_snapshot = Some(test_activation(thread, &run.0).snapshot);
+        });
         std::fs::remove_dir_all(storage.path().join("sandboxes").join(thread))
             .expect("terminate local sandbox out of band");
 
-        let run = RunId("dead-resident-run".into());
         assert!(
             adopt_bound_sandbox(
                 &host,
@@ -1832,10 +1906,9 @@ mod tests {
         assert_eq!(observed.handle(), replacement.handle());
         assert!(!Arc::ptr_eq(&observed, &replacement));
 
-        host.session_slots.update(thread, |slot| {
-            slot.runtime = None;
-            slot.environment = Some(replacement.clone());
-        });
+        host.session_slots
+            .modify(thread, |slot| slot.runtime = None);
+        host.install_test_resident_session_environment(thread, replacement.clone());
 
         assert!(
             !host.discard_session_environment(thread, &observed).await,

@@ -9,21 +9,42 @@ impl SharedHost {
     pub(crate) async fn session_child_execution_substrate(
         &self,
         thread: &str,
-        adopted: Option<crate::session_environment::SessionEnvironment>,
+        mut adopted: Option<crate::session_environment::SessionEnvironment>,
         frozen_parent: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<ChildExecutionSubstrate, HostError> {
         let lifecycle = self
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let lifecycle_guard = lifecycle.lock().await;
+        self.retry_unpublished_session_environment_cleanup(thread)
+            .await?;
         let warm_context = self
             .session_slots
             .read(thread, |slot| slot.runtime.clone())
             .flatten();
         let retained = self
             .session_slots
-            .read(thread, |slot| slot.environment.clone())
+            .read(thread, |slot| slot.environment_owner.resident())
             .flatten();
+        let prepared = self.prepared_session_environment(thread);
+        if let (Some(prepared), Some(extra)) = (&prepared, adopted.as_ref()) {
+            if prepared.environment.handle() != extra.handle() {
+                return Err(HostError::internal(format!(
+                    "thread {thread} is already preparing a different sandbox"
+                )));
+            }
+            extra.stop_bound_processes().await;
+            adopted = None;
+        }
+        if let Some(candidate) = prepared {
+            let environment = self
+                .complete_prepared_session_environment(thread, &candidate, true)
+                .await?;
+            drop(lifecycle_guard);
+            return self
+                .child_execution_substrate_from_environment(thread, warm_context, environment)
+                .await;
+        }
         let environment = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {
@@ -37,17 +58,17 @@ impl SharedHost {
             (Some(existing), None) => existing,
             (None, Some(adopted)) => {
                 let environment = Arc::new(adopted);
-                self.persist_environment_before_publish(
-                    thread,
-                    environment.as_ref(),
-                    awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
-                )
-                .await?;
-                self.session_slots
-                    .update(thread, |slot| slot.environment = Some(environment.clone()));
-                environment
+                let candidate =
+                    self.begin_session_environment_adoption(thread, environment.clone())?;
+                self.complete_prepared_session_environment(thread, &candidate, false)
+                    .await?
             }
             (None, None) => {
+                if !self.session_environment_owner_is_vacant(thread) {
+                    return Err(HostError::internal(
+                        "a prior parent Session Environment transition requires lifecycle retry",
+                    ));
+                }
                 let parent = frozen_parent
                     .cloned()
                     .or_else(|| {
@@ -72,45 +93,23 @@ impl SharedHost {
                     self.create_session_environment(provider, &self.sandbox_spec(thread))
                         .await?,
                 );
-                if let Err(error) = self
-                    .realize_thread_repositories(thread, environment.as_ref())
-                    .await
-                {
-                    let _ = environment.dispose().await;
-                    return Err(error);
-                }
-                let binding = serde_json::to_string(&environment.handle())
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                let dispatch_bound = match self
-                    .bind_deferred_dispatch_before_publish(thread, &binding)
-                    .await
-                {
-                    Ok(bound) => bound,
-                    Err(error) => {
-                        let _ = environment.dispose().await;
-                        return Err(error);
-                    }
-                };
-                if let Err(error) = self
-                    .persist_environment_before_publish(
-                        thread,
-                        environment.as_ref(),
-                        awaken_session_contract::SessionEnvironmentEffectKind::Create,
-                    )
-                    .await
-                {
-                    if !dispatch_bound {
-                        let _ = environment.dispose().await;
-                    }
-                    return Err(error);
-                }
-                self.session_slots
-                    .update(thread, |slot| slot.environment = Some(environment.clone()));
-                environment
+                let candidate =
+                    self.begin_session_environment_preparation(thread, environment.clone())?;
+                self.complete_prepared_session_environment(thread, &candidate, true)
+                    .await?
             }
         };
         drop(lifecycle_guard);
+        self.child_execution_substrate_from_environment(thread, warm_context, environment)
+            .await
+    }
 
+    async fn child_execution_substrate_from_environment(
+        &self,
+        thread: &str,
+        warm_context: Option<Arc<SessionCtx>>,
+        environment: Arc<crate::session_environment::SessionEnvironment>,
+    ) -> Result<ChildExecutionSubstrate, HostError> {
         let commit = match &warm_context {
             Some(context) => context.commit.clone(),
             None => self.commit_for_read(thread).await?,
@@ -226,7 +225,7 @@ mod tests {
         let physical = host
             .session_slots
             .read(parent_thread, |slot| {
-                (slot.environment.is_some(), slot.runtime.is_some())
+                (slot.environment_owner.is_resident(), slot.runtime.is_some())
             })
             .expect("S1 parent physical slot");
         assert_eq!(physical, (true, false), "S1/E2,E3");

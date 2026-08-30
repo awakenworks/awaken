@@ -856,6 +856,8 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         _thread: &str,
         _operation: &crate::SessionEnvironmentOperation,
+        _source_effect_id: &str,
+        _source_binding: &str,
         _generation: &crate::SandboxGeneration,
     ) -> Result<crate::QuiescenceReceipt, RunError> {
         Err(RunError::unavailable_classified(
@@ -882,6 +884,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         _thread: &str,
         _operation: &crate::SessionEnvironmentOperation,
+        _source_effect_id: &str,
         _generation: &crate::SandboxGeneration,
         _source_binding: &str,
     ) -> Result<crate::SourceDisposedReceipt, RunError> {
@@ -1241,7 +1244,14 @@ pub trait SessionEnvironmentBindingSink: Send + Sync {
         Ok(true)
     }
 
-    async fn persist(&self, receipt: crate::SessionEnvironmentReceipt) -> Result<(), RunError>;
+    /// Commit `receipt` and return the exact Environment state read from the
+    /// durable aggregate after that commit. Runtime publication consumes this
+    /// evidence directly; it must not reconstruct a generation from local time
+    /// or from the physical provider handle.
+    async fn persist(
+        &self,
+        receipt: crate::SessionEnvironmentReceipt,
+    ) -> Result<crate::SessionEnvironmentState, RunError>;
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it

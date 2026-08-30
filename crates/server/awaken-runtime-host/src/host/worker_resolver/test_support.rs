@@ -112,20 +112,79 @@ pub(super) struct ToggleBindingSink {
     pub(super) calls: AtomicUsize,
 }
 
+pub(super) fn committed_environment(
+    receipt: awaken_session_contract::SessionEnvironmentReceipt,
+) -> awaken_session_contract::SessionEnvironmentState {
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        &receipt.session_id,
+        1,
+        u64::MAX,
+        "test-environment",
+        "test-image",
+    );
+    awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: receipt.binding,
+        effect_id: Some(receipt.effect_id),
+        generation: Some(generation),
+        idle_since_unix_ms: None,
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
     async fn persist(
         &self,
-        _receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
             Err(awaken_session_contract::RunError::internal(
                 "injected Session binding failure",
             ))
         } else {
-            Ok(())
+            Ok(committed_environment(receipt))
         }
+    }
+}
+
+pub(crate) struct BlockingBindingSink {
+    block: std::sync::atomic::AtomicBool,
+    pub(crate) entered: tokio::sync::Notify,
+    calls: AtomicUsize,
+}
+
+impl BlockingBindingSink {
+    pub(crate) fn blocked() -> Self {
+        Self {
+            block: std::sync::atomic::AtomicBool::new(true),
+            entered: tokio::sync::Notify::new(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn unblock(&self) {
+        self.block.store(false, Ordering::SeqCst);
+    }
+
+    pub(crate) fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
+    async fn persist(
+        &self,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.block.load(Ordering::SeqCst) {
+            self.entered.notify_one();
+            std::future::pending::<()>().await;
+        }
+        Ok(committed_environment(receipt))
     }
 }
 

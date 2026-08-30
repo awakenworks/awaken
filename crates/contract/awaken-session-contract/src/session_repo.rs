@@ -16,6 +16,7 @@
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod environment_binding;
 mod repository_publication;
 mod runtime_intervals;
 

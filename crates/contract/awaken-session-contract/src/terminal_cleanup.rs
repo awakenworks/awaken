@@ -960,9 +960,10 @@ mod tests {
         // Layout cause/effect decision table: C1 PersistedSession embeds the
         // cleanup operation by value; C2 the four legacy variants retain their
         // exact public fields; C3 publication is absent/present; C4 optional
-        // realization-failure provenance is heap-indirected. Effects: E1 the
-        // operation retains its exact legacy inline size and PersistedSession
-        // carries only one pointer field for C4;
+        // realization-failure provenance is heap-indirected; C5 the embedded
+        // Suspending source identity is also heap-indirected. Effects: E1 the
+        // operation retains its exact legacy inline size and each C4/C5
+        // provenance contribution remains one pointer field;
         // E2 legacy Rust construction/destructuring keeps BTreeMap/String field
         // types; E3 publication contributes only one boxed-wrapper word; E4
         // serde emits the wrapper payload without a Box representation.
@@ -971,6 +972,7 @@ mod tests {
         // | B1 | absent | unchanged | E1/E2 |
         // | B2 | present | isolated in wrapper | E1/E3/E4 |
         // | B3 | either | boxed failure source | E1 (one pointer field) |
+        // | B4 | either | boxed suspend source | E1 (one pointer field) |
         //
         // On x86_64 the uncorrected publication layout measured 120 bytes for
         // SessionCleanupOperation and 2480 for PersistedSession. Boxing the one
@@ -991,6 +993,11 @@ mod tests {
         #[cfg(target_pointer_width = "64")]
         {
             assert_eq!(std::mem::size_of::<SessionCleanupOperation>(), 104, "E1");
+            assert_eq!(
+                std::mem::size_of::<crate::SessionEnvironmentState>(),
+                416,
+                "E1"
+            );
             assert_eq!(std::mem::size_of::<crate::PersistedSession>(), 2480, "E1");
         }
         let _legacy_requested_source_shape = SessionCleanupOperation::Requested {

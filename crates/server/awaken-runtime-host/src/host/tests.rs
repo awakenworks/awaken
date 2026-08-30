@@ -1603,32 +1603,58 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
     // Branch request-context cause/effect graph: C1 the frozen baseline is
     // already resident; C2 its immutable transcript prefix is materialized only
-    // on the later claim-fenced projection; C3 an identical projection replays.
-    // E1 C1+C2 invalidates only the stale SessionCtx and rebuilds with the exact
-    // request-only messages; E2 C1+C2+C3 retains that rebuilt context. FMECA:
-    // updating the slot directly leaves a resident ACP/Native attempt context
-    // stale, so a branch silently guesses from unrelated resources.
+    // on the later claim-fenced projection; C3 an identical projection replays;
+    // C4 the branch-only binding sink persists and returns one exact Store-read
+    // Resident before any later projection. E1 C1+C2+C4 invalidates only the
+    // stale SessionCtx and rebuilds with the exact request-only messages; E2
+    // C1+C2+C3+C4 retains that rebuilt context; E3 C4 persists exactly once and
+    // every later projection carries that returned Resident. FMECA: updating
+    // the slot directly leaves a resident ACP/Native attempt context stale,
+    // while replaying an Unmaterialized aggregate over its live owner violates
+    // the durable binding fence.
     //
     // | Rule | C1 | C2 changed | C3 replay | Effect |
-    // | B1   | T  | T          | F         | E1     |
-    // | B2   | T  | F          | T         | E2     |
+    // | B1   | T  | T          | F         | E1+E3  |
+    // | B2   | T  | F          | T         | E2+E3  |
+    let branch_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    let committed_environment = Arc::new(Mutex::new(None));
+    let branch_sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&branch_host),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: false,
+        require_realization: false,
+        owned_session_id: Some("branch-thread".into()),
+        committed_environment: Some(committed_environment.clone()),
+    });
+    let branch_managed =
+        crate::ManagedHost::new(branch_host.clone()).install_dispatch_session_runtime();
+    branch_managed.install_environment_binding_sink(branch_sink.clone());
     let mut branch = projection("branch prompt", false);
-    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
+    branch_host
+        .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
         .await
         .expect("B1 baseline without materialized prefix");
-    let stale = host
+    let stale = branch_host
         .ctx_for("branch-thread", None)
         .await
         .expect("B1 resident context");
+    branch.environment = committed_environment
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("B1 Store-read Resident returned by the binding sink");
+    assert_eq!(branch_sink.calls.load(Ordering::SeqCst), 1, "B1/E3");
     branch.request_context = vec![Message::text(
         MessageId("source-prefix".into()),
         Role::Assistant,
         "E2E_SOURCE_ONLY_exact",
     )];
-    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
+    branch_host
+        .install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
         .await
         .expect("B1 late materialized prefix");
-    let rebuilt = host
+    let rebuilt = branch_host
         .ctx_for("branch-thread", None)
         .await
         .expect("B1 rebuilt context");
@@ -1640,10 +1666,11 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         rebuilt.attempt_context.request_context, branch.request_context,
         "B1/E1 exact request-only prefix"
     );
-    host.install_frozen_session_projection("branch-thread", branch, None, true, None)
+    branch_host
+        .install_frozen_session_projection("branch-thread", branch, None, true, None)
         .await
         .expect("B2 identical replay");
-    let replayed = host
+    let replayed = branch_host
         .ctx_for("branch-thread", None)
         .await
         .expect("B2 resident context");
@@ -1651,6 +1678,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         Arc::ptr_eq(&rebuilt, &replayed),
         "B2/E2 no redundant rebuild"
     );
+    assert_eq!(branch_sink.calls.load(Ordering::SeqCst), 1, "B2/E3");
 
     // Frozen-projection Resource-generation cause/effect decision table.
     // C1=projection has an explicit non-legacy Resource generation;
@@ -5994,6 +6022,9 @@ struct BindingOrderSink {
     observed_before_publish: std::sync::atomic::AtomicBool,
     fail: bool,
     require_realization: bool,
+    owned_session_id: Option<String>,
+    committed_environment:
+        Option<Arc<Mutex<Option<awaken_session_contract::SessionEnvironmentState>>>>,
 }
 
 struct MovingRealizationFenceSink {
@@ -6001,16 +6032,35 @@ struct MovingRealizationFenceSink {
     accepted_epoch: AtomicU64,
 }
 
+fn test_committed_environment(
+    receipt: awaken_session_contract::SessionEnvironmentReceipt,
+) -> awaken_session_contract::SessionEnvironmentState {
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        &receipt.session_id,
+        1,
+        u64::MAX,
+        "test-environment",
+        "test-image",
+    );
+    awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: receipt.binding,
+        effect_id: Some(receipt.effect_id),
+        generation: Some(generation),
+        idle_since_unix_ms: None,
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionEnvironmentBindingSink for MovingRealizationFenceSink {
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let asserted_epoch = receipt.realization.map_or(0, |lease| lease.epoch);
+        let asserted_epoch = receipt.realization.as_ref().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
-            Ok(())
+            Ok(test_committed_environment(receipt))
         } else {
             Err(awaken_session_contract::RunError::classified(
                 "session_realization_stale",
@@ -6022,10 +6072,18 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for MovingRealizatio
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink {
+    async fn owns(&self, session_id: &str) -> Result<bool, awaken_session_contract::RunError> {
+        Ok(self
+            .owned_session_id
+            .as_deref()
+            .is_none_or(|owned| owned == session_id))
+    }
+
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
@@ -6044,7 +6102,11 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink
                 "binding store unavailable",
             ))
         } else {
-            Ok(())
+            let committed = test_committed_environment(receipt);
+            if let Some(recorded) = &self.committed_environment {
+                *recorded.lock().unwrap() = Some(committed.clone());
+            }
+            Ok(committed)
         }
     }
 }
@@ -6063,6 +6125,8 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: false,
         require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
     });
     crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
 
@@ -6135,6 +6199,8 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: false,
         require_realization: true,
+        owned_session_id: None,
+        committed_environment: None,
     });
     crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
 
@@ -6214,8 +6280,17 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
 #[tokio::test]
 async fn missing_durable_environment_adoption_never_creates_a_substitute() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    host.install_expected_environment_binding("binding-corrupt", Some("opaque".into()))
-        .expect("project durable expectation");
+    host.install_session_environment_owner_projection(
+        "binding-corrupt",
+        "workspace",
+        &awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: "opaque".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        },
+    )
+    .expect("project durable expectation");
     let error = match host.ctx_for("binding-corrupt", None).await {
         Ok(_) => panic!("missing adoption must fail closed"),
         Err(error) => error,
@@ -6233,6 +6308,8 @@ async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: true,
         require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
     });
     crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
 
@@ -6263,6 +6340,8 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: false,
         require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
     });
     let managed = crate::ManagedHost::new(host.clone());
     managed.install_environment_binding_sink(sink.clone());
@@ -6324,6 +6403,8 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: true,
         require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
     });
     let managed = crate::ManagedHost::new(host.clone());
     managed.install_environment_binding_sink(sink.clone());
@@ -12844,6 +12925,18 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_client_result_settles_the_authoritative_dispatch() {
+    use awaken_run_ingress::DispatchQueue as _;
+
+    async fn bounded_stage<T>(
+        stage: &'static str,
+        future: impl std::future::Future<Output = T>,
+    ) -> T {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), future).await {
+            Ok(output) => output,
+            Err(_) => panic!("R2/E6 durable client-result test timed out at {stage}"),
+        }
+    }
+
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
@@ -12851,8 +12944,10 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     // ends; C5 resumed work awaits on a new ticket. Effects: E1 input is appended
     // to the canonical durable Inbox; E2 the Worker alone claims/resumes/settles;
     // E3 Done removes the dispatch row; E4 Awaiting retains exactly one row; E5
-    // committed result reaches the model. Constraints: direct ingress remains the
-    // R1 path above; one ticket accepts one idempotency identity.
+    // committed result reaches the model; E6 any missing dispatch settlement
+    // fails at its exact bounded stage instead of hanging the suite. Constraints:
+    // direct ingress remains the R1 path above; one ticket accepts one
+    // idempotency identity.
     //
     // | Rule | ingress | initial state | resume result | Effect |
     // | R1 | direct | Awaiting | Ended | inline E1/E2 not applicable (sibling test) |
@@ -12871,16 +12966,20 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     );
     host.ensure_dispatch_pool();
 
-    let first = host
-        .run(None, "t-durable-client", user("hi"))
-        .await
-        .expect("durable Run awaits");
+    let first = bounded_stage(
+        "initial host.run settlement",
+        host.run(None, "t-durable-client", user("hi")),
+    )
+    .await
+    .expect("durable Run awaits");
     assert!(matches!(first.state, RunState::Awaiting), "R2 precondition");
     let pending = first.pending.expect("client tool ticket");
-    let awaiting = dispatch
-        .list_dispatches()
-        .await
-        .expect("list awaiting dispatch");
+    let awaiting = bounded_stage(
+        "first dispatch list after initial Awaiting",
+        dispatch.list_dispatches(),
+    )
+    .await
+    .expect("list awaiting dispatch");
     assert_eq!(awaiting.len(), 1, "one durable dispatch owns the wait");
     assert_eq!(awaiting[0].run_id, first.run_id);
     assert_eq!(
@@ -12888,23 +12987,28 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
         awaken_run_ingress::DispatchState::Awaiting
     );
 
-    let resumed = host
-        .resume(
+    let resumed = bounded_stage(
+        "host.resume client-result settlement",
+        host.resume(
             "t-durable-client",
             &pending.tool_use_id,
             HostResume::ClientResult {
                 content: vec![ContentBlock::text("sunny")],
                 is_error: false,
             },
-        )
-        .await
-        .expect("durable worker resumes the client result");
+        ),
+    )
+    .await
+    .expect("durable worker resumes the client result");
     assert!(matches!(resumed.state, RunState::Ended(_)), "R2/E5");
+    let settled_dispatches = bounded_stage(
+        "final dispatch list after terminal settlement",
+        dispatch.list_dispatches(),
+    )
+    .await
+    .expect("list settled dispatches");
     assert!(
-        dispatch
-            .list_dispatches()
-            .await
-            .expect("list settled dispatches")
+        settled_dispatches
             .iter()
             .all(|summary| summary.run_id != resumed.run_id),
         "R2/E3: terminal settlement removes the authoritative dispatch row"
@@ -13190,7 +13294,7 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
     assert!(
         host.session_slots
             .read("cold-terminal", |slot| {
-                slot.runtime.is_none() && slot.environment.is_none()
+                slot.runtime.is_none() && !slot.environment_owner.has_local_environment()
             })
             .unwrap_or(true),
         "terminal control may allocate a lock slot but not a Runtime or Environment projection"
@@ -13278,7 +13382,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     assert!(
         host.session_slots
             .read(&parent.0, |slot| slot.runtime.is_none()
-                && slot.environment.is_none())
+                && !slot.environment_owner.has_local_environment())
             .unwrap_or(true),
         "R1/E3"
     );

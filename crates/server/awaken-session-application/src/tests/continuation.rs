@@ -26,6 +26,7 @@ struct ContinuationRuntime {
     terminal_restore_disposals: AtomicUsize,
     terminal_effect_order: Mutex<Vec<&'static str>>,
     restore_substrate: Arc<RestoreSubstrate>,
+    source_tuples: Mutex<Vec<(&'static str, String, String, String)>>,
 }
 
 impl ContinuationRuntime {
@@ -94,9 +95,17 @@ impl SessionRuntime for ContinuationRuntime {
         &self,
         _thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
+        source_effect_id: &str,
+        source_binding: &str,
         generation: &awaken_session_contract::SandboxGeneration,
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.quiesces.fetch_add(1, Ordering::SeqCst);
+        self.source_tuples.lock().unwrap().push((
+            "quiesce",
+            source_effect_id.into(),
+            source_binding.into(),
+            generation.id.clone(),
+        ));
         if self.fail_quiesce_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected quiescence crash"));
         }
@@ -114,6 +123,12 @@ impl SessionRuntime for ContinuationRuntime {
         request: awaken_session_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
+        self.source_tuples.lock().unwrap().push((
+            "checkpoint",
+            request.source_effect_id.clone(),
+            request.source_binding.clone(),
+            request.generation.id.clone(),
+        ));
         self.checkpoint_scopes
             .lock()
             .unwrap()
@@ -143,10 +158,17 @@ impl SessionRuntime for ContinuationRuntime {
         &self,
         _thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
+        source_effect_id: &str,
         generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
         self.disposals.fetch_add(1, Ordering::SeqCst);
+        self.source_tuples.lock().unwrap().push((
+            "dispose",
+            source_effect_id.into(),
+            source_binding.into(),
+            generation.id.clone(),
+        ));
         if self.fail_dispose_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected disposal crash"));
         }
@@ -329,8 +351,15 @@ async fn due_idle_environment_suspends_once_in_order() {
     app.reconcile_environment_continuation("suspend", 2_000)
         .await
         .unwrap();
+    let settled = repo.get("suspend").await.unwrap();
+    let generation_id = settled
+        .environment
+        .generation()
+        .expect("hibernated generation")
+        .id
+        .clone();
     assert!(matches!(
-        repo.get("suspend").await.unwrap().environment,
+        settled.environment,
         awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
     ));
     app.reconcile_environment_continuation("suspend", 2_000)
@@ -342,6 +371,30 @@ async fn due_idle_environment_suspends_once_in_order() {
     assert_eq!(
         *runtime.checkpoint_scopes.lock().unwrap(),
         [("workspace".into(), 2_000)]
+    );
+    assert_eq!(
+        *runtime.source_tuples.lock().unwrap(),
+        [
+            (
+                "quiesce",
+                "create".into(),
+                "source-binding".into(),
+                generation_id.clone(),
+            ),
+            (
+                "checkpoint",
+                "create".into(),
+                "source-binding".into(),
+                generation_id.clone(),
+            ),
+            (
+                "dispose",
+                "create".into(),
+                "source-binding".into(),
+                generation_id,
+            ),
+        ],
+        "R19/R20 exact physical source tuple survives every suspend phase"
     );
 }
 

@@ -5523,18 +5523,18 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
 /// lease; C2 the binding is new or an idempotent replay; C3 the same epoch
 /// has been renewed monotonically; C4 a replacement owner/epoch has fenced
 /// the Runtime. C1 permits the ordinary root CAS; C3 preserves in-flight
-/// work admitted before renewal; C4 rejects a binding change while an equal
-/// durable binding remains a side-effect-free recovery replay.
+/// work admitted before renewal; C4 rejects every receipt, including an equal
+/// binding replay, before any aggregate mutation.
 ///
 /// | Rule | Asserted lease | Binding | Effect |
 /// |---|---|---|---|
 /// | B1 | exact | new | persist once |
 /// | B2 | exact | equal | idempotent success |
 /// | B3 | shorter same-epoch assertion under live renewal | new/equal | authorized |
-/// | B4 | stale owner/epoch | equal | idempotent success, no mutation |
+/// | B4 | stale owner/epoch | equal | fenced, no mutation |
 /// | B5 | stale owner/epoch | different | fenced, no mutation |
 /// | B6 | aggregate/assertion both absent | new/equal | legacy CAS path |
-/// | B7 | current lease expired | equal | idempotent success, no mutation |
+/// | B7 | current lease expired | equal | fenced, no mutation |
 /// | B8 | current lease expired | different | fenced, no mutation |
 #[tokio::test]
 async fn environment_binding_persistence_is_fenced_by_exact_realization() {
@@ -5565,12 +5565,32 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     create(repo.as_ref(), session).await;
     let sink = RepositoryEnvironmentBindingSink::new(repo.clone());
 
-    sink.persist(receipt("binding-fence", "sandbox-a", Some(&current)))
+    let committed = sink
+        .persist(receipt("binding-fence", "sandbox-a", Some(&current)))
         .await
         .expect("B1");
-    sink.persist(receipt("binding-fence", "sandbox-a", Some(&current)))
+    let revision_after_bind = repo.get("binding-fence").await.expect("B1").revision;
+    let replayed = sink
+        .persist(receipt("binding-fence", "sandbox-a", Some(&current)))
         .await
         .expect("B2");
+    assert_eq!(replayed, committed, "B2 returns exact Store-read authority");
+    assert_eq!(
+        repo.get("binding-fence").await.expect("B2").revision,
+        revision_after_bind,
+        "B2 exact replay performs no root write"
+    );
+    assert!(
+        matches!(
+            committed,
+            awaken_session_contract::SessionEnvironmentState::Resident {
+                effect_id: Some(_),
+                generation: Some(_),
+                ..
+            }
+        ),
+        "B1 returns generated durable authority"
+    );
     let mut renewed_session = persisted("binding-renewed", false, "idle");
     renewed_session.realization = Some(awaken_session_contract::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX,
@@ -5673,6 +5693,269 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             .as_deref(),
         Some("sandbox-a"),
         "B4/B5/B7/B8"
+    );
+}
+
+/// Binding transition cause/effect graph: C1 aggregate is Unmaterialized;
+/// C2 it is exact generated Resident; C3 it is terminal; C4 it is in a
+/// continuation phase; C5 receipt is Create; C6 receipt is Adopt with the
+/// same/different source binding; C7 receipt source/fingerprint is invalid.
+/// Effects: E1 one typed root mutation; E2 exact no-write replay; E3 fail
+/// closed with byte-identical Store state. The sink
+/// must also return only a nonterminal, exact binding/effect/generated Store
+/// read after CAS.
+///
+/// | Rule | Aggregate | Receipt | Effect |
+/// |---|---|---|---|
+/// | T1 | Unmaterialized | Create/Adopt | E1 generated Resident |
+/// | T2 | exact generated Resident | exact | E2 no write |
+/// | T2A | Resident | Adopt same binding | E1 update effect, preserve generation |
+/// | T3 | Resident | second Create | E3 denied |
+/// | T4 | Resident | Adopt different binding | E3 denied |
+/// | T5 | terminal | any | E3 denied |
+/// | T6 | Suspending/Hibernated/Restoring | any | E3 denied |
+/// | T7 | any | invalid receipt source/fingerprint | E3 denied |
+#[tokio::test]
+async fn environment_binding_sink_uses_only_the_aggregate_typed_transition() {
+    fn receipt(
+        session_id: &str,
+        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+        binding: &str,
+    ) -> awaken_session_contract::SessionEnvironmentReceipt {
+        awaken_session_contract::SessionEnvironmentReceipt::new(session_id, kind, binding, None)
+    }
+
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repo.as_ref(),
+        persisted("binding-transition", false, "idle"),
+    )
+    .await;
+    let sink = RepositoryEnvironmentBindingSink::new(repo.clone());
+    let create_receipt = receipt(
+        "binding-transition",
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        "sandbox-a",
+    );
+    let resident = sink
+        .persist(create_receipt.clone())
+        .await
+        .expect("T1 Create");
+    assert!(matches!(
+        resident,
+        awaken_session_contract::SessionEnvironmentState::Resident {
+            generation: Some(_),
+            ..
+        }
+    ));
+    create(
+        repo.as_ref(),
+        persisted("binding-adopt-unmaterialized", false, "idle"),
+    )
+    .await;
+    assert!(matches!(
+        sink.persist(receipt(
+            "binding-adopt-unmaterialized",
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+            "sandbox-adopted",
+        ))
+        .await
+        .expect("T1 Adopt"),
+        awaken_session_contract::SessionEnvironmentState::Resident {
+            generation: Some(_),
+            ..
+        }
+    ));
+    create(
+        repo.as_ref(),
+        persisted("binding-adopt-existing", false, "idle"),
+    )
+    .await;
+    let prior = sink
+        .persist(receipt(
+            "binding-adopt-existing",
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            "sandbox-existing",
+        ))
+        .await
+        .expect("T2A source");
+    let adopt_existing = receipt(
+        "binding-adopt-existing",
+        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+        "sandbox-existing",
+    );
+    let adopted = sink.persist(adopt_existing.clone()).await.expect("T2A");
+    assert_eq!(adopted.binding(), Some("sandbox-existing"), "T2A/E1");
+    assert_eq!(
+        adopted.effect_id(),
+        Some(adopt_existing.effect_id.as_str()),
+        "T2A/E1"
+    );
+    assert_eq!(adopted.generation(), prior.generation(), "T2A/E1");
+    let exact_revision = repo.get("binding-transition").await.expect("T2").revision;
+    assert_eq!(
+        sink.persist(create_receipt).await.expect("T2"),
+        resident,
+        "T2 exact Store read"
+    );
+    assert_eq!(
+        repo.get("binding-transition").await.expect("T2").revision,
+        exact_revision,
+        "T2 no root write"
+    );
+    for (rule, denied) in [
+        (
+            "T3",
+            receipt(
+                "binding-transition",
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                "sandbox-b",
+            ),
+        ),
+        (
+            "T4",
+            receipt(
+                "binding-transition",
+                awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                "sandbox-b",
+            ),
+        ),
+    ] {
+        assert_eq!(
+            sink.persist(denied).await.expect_err(rule).code,
+            "session_environment_binding_denied",
+            "{rule}"
+        );
+        let after = repo.get("binding-transition").await.expect(rule);
+        assert_eq!(after.revision, exact_revision, "{rule}/E3");
+        assert_eq!(after.environment, resident, "{rule}/E3");
+    }
+    let mut invalid_source = receipt(
+        "binding-transition",
+        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+        "sandbox-a",
+    );
+    invalid_source.binding = "tampered-after-signing".into();
+    assert_eq!(
+        sink.persist(invalid_source).await.expect_err("T7").code,
+        "session_environment_binding_denied",
+        "T7"
+    );
+    let after = repo.get("binding-transition").await.expect("T7");
+    assert_eq!(after.revision, exact_revision, "T7/E3");
+    assert_eq!(after.environment, resident, "T7/E3");
+
+    let terminal = persisted("binding-terminal", false, "terminated");
+    create(repo.as_ref(), terminal).await;
+    let terminal_before = repo
+        .get("binding-terminal")
+        .await
+        .expect("T5 fixture Store read");
+    assert_eq!(
+        sink.persist(receipt(
+            "binding-terminal",
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            "sandbox-terminal",
+        ))
+        .await
+        .expect_err("T5")
+        .code,
+        "session_environment_binding_denied"
+    );
+    assert_eq!(
+        repo.get("binding-terminal").await.expect("T5"),
+        terminal_before,
+        "T5/E3"
+    );
+
+    let mut continuation = persisted("binding-continuation", false, "idle");
+    let source_receipt = receipt(
+        "binding-continuation",
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        "sandbox-source",
+    );
+    continuation.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: source_receipt.binding.clone(),
+        effect_id: Some(source_receipt.effect_id),
+        generation: Some(awaken_session_contract::SandboxGeneration::new(
+            "binding-continuation",
+            1,
+            u64::MAX,
+            "environment",
+            "image",
+        )),
+        idle_since_unix_ms: None,
+    };
+    continuation
+        .environment
+        .begin_suspend("workspace", "binding-continuation", 0, None)
+        .expect("T6 fixture");
+    create(repo.as_ref(), continuation).await;
+    let continuation_before = repo
+        .get("binding-continuation")
+        .await
+        .expect("T6 fixture Store read");
+    assert_eq!(
+        sink.persist(receipt(
+            "binding-continuation",
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+            "sandbox-source",
+        ))
+        .await
+        .expect_err("T6")
+        .code,
+        "session_environment_binding_denied"
+    );
+    assert_eq!(
+        repo.get("binding-continuation").await.expect("T6"),
+        continuation_before,
+        "T6/E3"
+    );
+}
+
+#[test]
+fn environment_binding_readback_rejects_terminal_or_ungenerated_authority() {
+    // Cause/effect table: C1 Store read is exact binding+effect; C2 it is
+    // terminal; C3 generation is absent. E1 only C1+!C2+!C3 may publish;
+    // C2 or C3 returns typed denial. This owns the post-CAS/readback race fence,
+    // while the async table above owns mutation/no-mutation effects.
+    let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
+        "binding-readback",
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        "sandbox-readback",
+        None,
+    );
+    let mut session = persisted("binding-readback", false, "idle");
+    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: receipt.binding.clone(),
+        effect_id: Some(receipt.effect_id.clone()),
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    assert_eq!(
+        validate_environment_binding_authority(&session, &receipt)
+            .expect_err("C3")
+            .code,
+        "session_environment_binding_denied"
+    );
+    session
+        .environment
+        .assign_generation(awaken_session_contract::SandboxGeneration::new(
+            "binding-readback",
+            1,
+            u64::MAX,
+            "environment",
+            "image",
+        ));
+    session.execution = awaken_session_contract::SessionExecutionState::Terminated;
+    assert_eq!(
+        validate_environment_binding_authority(&session, &receipt)
+            .expect_err("C2")
+            .code,
+        "session_environment_binding_denied"
     );
 }
 

@@ -48,6 +48,8 @@ impl ManagedHost {
         &self,
         thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
+        source_effect_id: &str,
+        source_binding: &str,
         generation: &awaken_session_contract::SandboxGeneration,
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         let lifecycle = self
@@ -55,6 +57,16 @@ impl ManagedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
+        let environment = self
+            .host
+            .resident_checkpoint_source_environment(
+                thread,
+                operation,
+                source_effect_id,
+                source_binding,
+                generation,
+            )
+            .map_err(to_run_error)?;
         let primary_active = self
             .host
             .session_slots
@@ -70,7 +82,7 @@ impl ManagedHost {
             .unwrap_or(false);
         let delegated = self
             .host
-            .delegated_runs(thread)
+            .delegated_runs_under_lifecycle(thread)
             .await
             .map_err(to_run_error)?;
         let delegated_active = delegated.iter().any(|run| {
@@ -108,17 +120,6 @@ impl ManagedHost {
             ));
         }
         self.host.stop_session_mcp_processes(thread).await;
-        let environment = self
-            .host
-            .session_slots
-            .read(thread, |slot| slot.environment.clone())
-            .flatten()
-            .ok_or_else(|| {
-                RunError::unavailable_classified(
-                    "session_environment_missing",
-                    "Resident Session environment is unavailable for checkpoint",
-                )
-            })?;
         environment.quiesce().await;
         self.host
             .session_slots
@@ -136,6 +137,26 @@ impl ManagedHost {
         thread: &str,
         request: awaken_session_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        if request.session_id != thread {
+            return Err(RunError::internal(
+                "checkpoint request does not belong to its Session",
+            ));
+        }
+        let environment = self
+            .host
+            .resident_checkpoint_source_environment(
+                thread,
+                &request.operation,
+                &request.source_effect_id,
+                &request.source_binding,
+                &request.generation,
+            )
+            .map_err(to_run_error)?;
         let store = self
             .host
             .environment_checkpoint_store
@@ -144,17 +165,6 @@ impl ManagedHost {
                 RunError::unavailable_classified(
                     "session_environment_checkpoint_store_unavailable",
                     "No Session environment checkpoint store is installed",
-                )
-            })?;
-        let environment = self
-            .host
-            .session_slots
-            .read(thread, |slot| slot.environment.clone())
-            .flatten()
-            .ok_or_else(|| {
-                RunError::unavailable_classified(
-                    "session_environment_missing",
-                    "Resident Session environment is unavailable for checkpoint",
                 )
             })?;
         let provider_request = awaken_provisioning_contract::SandboxCheckpointRequest {
@@ -184,6 +194,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
+        source_effect_id: &str,
         generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
@@ -192,40 +203,16 @@ impl ManagedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
-        let environment = self
-            .host
-            .session_slots
-            .read(thread, |slot| slot.environment.clone())
-            .flatten();
-        if let Some(environment) = environment {
-            let binding = serde_json::to_string(&environment.handle())
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            if binding != source_binding {
-                return Err(RunError::classified(
-                    "session_environment_stale_source",
-                    "Checkpoint disposal was fenced by another environment binding",
-                ));
-            }
-            self.host.session_slots.modify(thread, |slot| {
-                slot.runtime = None;
-                slot.environment = None;
-                slot.expected_environment_binding = None;
-            });
-            environment
-                .dispose()
-                .await
-                .map_err(|error| RunError::unavailable(error.to_string()))?;
-            if environment
-                .status()
-                .await
-                .map_err(|error| RunError::unavailable(error.to_string()))?
-                != awaken_provisioning_contract::SandboxStatus::Terminated
-            {
-                return Err(RunError::unavailable(
-                    "Checkpoint source still reports a live Sandbox",
-                ));
-            }
-        }
+        self.host
+            .dispose_checkpoint_source_environment(
+                thread,
+                operation,
+                source_effect_id,
+                generation,
+                source_binding,
+            )
+            .await
+            .map_err(to_run_error)?;
         Ok(awaken_session_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id.clone(),
@@ -238,6 +225,19 @@ impl ManagedHost {
         &self,
         request: awaken_session_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
+        let thread = request.session_id.clone();
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(&thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        self.host
+            .retry_unpublished_session_environment_cleanup(&thread)
+            .await
+            .map_err(to_run_error)?;
+        self.host
+            .begin_session_environment_restore(&thread, &request)
+            .map_err(to_run_error)?;
         let store = self
             .host
             .environment_checkpoint_store
@@ -270,11 +270,19 @@ impl ManagedHost {
         &self,
         request: &awaken_session_contract::SandboxRestoreRequest,
     ) -> Result<(), RunError> {
+        // The terminal cleanup caller owns the Session lifecycle guard across
+        // exact target disposal and generic owner removal.
+        self.host
+            .begin_session_environment_restore(&request.session_id, request)
+            .map_err(to_run_error)?;
         let (provider, spec) = self.restoration_provider_and_spec(request)?;
         provider
             .dispose_restored(&spec, request)
             .await
-            .map_err(|error| RunError::unavailable(error.to_string()))
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        self.host
+            .complete_session_environment_restore_target_disposal(&request.session_id, request)
+            .map_err(to_run_error)
     }
 
     pub(super) async fn delete_environment_continuation_checkpoint(
