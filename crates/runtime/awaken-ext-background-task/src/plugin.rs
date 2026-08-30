@@ -10,7 +10,8 @@ use std::sync::Arc;
 use crate::BACKGROUND_TASK_STATE_PREFIX;
 use crate::tools::{CancelBackgroundTask, GetBackgroundTask, ListBackgroundTasks, RunInBackground};
 use crate::{
-    BackgroundTaskLifecycle, BackgroundTaskSupervisor, TaskClaim, task_state_cell, tasks_from_state,
+    BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, TaskClaim,
+    task_state_cell, tasks_from_state,
 };
 
 pub const BACKGROUND_TASK_PLUGIN_ID: &str = "background_task";
@@ -143,12 +144,22 @@ impl PhaseHook for ReconcileBackgroundTasks {
         let mut commands = Vec::new();
         for mut task in tasks {
             if let Some(completion) = self.supervisor.completion(&task.id) {
-                if task.finish(&completion.fence, completion.end).is_ok()
-                    && let Ok(command) = task_state_cell(&task.id).write(&task)
-                {
-                    commands.push(command);
+                match task.finish(&completion.fence, completion.end) {
+                    Ok(()) => {
+                        if let Ok(command) = task_state_cell(&task.id).write(&task) {
+                            commands.push(command);
+                        }
+                        continue;
+                    }
+                    Err(BackgroundTaskError::StaleFence) => {
+                        // Another worker epoch is now durable. Retire only the
+                        // stale process projection and continue reconciling the
+                        // authoritative attempt; otherwise stale completion
+                        // would permanently suppress its post-commit launch.
+                        self.supervisor.retire(&task.id);
+                    }
+                    Err(_) => continue,
                 }
-                continue;
             }
             if matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. }) {
                 self.supervisor.cancel(&task.id);

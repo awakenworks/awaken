@@ -7,7 +7,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskCompletion, BackgroundTaskConfig,
     BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle, BackgroundTaskOrigin,
-    BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, task_state_cell,
+    BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, TaskFence,
+    task_state_cell,
 };
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
@@ -267,7 +268,9 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     // C1 matching process completion + current fence -> E1 Ended in one StateCommand;
     // C2 replacement worker before lease expiry -> E2 no command;
     // C3 replacement worker at expiry + replay-safe policy -> E3 epoch increments
-    // and ownership moves in one command. This is the persisted recovery edge;
+    // and ownership moves in one command; C4 an old local completion observes
+    // the new durable fence -> E4 it is retired and cannot suppress relaunch.
+    // This is the persisted recovery edge;
     // the product observer may execute only after E1/E3's enclosing Run commits.
     let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-new"));
     let plugin = BackgroundTaskPlugin::with_supervisor(
@@ -319,6 +322,10 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             },
         )
         .expect("completed claim");
+    assert!(
+        supervisor.register(&completed.id).is_some(),
+        "C1 completion must follow local launch registration"
+    );
     supervisor.complete(
         completed.id.clone(),
         BackgroundTaskCompletion {
@@ -402,4 +409,32 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     let attempt = reclaimed.attempt().expect("reclaimed attempt");
     assert_eq!(attempt.worker_id, supervisor.worker_id());
     assert_eq!(attempt.epoch, 2);
+
+    assert!(supervisor.register(&replacement.id).is_some(), "C4 setup");
+    supervisor.complete(
+        replacement.id.clone(),
+        BackgroundTaskCompletion {
+            fence: TaskFence {
+                worker_id: "worker-old".into(),
+                epoch: 1,
+            },
+            end: BackgroundTaskEnd::Completed {
+                content: Vec::new(),
+                is_error: false,
+            },
+        },
+    );
+    assert!(supervisor.completion(&replacement.id).is_some(), "C4 setup");
+    assert!(
+        hook.on_phase(&ctx, &[], &replacement_state)
+            .await
+            .state
+            .is_empty(),
+        "C4/E4 stale completion cannot mutate the current attempt"
+    );
+    assert!(supervisor.completion(&replacement.id).is_none(), "C4/E4");
+    assert!(
+        supervisor.register(&replacement.id).is_some(),
+        "C4/E4 the stale guard no longer suppresses post-commit launch"
+    );
 }

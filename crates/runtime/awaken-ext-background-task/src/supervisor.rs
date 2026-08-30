@@ -14,12 +14,19 @@ pub struct BackgroundTaskCompletion {
     pub end: BackgroundTaskEnd,
 }
 
+enum SupervisorEntry {
+    Active(CancellationToken),
+    Completed(BackgroundTaskCompletion),
+}
+
 /// Process-local execution projection. Durable authority remains Thread State;
 /// losing this value on restart is handled by the aggregate lease/recovery law.
 pub struct BackgroundTaskSupervisor {
     worker_id: String,
-    active: Mutex<BTreeMap<BackgroundTaskId, CancellationToken>>,
-    completed: Mutex<BTreeMap<BackgroundTaskId, BackgroundTaskCompletion>>,
+    /// One mutually-exclusive process projection per durable task. A single
+    /// lock makes Active -> Completed atomic, so duplicate terminal delivery
+    /// cannot register between two parallel maps.
+    entries: Mutex<BTreeMap<BackgroundTaskId, SupervisorEntry>>,
 }
 
 /// One process identity shared by the Runtime plugin and product observer.
@@ -45,8 +52,7 @@ impl BackgroundTaskSupervisor {
     pub fn new(worker_id: impl Into<String>) -> Self {
         Self {
             worker_id: worker_id.into(),
-            active: Mutex::new(BTreeMap::new()),
-            completed: Mutex::new(BTreeMap::new()),
+            entries: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -72,55 +78,50 @@ impl BackgroundTaskSupervisor {
     /// Claim process-local launch ownership once. Duplicate terminal delivery
     /// observes the existing token and causes no second effect.
     pub fn register(&self, id: &BackgroundTaskId) -> Option<CancellationToken> {
-        if self
-            .completed
+        let mut entries = self
+            .entries
             .lock()
-            .expect("background completion mutex poisoned")
-            .contains_key(id)
-        {
-            return None;
-        }
-        let mut active = self
-            .active
-            .lock()
-            .expect("background active mutex poisoned");
-        if active.contains_key(id) {
+            .expect("background supervisor mutex poisoned");
+        if entries.contains_key(id) {
             return None;
         }
         let token = CancellationToken::new();
-        active.insert(id.clone(), token.clone());
+        entries.insert(id.clone(), SupervisorEntry::Active(token.clone()));
         Some(token)
     }
 
     #[must_use]
     pub fn is_active(&self, id: &BackgroundTaskId) -> bool {
-        self.active
-            .lock()
-            .expect("background active mutex poisoned")
-            .contains_key(id)
+        matches!(
+            self.entries
+                .lock()
+                .expect("background supervisor mutex poisoned")
+                .get(id),
+            Some(SupervisorEntry::Active(_))
+        )
     }
 
     pub fn cancel(&self, id: &BackgroundTaskId) {
-        if let Some(token) = self
-            .active
+        if let Some(SupervisorEntry::Active(token)) = self
+            .entries
             .lock()
-            .expect("background active mutex poisoned")
+            .expect("background supervisor mutex poisoned")
             .get(id)
         {
             token.cancel();
         }
     }
 
+    /// Atomically replace one registered launch with its first completion.
+    /// An unregistered or already-completed delivery is stale and ignored.
     pub fn complete(&self, id: BackgroundTaskId, completion: BackgroundTaskCompletion) {
-        self.active
+        let mut entries = self
+            .entries
             .lock()
-            .expect("background active mutex poisoned")
-            .remove(&id);
-        self.completed
-            .lock()
-            .expect("background completion mutex poisoned")
-            .entry(id)
-            .or_insert(completion);
+            .expect("background supervisor mutex poisoned");
+        if matches!(entries.get(&id), Some(SupervisorEntry::Active(_))) {
+            entries.insert(id, SupervisorEntry::Completed(completion));
+        }
     }
 
     /// Read a completed projection without releasing its deduplication guard.
@@ -128,22 +129,73 @@ impl BackgroundTaskSupervisor {
     /// durable terminal state.
     #[must_use]
     pub fn completion(&self, id: &BackgroundTaskId) -> Option<BackgroundTaskCompletion> {
-        self.completed
+        match self
+            .entries
             .lock()
-            .expect("background completion mutex poisoned")
+            .expect("background supervisor mutex poisoned")
             .get(id)
-            .cloned()
+        {
+            Some(SupervisorEntry::Completed(completion)) => Some(completion.clone()),
+            Some(SupervisorEntry::Active(_)) | None => None,
+        }
     }
 
     /// Release process-local state after durable Thread State is terminal.
     pub fn retire(&self, id: &BackgroundTaskId) {
-        self.active
+        self.entries
             .lock()
-            .expect("background active mutex poisoned")
+            .expect("background supervisor mutex poisoned")
             .remove(id);
-        self.completed
-            .lock()
-            .expect("background completion mutex poisoned")
-            .remove(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id() -> BackgroundTaskId {
+        BackgroundTaskId::new("task").expect("fixture id")
+    }
+
+    fn completion(epoch: u64) -> BackgroundTaskCompletion {
+        BackgroundTaskCompletion {
+            fence: TaskFence {
+                worker_id: "worker".into(),
+                epoch,
+            },
+            end: BackgroundTaskEnd::Cancelled,
+        }
+    }
+
+    #[test]
+    fn active_to_completed_is_one_atomic_deduplication_slot() {
+        // Cause/effect table: C1 vacant+register -> E1 Active; C2 Active+complete
+        // -> E2 Completed; C3 Completed+register/complete -> E3 both stutter;
+        // C4 retire -> E4 vacant and registerable. Constraint: Active and
+        // Completed can never coexist in parallel maps for one task id.
+        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let id = id();
+        assert!(supervisor.register(&id).is_some(), "C1/E1");
+        assert!(supervisor.is_active(&id), "C1/E1");
+        supervisor.complete(id.clone(), completion(1));
+        assert!(!supervisor.is_active(&id), "C2/E2");
+        assert_eq!(supervisor.completion(&id).unwrap().fence.epoch, 1, "C2/E2");
+        assert!(supervisor.register(&id).is_none(), "C3/E3");
+        supervisor.complete(id.clone(), completion(2));
+        assert_eq!(supervisor.completion(&id).unwrap().fence.epoch, 1, "C3/E3");
+        supervisor.retire(&id);
+        assert!(supervisor.register(&id).is_some(), "C4/E4");
+    }
+
+    #[test]
+    fn unregistered_completion_cannot_create_a_parallel_guard() {
+        // Cause: completion arrives without a locally registered launch.
+        // Effect: it is ignored and leaves the sole slot vacant. Constraint:
+        // only the owner that won register may create completion evidence.
+        let supervisor = BackgroundTaskSupervisor::new("worker");
+        let id = id();
+        supervisor.complete(id.clone(), completion(1));
+        assert!(supervisor.completion(&id).is_none());
+        assert!(supervisor.register(&id).is_some());
     }
 }
