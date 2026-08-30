@@ -250,7 +250,7 @@ impl DispatchSessionRuntime {
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         self.managed()?
             .publish_terminal_repository(command, Some(lease))
             .await
@@ -372,7 +372,7 @@ impl SharedHost {
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         self.dispatch_session_runtime()?
             .execute_terminal_repository_publication(command, lease)
             .await

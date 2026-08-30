@@ -1387,7 +1387,7 @@ impl SessionRuntime for ManagedHost {
     async fn execute_terminal_repository_publication(
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
-    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         self.publish_terminal_repository(command, None).await
     }
 

@@ -1907,6 +1907,7 @@ dependencies = [
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-observability",
+ "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",

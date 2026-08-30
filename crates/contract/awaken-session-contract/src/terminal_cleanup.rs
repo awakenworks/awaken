@@ -9,9 +9,12 @@ mod completion;
 mod repository_publication;
 
 pub use completion::{SessionCleanupCompletion, VerifiedSessionCleanupReceipt};
+use repository_publication::{
+    VerifiedRepositoryPublicationOutcome, verified_repository_publication_outcome,
+};
 
 use awaken_provisioning_contract::{
-    RepositoryPublicationExpectation, RepositoryPublicationReceipt,
+    RepositoryPublicationExpectation, RepositoryPublicationReceipt, RepositoryPublicationRejection,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,6 +52,28 @@ pub struct SessionRepositoryPublicationReceipt {
     pub receipt_fingerprint: String,
 }
 
+/// Canonical permanent rejection evidence for one exact Session publication
+/// command. This is the negative counterpart of
+/// [`SessionRepositoryPublicationReceipt`], not a second cleanup state: exactly
+/// one of the two may be retained by the existing publication sidecar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRepositoryPublicationRejection {
+    pub command_fingerprint: String,
+    pub effect_rejection: RepositoryPublicationRejection,
+    pub rejection_fingerprint: String,
+}
+
+/// One execution attempt at the root publication effect. `Rejected` is a
+/// successful observation of a permanent compare-and-swap failure and therefore
+/// must be made durable before ordinary root cleanup. Dependency loss remains a
+/// `RunError` outside this enum so the same command is retried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionRepositoryPublicationEffect {
+    Published(SessionRepositoryPublicationReceipt),
+    Rejected(SessionRepositoryPublicationRejection),
+}
+
 /// The publication sidecar around the one legacy cleanup operation.
 ///
 /// Its fields are private so callers cannot construct a recursive wrapper or a
@@ -61,6 +86,8 @@ pub struct SessionRepositoryPublicationCleanup {
     intent: SessionRepositoryPublicationIntent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     receipt: Option<SessionRepositoryPublicationReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rejection: Option<SessionRepositoryPublicationRejection>,
 }
 
 /// Heap-free admission kernel for one terminal cleanup effect receipt. The
@@ -232,6 +259,7 @@ impl SessionCleanupOperation {
                         cleanup,
                         intent: repository_publication,
                         receipt: None,
+                        rejection: None,
                     }));
                 Ok(true)
             }
@@ -350,28 +378,6 @@ impl SessionCleanupOperation {
     }
 
     #[must_use]
-    pub fn repository_publication_intent(&self) -> Option<&SessionRepositoryPublicationIntent> {
-        match self {
-            Self::RepositoryPublication(publication) => Some(&publication.intent),
-            Self::NotRequested
-            | Self::Fenced { .. }
-            | Self::Requested { .. }
-            | Self::Completed { .. } => None,
-        }
-    }
-
-    #[must_use]
-    pub fn repository_publication_receipt(&self) -> Option<&SessionRepositoryPublicationReceipt> {
-        match self {
-            Self::RepositoryPublication(publication) => publication.receipt.as_ref(),
-            Self::NotRequested
-            | Self::Fenced { .. }
-            | Self::Requested { .. }
-            | Self::Completed { .. } => None,
-        }
-    }
-
-    #[must_use]
     pub fn is_fenced(&self) -> bool {
         matches!(self.legacy_cleanup(), Self::Fenced { .. })
     }
@@ -392,54 +398,6 @@ impl SessionCleanupOperation {
             self.legacy_cleanup(),
             Self::Fenced { .. } | Self::Requested { .. }
         )
-    }
-
-    /// Project the one root Repository publication effect only after every
-    /// child Runtime cleanup receipt is durable and before the root cleanup is
-    /// allowed to dispose the shared environment.
-    pub fn publication_command(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<SessionRepositoryPublicationCommand>, SessionCleanupError> {
-        let Self::RepositoryPublication(publication) = self else {
-            return match self {
-                Self::Requested { .. } | Self::Completed { .. } => Ok(None),
-                Self::NotRequested | Self::Fenced { .. } => Err(SessionCleanupError::NotRequested),
-                Self::RepositoryPublication(_) => unreachable!(),
-            };
-        };
-        let Self::Requested {
-            effect_id,
-            thread_ids,
-            completions,
-            ..
-        } = &publication.cleanup
-        else {
-            return if publication.cleanup.is_completed() {
-                Ok(None)
-            } else {
-                Err(SessionCleanupError::NotRequested)
-            };
-        };
-        if *effect_id != cleanup_effect_id(session_id) {
-            return Err(SessionCleanupError::OperationMismatch);
-        }
-        if !thread_ids.contains(session_id) {
-            return Err(SessionCleanupError::FrozenTargetsMismatch);
-        }
-        if thread_ids
-            .iter()
-            .any(|thread_id| thread_id != session_id && !completions.contains_key(thread_id))
-        {
-            return Ok(None);
-        }
-        let command =
-            SessionRepositoryPublicationCommand::new(session_id, effect_id, &publication.intent)?;
-        if let Some(receipt) = publication.receipt.as_ref() {
-            receipt.verify(&command)?;
-            return Ok(None);
-        }
-        Ok(Some(command))
     }
 
     #[must_use]
@@ -466,6 +424,7 @@ impl SessionCleanupOperation {
         &self,
         session_id: &str,
     ) -> Result<Vec<SessionCleanupCommand>, SessionCleanupError> {
+        self.verify_for(session_id)?;
         let cleanup = self.legacy_cleanup();
         let Self::Requested {
             effect_id,
@@ -499,7 +458,7 @@ impl SessionCleanupOperation {
         if self.publication_command(session_id)?.is_some() {
             // Repository publication is a root-owned effect, but the ordinary
             // root cleanup command would dispose its working tree. Withhold that
-            // finalizer until the exact publication receipt is durable.
+            // finalizer until the exact publication outcome is durable.
             return Ok(Vec::new());
         }
         Ok(thread_ids
@@ -513,75 +472,6 @@ impl SessionCleanupOperation {
             .collect())
     }
 
-    /// Verify and durably retain the exact root Repository publication receipt.
-    /// Children must already be complete. Exact replay is a no-op, while a
-    /// different command binding or effect receipt fails closed.
-    pub fn record_repository_publication_receipt(
-        &mut self,
-        session_id: &str,
-        receipt: SessionRepositoryPublicationReceipt,
-    ) -> Result<bool, SessionCleanupError> {
-        let Self::RepositoryPublication(publication) = self else {
-            return match self {
-                Self::Fenced { .. } => Err(SessionCleanupError::RepositoryPublicationNotReady),
-                Self::NotRequested | Self::Requested { .. } | Self::Completed { .. } => {
-                    Err(SessionCleanupError::RepositoryPublicationNotRequested)
-                }
-                Self::RepositoryPublication(_) => unreachable!(),
-            };
-        };
-        let publication = publication.as_mut();
-        let (effect_id, root_present, children_complete, completed) = match &publication.cleanup {
-            Self::Requested {
-                effect_id,
-                thread_ids,
-                completions,
-                ..
-            } => (
-                effect_id.clone(),
-                thread_ids.contains(session_id),
-                thread_ids.iter().all(|thread_id| {
-                    thread_id == session_id || completions.contains_key(thread_id)
-                }),
-                false,
-            ),
-            Self::Completed { effect_id, .. } => (effect_id.clone(), true, true, true),
-            Self::NotRequested => {
-                return Err(SessionCleanupError::RepositoryPublicationNotRequested);
-            }
-            Self::Fenced { .. } => {
-                return Err(SessionCleanupError::RepositoryPublicationNotReady);
-            }
-            Self::RepositoryPublication(_) => {
-                return Err(SessionCleanupError::FrozenRepositoryPublicationMismatch);
-            }
-        };
-        if effect_id != cleanup_effect_id(session_id) {
-            return Err(SessionCleanupError::OperationMismatch);
-        }
-        if !root_present {
-            return Err(SessionCleanupError::FrozenTargetsMismatch);
-        }
-        if !children_complete {
-            return Err(SessionCleanupError::RepositoryPublicationNotReady);
-        }
-        let command =
-            SessionRepositoryPublicationCommand::new(session_id, &effect_id, &publication.intent)?;
-        receipt.verify(&command)?;
-        match publication.receipt.as_ref() {
-            Some(durable) if durable == &receipt => return Ok(false),
-            Some(_) => {
-                return Err(SessionCleanupError::RepositoryPublicationReceiptMismatch);
-            }
-            None if completed => {
-                return Err(SessionCleanupError::MissingRepositoryPublicationReceipt);
-            }
-            None => {}
-        }
-        publication.receipt = Some(receipt);
-        Ok(true)
-    }
-
     /// Verify and durably retain one completion for an already-frozen target.
     /// Exact replay is a no-op; a conflicting completion fails closed.
     pub fn record_completion(
@@ -589,22 +479,19 @@ impl SessionCleanupOperation {
         session_id: &str,
         completion: SessionCleanupCompletion,
     ) -> Result<bool, SessionCleanupError> {
+        self.verify_for(session_id)?;
         if let Self::RepositoryPublication(publication) = self {
             if completion.thread_id == session_id {
                 let effect_id = publication
                     .cleanup
                     .effect_id()
                     .ok_or(SessionCleanupError::NotRequested)?;
-                let receipt = publication
-                    .receipt
-                    .as_ref()
-                    .ok_or(SessionCleanupError::MissingRepositoryPublicationReceipt)?;
                 let command = SessionRepositoryPublicationCommand::new(
                     session_id,
                     effect_id,
                     &publication.intent,
                 )?;
-                receipt.verify(&command)?;
+                verified_repository_publication_outcome(publication, &command)?;
             }
             return publication
                 .cleanup
@@ -691,21 +578,17 @@ impl SessionCleanupOperation {
                 .cleanup
                 .effect_id()
                 .ok_or(SessionCleanupError::NotRequested)?;
-            let receipt = publication
-                .receipt
-                .as_ref()
-                .ok_or(SessionCleanupError::MissingRepositoryPublicationReceipt)?;
             let command = SessionRepositoryPublicationCommand::new(
                 session_id,
                 effect_id,
                 &publication.intent,
             )?;
-            receipt.verify(&command)?;
+            let outcome = verified_repository_publication_outcome(publication, &command)?;
             return complete_cleanup(
                 &mut publication.cleanup,
                 session_id,
                 receipts,
-                Some(receipt),
+                Some(outcome),
             );
         }
         complete_cleanup(self, session_id, receipts, None)
@@ -716,7 +599,7 @@ fn complete_cleanup(
     cleanup: &mut SessionCleanupOperation,
     session_id: &str,
     receipts: &[VerifiedSessionCleanupReceipt],
-    repository_publication_receipt: Option<&SessionRepositoryPublicationReceipt>,
+    repository_publication_outcome: Option<VerifiedRepositoryPublicationOutcome>,
 ) -> Result<bool, SessionCleanupError> {
     let SessionCleanupOperation::Requested {
         effect_id,
@@ -770,21 +653,31 @@ fn complete_cleanup(
             )
         })
         .collect::<Vec<_>>();
-    let receipt_fingerprint = if let Some(publication_receipt) = repository_publication_receipt {
-        crate::stable_fingerprint(&(
-            "session-terminal-cleanup-receipt-v2",
-            effect_id.as_str(),
-            *delegation_watermark,
-            cleanup_evidence,
-            publication_receipt.receipt_fingerprint.as_str(),
-        ))
-    } else {
-        crate::stable_fingerprint(&(
+    let receipt_fingerprint = match repository_publication_outcome {
+        Some(VerifiedRepositoryPublicationOutcome::Published(publication_receipt)) => {
+            crate::stable_fingerprint(&(
+                "session-terminal-cleanup-receipt-v2",
+                effect_id.as_str(),
+                *delegation_watermark,
+                cleanup_evidence,
+                publication_receipt.receipt_fingerprint.as_str(),
+            ))
+        }
+        Some(VerifiedRepositoryPublicationOutcome::Rejected(publication_rejection)) => {
+            crate::stable_fingerprint(&(
+                "session-terminal-cleanup-rejection-v1",
+                effect_id.as_str(),
+                *delegation_watermark,
+                cleanup_evidence,
+                publication_rejection.rejection_fingerprint.as_str(),
+            ))
+        }
+        None => crate::stable_fingerprint(&(
             "session-terminal-cleanup-receipt-v1",
             effect_id.as_str(),
             *delegation_watermark,
             cleanup_evidence,
-        ))
+        )),
     };
     let next = SessionCleanupOperation::Completed {
         effect_id: effect_id.clone(),
@@ -861,6 +754,12 @@ pub enum SessionCleanupError {
     MissingRepositoryPublicationReceipt,
     #[error("Session Repository publication receipt does not match its exact command")]
     RepositoryPublicationReceiptMismatch,
+    #[error("Session terminal cleanup has no Repository publication outcome")]
+    MissingRepositoryPublicationOutcome,
+    #[error("Session Repository publication rejection does not match its exact command")]
+    RepositoryPublicationRejectionMismatch,
+    #[error("Session Repository publication has conflicting terminal outcomes")]
+    RepositoryPublicationOutcomeMismatch,
     #[error("Session Repository publication intent is already frozen to another value")]
     FrozenRepositoryPublicationMismatch,
     #[error("Session cleanup operation does not match its Session identity")]
@@ -914,6 +813,7 @@ mod tests {
             expectation: RepositoryPublicationExpectation {
                 branch: "awf/work".into(),
                 commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                expected_prior_commit: None,
             },
         }
     }
@@ -1162,7 +1062,13 @@ mod tests {
         assert_eq!(serde_json::to_string(&state).unwrap(), completed, "L3/E1");
         let decoded: SessionCleanupOperation = serde_json::from_str(completed).unwrap();
         assert!(decoded.repository_publication_intent().is_none(), "L3/E3");
-        assert!(decoded.repository_publication_receipt().is_none(), "L3/E3");
+        assert!(
+            decoded
+                .repository_publication_receipt("legacy-session")
+                .unwrap()
+                .is_none(),
+            "L3/E3"
+        );
     }
 
     #[test]
@@ -1260,7 +1166,7 @@ mod tests {
                 "publish-session",
                 SessionCleanupCompletion::new(&root, Vec::new()),
             ),
-            Err(SessionCleanupError::MissingRepositoryPublicationReceipt),
+            Err(SessionCleanupError::MissingRepositoryPublicationOutcome),
             "R3/E3"
         );
 
@@ -1315,7 +1221,13 @@ mod tests {
             recovered.complete("publish-session", &receipts).unwrap(),
             "R6"
         );
-        assert!(recovered.repository_publication_receipt().is_some(), "R6");
+        assert!(
+            recovered
+                .repository_publication_receipt("publish-session")
+                .unwrap()
+                .is_some(),
+            "R6"
+        );
         let SessionCleanupOperation::RepositoryPublication(publication) = &recovered else {
             panic!("R6 publication wrapper");
         };
@@ -1367,6 +1279,93 @@ mod tests {
                 .record_repository_publication_receipt("publish-session", receipt)
                 .unwrap(),
             "R6 exact completed replay"
+        );
+    }
+
+    #[test]
+    fn repository_publication_rejection_is_durable_root_gating_evidence() {
+        /* Permanent-rejection cause/effect table. Causes: C1 every child is
+         * complete; C2 the realizer reports an exact command-bound stale remote;
+         * C3 the same/different outcome is replayed; C4 ordinary root cleanup is
+         * attempted before/after rejection durability. Effects: E1 retain no
+         * second publication command; E2 expose the root cleanup only after the
+         * rejection; E3 exact rejection replay is a no-op and receipt/conflicting
+         * rejection fails closed; E4 completed recovery preserves the rejection.
+         * Rules: J1 !C1=>reject record; J2 C1+C2=>E1+E2; J3 same=>E3 no-op;
+         * J4 different=>E3 fail; J5 C2+C4=>E4. */
+        let session_id = "rejected-publication";
+        let prior = "1111111111111111111111111111111111111111";
+        let observed = "2222222222222222222222222222222222222222";
+        let mut intent = publication_intent();
+        intent.expectation.expected_prior_commit = Some(prior.into());
+        let mut state = SessionCleanupOperation::default();
+        state.request_with_publication(session_id, intent).unwrap();
+        state.freeze_targets(session_id, [], 3, 5).unwrap();
+        let command = state
+            .publication_command(session_id)
+            .unwrap()
+            .expect("J2 publication command");
+        let rejection = SessionRepositoryPublicationRejection::new(
+            &command,
+            RepositoryPublicationRejection::RemoteRefChanged {
+                observed_commit: observed.into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            state.pending_commands(session_id).unwrap().is_empty(),
+            "J1 root is withheld before the publication outcome"
+        );
+        assert!(
+            state
+                .record_repository_publication_rejection(session_id, rejection.clone())
+                .unwrap(),
+            "J2 rejection becomes durable"
+        );
+        assert!(
+            !state
+                .record_repository_publication_rejection(session_id, rejection.clone())
+                .unwrap(),
+            "J3 exact rejection replay"
+        );
+        assert!(
+            state.publication_command(session_id).unwrap().is_none(),
+            "J2 Git is absorbing after durable rejection"
+        );
+        assert_eq!(
+            state
+                .pending_commands(session_id)
+                .unwrap()
+                .iter()
+                .map(|command| command.thread_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![session_id],
+            "J2 ordinary root cleanup is now exposed"
+        );
+        assert_eq!(
+            state.record_repository_publication_receipt(session_id, publication_receipt(&command),),
+            Err(SessionCleanupError::RepositoryPublicationOutcomeMismatch),
+            "J4 receipt cannot replace a durable rejection"
+        );
+
+        let root = state.command_for(session_id, session_id).unwrap();
+        state
+            .record_completion(session_id, SessionCleanupCompletion::new(&root, Vec::new()))
+            .unwrap();
+        let receipts = state.recorded_receipts(session_id).unwrap();
+        assert!(state.complete(session_id, &receipts).unwrap(), "J5");
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            recovered
+                .repository_publication_rejection(session_id)
+                .unwrap(),
+            Some(&rejection),
+            "J5 durable recovery"
+        );
+        assert!(
+            recovered.publication_command(session_id).unwrap().is_none(),
+            "J5 recovered rejection never reissues Git"
         );
     }
 
@@ -1470,7 +1469,13 @@ mod tests {
                 Err(SessionCleanupError::RepositoryPublicationReceiptMismatch),
                 "V7/E2"
             );
-            assert!(state.repository_publication_receipt().is_none(), "V7/E2");
+            assert!(
+                state
+                    .repository_publication_receipt("exact")
+                    .unwrap()
+                    .is_none(),
+                "V7/E2"
+            );
         }
         assert!(
             state

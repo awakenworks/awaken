@@ -85,14 +85,17 @@ pub(super) async fn push(
     plan: &pc::RepositoryRealizationPlan,
     expectation: &pc::RepositoryPublicationExpectation,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
-) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
-    expectation.validate()?;
+) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
+    expectation
+        .validate()
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if plan.access == pc::MountAccess::ReadOnly {
-        return Err(pc::SandboxError::new(
-            "read-only repository cannot be published",
+        return Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new("read-only repository cannot be published"),
         ));
     }
-    let repo = super::container_files::logical_path(&plan.mount_path)?;
+    let repo = super::container_files::logical_path(&plan.mount_path)
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     let process = sandbox
         .spawn_agent_process(pc::Command {
             argv: vec![
@@ -111,36 +114,55 @@ pub(super) async fn push(
             env: Vec::new(),
             stdio: pc::Stdio::Piped,
         })
-        .await?;
+        .await
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     let mut bundle = Vec::new();
     process
         .channel
         .take((MAX_REPO_BUNDLE_BYTES + MAX_REPOSITORY_BRANCH_BYTES + 2) as u64)
         .read_to_end(&mut bundle)
         .await
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        .map_err(|error| {
+            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+        })?;
     if bundle.len() > MAX_REPO_BUNDLE_BYTES + MAX_REPOSITORY_BRANCH_BYTES + 1 {
         let _ = process.process.signal(pc::Signal::Kill).await;
-        return Err(pc::SandboxError::new("repository bundle exceeds limit"));
+        return Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new("repository bundle exceeds limit"),
+        ));
     }
-    let status = process.process.wait().await?;
+    let status = process
+        .process
+        .wait()
+        .await
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     if status.code != Some(0) {
-        return Err(pc::SandboxError::new(format!(
-            "container repository export exited {:?}",
-            status.code
-        )));
+        return Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new(format!(
+                "container repository export exited {:?}",
+                status.code
+            )),
+        ));
     }
     let branch_end = bundle
         .iter()
         .position(|byte| *byte == b'\n')
         .filter(|index| *index > 0 && *index <= MAX_REPOSITORY_BRANCH_BYTES)
-        .ok_or_else(|| pc::SandboxError::new("repository export has no current branch"))?;
+        .ok_or_else(|| {
+            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(
+                "repository export has no current branch",
+            ))
+        })?;
     let branch = std::str::from_utf8(&bundle[..branch_end])
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?
+        .map_err(|error| {
+            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+        })?
         .to_owned();
     let bundle = bundle.split_off(branch_end + 1);
     if bundle.len() > MAX_REPO_BUNDLE_BYTES {
-        return Err(pc::SandboxError::new("repository bundle exceeds limit"));
+        return Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new("repository bundle exceeds limit"),
+        ));
     }
     let plan = plan.clone();
     let expectation = expectation.clone();
@@ -155,5 +177,7 @@ pub(super) async fn push(
         )
     })
     .await
-    .map_err(|error| pc::SandboxError::new(error.to_string()))?
+    .map_err(|error| {
+        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
+    })?
 }

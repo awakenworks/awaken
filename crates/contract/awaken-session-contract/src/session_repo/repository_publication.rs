@@ -23,6 +23,25 @@ fn publication_input_is_exactly_active(
 }
 
 impl PersistedSession {
+    /// Return terminal cleanup authority only after binding any Repository
+    /// publication sidecar to this aggregate's outer Session identity.
+    pub fn verified_terminal_cleanup(
+        &self,
+    ) -> Result<&crate::SessionCleanupOperation, crate::SessionCleanupError> {
+        self.terminal_cleanup.verify_for(&self.session_id)?;
+        Ok(&self.terminal_cleanup)
+    }
+
+    pub(super) fn has_verified_completed_cleanup(&self) -> bool {
+        self.verified_terminal_cleanup()
+            .is_ok_and(crate::SessionCleanupOperation::is_completed)
+    }
+
+    pub(super) fn verified_cleanup_needs_reconciliation(&self) -> bool {
+        self.verified_terminal_cleanup()
+            .map_or(true, crate::SessionCleanupOperation::needs_reconciliation)
+    }
+
     /// Atomically freeze one exact Repository publication intent before the
     /// existing archive transition installs its terminal fence. Adapters call
     /// this single aggregate API so none can accidentally archive first and then
@@ -169,6 +188,24 @@ mod tests {
             "A2/E2"
         );
         assert_eq!(active, archived, "A2/E2");
+
+        let mut foreign_completed = active.clone();
+        foreign_completed.session_id = "foreign-publish-archive".into();
+        assert!(
+            foreign_completed.request_delete(),
+            "A2 foreign setup hidden"
+        );
+        assert!(
+            foreign_completed.verified_terminal_cleanup().is_err(),
+            "A2 foreign sidecar cannot bind the rewritten outer Session"
+        );
+        assert!(
+            !foreign_completed.admits_tombstone(
+                "foreign-publish-archive",
+                SessionRevision(foreign_completed.revision.0 + 1),
+            ),
+            "A2 foreign Completed evidence cannot authorize a tombstone"
+        );
 
         let mut invalid = session("invalid-archive", SessionRevision(1));
         install_publication_input(&mut invalid, &intent);

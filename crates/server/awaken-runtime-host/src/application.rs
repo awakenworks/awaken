@@ -949,7 +949,7 @@ impl crate::SharedHost {
                                 "Session `{session_id}` terminal Repository publication Workspace does not match its frozen Runtime projection"
                             )));
                         }
-                        let receipt = self
+                        let effect = self
                             .execute_dispatched_terminal_repository_publication(
                                 projection.command,
                                 lease,
@@ -960,17 +960,36 @@ impl crate::SharedHost {
                                     "Session `{session_id}` terminal Repository publication remained pending: {error}"
                                 ))
                             })?;
-                        if let Err(error) = control
-                            .record_terminal_repository_publication_receipt(
-                                session_id, lease, receipt,
-                            )
-                            .await
-                        {
+                        let outcome = match effect {
+                            awaken_session_contract::SessionRepositoryPublicationEffect::Published(
+                                receipt,
+                            ) => {
+                                control
+                                    .record_terminal_repository_publication_receipt(
+                                        session_id,
+                                        lease,
+                                        receipt,
+                                    )
+                                    .await
+                            }
+                            awaken_session_contract::SessionRepositoryPublicationEffect::Rejected(
+                                rejection,
+                            ) => {
+                                control
+                                    .record_terminal_repository_publication_rejection(
+                                        session_id,
+                                        lease,
+                                        rejection,
+                                    )
+                                    .await
+                            }
+                        };
+                        if let Err(error) = outcome {
                             return self
                                 .handle_session_realization_control_failure(
                                     session_id,
                                     error,
-                                    "terminal Repository publication receipt",
+                                    "terminal Repository publication outcome",
                                 )
                                 .await;
                         }
@@ -987,9 +1006,9 @@ impl crate::SharedHost {
                     }
                 }
 
-                // Re-read the aggregate after child/publication receipts. Only
-                // its canonical pending-command projection may expose the root
-                // finalizer that disposes the retained Environment.
+                // Re-read the aggregate after child receipts and the publication
+                // outcome. Only its canonical pending-command projection may expose
+                // the root finalizer that disposes the retained Environment.
                 let root_commands = match control.terminal_cleanup_commands(session_id, lease).await
                 {
                     Ok(Some(commands)) => commands,

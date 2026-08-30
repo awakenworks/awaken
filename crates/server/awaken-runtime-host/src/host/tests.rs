@@ -744,7 +744,7 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
         _credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
     ) -> Result<
         awaken_provisioning_contract::RepositoryPublicationReceipt,
-        awaken_provisioning_contract::SandboxError,
+        awaken_provisioning_contract::RepositoryPublicationError,
     > {
         Ok(awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation))
     }
@@ -7086,7 +7086,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
 /// | P1 | one writable Repository | exact expected coordinate | absent | publish and return canonical Session receipt |
 /// | P2 | same command replay | exact expected coordinate | same commit | no-op with byte-identical receipt |
 /// | P3 | command carries no second Resource lookup | exact | any | compile the command input through the ordinary staging owner |
-/// | P4 | child cleanup complete, publication receipt absent | exact | same commit | record replay receipt before root cleanup |
+/// | P4 | child cleanup complete, remote changed without an authorized prior | exact | stale | record rejection before root cleanup |
 ///
 /// Invalid coordinate and mismatched remote rules are exhaustively covered at
 /// the Repository realizer boundary; this integration test proves the
@@ -7250,6 +7250,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: commit.clone(),
+            expected_prior_commit: None,
         },
     };
     let mut operation = awaken_session_contract::SessionCleanupOperation::default();
@@ -7285,6 +7286,10 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         .await
         .expect("P2 replay");
     assert_eq!(first, replay, "P2 canonical first/replay receipt");
+    let awaken_session_contract::SessionRepositoryPublicationEffect::Published(first) = first
+    else {
+        panic!("P1 expected a publication receipt");
+    };
     assert_eq!(first.effect_receipt.commit, commit, "P1 exact receipt");
     let remote_commit = std::process::Command::new("git")
         .current_dir(temp.path())
@@ -7304,6 +7309,25 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         commit,
         "P1 remote exact commit"
     );
+    let divergent = temp.path().join("divergent");
+    git(
+        temp.path(),
+        &[
+            "clone",
+            "--branch",
+            "awf/work",
+            remote.to_str().unwrap(),
+            divergent.to_str().unwrap(),
+        ],
+    );
+    git(&divergent, &["config", "user.name", "remote-writer"]);
+    git(
+        &divergent,
+        &["config", "user.email", "remote@example.invalid"],
+    );
+    std::fs::write(divergent.join("README.md"), "remote changed").unwrap();
+    git(&divergent, &["commit", "-am", "remote changed"]);
+    git(&divergent, &["push", "origin", "awf/work"]);
     assert!(
         host.session_environment(session_id).await.is_some(),
         "P1-P2 Environment survives until root cleanup"
@@ -7356,16 +7380,24 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
             "cleanup:poll",
             "cleanup:terminal-publication-child",
             "publication:poll",
-            "publication:receipt",
+            "publication:rejection",
             "cleanup:poll",
             "cleanup:terminal-publication-local",
         ],
-        "P4 child -> publication receipt -> root"
+        "P4 child -> durable publication rejection -> root"
     );
-    assert_eq!(control.publication_receipts.lock().unwrap().len(), 1, "P4");
+    assert!(
+        control.publication_receipts.lock().unwrap().is_empty(),
+        "P4"
+    );
+    assert_eq!(
+        control.publication_rejections.lock().unwrap().len(),
+        1,
+        "P4"
+    );
     assert!(
         host.session_environment(session_id).await.is_none(),
-        "P4 root cleanup runs only after the publication receipt"
+        "P4 root cleanup runs only after the publication rejection"
     );
 }
 
@@ -14168,6 +14200,8 @@ struct RemoteTerminalCleanupControl {
     publication_projection:
         Mutex<Option<awaken_session_contract::SessionRepositoryPublicationProjection>>,
     publication_receipts: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
+    publication_rejections:
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
     events: Mutex<Vec<String>>,
     poll_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     poll_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
@@ -14310,6 +14344,20 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
             .unwrap()
             .push("publication:receipt".into());
         self.publication_receipts.lock().unwrap().push(receipt);
+        Ok(())
+    }
+
+    async fn record_terminal_repository_publication_rejection(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.events
+            .lock()
+            .unwrap()
+            .push("publication:rejection".into());
+        self.publication_rejections.lock().unwrap().push(rejection);
         Ok(())
     }
 

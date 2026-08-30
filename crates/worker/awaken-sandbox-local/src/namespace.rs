@@ -794,7 +794,7 @@ impl NamespaceSandbox {
         plan: &pc::RepositoryRealizationPlan,
         expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+    ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
         push_repo_to_at(
             &self.workspace_root(),
             workspace_relative(&plan.mount_path),
@@ -802,7 +802,6 @@ impl NamespaceSandbox {
             expectation,
             credential,
         )
-        .map_err(err)
     }
 
     pub fn list_files(&self, subdir: &str) -> Vec<(String, Vec<u8>)> {

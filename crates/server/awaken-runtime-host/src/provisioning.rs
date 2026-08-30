@@ -21,6 +21,12 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 /// their exact path and remain adoptable without a second live-path convention.
 const OUTPUTS_PATH: &str = "/mnt/session/outputs";
 
+#[derive(Debug)]
+pub(crate) enum RepositoryPublicationActivationError {
+    Rejected(pc::RepositoryPublicationRejection),
+    Failed(crate::host::HostError),
+}
+
 /// Canonical projection from the frozen Session Environment into neutral
 /// provisioning vocabulary. Admission and realization both consume this value,
 /// so a Worker cannot claim requirements different from those it materializes.
@@ -665,25 +671,44 @@ impl SharedHost {
             awaken_session_contract::SessionRepositoryPublicationCommand,
             awaken_session_contract::SessionRealizationLease,
         )>,
-    ) -> Result<pc::RepositoryPublicationReceipt, crate::host::HostError> {
-        expectation
-            .validate()
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+    ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
+        expectation.validate().map_err(|error| {
+            RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
+                error.to_string(),
+            ))
+        })?;
         if repository.plan.access == pc::MountAccess::ReadOnly {
-            return Err(crate::host::HostError::internal(
-                "read-only repository cannot be published",
+            return Err(RepositoryPublicationActivationError::Failed(
+                crate::host::HostError::internal("read-only repository cannot be published"),
             ));
         }
         let credential = self
             .repository_operation_credential(thread, repository, binding_checks, publication_fence)
-            .await?;
+            .await
+            .map_err(RepositoryPublicationActivationError::Failed)?;
         let receipt = realizer
             .publish_repository(&repository.plan, expectation, credential.as_ref())
             .await
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+            .map_err(|error| match error {
+                pc::RepositoryPublicationError::Rejected(rejection) => {
+                    RepositoryPublicationActivationError::Rejected(rejection)
+                }
+                pc::RepositoryPublicationError::Unavailable(error) => {
+                    RepositoryPublicationActivationError::Failed(
+                        crate::host::HostError::unavailable_classified(
+                            "repository_publication_transport_unavailable",
+                            error.to_string(),
+                        ),
+                    )
+                }
+            })?;
         receipt
             .verify(&repository.plan, expectation)
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+            .map_err(|error| {
+                RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
+                    error.to_string(),
+                ))
+            })?;
         Ok(receipt)
     }
 
@@ -983,7 +1008,7 @@ mod provisioning_registry_tests {
             plan: &pc::RepositoryRealizationPlan,
             expectation: &pc::RepositoryPublicationExpectation,
             _credential: Option<&pc::RepositoryHttpBasicCredential>,
-        ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+        ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
             *self.calls.lock().unwrap() += 1;
             let mut receipt = pc::RepositoryPublicationReceipt::new(plan, expectation);
             if self.mismatched_receipt {
@@ -1222,7 +1247,8 @@ mod provisioning_registry_tests {
                 _plan: &pc::RepositoryRealizationPlan,
                 _expectation: &pc::RepositoryPublicationExpectation,
                 _credential: Option<&pc::RepositoryHttpBasicCredential>,
-            ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+            ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError>
+            {
                 unreachable!("R9 tests realization only")
             }
         }
@@ -1289,6 +1315,7 @@ mod provisioning_registry_tests {
         let expectation = pc::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            expected_prior_commit: None,
         };
         let realizer = RecordingPublicationRealizer::default();
         let receipt = host
@@ -1316,12 +1343,20 @@ mod provisioning_registry_tests {
             .publish_repository_activation("thread", &readonly, &[], &realizer, &expectation, None)
             .await
             .expect_err("H2");
-        assert!(error.message.contains("read-only"), "H2/E3");
+        assert!(
+            matches!(
+                error,
+                RepositoryPublicationActivationError::Failed(error)
+                    if error.message.contains("read-only")
+            ),
+            "H2/E3"
+        );
         assert_eq!(*realizer.calls.lock().unwrap(), 1, "H2 no effect");
 
         let invalid = pc::RepositoryPublicationExpectation {
             branch: "awf/work".into(),
             commit: "short".into(),
+            expected_prior_commit: None,
         };
         host.publish_repository_activation("thread", &repository, &[], &realizer, &invalid, None)
             .await
@@ -1343,7 +1378,14 @@ mod provisioning_registry_tests {
             )
             .await
             .expect_err("H4");
-        assert!(error.message.contains("does not match"), "H4/E4");
+        assert!(
+            matches!(
+                error,
+                RepositoryPublicationActivationError::Failed(error)
+                    if error.message.contains("does not match")
+            ),
+            "H4/E4"
+        );
         assert_eq!(*mismatched.calls.lock().unwrap(), 1, "H4/E1");
     }
 

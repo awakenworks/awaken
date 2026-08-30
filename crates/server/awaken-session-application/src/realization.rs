@@ -1716,6 +1716,16 @@ impl SessionApplication {
         self.record_external_terminal_repository_publication_receipt(session_id, lease, receipt)
             .await
     }
+
+    async fn record_terminal_repository_publication_rejection_after_refresh(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_external_terminal_repository_publication_rejection(session_id, lease, rejection)
+            .await
+    }
 }
 
 /// Local application drivers cross an executable-refresh boundary before they
@@ -1860,6 +1870,18 @@ impl SessionRealizationControl for SessionApplication {
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_repository_publication_receipt_after_refresh(
             session_id, lease, receipt,
+        )
+        .await
+    }
+
+    async fn record_terminal_repository_publication_rejection(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_terminal_repository_publication_rejection_after_refresh(
+            session_id, lease, rejection,
         )
         .await
     }

@@ -2,7 +2,8 @@
 
 use awaken_session_contract::{
     RunError, SessionRealizationLease, SessionRepositoryPublicationCommand,
-    SessionRepositoryPublicationReceipt,
+    SessionRepositoryPublicationEffect, SessionRepositoryPublicationReceipt,
+    SessionRepositoryPublicationRejection,
 };
 
 use crate::{ManagedHost, managed_adapter_error::to_run_error};
@@ -18,7 +19,7 @@ impl ManagedHost {
         &self,
         command: SessionRepositoryPublicationCommand,
         lease: Option<&SessionRealizationLease>,
-    ) -> Result<SessionRepositoryPublicationReceipt, RunError> {
+    ) -> Result<SessionRepositoryPublicationEffect, RunError> {
         if let Some(asserted) = lease {
             let authorized = self
                 .host
@@ -66,7 +67,7 @@ impl ManagedHost {
                     "terminal Repository publication has no retained Session environment",
                 )
             })?;
-        let effect_receipt = self
+        let effect = self
             .host
             .publish_repository_activation(
                 &command.session_id,
@@ -76,12 +77,26 @@ impl ManagedHost {
                 &command.intent.expectation,
                 fence.as_ref(),
             )
-            .await
-            .map_err(to_run_error)?;
-        Ok(SessionRepositoryPublicationReceipt::new(
-            &command,
-            effect_receipt,
-        ))
+            .await;
+        match effect {
+            Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(
+                SessionRepositoryPublicationReceipt::new(&command, effect_receipt),
+            )),
+            Err(crate::provisioning::RepositoryPublicationActivationError::Rejected(
+                effect_rejection,
+            )) => Ok(SessionRepositoryPublicationEffect::Rejected(
+                SessionRepositoryPublicationRejection::new(&command, effect_rejection).map_err(
+                    |error| {
+                        RunError::internal(format!(
+                            "Repository publication rejection did not match its command: {error}"
+                        ))
+                    },
+                )?,
+            )),
+            Err(crate::provisioning::RepositoryPublicationActivationError::Failed(error)) => {
+                Err(to_run_error(error))
+            }
+        }
     }
 }
 

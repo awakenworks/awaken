@@ -1064,21 +1064,24 @@ async fn remote_terminal_cleanup_uses_durable_commands_and_cold_receipt_replay()
 /// or durable; C3 the asserted lease is exact or stale; C4 the publication
 /// receipt is mismatched, exact, or an exact response-loss replay; C5 ordinary
 /// cleanup commands may be empty while publication is pending; C6 the durable
-/// Session row has one immutable Workspace owner. Effects: E1 the
-/// child is the sole first command; E2 publication remains hidden behind the
-/// child; E3 an empty cleanup vector remains cold-claimable; E4 stale/wrong
-/// evidence fails without mutation; E5 the exact receipt is durably replayable;
-/// E6 only then is the root finalizer exposed and completion becomes absorbing;
-/// E7 the command projection carries that canonical Workspace beside the
-/// command so transports need not accept a Worker-selected tenant.
+/// Session row has one immutable Workspace owner; C7 the publication outcome is
+/// an exact receipt or typed permanent rejection. Effects: E1 the child is the
+/// sole first command; E2 publication remains hidden behind the child; E3 an
+/// empty cleanup vector remains cold-claimable; E4 stale/wrong evidence fails
+/// without mutation; E5 the exact receipt is durably replayable; E6 only then is
+/// the root finalizer exposed and completion becomes absorbing; E7 the command
+/// projection carries that canonical Workspace beside the command so transports
+/// need not accept a Worker-selected tenant; E8 an exact rejection is durable
+/// and replayable before ordinary root cleanup without a second Git command.
 ///
-/// | Rule | child | lease | publication receipt | Effect |
+/// | Rule | child | lease | publication outcome | Effect |
 /// |---|---|---|---|---|
 /// | P1 | pending | exact | none | E1 + E2 |
 /// | P2 | complete | stale | none | E4 |
 /// | P3 | none | unclaimed | none, cleanup=[] | E3 + E7 |
 /// | P4 | complete | exact | wrong | E4 |
 /// | P5 | complete | exact | exact/replay | E5 + E6 |
+/// | P6 | complete | exact | rejection/replay | E8 + E6 |
 #[tokio::test]
 async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayable() {
     // Constraint: SessionCleanupOperation is the only queue/receipt registry;
@@ -1127,6 +1130,21 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         requested("publication-cold-claim", None, None),
     )
     .await;
+    let resources = repository_resources("source", "repo-1");
+    let mut rejected_intent = repository_publication_intent(&resources);
+    rejected_intent.expectation.expected_prior_commit =
+        Some("1111111111111111111111111111111111111111".into());
+    let mut rejected = persisted("publication-rejected", true, "terminated");
+    rejected.resources = awaken_session_contract::SessionResourceState::from_active(resources);
+    rejected
+        .terminal_cleanup
+        .request_with_publication("publication-rejected", rejected_intent)
+        .unwrap();
+    rejected
+        .terminal_cleanup
+        .freeze_targets("publication-rejected", [], 17, 19)
+        .unwrap();
+    create(repo.as_ref(), rejected).await;
     let application = application_with_configuration(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -1243,7 +1261,8 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt()
+            .repository_publication_receipt(&assignment.session_id)
+            .unwrap()
             .is_none(),
         "P4/E4 no mutation"
     );
@@ -1278,7 +1297,8 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt(),
+            .repository_publication_receipt(&assignment.session_id)
+            .unwrap(),
         Some(&exact),
         "P5/E5"
     );
@@ -1311,6 +1331,82 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .terminal_cleanup
             .is_completed(),
         "P5/E6"
+    );
+
+    let rejected_assignment = application
+        .claim_next_terminal_cleanup(awaken_session_contract::SessionRealizationTarget {
+            owner: "worker-c".into(),
+            runtime_incarnation: "worker-c:publication".into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            renew_existing_lease: false,
+            reassign_existing_lease: false,
+        })
+        .await
+        .expect("P6 claim")
+        .expect("P6 rejected publication assignment");
+    assert_eq!(rejected_assignment.session_id, "publication-rejected", "P6");
+    let projection = application
+        .terminal_repository_publication_command(
+            &rejected_assignment.session_id,
+            &rejected_assignment.lease,
+        )
+        .await
+        .unwrap()
+        .expect("P6 command");
+    let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
+        &projection.command,
+        awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+    )
+    .unwrap();
+    application
+        .record_terminal_repository_publication_rejection(
+            &rejected_assignment.session_id,
+            &rejected_assignment.lease,
+            rejection.clone(),
+        )
+        .await
+        .expect("P6 exact rejection");
+    application
+        .record_terminal_repository_publication_rejection(
+            &rejected_assignment.session_id,
+            &rejected_assignment.lease,
+            rejection.clone(),
+        )
+        .await
+        .expect("P6 response-loss replay");
+    assert!(
+        application
+            .terminal_repository_publication_command(
+                &rejected_assignment.session_id,
+                &rejected_assignment.lease,
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "P6 no second Git command"
+    );
+    let root = application
+        .terminal_cleanup_commands(&rejected_assignment.session_id, &rejected_assignment.lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(root.len(), 1, "P6 ordinary root cleanup is exposed");
+    application
+        .record_terminal_cleanup_completion(
+            &rejected_assignment.lease,
+            awaken_session_contract::SessionCleanupCompletion::new(&root[0], Vec::new()),
+        )
+        .await
+        .expect("P6 root completion");
+    let durable = repo.get("publication-rejected").await.unwrap();
+    assert!(durable.terminal_cleanup.is_completed(), "P6 completed");
+    assert_eq!(
+        durable
+            .terminal_cleanup
+            .repository_publication_rejection("publication-rejected")
+            .unwrap(),
+        Some(&rejection),
+        "P6 rejection survives the same root CAS lifecycle"
     );
 }
 

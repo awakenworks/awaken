@@ -43,10 +43,10 @@ pub awaken_protocol_awaken::ProfiledSessionRepository::mount_path: alloc::string
 pub awaken_protocol_awaken::ProfiledSessionRepository::remote_url: alloc::string::String
 pub struct awaken_protocol_awaken::ProfiledSessionRepositoryPublication
 pub awaken_protocol_awaken::ProfiledSessionRepositoryPublication::binding_id: alloc::string::String
-pub awaken_protocol_awaken::ProfiledSessionRepositoryPublication::expectation: awaken_provisioning_contract::sandbox::RepositoryPublicationExpectation
+pub awaken_protocol_awaken::ProfiledSessionRepositoryPublication::expectation: awaken_provisioning_contract::sandbox::repository_publication::RepositoryPublicationExpectation
 pub struct awaken_protocol_awaken::ProfiledSessionRepositoryPublished
 pub awaken_protocol_awaken::ProfiledSessionRepositoryPublished::binding_id: alloc::string::String
-pub awaken_protocol_awaken::ProfiledSessionRepositoryPublished::receipt: awaken_provisioning_contract::sandbox::RepositoryPublicationReceipt
+pub awaken_protocol_awaken::ProfiledSessionRepositoryPublished::receipt: awaken_provisioning_contract::sandbox::repository_publication::RepositoryPublicationReceipt
 pub struct awaken_protocol_awaken::ProfiledSessionRunReceipt
 pub awaken_protocol_awaken::ProfiledSessionRunReceipt::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_protocol_awaken::ProfiledSessionRunReceipt::session_id: alloc::string::String

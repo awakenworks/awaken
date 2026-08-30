@@ -7,6 +7,7 @@
 - Amended: 2026-08-12 — one front-door IAM enforcement path
 - Amended: 2026-08-27 — profiled creation, File item fencing, and Session-owned Repository adoption
 - Amended: 2026-08-28 — explicit terminal Repository publication
+- Amended: 2026-08-31 — expected-prior Repository CAS and durable rejection
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -621,3 +622,43 @@ loss replays the exact command; first success and already-current replay produce
 the same receipt without a changed flag. A mismatched intent or receipt fails
 closed, and a cleanup operation already frozen without publication cannot be
 upgraded after archive.
+
+### 2026-08-31 amendment: exact update lease and durable rejection
+
+`RepositoryPublicationExpectation` may additionally freeze one
+`expected_prior_commit`. Omission retains the original create-only contract:
+only an absent remote ref may be created. Presence authorizes exactly one update
+when the first remote observation equals that full commit. The sole Git adapter
+uses the observed value as an exact force-with-lease precondition; it never
+turns the field into general overwrite authority. A remote already at the
+desired commit remains the absorbing replay for either form.
+
+Desired, expected-prior, and observed Git object ids use one canonical wire:
+exactly 40 lowercase hexadecimal characters. Uppercase or otherwise
+non-canonical text is rejected before a Git write rather than normalized, so
+one object cannot produce two command fingerprints or a false stale outcome.
+
+After every push attempt, including a process-level failure, the adapter
+reobserves the exact remote ref. Desired means the response was lost and returns
+the canonical receipt; an unchanged absent/prior observation remains retryable;
+an absent update lease or a third commit is a typed permanent rejection. No Git
+transport, authentication, observation, or I/O error may claim permanent stale
+evidence.
+
+Permanent rejection is retained beside the receipt in the existing terminal
+publication sidecar, with exactly one outcome bound to the same command
+fingerprint. It is committed through the Session root CAS before ordinary root
+cleanup may dispose the working tree. A local coordinator or registered remote
+Worker records that same command-bound outcome through the existing realization
+control; neither path adds a queue, store, phase machine, or Git writer. Exact
+profiled replay returns the durable rejection without another Git call.
+Every aggregate encode/decode and every Completed suppression or tombstone gate
+rebinds that outcome to the outer Session id; an intent-local but foreign
+receipt or rejection is corrupt evidence, never terminal truth.
+
+Both the expected-prior field and rejection sidecar are first-write contract
+changes under deny-unknown decoding. Deployment must therefore raise the
+Session application, Runtime Host, registered Worker, and ingress/control plane
+to the same contract floor before either value is emitted. A pre-floor request
+continues to omit the prior and can only use the historical create-only path;
+mixed old/new writers are not a compatibility mode.

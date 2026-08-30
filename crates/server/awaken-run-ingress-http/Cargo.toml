@@ -30,6 +30,7 @@ tracing = "0.1"
 test-support = []
 
 [dev-dependencies]
+awaken-provisioning-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
