@@ -2,24 +2,6 @@
   "version": 1,
   "exclusions": [
     {
-      "path": "crates/control/awaken-credential-vault/src/repo/credential_operations/managed_tests.rs",
-      "boundary": "test_only",
-      "reason": "Managed Credential aggregate scenarios compiled only through the cfg(test) module declaration; production commands and recovery remain inventoried in credential_operations.rs.",
-      "evidence": ["crates/control/awaken-credential-vault/src/repo/credential_operations.rs"]
-    },
-    {
-      "path": "crates/control/awaken-control/src/authz/credential_authentication_tests.rs",
-      "boundary": "test_only",
-      "reason": "Authentication characterization compiled only by the cfg(test) module declaration; the production authentication decision remains inventoried in authz.rs.",
-      "evidence": ["crates/control/awaken-control/src/authz.rs"]
-    },
-    {
-      "path": "crates/control/awaken-control/src/authz_identity_tests.rs",
-      "boundary": "test_only",
-      "reason": "Identity and authorization characterization compiled only through authz_tests.rs; the production authorization decisions remain inventoried in authz.rs.",
-      "evidence": ["crates/control/awaken-control/src/authz.rs", "crates/control/awaken-control/src/authz_tests.rs"]
-    },
-    {
       "path": "crates/bin/awaken-cli/src/config/report.rs",
       "boundary": "presentation_only",
       "reason": "Formats an already-resolved deployment into redacted text or JSON; it owns no authorization, state transition, concurrency, or persistence decision.",
@@ -122,12 +104,6 @@
       "evidence": ["crates/control/awaken-admin-config-api/tests/openapi_contract.rs"]
     },
     {
-      "path": "crates/control/awaken-config-service/src/config_service/publication_recovery_tests.rs",
-      "boundary": "test_only",
-      "reason": "A production-src-named test module containing recovery scenarios and fixtures; it is compiled only by the parent module's test configuration.",
-      "evidence": ["crates/control/awaken-config-service/src/config_service/publication_recovery_tests.rs"]
-    },
-    {
       "path": "crates/control/awaken-config-service/src/lib.rs",
       "boundary": "module_facade",
       "reason": "Config-service module declarations and public re-exports only; authoring and publication decisions live in the referenced implementation modules.",
@@ -138,24 +114,6 @@
       "boundary": "composition_wiring",
       "reason": "Builder methods install already-authorized collaborator ports into ConfigService fields and contain no selection or authorization policy.",
       "evidence": ["crates/control/awaken-config-service/src/config_service.rs"]
-    },
-    {
-      "path": "crates/control/awaken-control/src/application_mcp_credentials_tests.rs",
-      "boundary": "test_only",
-      "reason": "Test-only credential application scenarios whose filename escaped the scanner's exact tests.rs filter.",
-      "evidence": ["crates/control/awaken-control/src/application_mcp_credentials_tests.rs"]
-    },
-    {
-      "path": "crates/control/awaken-control/src/audit_tests.rs",
-      "boundary": "test_only",
-      "reason": "Test-only audit fixtures and assertions whose filename escaped the scanner's exact tests.rs filter.",
-      "evidence": ["crates/control/awaken-control/src/audit_tests.rs"]
-    },
-    {
-      "path": "crates/control/awaken-control/src/authz/remote_tests.rs",
-      "boundary": "test_only",
-      "reason": "Test-only remote authorization fixtures and assertions; production authorization remains inventoried in remote.rs.",
-      "evidence": ["crates/control/awaken-control/src/authz/remote_tests.rs"]
     },
     {
       "path": "crates/runtime/awaken-ext-mcp/src/lib.rs",
@@ -228,12 +186,6 @@
       "boundary": "module_facade",
       "reason": "Runtime crate declarations and public re-exports only; the execution decisions remain inventoried in engine and runtime modules.",
       "evidence": ["crates/runtime/awaken-runtime/src/lib.rs"]
-    },
-    {
-      "path": "crates/server/awaken-coordinator/src/inference_publication_tests.rs",
-      "boundary": "test_only",
-      "reason": "Test-only publication fixtures and assertions whose filename escaped the scanner's exact tests.rs filter.",
-      "evidence": ["crates/server/awaken-coordinator/src/inference_publication_tests.rs"]
     },
     {
       "path": "crates/server/awaken-mcp-server-testkit/src/lib.rs",

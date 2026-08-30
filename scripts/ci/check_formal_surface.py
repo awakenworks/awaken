@@ -106,7 +106,9 @@ def is_production_source(path: pathlib.Path) -> bool:
     parts = relative.parts
     if "src" not in parts:
         return False
-    if path.name in {"tests.rs", "test.rs", "formal.rs"}:
+    if path.name in {"tests.rs", "test.rs", "formal.rs"} or path.name.endswith(
+        "_tests.rs"
+    ):
         return False
     return not any(part in {"tests", "test_support", "fixtures"} for part in parts)
 
