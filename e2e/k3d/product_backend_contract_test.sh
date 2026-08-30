@@ -16,14 +16,17 @@ trap 'rm -f "$RENDERED"' EXIT
 # BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC including
 # Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
-# publishing port is not reachable inside the cluster); C6 model/provider secret names or values
-# appear in the manifest. Effects: E1 one all-in-one backend can start from the canonical image;
+# publishing port is not reachable inside the cluster); C6 the Kubernetes
+# backend selects the canonical resident Pod channel instead of attached exec; C7
+# model/provider secret names or values appear in the manifest. Effects: E1 one
+# all-in-one backend can start from the canonical image;
 # E2 Awaken/Console and management APIs have no terminal-user ingress; E3 config
 # plus Awaken-owned provider configuration, Skills, Agents, and Sessions survive
-# Pod replacement; E4 only the product backend may reach port 8080; E5 reject
-# the deployment contract before a
-# cluster mutation. Rules: K1 C1+C2+C3+C4+C5+!C6=>E1+E2+E3+E4;
-# K2 !C1|!C2|!C3|!C4|!C5|C6=>E5.
+# Pod replacement; E4 only the product backend may reach port 8080; E5 K8s ACP
+# startup uses the already-owned resident channel rather than depending on an
+# apiserver exec-stream protocol; E6 reject the deployment contract before a
+# cluster mutation. Rules: K1 C1+C2+C3+C4+C5+C6+!C7=>E1+E2+E3+E4+E5;
+# K2 !C1|!C2|!C3|!C4|!C5|!C6|C7=>E6.
 kubectl kustomize "$OVERLAY" >"$RENDERED"
 
 [[ "$(grep -c '^kind: Deployment$' "$RENDERED")" -eq 1 ]]
@@ -44,6 +47,7 @@ grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
 grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
+grep -q 'container_hand_residency = "resident"' "$RENDERED"
 grep -q 'package_image_builder = "k8s"' "$RENDERED"
 grep -q 'package_image_registry = "k3d-awaken-registry.localhost:5000/environments"' "$RENDERED"
 grep -q 'k8s_buildkit_image = "k3d-awaken-registry.localhost:5000/system/buildkit:v0.30.0-rootless"' "$RENDERED"
