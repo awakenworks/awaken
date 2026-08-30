@@ -259,7 +259,7 @@ mod tests {
             adopted_handle: None,
             realized: Vec::new(),
             recovered: false,
-            lifecycle: Arc::new(crate::ContainerCleanupState::completed(None)),
+            lifecycle: Arc::new(crate::ContainerCleanupState::recovered(None, None)),
         }
     }
 

@@ -330,7 +330,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         match self {
             Self::Workdir(provider) => provider
-                .adopt_sandbox(handle)
+                .adopt_sandbox_with_spec(spec, handle)
                 .await
                 .map(SessionEnvironment::workdir),
             Self::Namespace {
@@ -380,40 +380,52 @@ impl SessionEnvironmentProvider {
     pub(crate) async fn restore(
         &self,
         spec: &pc::SandboxSpec,
-        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
+    ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         match self {
-            Self::Workdir(provider) => provider
-                .restore_sandbox(spec, checkpoint, store)
-                .await
-                .map(SessionEnvironment::workdir),
+            Self::Workdir(provider) => {
+                let restored = pc::SandboxProvider::restore(provider, spec, request, store).await?;
+                let handle = restored.target().handle();
+                request.verify_handle(spec, &handle)?;
+                Ok(handle)
+            }
             Self::Namespace { .. } => Err(pc::SandboxError::new(
                 "namespace provider does not implement checkpoint restore",
             )),
             Self::Container {
                 provider,
                 extra_mounts,
-                hand_factory,
-                hand_bin,
-                hand_idle_after,
-                hand_residency,
                 ..
             } => {
-                let capabilities = provider.sandbox_capabilities();
                 let spec = container_spec(spec, extra_mounts)?;
-                let environment = provider
-                    .restore_environment(&spec, checkpoint, store)
-                    .await?;
-                SessionEnvironment::container(
-                    environment,
-                    hand_factory.clone(),
-                    hand_bin,
-                    *hand_idle_after,
-                    *hand_residency,
-                    capabilities,
-                )
-                .await
+                let restored = provider.restore_environment(&spec, request, store).await?;
+                let handle = restored.target().handle();
+                request.verify_handle(&spec, &handle)?;
+                Ok(handle)
+            }
+        }
+    }
+
+    pub(crate) async fn dispose_restored(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<(), pc::SandboxError> {
+        match self {
+            Self::Workdir(provider) => {
+                pc::SandboxProvider::dispose_restored(provider, spec, request).await
+            }
+            Self::Namespace { .. } => Err(pc::SandboxError::new(
+                "namespace provider does not implement exact restored-target disposal",
+            )),
+            Self::Container {
+                provider,
+                extra_mounts,
+                ..
+            } => {
+                let spec = container_spec(spec, extra_mounts)?;
+                provider.dispose_restored_environment(&spec, request).await
             }
         }
     }

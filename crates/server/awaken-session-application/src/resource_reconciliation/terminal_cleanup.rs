@@ -52,6 +52,7 @@ impl SessionApplication {
 
     async fn execute_local_terminal_cleanup_batch(
         &self,
+        owner_scope: &str,
         session_id: &str,
         session: &mut PersistedSession,
         commands: Vec<awaken_session_contract::SessionCleanupCommand>,
@@ -59,22 +60,36 @@ impl SessionApplication {
         let mut changed = false;
         let mut teardown_error = None;
         for command in commands {
+            let command = match session
+                .environment
+                .restoring_request(owner_scope, session_id)
+            {
+                Some(request) if command.thread_id == session_id => {
+                    command.with_restore_target(request).map_err(internal)?
+                }
+                _ => command,
+            };
             match self
                 .runtime()
                 .execute_terminal_cleanup(command.clone())
                 .await
             {
-                Ok(completion) => match session
-                    .record_terminal_cleanup_completion(completion)
-                    .map_err(internal)
-                {
-                    Ok(recorded) => changed |= recorded,
-                    Err(error) => {
-                        teardown_error.get_or_insert(RunError::internal(format!(
-                            "Session cleanup completion mismatch: {error}"
-                        )));
+                Ok(completion) => {
+                    let completion = completion
+                        .into_aggregate_completion(&command)
+                        .map_err(internal)?;
+                    match session
+                        .record_terminal_cleanup_completion(completion)
+                        .map_err(internal)
+                    {
+                        Ok(recorded) => changed |= recorded,
+                        Err(error) => {
+                            teardown_error.get_or_insert(RunError::internal(format!(
+                                "Session cleanup completion mismatch: {error}"
+                            )));
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     tracing::warn!(
                         session = session_id,
@@ -190,6 +205,7 @@ impl SessionApplication {
                             .map_err(internal)?;
                         let (changed, teardown_error) = self
                             .execute_local_terminal_cleanup_batch(
+                                owner_scope,
                                 session_id,
                                 &mut session,
                                 commands,
@@ -241,6 +257,7 @@ impl SessionApplication {
                             .map_err(internal)?;
                         let (changed, teardown_error) = self
                             .execute_local_terminal_cleanup_batch(
+                                owner_scope,
                                 session_id,
                                 &mut session,
                                 root_commands,

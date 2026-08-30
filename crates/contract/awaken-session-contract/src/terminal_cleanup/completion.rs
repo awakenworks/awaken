@@ -112,6 +112,7 @@ impl<'de> Deserialize<'de> for SessionCleanupCompletion {
             session_id: wire.session_id,
             thread_id: wire.thread_id,
             effect_id: wire.effect_id,
+            restore_target: None,
         };
         Ok(Self::new(&command, wire.artifact_receipts))
     }
@@ -128,13 +129,27 @@ impl SessionCleanupCompletion {
             .iter()
             .map(|receipt| (receipt.effect_id.as_str(), receipt.content_id.as_str()))
             .collect::<Vec<_>>();
-        let receipt_fingerprint = crate::stable_fingerprint(&(
-            "session-terminal-cleanup-thread-receipt-v1",
-            command.session_id.as_str(),
-            command.thread_id.as_str(),
-            command.effect_id.as_str(),
-            artifact_evidence,
-        ));
+        let receipt_fingerprint = command.restore_target.as_ref().map_or_else(
+            || {
+                crate::stable_fingerprint(&(
+                    "session-terminal-cleanup-thread-receipt-v1",
+                    command.session_id.as_str(),
+                    command.thread_id.as_str(),
+                    command.effect_id.as_str(),
+                    artifact_evidence.as_slice(),
+                ))
+            },
+            |request| {
+                crate::stable_fingerprint(&(
+                    "session-terminal-cleanup-thread-restore-receipt-v1",
+                    command.session_id.as_str(),
+                    command.thread_id.as_str(),
+                    command.effect_id.as_str(),
+                    request,
+                    artifact_evidence.as_slice(),
+                ))
+            },
+        );
         Self {
             session_id: command.session_id.clone(),
             thread_id: command.thread_id.clone(),
@@ -166,6 +181,28 @@ impl SessionCleanupCompletion {
             command: command.clone(),
             completion: self.clone(),
         })
+    }
+
+    /// Verify the Runtime result against the exact effect-bearing command,
+    /// then collapse it back to the aggregate's existing per-thread receipt.
+    /// `SessionEnvironmentState::Restoring` remains the sole durable target
+    /// authority; the target-bound fingerprint is a fail-forward transport
+    /// fence that prevents a Phase-A Worker from silently skipping disposal.
+    pub fn into_aggregate_completion(
+        self,
+        command: &SessionCleanupCommand,
+    ) -> Result<Self, SessionCleanupError> {
+        self.verify(command)?;
+        if command.restore_target.is_none() {
+            return Ok(self);
+        }
+        let aggregate_command = SessionCleanupCommand {
+            session_id: command.session_id.clone(),
+            thread_id: command.thread_id.clone(),
+            effect_id: command.effect_id.clone(),
+            restore_target: None,
+        };
+        Ok(Self::new(&aggregate_command, self.artifact_receipts))
     }
 }
 
@@ -229,6 +266,61 @@ mod tests {
         }
     }
 
+    fn restore_request() -> crate::SandboxRestoreRequest {
+        crate::SandboxRestoreRequest {
+            workspace_id: "workspace".into(),
+            session_id: "session".into(),
+            effect_id: awaken_agent_contract::collision_resistant_fingerprint(
+                "awaken-test-restoration-effect-v1",
+                &[b"terminal-cleanup-effect"],
+            ),
+            generation_id: "generation".into(),
+            checkpoint: crate::SandboxCheckpointRef {
+                id: "checkpoint".into(),
+                format: "provider-owned".into(),
+                digest: "digest".into(),
+                size_bytes: 7,
+                created_at_unix_ms: 1,
+                expires_at_unix_ms: 2,
+                environment_fingerprint: "environment".into(),
+                base_image_fingerprint: "base".into(),
+                excluded_mounts: Vec::new(),
+                suspend_effect_id: "suspend".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn restoring_cleanup_transport_is_fail_forward_then_normalizes_to_one_aggregate_receipt() {
+        /* Restore-cleanup transport table. C1 exact Phase-B target is present;
+         * C2 a legacy Worker returns the target-free completion; C3 the exact
+         * target-bound completion returns. Effects: E1 reject C2 before root
+         * CAS; E2 admit C3; E3 normalize only after verification to the
+         * aggregate's existing receipt, leaving Environment as sole target
+         * authority. Rules RC1=C1+C2=>E1; RC2=C1+C3=>E2+E3. */
+        let base = SessionCleanupCommand {
+            session_id: "session".into(),
+            thread_id: "session".into(),
+            effect_id: "cleanup-effect".into(),
+            restore_target: None,
+        };
+        let exact = base.clone().with_restore_target(restore_request()).unwrap();
+        let legacy = SessionCleanupCompletion::new(&base, Vec::new());
+        assert!(
+            legacy.clone().into_aggregate_completion(&exact).is_err(),
+            "RC1/E1"
+        );
+
+        let bound = SessionCleanupCompletion::new(&exact, Vec::new());
+        assert!(
+            bound.verify(&base).is_err(),
+            "RC2 exact target is mandatory"
+        );
+        let normalized = bound.into_aggregate_completion(&exact).unwrap();
+        assert_eq!(normalized, legacy, "RC2/E2+E3");
+        normalized.verify(&base).expect("RC2/E3 aggregate receipt");
+    }
+
     fn removed_bundle(fingerprint: &str) -> serde_json::Value {
         json!({
             "purpose": "patch_bundle",
@@ -284,6 +376,7 @@ mod tests {
             session_id: "session".into(),
             thread_id: "thread".into(),
             effect_id: "effect".into(),
+            restore_target: None,
         };
         let current = SessionCleanupCompletion::new(&command, Vec::new());
         assert_eq!(
@@ -325,6 +418,7 @@ mod tests {
             session_id: "session".into(),
             thread_id: "foreign-thread".into(),
             effect_id: "foreign-effect".into(),
+            restore_target: None,
         };
         assert!(
             normalized.verify(&foreign_command).is_err(),

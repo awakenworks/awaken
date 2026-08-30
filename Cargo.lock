@@ -349,6 +349,7 @@ name = "awaken-agent-contract"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "blake3",
  "http",
  "schemars 1.2.1",
  "serde",

@@ -646,3 +646,75 @@ diagnostic no-proof and keeps the rollout closed. A concurrent root transition
 is observed wholly before or after the repository count statement; after drain
 and in-flight completion no new public driving event may create another restore.
 The private convergence channel never becomes an alternate public ingress.
+
+## 2026-08-30 amendment: one durable restore tuple names one physical target
+
+Phase B projects the Session aggregate's committed
+`Restoring { operation, checkpoint, generation }` tuple into one canonical
+`SandboxRestoreRequest`. The request binds the exact Session and Workspace,
+complete frozen `SandboxSpec`, checkpoint identity and digest, and the
+checkpoint driver's exact exclusion list. Every declared Sandbox mount must be
+included in that list, while the byte owner may add runtime configuration homes
+and other independently governed paths; an open provider neither re-derives nor
+narrows it. `SandboxRestoreTarget` proves only acquisition of the exact physical
+target. The checkpoint decorator may return `SandboxRestoreResult` only after
+its own bytes are materialized and verified against the same evidence.
+
+The one Session-owned operation writer derives new suspend and restore
+`effect_id` values as domain-separated, byte-length-framed BLAKE3 v2 identities
+over Workspace, Session, operation kind, the complete `SandboxGeneration`,
+activity epoch and complete realization lease; restore additionally includes
+the complete checkpoint reference. Existing persisted operation ids remain
+opaque and replay unchanged. The rollout's zero-`Restoring` barrier is what
+permits the writer algorithm to advance without migrating an in-flight physical
+target. Phase-B substrate admission accepts only the new canonical
+`blake3:<64 lowercase hex>` form.
+
+Only the complete 256-bit operation digest selects the physical target.
+Generation, checkpoint identity/digest, full SandboxSpec and exact exclusions
+are collision-resistant evidence fences on that same locator. A mismatch must
+therefore reject or clean up the one target; it never selects a second target.
+This keeps Workspace and Session scoping in the sole aggregate operation
+authority without adding another locator field or reader phase.
+
+The open providers own only physical identity. Local Workdir uses one
+process-shared lock and a durable evidence sidecar beside its deterministic
+target directory. Docker and Podman use the complete 256-bit deterministic
+container-name identity,
+creation-time immutable effect and plan labels, and the daemon-observed retained
+host-bind locator. Kubernetes reuses the sole canonical continuation-volume
+selector and its existing bounded cryptographic name encoder, and verifies the
+complete Pod/PVC realization, exact PVC UID and
+resource identity. A replacement provider reads before resolving package,
+File, Secret, MemoryStore or CacheVolume inputs and either adopts that exact
+target or fails closed. Namespace advertises no such substrate. No open provider
+advertises a checkpoint format or implements checkpoint-byte restoration;
+portable v3 bytes remain solely owned by the existing deployment decorator.
+
+The dynamic ordering is fixed:
+
+```text
+committed Restoring tuple
+  -> read or acquire one exact physical target
+  -> deployment decorator materializes and verifies portable v3 bytes
+  -> return the exact evidence-bearing handle and provider completion
+  -> root CAS Restoring -> Resident
+  -> the existing lifecycle owner may reproject Resources, MCP and processes
+```
+
+A provider or Host crash before the result, and a successful provider result
+followed by a failed root CAS, both leave the same physical target discoverable
+from the durable tuple. Retries never replace it with a second environment and
+never publish a Session slot, Hand, MCP generation or independently governed
+mount before the CAS. `Resident` remains a no-op at this boundary; cold driving
+Run sequencing and post-CAS projection remain responsibilities of their existing
+owners rather than a second restore state machine.
+
+When terminal intent wins while the aggregate still carries `Restoring`, the
+root cleanup command carries that exact tuple as transport evidence. Runtime
+must query and dispose only the matching unpublished target before checkpoint
+deletion can proceed. A legacy target-free completion, partial evidence,
+mismatched plan/handle, or ambiguous substrate observation fails closed and
+keeps the existing cleanup retry pending. The Session aggregate, root CAS and
+terminal cleanup receipt remain the only durable journals; no provider database,
+queue, slot cache, marker or restore store is added.

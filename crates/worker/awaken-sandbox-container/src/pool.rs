@@ -501,6 +501,24 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         self.inner.adopt_environment(adoption).await
     }
+
+    async fn acquire_restore_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+        // A restored Session target is never interchangeable with unused warm
+        // capacity. Delegate to the canonical provider's exact substrate path.
+        self.inner.acquire_restore_environment(spec, request).await
+    }
+
+    async fn dispose_restored_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<(), pc::SandboxError> {
+        self.inner.dispose_restored_environment(spec, request).await
+    }
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ use crate::{
     provision_repo_at, push_repo_to_at, rooted_raw_tools, scan_skill_dir_at,
 };
 
-mod checkpoint;
+mod restore_target;
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
@@ -291,9 +291,28 @@ impl LocalProvider {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<LocalSandbox, pc::SandboxError> {
+        // Phase-A reader compatibility remains an ordinary-root pass-through:
+        // observing future evidence must not activate physical restoration.
+        // The spec-bound composition path below is the sole Phase-B adoption
+        // authority for an acquired exact target.
+        let root = crate::sandbox_dir(&self.base, &handle.sandbox_id);
+        self.adopt_sandbox_at(handle, root)
+    }
+
+    fn adopt_sandbox_at(
+        &self,
+        handle: &pc::SandboxHandle,
+        root: PathBuf,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
         let payload = handle.local_payload()?;
-        let mut sandbox = self.build(&handle.sandbox_id, &payload.outputs_path);
+        let mut sandbox = self.build_at(
+            &handle.sandbox_id,
+            &payload.outputs_path,
+            root,
+            Some(handle.clone()),
+        );
         sandbox.base_env.clone_from(&payload.base_env);
+        sandbox.deny_egress = payload.deny_tool_egress;
         sandbox.continuation_excluded_paths = payload
             .continuation_excluded_paths
             .iter()
@@ -301,6 +320,46 @@ impl LocalProvider {
             .collect::<Result<_, _>>()?;
         sandbox.adopted_handle = Some(handle.clone());
         Ok(sandbox)
+    }
+
+    /// Adopt through the frozen security authority. Restored handles are never
+    /// sufficient on their own because their compact locator intentionally does
+    /// not duplicate the full SandboxSpec.
+    pub async fn adopt_sandbox_with_spec(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
+        if handle.sandbox_id != spec.scope {
+            return Err(err("local Sandbox handle does not match SandboxSpec scope"));
+        }
+        if let Some(evidence) = handle.restoration() {
+            let payload = handle.local_payload()?;
+            if evidence.sandbox_spec_fingerprint() != pc::sandbox_spec_security_fingerprint(spec)
+                || pc::validate_checkpoint_exclusions_for_spec(
+                    &payload.continuation_excluded_paths,
+                    spec,
+                )
+                .is_err()
+                || evidence.checkpoint_exclusions_fingerprint()
+                    != pc::checkpoint_exclusions_fingerprint(&payload.continuation_excluded_paths)
+                || payload.deny_tool_egress != spec.deny_tool_egress
+            {
+                return Err(err(
+                    "restored local handle differs from the exact SandboxSpec or checkpoint exclusions",
+                ));
+            }
+        }
+        let root = match handle.restoration() {
+            Some(evidence) => {
+                let root = restore_target::restoration_root(&self.base, evidence)?;
+                restore_target::verify_binding(&root, evidence)?;
+                root
+            }
+            None => crate::sandbox_dir(&self.base, &handle.sandbox_id),
+        };
+        self.adopt_sandbox_at(handle, root)
     }
 
     /// Static capability evidence shared by provider admission and owners of an
@@ -438,7 +497,16 @@ impl LocalProvider {
     }
 
     fn build(&self, id: &str, outputs_path: &str) -> LocalSandbox {
-        let dir = crate::sandbox_dir(&self.base, id);
+        self.build_at(id, outputs_path, crate::sandbox_dir(&self.base, id), None)
+    }
+
+    fn build_at(
+        &self,
+        id: &str,
+        outputs_path: &str,
+        dir: PathBuf,
+        adopted_handle: Option<pc::SandboxHandle>,
+    ) -> LocalSandbox {
         LocalSandbox {
             id: id.to_string(),
             root: IsolatedRoot::new(dir),
@@ -451,7 +519,7 @@ impl LocalProvider {
             secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
             continuation_excluded_paths: Vec::new(),
-            adopted_handle: None,
+            adopted_handle,
         }
     }
 }
@@ -468,10 +536,6 @@ impl pc::SandboxProvider for LocalProvider {
         Self::capabilities()
     }
 
-    fn checkpoint_formats(&self) -> Vec<String> {
-        vec!["awaken-fs-tar-v1".into()]
-    }
-
     async fn create(
         &self,
         spec: &pc::SandboxSpec,
@@ -486,15 +550,23 @@ impl pc::SandboxProvider for LocalProvider {
         Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 
-    async fn restore(
+    async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
-        checkpoint: &pc::SandboxCheckpointRef,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(
-            self.restore_sandbox(spec, checkpoint, store).await?,
-        ))
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Box<dyn pc::Sandbox>>, pc::SandboxError> {
+        Ok(self
+            .acquire_restore_sandbox(spec, request)
+            .await?
+            .map_target(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+    }
+
+    async fn dispose_restored(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<(), pc::SandboxError> {
+        self.dispose_restore_sandbox(spec, request).await
     }
 }
 
@@ -523,7 +595,8 @@ pub struct LocalSandbox {
     /// credentials. They are rematerialized from that authority after restore.
     continuation_excluded_paths: Vec<PathBuf>,
     /// Exact reader-owned wire handle retained only across adoption. Create and
-    /// restore continue to emit the current legacy-None constructor shape.
+    /// ordinary creation emit the current legacy-None constructor shape; exact
+    /// physical restore acquisition installs the request-bound handle.
     adopted_handle: Option<pc::SandboxHandle>,
 }
 
@@ -770,7 +843,7 @@ impl pc::Sandbox for LocalSandbox {
             .continuation_excluded_paths
             .iter()
             .filter_map(|path| path.strip_prefix(self.root.root()).ok())
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|path| format!("/{}", path.to_string_lossy().trim_start_matches('/')))
             .collect();
         pc::SandboxHandle::local(
             &self.id,
@@ -778,6 +851,7 @@ impl pc::Sandbox for LocalSandbox {
                 outputs_path: self.outputs_path.clone(),
                 base_env: self.base_env.clone(),
                 continuation_excluded_paths,
+                deny_tool_egress: self.deny_egress,
             },
         )
     }
@@ -797,14 +871,6 @@ impl pc::Sandbox for LocalSandbox {
 
         let child = cmd.spawn().map_err(err)?;
         Ok(Box::new(LocalProcess::spawned(child)))
-    }
-
-    async fn checkpoint(
-        &self,
-        request: &pc::SandboxCheckpointRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        self.create_checkpoint(request, store).await
     }
 
     async fn attach(
@@ -866,7 +932,13 @@ impl pc::Sandbox for LocalSandbox {
         self.release_memory_mounts().await;
         self.shred_secrets();
         let root = self.root.root();
-        if root.exists() {
+        if let Some(evidence) = self
+            .adopted_handle
+            .as_ref()
+            .and_then(pc::SandboxHandle::restoration)
+        {
+            restore_target::dispose_bound_target(root, evidence).await?;
+        } else if root.exists() {
             std::fs::remove_dir_all(root).map_err(err)?;
         }
         Ok(())
@@ -1279,7 +1351,7 @@ mod workdir_helper_tests {
     use super::*;
     use crate::git_transport::git_stdout;
     use awaken_provisioning_contract::{
-        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
+        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
     };
 
     fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
@@ -1697,125 +1769,186 @@ mod workdir_helper_tests {
         sandbox.remove_inline("nested").unwrap();
     }
 
-    #[derive(Default)]
-    struct CheckpointStore {
-        objects: std::sync::Mutex<HashMap<String, Vec<u8>>>,
-    }
-
-    #[async_trait]
-    impl pc::SandboxCheckpointStore for CheckpointStore {
-        async fn put(
-            &self,
-            metadata: &pc::CheckpointObjectMetadata,
-            bytes: Vec<u8>,
-        ) -> Result<pc::StoredCheckpointObject, pc::SandboxError> {
-            let id = format!("{}/{}", metadata.generation_id, metadata.suspend_effect_id);
-            let digest = content_fingerprint(&bytes);
-            let size_bytes = bytes.len() as u64;
-            self.objects.lock().unwrap().insert(id.clone(), bytes);
-            Ok(pc::StoredCheckpointObject {
-                id,
-                digest,
-                size_bytes,
-            })
-        }
-
-        async fn get(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-            self.objects
-                .lock()
-                .unwrap()
-                .get(id)
-                .cloned()
-                .ok_or_else(|| err("checkpoint object not found"))
-        }
-
-        async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {
-            self.objects.lock().unwrap().remove(id);
-            Ok(())
-        }
-    }
-
-    fn checkpoint_request() -> pc::SandboxCheckpointRequest {
-        let generation = awaken_session_contract::SandboxGeneration::new(
-            "checkpoint-session",
-            10,
-            10_000,
-            "environment",
-            "base-image",
-        );
-        pc::SandboxCheckpointRequest {
+    fn restore_request(excluded_mounts: Vec<String>) -> pc::SandboxRestoreRequest {
+        pc::SandboxRestoreRequest {
             workspace_id: "workspace-a".into(),
             session_id: "checkpoint-session".into(),
-            generation_id: generation.id,
-            environment_fingerprint: generation.environment_fingerprint,
-            base_image_fingerprint: generation.base_image_fingerprint,
-            effect_id: "suspend".into(),
-            format: "awaken-fs-tar-v1".into(),
-            created_at_unix_ms: 20,
-            expires_at_unix_ms: 10_000,
-            max_bytes: 1024 * 1024,
+            effect_id: "blake3:0000000000000000000000000000000000000000000000000000000000000001"
+                .into(),
+            generation_id: "generation-a".into(),
+            checkpoint: pc::SandboxCheckpointRef {
+                id: "checkpoint-a".into(),
+                format: "portable-provider-owned-format".into(),
+                digest: "sha256:checkpoint-a".into(),
+                size_bytes: 7,
+                created_at_unix_ms: 20,
+                expires_at_unix_ms: 10_000,
+                environment_fingerprint: "environment".into(),
+                base_image_fingerprint: "base-image".into(),
+                excluded_mounts,
+                suspend_effect_id: "suspend".into(),
+            },
         }
     }
 
-    // Cause/effect design: C1=mutable nested file+mode, C5=durable store write,
-    // C6=source disposed, C7=valid object; provider-conformance rule P1 => a
-    // distinct live Sandbox contains identical bytes and executable metadata.
+    /*
+     * Exact local-target decision table (R1-R4, R7-R8).
+     * Causes: C1 no target; C2 exact evidence exists; C3 fresh provider; C4
+     * concurrent acquisition; C5 source checkpoint unavailable; C6 provider
+     * exclusion superset; C7 restored handle carries deny-tool-egress.
+     * Effects: E1 reserve one directory/evidence sidecar; E2 return one handle;
+     * E3 recover without checkpoint-byte access or process memory; E4 preserve
+     * the exact exclusion list and security posture.
+     * Rules: R1=C1=>E1; R2=C2=>E2; R3=C2+C3+C5=>E2+E3;
+     * R4=C1+C4=>E1+E2; R7=C6+C7=>E4.
+     */
     #[tokio::test]
-    async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
-        use std::os::unix::fs::PermissionsExt;
-
+    async fn exact_restore_target_replays_across_concurrent_and_fresh_local_providers() {
         let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-        let spec = workdir_spec("checkpoint-session", false);
-        let sandbox = provider.create_sandbox(&spec).await.unwrap();
-        let file = sandbox.workspace_path().join("workspace/bin/tool");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, b"mutable state").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o750)).unwrap();
-        let store = CheckpointStore::default();
-        let receipt = sandbox
-            .checkpoint(&checkpoint_request(), &store)
+        let mut spec = workdir_spec("checkpoint-session", true);
+        spec.mounts.push(pc::MountRequirement {
+            mount_id: "input-a".into(),
+            source: pc::MountSource::Inline {
+                contents: "authority-owned".into(),
+            },
+            mount_path: "/workspace/input-a".into(),
+            access: pc::MountAccess::ReadWrite,
+            required: true,
+            lifetime: pc::MountLifetime::Session,
+        });
+        let exclusions = vec!["/runtime/config-home".into(), "/workspace/input-a".into()];
+        let request = restore_request(exclusions.clone());
+        let left_provider = LocalProvider::new(tmp.path());
+        let right_provider = LocalProvider::new(tmp.path());
+
+        let (left, right) = tokio::join!(
+            pc::SandboxProvider::acquire_restore(&left_provider, &spec, &request),
+            pc::SandboxProvider::acquire_restore(&right_provider, &spec, &request),
+        );
+        let left = left.unwrap();
+        let right = right.unwrap();
+        assert_ne!(left.disposition(), right.disposition(), "R1/R4");
+        let left_handle = left.target().handle();
+        let right_handle = right.target().handle();
+        assert_eq!(left_handle, right_handle, "R2/E2");
+        assert_eq!(
+            left_handle
+                .local_payload()
+                .unwrap()
+                .continuation_excluded_paths,
+            exclusions,
+            "R7/E4"
+        );
+        assert!(
+            left_handle.local_payload().unwrap().deny_tool_egress,
+            "R7/E4"
+        );
+
+        let evidence = request.evidence(&spec);
+        let root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
+        assert!(root.is_dir(), "R1/E1");
+        let fresh_provider = LocalProvider::new(tmp.path());
+        let replay = pc::SandboxProvider::acquire_restore(&fresh_provider, &spec, &request)
             .await
             .unwrap();
-        sandbox.dispose().await.unwrap();
-        assert!(!sandbox.workspace_path().exists(), "source terminated");
-
-        let restored = provider.restore(&spec, &receipt, &store).await.unwrap();
-        let restored_root = crate::sandbox_dir(tmp.path(), "checkpoint-session");
-        let restored_file = restored_root.join("workspace/bin/tool");
-        assert_eq!(std::fs::read(&restored_file).unwrap(), b"mutable state");
         assert_eq!(
-            std::fs::metadata(restored_file)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o750
+            replay.disposition(),
+            pc::SandboxRestoreTargetDisposition::Recovered,
+            "R3/E3"
         );
-        restored.dispose().await.unwrap();
+        assert_eq!(replay.target().handle(), left_handle, "R3/E2");
+        assert_eq!(
+            fresh_provider
+                .adopt_sandbox_with_spec(&spec, &left_handle)
+                .await
+                .unwrap()
+                .handle(),
+            left_handle,
+            "R3/E2"
+        );
+
+        drop(left);
+        drop(right);
+        drop(replay);
+        pc::SandboxProvider::dispose_restored(&fresh_provider, &spec, &request)
+            .await
+            .unwrap();
+        assert!(!root.exists(), "R8 exact disposal");
     }
 
-    // Cause/effect design: C7=object bytes differ from the committed digest.
-    // FMECA corruption rule => fail closed, create no usable restored Sandbox,
-    // and preserve the durable checkpoint reference for operator recovery.
+    /*
+     * Local mismatch/orphan rules (R5-R6). C1 target evidence differs; C2 an
+     * unfenced directory occupies the deterministic target; C3 exact evidence
+     * points at a symlink instead of a physical provider directory. E1 reject
+     * without replacing/deleting either object. R5=C1=>E1; R6=C2|C3=>E1.
+     */
     #[tokio::test]
-    async fn corrupt_checkpoint_is_rejected_before_restore() {
+    async fn exact_restore_target_rejects_mismatched_evidence_and_unfenced_orphan() {
         let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
         let spec = workdir_spec("checkpoint-session", false);
-        let sandbox = provider.create_sandbox(&spec).await.unwrap();
-        std::fs::write(sandbox.workspace_path().join("value"), b"original").unwrap();
-        let store = CheckpointStore::default();
-        let receipt = sandbox
-            .checkpoint(&checkpoint_request(), &store)
+        let provider = LocalProvider::new(tmp.path());
+        let request = restore_request(Vec::new());
+        let target = pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
             .await
             .unwrap();
-        sandbox.dispose().await.unwrap();
-        store
-            .objects
-            .lock()
+        let evidence = request.evidence(&spec);
+        let root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
+        let file_name = root.file_name().unwrap().to_string_lossy();
+        let sidecar = root
+            .parent()
             .unwrap()
-            .insert(receipt.id.clone(), b"corrupt".to_vec());
-        assert!(provider.restore(&spec, &receipt, &store).await.is_err());
+            .join(format!(".{file_name}.awaken-restore-target.json"));
+        let mut other = request.clone();
+        other.generation_id = "generation-b".into();
+        std::fs::write(
+            &sidecar,
+            serde_json::to_vec(&serde_json::json!({
+                "evidence": other.evidence(&spec)
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
+                .await
+                .is_err(),
+            "R5/E1"
+        );
+        assert!(root.exists(), "R5/E1 preserve target");
+
+        drop(target);
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_file(&sidecar).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
+                .await
+                .is_err(),
+            "R6/E1"
+        );
+        assert!(root.exists(), "R6/E1 preserve orphan");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            std::fs::remove_dir_all(&root).unwrap();
+            let outside = tmp.path().join("outside-provider-target");
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(outside.join("sentinel"), b"outside").unwrap();
+            symlink(&outside, &root).unwrap();
+            std::fs::write(
+                &sidecar,
+                serde_json::to_vec(&serde_json::json!({ "evidence": evidence })).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                pc::SandboxProvider::acquire_restore(&provider, &spec, &request)
+                    .await
+                    .is_err(),
+                "R6/C3/E1"
+            );
+            assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"outside");
+        }
     }
 }

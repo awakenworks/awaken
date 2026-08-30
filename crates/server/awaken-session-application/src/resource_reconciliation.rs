@@ -281,7 +281,26 @@ impl SessionApplication {
         }
         if session.is_terminal() || session.terminal_cleanup.needs_reconciliation() {
             return match session.terminal_cleanup.pending_commands(session_id) {
-                Ok(commands) => Ok(Some(commands)),
+                Ok(commands) => {
+                    let workspace_id = self.owner(session_id).await.map_err(|error| {
+                        SessionRealizationControlFailure::Unavailable(error.to_string())
+                    })?;
+                    let restore_target = session
+                        .environment
+                        .restoring_request(&workspace_id, session_id);
+                    let commands = commands
+                        .into_iter()
+                        .map(|command| match restore_target.clone() {
+                            Some(request) if command.thread_id == session_id => {
+                                command.with_restore_target(request).map_err(|error| {
+                                    SessionRealizationControlFailure::Invalid(error.to_string())
+                                })
+                            }
+                            _ => Ok(command),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Some(commands))
+                }
                 Err(awaken_session_contract::SessionCleanupError::NotRequested) => {
                     Ok(Some(Vec::new()))
                 }
@@ -441,6 +460,20 @@ impl SessionApplication {
             if !Self::terminal_cleanup_lease_matches(&session, lease) {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
+            let restore_target = session
+                .environment
+                .restoring_request(&owner_scope, &session_id)
+                .filter(|_| completion.thread_id == session_id);
+            let command = awaken_session_contract::SessionCleanupCommand {
+                session_id: completion.session_id.clone(),
+                thread_id: completion.thread_id.clone(),
+                effect_id: completion.effect_id.clone(),
+                restore_target,
+            };
+            let completion = completion
+                .clone()
+                .into_aggregate_completion(&command)
+                .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             let changed = session
                 .record_terminal_cleanup_completion(completion.clone())
                 .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
