@@ -95,16 +95,26 @@ const SESSION_MOUNT_ROOT: &str = "/mnt";
 /// owns that tree, so allowing it here does not widen access to host paths.
 fn sandbox_hand_tools() -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
     let logical = std::path::PathBuf::from(SESSION_MOUNT_ROOT);
-    let physical = if logical.exists() {
-        logical.clone()
-    } else {
-        std::env::current_dir()
-            .ok()
-            .and_then(|workdir| workdir.parent().map(|root| root.join("mnt")))
-            .filter(|candidate| candidate.exists())
-            .unwrap_or_else(|| logical.clone())
-    };
+    let physical = select_physical_mount_root(
+        logical,
+        std::env::current_dir().ok(),
+        cfg!(target_os = "linux"),
+    );
     sandbox_hand_tools_at(physical)
+}
+
+fn select_physical_mount_root(
+    logical: std::path::PathBuf,
+    workdir: Option<std::path::PathBuf>,
+    has_mount_namespace: bool,
+) -> std::path::PathBuf {
+    if has_mount_namespace && logical.exists() {
+        return logical;
+    }
+    workdir
+        .and_then(|workdir| workdir.parent().map(|root| root.join("mnt")))
+        .filter(|candidate| candidate.exists())
+        .unwrap_or(logical)
 }
 
 fn sandbox_hand_tools_at(
@@ -562,6 +572,29 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(denied, ToolError::Execution(message) if message.contains("escapes workdir"))
+        );
+    }
+
+    #[test]
+    fn seatbelt_uses_the_session_mount_instead_of_the_host_mnt_directory() {
+        // C1: macOS Seatbelt has no mount namespace; C2: the host may still have
+        // a real /mnt directory; C3: the Session root has its own sibling mnt.
+        // C1+C2+C3 must select the Session tree. Linux's mount namespace keeps
+        // the logical root because the bind is visible there.
+        let session = tempfile::tempdir().unwrap();
+        let workdir = session.path().join("workspace");
+        let session_mnt = session.path().join("mnt");
+        let host_mnt = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(&workdir).unwrap();
+        std::fs::create_dir_all(&session_mnt).unwrap();
+
+        assert_eq!(
+            select_physical_mount_root(host_mnt.path().into(), Some(workdir.clone()), false),
+            session_mnt,
+        );
+        assert_eq!(
+            select_physical_mount_root(host_mnt.path().into(), Some(workdir), true),
+            host_mnt.path(),
         );
     }
 }

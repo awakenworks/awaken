@@ -96,6 +96,14 @@ pub fn sandbox_exec_argv(input: &RenderInput) -> Vec<String> {
         input.host_workspace.to_path_buf(),
         input.host_outputs.to_path_buf(),
     ];
+    // The Hand's capability-based file tools open the Session-private mount
+    // directory before addressing an individual file relative to that handle.
+    // Seatbelt has no mount namespace, so grants for leaf mount paths alone do
+    // not authorize opening this directory. It contains only this sandbox's
+    // declared mounts; write access remains constrained below.
+    if let Some(root) = input.host_workspace.parent() {
+        readable.push(root.join("mnt"));
+    }
     readable.extend(input.mounts.iter().map(|mount| mount.host.clone()));
     let mut writable = vec![
         input.host_workspace.to_path_buf(),
