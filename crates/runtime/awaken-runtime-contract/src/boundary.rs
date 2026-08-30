@@ -73,10 +73,11 @@ fn drain_and_reidentify(
 }
 
 /// Decide the boundary action. Priority: **pause preempts queued input preempts
-/// idle.** The inbox is always drained first (so no queued input is lost); on a
-/// pause the drained messages ride out with `Await { fold, .. }` to be committed
-/// before awaiting, so a steer message in flight when an operator pauses is not
-/// dropped.
+/// idle.** The inbox is always drained first; on a pause the complete drained
+/// batch rides out with `Await { fold, .. }`, so a successful caller commit
+/// includes every steer observed at this boundary. `LiveInbox` is explicitly
+/// best-effort: durable delivery across a caller commit failure belongs to the
+/// existing Session event ingress, not to a second queue here.
 pub fn evaluate_boundary(
     ctx: &RuntimeRunContext,
     run_id: &RunId,
@@ -152,19 +153,24 @@ mod tests {
 
     #[test]
     fn pause_preempts_and_still_drains_the_inbox() {
+        // Cause/effect decision rule B1: pause=true and queued-input=true ->
+        // Await wins, the complete queue is returned once in `fold`, and the
+        // editable best-effort inbox is empty. The caller's later commit, not
+        // this process-local drain, owns durability.
         let inbox = LiveInbox::new();
         let _ = inbox.offer_as(MessageOrigin::External, msg("steer"));
         let pause = PauseSignal::new();
         pause.request();
         let ctx = RuntimeRunContext::new()
-            .with_live_inbox(inbox)
+            .with_live_inbox(inbox.clone())
             .with_pause(pause);
         match evaluate_boundary(&ctx, &run(), &[]) {
             BoundaryOutcome::Await { fold, reason } => {
                 assert_eq!(reason, PauseReason::Manual);
-                // The in-flight steer is not lost: it rides out to be committed.
+                // The complete in-flight steer rides out in the returned fold.
                 assert_eq!(fold.len(), 1);
                 assert_eq!(fold[0].id.0, "r1-inbox-0");
+                assert!(inbox.list().is_empty());
             }
             other => panic!("expected Await, got {other:?}"),
         }

@@ -83,15 +83,21 @@ pub fn evaluate_boundary(
 ```
 
 Priority: **pause preempts queued input preempts idle.** The inbox is *always*
-drained first (so no queued input is lost), and on a pause the drained messages
-ride out with `Await { fold, .. }` to be committed before awaiting. The
+drained first, and on a pause the drained messages ride out with
+`Await { fold, .. }` to be committed before awaiting. A successful caller commit
+therefore omits no queued input. `LiveInbox` remains explicitly process-local and
+best-effort: a caller commit failure after the drain may lose that attempt-local
+fold, and lossless delivery must use the existing durable Session event ingress.
+The
 re-identification helper (`{run_id}-inbox-{n}`) moves here from
 `engine/mod.rs::drain_live_inbox`, so the discipline is defined **once**.
 
 `evaluate_boundary` decides *and consumes the inbox*; it does **not** commit or
 await — those are the caller's, because each executor has its own commit mechanism.
 This side effect is the boundary's defined, deterministic semantic, documented as
-such (it is not a pure query).
+such (it is not a pure query). It must not grow an acknowledgement store, remote
+relay, or retry queue beside durable ingress merely to strengthen this best-effort
+handle.
 
 ### D2: The durable execution context wires the inbox, and both executors route through the seam
 
