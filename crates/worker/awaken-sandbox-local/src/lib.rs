@@ -498,7 +498,19 @@ pub(crate) fn scan_skill_dir_at(root: &IsolatedRoot, subdir: &str) -> Vec<Discov
             continue;
         }
         let id = entry.file_name().to_string_lossy().into_owned();
-        let md = entry.path().join("SKILL.md");
+        // Resolve the manifest by enumerated, exact directory-entry spelling.
+        // Joining `SKILL.md` would also open `skill.md` on a case-insensitive
+        // filesystem and silently broaden the cross-platform Skill contract.
+        let Ok(files) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        let Some(md) = files.flatten().find_map(|file| {
+            (file.file_name() == std::ffi::OsStr::new("SKILL.md")
+                && file.file_type().is_ok_and(|kind| kind.is_file()))
+            .then(|| file.path())
+        }) else {
+            continue;
+        };
         let Ok(content) = std::fs::read_to_string(&md) else {
             continue;
         };
