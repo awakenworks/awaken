@@ -49,6 +49,7 @@ fn publication(
         mime_type: "text/html".into(),
         content_id,
         bytes: bytes.to_vec(),
+        idempotency_scope: None,
         fence: claim,
     }
 }

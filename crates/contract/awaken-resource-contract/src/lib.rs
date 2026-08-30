@@ -29,7 +29,7 @@ mod registry;
 
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
-    FileContentSource, FileContentSourceError, FileReadPurpose,
+    ArtifactRecovery, FileContentSource, FileContentSourceError, FileReadPurpose,
     MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
     RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryGatewayCapability,
     RepositoryGatewayCapabilityExpiry, RepositoryTransport, ResolvedFileContent,
@@ -191,6 +191,11 @@ pub struct FileRecord {
     /// no key because every upload creates an independent logical File.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harvest_key: Option<String>,
+    /// Optional terminal-cleanup operation which durably incorporated this
+    /// existing artifact publication. It is an association on the same logical
+    /// File, never a second harvest identity or receipt registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_idempotency_scope: Option<String>,
     #[serde(default)]
     pub deleted: bool,
 }
@@ -240,6 +245,18 @@ pub trait FileCatalog: Send + Sync {
         workspace_id: &str,
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError>;
+    /// Recovery-only projection which retains tombstoned logical evidence.
+    /// Public Files lists remain active-only; implementations that cannot
+    /// prove deleted rows must fail closed instead of silently dropping them.
+    async fn list_files_including_deleted(
+        &self,
+        _workspace_id: &str,
+        _scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        Err(FileCatalogError::Storage(
+            "File catalog does not support durable deleted-record readback".into(),
+        ))
+    }
     /// Mark one logical File deleted and return its retained cleanup metadata.
     async fn mark_file_deleted(
         &self,
@@ -284,6 +301,19 @@ pub trait FileApplicationService: Send + Sync {
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, ResourcePurgeError>;
 
+    /// Internal response-loss readback. Unlike the public list, this includes
+    /// tombstoned records so a later logical delete cannot erase proof of a
+    /// previously committed publication.
+    async fn list_including_deleted(
+        &self,
+        _workspace_id: &str,
+        _scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        Err(ResourcePurgeError::Storage(
+            "File application does not support durable deleted-record readback".into(),
+        ))
+    }
+
     async fn create_uploaded_file_with_expiry(
         &self,
         workspace_id: &str,
@@ -313,14 +343,15 @@ pub trait FileApplicationService: Send + Sync {
         idempotency_key: String,
     ) -> Result<FileRecord, ResourcePurgeError>;
 
+    /// Create or atomically associate a terminal operation with the same
+    /// canonical artifact File. The existing [`ArtifactPublication`] is the
+    /// sole command value for ordinary and terminal artifacts; execution
+    /// adapters remove their opaque fence through
+    /// [`ArtifactPublication::into_file_application`] before invoking this
+    /// Resources-owned port.
     async fn create_artifact(
         &self,
-        workspace_id: &str,
-        session_id: &str,
-        logical_path: String,
-        mime_type: String,
-        bytes: &[u8],
-        idempotency_key: String,
+        publication: &ArtifactPublication<()>,
     ) -> Result<FileRecord, ResourcePurgeError>;
 
     async fn bytes(

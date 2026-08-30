@@ -5,9 +5,9 @@ use std::sync::Arc;
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
-    FileApplicationService, FileContentSource, FileContentSourceError, FileReadPurpose,
-    LiveResourceBindingVerifier, RepositoryBindingVerifier, RepositoryBindingVerifierError,
-    ResolvedFileContent, SkillStore, SkillVersion, content_id,
+    ArtifactRecovery, FileApplicationService, FileContentSource, FileContentSourceError,
+    FileReadPurpose, LiveResourceBindingVerifier, RepositoryBindingVerifier,
+    RepositoryBindingVerifierError, ResolvedFileContent, SkillStore, SkillVersion, content_id,
 };
 use awaken_session_contract::{
     ResolvedSkillBinding, SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication,
@@ -77,25 +77,26 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
         publication: ArtifactPublication<C>,
     ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
         publication.verify()?;
+        let file_publication = publication.into_file_application();
         let record = self
             .application
-            .create_artifact(
-                &publication.workspace_id,
-                &publication.session_id,
-                publication.logical_path.clone(),
-                publication.mime_type.clone(),
-                &publication.bytes,
-                publication.effect_id.clone(),
-            )
+            .create_artifact(&file_publication)
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
-        let receipt = ArtifactPublicationReceipt {
-            effect_id: publication.effect_id.clone(),
-            content_id: publication.content_id.clone(),
-            record,
-        };
-        receipt.verify(&publication)?;
-        Ok(receipt)
+        ArtifactPublicationReceipt::from_publication_record(&file_publication, record)
+    }
+
+    async fn recover(
+        &self,
+        recovery: ArtifactRecovery<C>,
+    ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
+        recovery.verify()?;
+        let records = self
+            .application
+            .list_including_deleted(&recovery.workspace_id, Some(&recovery.session_id))
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        recovery.receipts_from_records(records)
     }
 }
 
@@ -283,6 +284,13 @@ impl<C: Sync> SkillBundleSource<C> for StoreSkillBundleSource {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use awaken_resource_contract::{
+        ArtifactPublication, ArtifactPublisher as _, ArtifactRecovery, content_id,
+        harvest_idempotency_key,
+    };
+
     #[tokio::test]
     async fn missing_file_application_fails_closed() {
         // Cause/effect graph: C1 no File application was injected; C2 runtime
@@ -299,5 +307,94 @@ mod tests {
             .await
             .expect_err("U1");
         assert!(error.to_string().contains("not configured"), "U1: {error}");
+    }
+
+    #[tokio::test]
+    async fn artifact_terminal_association_reuses_one_file_and_recovers_through_delete() {
+        // Cause/effect decision table:
+        // A1 ordinary canonical File + terminal scope => atomically associate
+        // the same row and return the same File id; A2 exact terminal replay =>
+        // same receipt; A3 logical delete + response loss => include-deleted
+        // readback returns the byte-identical creation receipt; A4 ordinary or
+        // foreign terminal scope => filtered from current recovery.
+        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+        let application = Arc::new(crate::FileApplication::new(
+            files.clone(),
+            files,
+            Arc::new(
+                awaken_resource_store::SqliteResourceStore::in_memory()
+                    .expect("resource lifecycle"),
+            ),
+        ));
+        let publisher = super::ApplicationArtifactPublisher::new(application.clone());
+        let bytes = b"durable terminal artifact".to_vec();
+        let digest = content_id(&bytes);
+        let effect_id = harvest_idempotency_key("session-a", "report.txt", &digest);
+        let publication = |idempotency_scope: Option<&str>| ArtifactPublication {
+            effect_id: effect_id.clone(),
+            workspace_id: "workspace-a".into(),
+            session_id: "session-a".into(),
+            logical_path: "report.txt".into(),
+            mime_type: "text/plain".into(),
+            content_id: digest.clone(),
+            bytes: bytes.clone(),
+            idempotency_scope: idempotency_scope.map(str::to_string),
+            fence: None::<()>,
+        };
+
+        let ordinary = publisher
+            .publish(publication(None))
+            .await
+            .expect("A1 ordinary");
+        let terminal = publisher
+            .publish(publication(Some("cleanup-current")))
+            .await
+            .expect("A1 terminal association");
+        assert_eq!(terminal.record.id, ordinary.record.id, "A1 one File row");
+        assert_eq!(
+            terminal.record.artifact_idempotency_scope.as_deref(),
+            Some("cleanup-current"),
+            "A1 durable association"
+        );
+        assert_eq!(
+            publisher
+                .publish(publication(Some("cleanup-current")))
+                .await
+                .expect("A2 replay"),
+            terminal,
+            "A2"
+        );
+
+        application
+            .delete("workspace-a", &terminal.record.id, 7)
+            .await
+            .expect("A3 delete");
+        let recovered = publisher
+            .recover(ArtifactRecovery {
+                workspace_id: "workspace-a".into(),
+                session_id: "session-a".into(),
+                idempotency_scope: "cleanup-current".into(),
+                fence: (),
+            })
+            .await
+            .expect("A3 readback");
+        assert_eq!(
+            recovered,
+            vec![terminal],
+            "A3 canonical receipt survives delete"
+        );
+        assert!(
+            publisher
+                .recover(ArtifactRecovery {
+                    workspace_id: "workspace-a".into(),
+                    session_id: "session-a".into(),
+                    idempotency_scope: "cleanup-foreign".into(),
+                    fence: (),
+                })
+                .await
+                .expect("A4 filtered readback")
+                .is_empty(),
+            "A4"
+        );
     }
 }

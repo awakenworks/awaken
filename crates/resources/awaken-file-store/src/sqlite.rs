@@ -7,12 +7,13 @@
 //! `rusqlite` calls use the workspace's canonical SQLite scheduler boundary.
 
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::schema::{NS, file_store_bundle};
 use crate::{
-    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
-    content_id,
+    ArtifactAssociationDecision, CreateFileRecordOutcome, FileCatalog, FileCatalogError,
+    FileRecord, FileStore, FileStoreError, artifact_association_decision, content_id,
+    same_harvest_identity,
 };
 
 fn e(x: impl ToString) -> FileStoreError {
@@ -37,12 +38,14 @@ fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
         scope_id: row.get(9)?,
         logical_path: row.get(10)?,
         harvest_key: row.get(11)?,
-        deleted: row.get::<_, i64>(12)? != 0,
+        artifact_idempotency_scope: row.get(12)?,
+        deleted: row.get::<_, i64>(13)? != 0,
     })
 }
 
 const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, \
-size_bytes, created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, deleted";
+size_bytes, created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, \
+artifact_idempotency_scope, deleted";
 
 /// A SQLite-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct SqliteFileStore {
@@ -178,11 +181,71 @@ impl FileCatalog for SqliteFileStore {
     ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
         crate::validate_record(&record)?;
         self.with_conn(move |conn| {
-            let inserted = conn
+            let transaction =
+                Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(e)?;
+            if let (Some(key), Some(requested)) = (
+                record.harvest_key.as_deref(),
+                record.artifact_idempotency_scope.as_deref(),
+            ) {
+                let matching = {
+                    let mut statement = transaction
+                        .prepare(&format!(
+                            "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                             WHERE workspace_id=?1 AND harvest_key=?2 \
+                             ORDER BY deleted ASC, created_at DESC, id DESC"
+                        ))
+                        .map_err(e)?;
+                    let rows = statement
+                        .query_map(params![record.workspace_id, key], row_record)
+                        .map_err(e)?;
+                    rows.collect::<Result<Vec<_>, _>>().map_err(e)?
+                };
+                match artifact_association_decision(&matching, &record) {
+                    Ok(Some(ArtifactAssociationDecision::Existing(existing))) => {
+                        transaction.commit().map_err(e)?;
+                        return Ok(Ok(CreateFileRecordOutcome::Existing(existing)));
+                    }
+                    Ok(Some(ArtifactAssociationDecision::Associate(target))) => {
+                        transaction
+                            .execute(
+                                &format!(
+                                    "UPDATE {NS}_file SET artifact_idempotency_scope=?1 \
+                                     WHERE id=?2 AND artifact_idempotency_scope IS NULL"
+                                ),
+                                params![requested, target.id],
+                            )
+                            .map_err(e)?;
+                        let associated = transaction
+                            .query_row(
+                                &format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1"),
+                                params![target.id],
+                                row_record,
+                            )
+                            .map_err(e)?;
+                        if associated.artifact_idempotency_scope.as_deref() != Some(requested) {
+                            return Ok(Err(
+                                "artifact File association raced another terminal operation".into(),
+                            ));
+                        }
+                        transaction.commit().map_err(e)?;
+                        return Ok(Ok(CreateFileRecordOutcome::Existing(associated)));
+                    }
+                    Ok(None) if record.deleted => {
+                        return Ok(Err(
+                            "terminal association cannot recreate a missing tombstone".into(),
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(FileCatalogError::Invalid(message)) => return Ok(Err(message)),
+                    Err(FileCatalogError::Storage(message)) => return Err(e(message)),
+                }
+            }
+
+            let inserted = transaction
                 .execute(
                     &format!(
                         "INSERT OR IGNORE INTO {NS}_file ({FILE_COLUMNS}) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"
                     ),
                     params![
                         record.id,
@@ -197,38 +260,49 @@ impl FileCatalog for SqliteFileStore {
                         record.scope_id,
                         record.logical_path,
                         record.harvest_key,
+                        record.artifact_idempotency_scope,
                         i64::from(record.deleted),
                     ],
                 )
                 .map_err(e)?;
             let lookup = if inserted > 0 {
-                conn.query_row(
-                    &format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1"),
-                    params![record.id],
-                    row_record,
-                )
-                .map_err(e)?
+                transaction
+                    .query_row(
+                        &format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1"),
+                        params![record.id],
+                        row_record,
+                    )
+                    .map_err(e)?
             } else if let Some(key) = record.harvest_key.as_deref() {
-                conn.query_row(
-                    &format!(
-                        "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                transaction
+                    .query_row(
+                        &format!(
+                            "SELECT {FILE_COLUMNS} FROM {NS}_file \
                          WHERE workspace_id=?1 AND harvest_key=?2 AND deleted=0"
-                    ),
-                    params![record.workspace_id, key],
-                    row_record,
-                )
-                .map_err(e)?
+                        ),
+                        params![record.workspace_id, key],
+                        row_record,
+                    )
+                    .map_err(e)?
             } else {
-                return Err(e(format!("file id `{}` already exists", record.id)));
+                return Ok(Err(format!("file id `{}` already exists", record.id)));
             };
-            Ok(if inserted > 0 {
+            if inserted == 0 && !same_harvest_identity(&lookup, &record) {
+                return Ok(Err(
+                    "artifact harvest key is bound to different File identity".into(),
+                ));
+            }
+            let outcome = if inserted > 0 {
                 CreateFileRecordOutcome::Inserted(lookup)
             } else {
                 CreateFileRecordOutcome::Existing(lookup)
-            })
+            };
+            transaction.commit().map_err(e)?;
+            Ok(Ok(outcome))
         })
         .await
-        .map_err(ce)
+        .map_err(ce)?
+        .map_err(FileCatalogError::Invalid)
     }
 
     async fn get_file(
@@ -268,6 +342,30 @@ impl FileCatalog for SqliteFileStore {
                     "SELECT {FILE_COLUMNS} FROM {NS}_file \
                      WHERE workspace_id=?1 AND deleted=0 \
                      AND (?2 IS NULL OR scope_id=?2) ORDER BY created_at DESC, id DESC"
+                ))
+                .map_err(e)?;
+            let rows = stmt
+                .query_map(params![workspace, scope], row_record)
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })
+        .await
+        .map_err(ce)
+    }
+
+    async fn list_files_including_deleted(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        let workspace = workspace_id.to_string();
+        let scope = scope_id.map(str::to_string);
+        self.with_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                     WHERE workspace_id=?1 AND (?2 IS NULL OR scope_id=?2) \
+                     ORDER BY created_at DESC, id DESC"
                 ))
                 .map_err(e)?;
             let rows = stmt

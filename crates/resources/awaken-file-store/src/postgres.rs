@@ -3,12 +3,13 @@
 //! the immutable/dedup contract. Compile-verified; running needs a database.
 
 use async_trait::async_trait;
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::schema::{NS, file_store_bundle};
 use crate::{
-    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
-    content_id,
+    ArtifactAssociationDecision, CreateFileRecordOutcome, FileCatalog, FileCatalogError,
+    FileRecord, FileStore, FileStoreError, artifact_association_decision, content_id,
+    same_harvest_identity,
 };
 
 fn e(x: impl ToString) -> FileStoreError {
@@ -33,12 +34,73 @@ fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
         scope_id: row.get("scope_id"),
         logical_path: row.get("logical_path"),
         harvest_key: row.get("harvest_key"),
+        artifact_idempotency_scope: row.get("artifact_idempotency_scope"),
         deleted: row.get::<i64, _>("deleted") != 0,
     }
 }
 
 const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, size_bytes, \
-created_at AS file_created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, deleted";
+created_at AS file_created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, \
+artifact_idempotency_scope, deleted";
+
+async fn harvest_records_for_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    workspace_id: &str,
+    harvest_key: &str,
+) -> Result<Vec<FileRecord>, FileCatalogError> {
+    sqlx::query(&format!(
+        "SELECT {FILE_COLUMNS} FROM file_store_file \
+         WHERE workspace_id=$1 AND harvest_key=$2 \
+         ORDER BY deleted ASC, created_at DESC, id DESC FOR UPDATE"
+    ))
+    .bind(workspace_id)
+    .bind(harvest_key)
+    .fetch_all(&mut **transaction)
+    .await
+    .map(|rows| rows.iter().map(row_record).collect())
+    .map_err(ce)
+}
+
+async fn persist_artifact_association(
+    transaction: &mut Transaction<'_, Postgres>,
+    records: &[FileRecord],
+    candidate: &FileRecord,
+) -> Result<Option<CreateFileRecordOutcome>, FileCatalogError> {
+    let requested_scope = candidate
+        .artifact_idempotency_scope
+        .as_deref()
+        .ok_or_else(|| {
+            FileCatalogError::Invalid(
+                "artifact association requires a terminal idempotency scope".into(),
+            )
+        })?;
+    match artifact_association_decision(records, candidate)? {
+        Some(ArtifactAssociationDecision::Existing(existing)) => {
+            Ok(Some(CreateFileRecordOutcome::Existing(existing)))
+        }
+        Some(ArtifactAssociationDecision::Associate(target)) => {
+            let updated = sqlx::query(&format!(
+                "UPDATE file_store_file SET artifact_idempotency_scope=$1 \
+                 WHERE id=$2 AND artifact_idempotency_scope IS NULL \
+                 RETURNING {FILE_COLUMNS}"
+            ))
+            .bind(requested_scope)
+            .bind(&target.id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(ce)?
+            .ok_or_else(|| {
+                FileCatalogError::Invalid(
+                    "artifact File association raced another terminal operation".into(),
+                )
+            })?;
+            Ok(Some(CreateFileRecordOutcome::Existing(row_record(
+                &updated,
+            ))))
+        }
+        None => Ok(None),
+    }
+}
 
 /// A Postgres-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct PgFileStore {
@@ -146,10 +208,46 @@ impl FileCatalog for PgFileStore {
         record: FileRecord,
     ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
         crate::validate_record(&record)?;
+        let mut transaction = self.pool.begin().await.map_err(ce)?;
+        if let Some(key) = record.harvest_key.as_deref() {
+            let lock_key = format!(
+                "file-store:{}:{}:{key}",
+                record.workspace_id.len(),
+                record.workspace_id
+            );
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+                .bind(lock_key)
+                .execute(&mut *transaction)
+                .await
+                .map_err(ce)?;
+            let matching =
+                harvest_records_for_update(&mut transaction, &record.workspace_id, key).await?;
+            if record.artifact_idempotency_scope.is_some() {
+                if let Some(outcome) =
+                    persist_artifact_association(&mut transaction, &matching, &record).await?
+                {
+                    transaction.commit().await.map_err(ce)?;
+                    return Ok(outcome);
+                }
+                if record.deleted {
+                    return Err(FileCatalogError::Invalid(
+                        "terminal association cannot recreate a missing tombstone".into(),
+                    ));
+                }
+            } else if let Some(existing) = matching.into_iter().find(|row| !row.deleted) {
+                if !same_harvest_identity(&existing, &record) {
+                    return Err(FileCatalogError::Invalid(
+                        "artifact harvest key is bound to different File identity".into(),
+                    ));
+                }
+                transaction.commit().await.map_err(ce)?;
+                return Ok(CreateFileRecordOutcome::Existing(existing));
+            }
+        }
         let inserted = sqlx::query(&format!(
             "INSERT INTO file_store_file \
-             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,deleted) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
+             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,artifact_idempotency_scope,deleted) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
              ON CONFLICT DO NOTHING RETURNING {FILE_COLUMNS}"
         ))
         .bind(&record.id)
@@ -164,30 +262,48 @@ impl FileCatalog for PgFileStore {
         .bind(&record.scope_id)
         .bind(&record.logical_path)
         .bind(&record.harvest_key)
+        .bind(&record.artifact_idempotency_scope)
         .bind(i64::from(record.deleted))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(ce)?;
         if let Some(row) = inserted {
-            return Ok(CreateFileRecordOutcome::Inserted(row_record(&row)));
+            let inserted = row_record(&row);
+            transaction.commit().await.map_err(ce)?;
+            return Ok(CreateFileRecordOutcome::Inserted(inserted));
         }
         let existing = if let Some(key) = record.harvest_key.as_deref() {
-            sqlx::query(&format!(
-                "SELECT {FILE_COLUMNS} FROM file_store_file \
-                 WHERE workspace_id=$1 AND harvest_key=$2 AND deleted=0"
-            ))
-            .bind(&record.workspace_id)
-            .bind(key)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(ce)?
+            let matching =
+                harvest_records_for_update(&mut transaction, &record.workspace_id, key).await?;
+            if record.artifact_idempotency_scope.is_some()
+                && let Some(outcome) =
+                    persist_artifact_association(&mut transaction, &matching, &record).await?
+            {
+                transaction.commit().await.map_err(ce)?;
+                return Ok(outcome);
+            }
+            let existing = matching
+                .into_iter()
+                .find(|row| !row.deleted)
+                .ok_or_else(|| {
+                    FileCatalogError::Invalid(
+                        "artifact File conflict has no canonical active record".into(),
+                    )
+                })?;
+            if !same_harvest_identity(&existing, &record) {
+                return Err(FileCatalogError::Invalid(
+                    "artifact harvest key is bound to different File identity".into(),
+                ));
+            }
+            existing
         } else {
             return Err(FileCatalogError::Invalid(format!(
                 "file id `{}` already exists",
                 record.id
             )));
         };
-        Ok(CreateFileRecordOutcome::Existing(row_record(&existing)))
+        transaction.commit().await.map_err(ce)?;
+        Ok(CreateFileRecordOutcome::Existing(existing))
     }
 
     async fn get_file(
@@ -217,6 +333,24 @@ impl FileCatalog for PgFileStore {
         let rows = sqlx::query(&format!(
             "SELECT {FILE_COLUMNS} FROM file_store_file \
              WHERE workspace_id=$1 AND deleted=0 AND ($2::TEXT IS NULL OR scope_id=$2) \
+             ORDER BY created_at DESC, id DESC"
+        ))
+        .bind(workspace_id)
+        .bind(scope_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ce)?;
+        Ok(rows.iter().map(row_record).collect())
+    }
+
+    async fn list_files_including_deleted(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {FILE_COLUMNS} FROM file_store_file \
+             WHERE workspace_id=$1 AND ($2::TEXT IS NULL OR scope_id=$2) \
              ORDER BY created_at DESC, id DESC"
         ))
         .bind(workspace_id)

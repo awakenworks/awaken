@@ -226,14 +226,17 @@ async fn publish_artifact(
     }
     match service
         .application
-        .create_artifact(
-            &metadata.workspace_id,
-            &metadata.session_id,
-            metadata.logical_path,
-            metadata.mime_type,
-            &bytes,
-            metadata.effect_id.clone(),
-        )
+        .create_artifact(&awaken_resource_contract::ArtifactPublication {
+            effect_id: metadata.effect_id.clone(),
+            workspace_id: metadata.workspace_id.clone(),
+            session_id: metadata.session_id.clone(),
+            logical_path: metadata.logical_path.clone(),
+            mime_type: metadata.mime_type.clone(),
+            content_id: metadata.content_id.clone(),
+            bytes: bytes.to_vec(),
+            idempotency_scope: None,
+            fence: None,
+        })
         .await
     {
         Ok(record) => (
