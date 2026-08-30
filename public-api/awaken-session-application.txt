@@ -158,7 +158,7 @@ pub struct awaken_session_application::RecoveredSessionProjection
 pub awaken_session_application::RecoveredSessionProjection::owner_scope: alloc::string::String
 pub awaken_session_application::RecoveredSessionProjection::session: awaken_session_contract::session_repo::PersistedSession
 pub struct awaken_session_application::ReplaceSessionResourceManifest
-pub awaken_session_application::ReplaceSessionResourceManifest::expected_session_revision: core::option::Option<awaken_session_contract::session_repo::SessionRevision>
+pub awaken_session_application::ReplaceSessionResourceManifest::expected_resource_revision: core::option::Option<u64>
 pub awaken_session_application::ReplaceSessionResourceManifest::idempotency_key: core::option::Option<alloc::string::String>
 pub awaken_session_application::ReplaceSessionResourceManifest::request_fingerprint: alloc::string::String
 pub awaken_session_application::ReplaceSessionResourceManifest::resources: awaken_session_contract::resource::ResolvedSessionResources

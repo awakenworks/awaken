@@ -279,10 +279,11 @@ async fn infer_step(
             Ok(response) => {
                 let has_tool_calls = !response.output.tool_calls().is_empty();
                 let has_text = !response.output.text_content().is_empty();
+                let has_continuable_output = has_text || response.output.has_reasoning();
                 let may_continue = response.stop_reason.is_some_and(|reason| {
                     reason.admits_continuation(
                         has_tool_calls,
-                        has_text,
+                        has_continuable_output,
                         truncation_retries,
                         runtime.max_continuation_retries(),
                     )
