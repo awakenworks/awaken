@@ -449,6 +449,7 @@ impl SharedHost {
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
             agent_coordination: std::sync::RwLock::new(None),
+            session_background_runs: std::sync::RwLock::new(None),
             #[cfg(any(test, feature = "test-support"))]
             file_store,
             file_content_source,

@@ -313,6 +313,10 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// Process-local admission shared by every foreground and detached call in
+    /// the same realized environment generation. It is coordination only;
+    /// ThreadCommit and the owning extension aggregate remain durable authority.
+    pub tool_execution_admission: Option<Arc<dyn crate::tool::ToolExecutionAdmission>>,
     /// Optional maximum number of compatible tool calls entered concurrently in
     /// one model step. `None` admits the complete compatible batch at once.
     pub tool_concurrency_limit: Option<NonZeroUsize>,
@@ -528,6 +532,15 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_tool_executor(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    #[must_use]
+    pub fn with_tool_execution_admission(
+        mut self,
+        admission: Arc<dyn crate::tool::ToolExecutionAdmission>,
+    ) -> Self {
+        self.tool_execution_admission = Some(admission);
         self
     }
 

@@ -41,11 +41,15 @@ pub fn awaken_runtime::PermissionGate::gate<'life0, 'life1, 'life2, 'async_trait
 pub fn awaken_runtime::PermissionGate::id(&self) -> &str
 pub struct awaken_runtime::PreparedToolExecutor
 impl awaken_runtime::PreparedToolExecutor
+pub async fn awaken_runtime::PreparedToolExecutor::cancel_task(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, alloc::string::String, &awaken_runtime_contract::llm::ToolCall, &awaken_runtime_contract::tool::ToolTaskHandle, &awaken_agent_contract::agent::state::Store) -> core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime::DetachedToolError>
 pub fn awaken_runtime::PreparedToolExecutor::execution(&self, &awaken_runtime_contract::llm::ToolCall) -> core::result::Result<awaken_runtime::ResolvedToolExecution, awaken_runtime::DetachedToolError>
 pub async fn awaken_runtime::PreparedToolExecutor::invoke(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, alloc::string::String, &awaken_runtime_contract::llm::ToolCall, &awaken_agent_contract::agent::state::Store) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime::DetachedToolError>
 pub fn awaken_runtime::PreparedToolExecutor::new(alloc::sync::Arc<awaken_runtime::Runtime>, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<Self, awaken_runtime::DetachedToolError>
+pub async fn awaken_runtime::PreparedToolExecutor::poll_task(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, alloc::string::String, &awaken_runtime_contract::llm::ToolCall, &awaken_runtime_contract::tool::ToolTaskHandle, &awaken_agent_contract::agent::state::Store) -> core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime::DetachedToolError>
+pub async fn awaken_runtime::PreparedToolExecutor::start_task(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, alloc::string::String, &awaken_runtime_contract::llm::ToolCall, &awaken_agent_contract::agent::state::Store) -> core::result::Result<awaken_runtime_contract::tool::ToolTaskStart, awaken_runtime::DetachedToolError>
 pub struct awaken_runtime::ResolvedToolExecution
 pub awaken_runtime::ResolvedToolExecution::concurrency: awaken_runtime_contract::tool::ToolConcurrency
+pub awaken_runtime::ResolvedToolExecution::kind: awaken_runtime_contract::resolved::ToolKind
 pub awaken_runtime::ResolvedToolExecution::recovery: awaken_runtime_contract::tool::ToolRecoveryPolicy
 pub struct awaken_runtime::RunInput(_)
 impl core::convert::From<&str> for awaken_runtime::RunInput

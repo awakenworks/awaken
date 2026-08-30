@@ -14,19 +14,23 @@ use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::ResolvedExecutionEnv;
 use awaken_runtime_contract::resolved::{ResolvedRun, ToolKind};
 use awaken_runtime_contract::resolver::RunResolver;
-use awaken_runtime_contract::tool::{ToolCall, ToolConcurrency, ToolOutput, ToolRecoveryPolicy};
+use awaken_runtime_contract::tool::{
+    ToolCall, ToolConcurrency, ToolOutput, ToolRecoveryPolicy, ToolTaskHandle, ToolTaskPoll,
+    ToolTaskStart,
+};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 
 use crate::Runtime;
 use crate::engine::convert::executable_tool_descriptors;
 use crate::engine::tool_execution::{
-    ToolExecutionOrigin, execute_tool, gate_decision, spill_tool_output, tool_concurrency,
-    tool_recovery_capability,
+    DetachedToolAction, ToolExecutionOrigin, ToolExecutorOutcome, execute_detached_tool_action,
+    execute_tool, gate_decision, spill_tool_output, tool_concurrency, tool_recovery_capability,
 };
 
 /// Trusted execution facts frozen before a detached effect starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedToolExecution {
+    pub kind: ToolKind,
     pub recovery: ToolRecoveryPolicy,
     pub concurrency: ToolConcurrency,
 }
@@ -82,7 +86,9 @@ impl PreparedToolExecutor {
         let descriptor = descriptors
             .iter()
             .find(|descriptor| descriptor.id == call.tool_id)
-            .filter(|descriptor| descriptor.kind == ToolKind::Regular)
+            .filter(|descriptor| {
+                matches!(descriptor.kind, ToolKind::Regular | ToolKind::DetachedOnly)
+            })
             .ok_or_else(|| DetachedToolError::NotExecutable(call.tool_id.clone()))?;
         descriptor
             .recovery_policy
@@ -94,6 +100,7 @@ impl PreparedToolExecutor {
             ))
             .map_err(|error| DetachedToolError::Execution(error.to_string()))?;
         Ok(ResolvedToolExecution {
+            kind: descriptor.kind,
             recovery: descriptor.recovery_policy.clone(),
             concurrency: tool_concurrency(self.runtime.as_ref(), &self.env, &self.context, call),
         })
@@ -135,5 +142,144 @@ impl PreparedToolExecutor {
         spill_tool_output(&self.context, run_id, output)
             .await
             .map_err(|error| DetachedToolError::Execution(error.to_string()))
+    }
+
+    /// Start the canonical ordinary tool through its negotiated durable-task
+    /// port. Authorization is evaluated exactly once here; subsequent poll and
+    /// cancellation calls continue the already-authorized request coordinates.
+    pub async fn start_task(
+        &self,
+        run_id: &RunId,
+        thread_id: &ThreadId,
+        operation_id: String,
+        call: &ToolCall,
+        state: &Store,
+    ) -> Result<ToolTaskStart, DetachedToolError> {
+        match gate_decision(self.runtime.as_ref(), call, &self.env, state, &self.context).await {
+            GateOutcome::Allow => {}
+            outcome => {
+                return Err(DetachedToolError::NotAuthorized {
+                    tool_id: call.tool_id.clone(),
+                    reason: outcome.decision_label().to_string(),
+                });
+            }
+        }
+        let outcome = execute_detached_tool_action(
+            self.runtime.as_ref(),
+            &self.env,
+            &self.resolved,
+            call,
+            &self.context,
+            ToolExecutionOrigin {
+                run_id,
+                thread_id,
+                operation_id,
+            },
+            state,
+            DetachedToolAction::Start,
+        )
+        .await
+        .map_err(|error| DetachedToolError::Execution(error.to_string()))?
+        .map_err(|error| DetachedToolError::Execution(error.to_string()))?;
+        match outcome {
+            ToolExecutorOutcome::Started(ToolTaskStart::Completed(output)) => {
+                spill_tool_output(&self.context, run_id, output)
+                    .await
+                    .map(ToolTaskStart::Completed)
+                    .map_err(|error| DetachedToolError::Execution(error.to_string()))
+            }
+            ToolExecutorOutcome::Started(started) => Ok(started),
+            _ => Err(DetachedToolError::Execution(
+                "detached start returned an invalid executor outcome".into(),
+            )),
+        }
+    }
+
+    /// Poll one durable request using the exact resolved adapter that created
+    /// its opaque handle. This is continuation, not a second permission event.
+    pub async fn poll_task(
+        &self,
+        run_id: &RunId,
+        thread_id: &ThreadId,
+        operation_id: String,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+        state: &Store,
+    ) -> Result<ToolTaskPoll, DetachedToolError> {
+        self.continue_task(
+            run_id,
+            thread_id,
+            operation_id,
+            call,
+            task,
+            state,
+            DetachedToolAction::Poll(task),
+        )
+        .await
+    }
+
+    /// Cancel one durable request. A successful return reports the remote
+    /// protocol's observed state; it does not invent local terminal truth.
+    pub async fn cancel_task(
+        &self,
+        run_id: &RunId,
+        thread_id: &ThreadId,
+        operation_id: String,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+        state: &Store,
+    ) -> Result<ToolTaskPoll, DetachedToolError> {
+        self.continue_task(
+            run_id,
+            thread_id,
+            operation_id,
+            call,
+            task,
+            state,
+            DetachedToolAction::Cancel(task),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn continue_task(
+        &self,
+        run_id: &RunId,
+        thread_id: &ThreadId,
+        operation_id: String,
+        call: &ToolCall,
+        _task: &ToolTaskHandle,
+        state: &Store,
+        action: DetachedToolAction<'_>,
+    ) -> Result<ToolTaskPoll, DetachedToolError> {
+        let outcome = execute_detached_tool_action(
+            self.runtime.as_ref(),
+            &self.env,
+            &self.resolved,
+            call,
+            &self.context,
+            ToolExecutionOrigin {
+                run_id,
+                thread_id,
+                operation_id,
+            },
+            state,
+            action,
+        )
+        .await
+        .map_err(|error| DetachedToolError::Execution(error.to_string()))?
+        .map_err(|error| DetachedToolError::Execution(error.to_string()))?;
+        match outcome {
+            ToolExecutorOutcome::Polled(ToolTaskPoll::Completed(output)) => {
+                spill_tool_output(&self.context, run_id, output)
+                    .await
+                    .map(ToolTaskPoll::Completed)
+                    .map_err(|error| DetachedToolError::Execution(error.to_string()))
+            }
+            ToolExecutorOutcome::Polled(polled) => Ok(polled),
+            _ => Err(DetachedToolError::Execution(
+                "detached continuation returned an invalid executor outcome".into(),
+            )),
+        }
     }
 }

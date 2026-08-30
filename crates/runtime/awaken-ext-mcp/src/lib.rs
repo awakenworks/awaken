@@ -36,7 +36,8 @@ pub mod types;
 // vocabulary) is shared with the MCP server crate via `awaken-mcp-wire`;
 // re-exported here so client-side paths (`awaken_ext_mcp::jsonrpc`, …) hold.
 pub use awaken_mcp_wire::{
-    CallToolResult, McpToolDefinition, McpTransportError, jsonrpc, progress, sse,
+    CallToolResult, CreateTaskResult, McpTask, McpToolDefinition, McpTransportError, TaskStatus,
+    jsonrpc, progress, sse,
 };
 
 pub use client::{McpConnection, connect_tools};
@@ -54,7 +55,7 @@ pub use sampling::{
 };
 pub use sensitive::{REDACTED, mark_sensitive, redact_arguments, sensitive_paths};
 pub use stdio::{DEFAULT_TIMEOUT, StdioTransport};
-pub use tool::{McpRawTool, mcp_tool_descriptor};
+pub use tool::{MCP_TASK_OWNER, McpRawTool, mcp_tool_descriptor};
 pub use transport::{ListChangedKind, McpToolTransport};
 pub use types::{
     McpPromptArgument, McpPromptDefinition, McpPromptMessage, McpPromptResult,

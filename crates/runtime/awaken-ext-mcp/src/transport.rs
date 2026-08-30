@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
-use awaken_mcp_wire::{CallToolResult, McpToolDefinition};
+use awaken_mcp_wire::{CallToolResult, CreateTaskResult, McpTask, McpToolDefinition};
 use serde_json::Value;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
@@ -172,6 +172,47 @@ pub trait McpToolTransport: Send + Sync {
         self.call_tool(tool_name, arguments).await
     }
 
+    /// Whether `initialize` negotiated task augmentation for `tools/call`.
+    /// Defaults to false so legacy and test transports fail closed.
+    fn supports_task_tools_call(&self) -> bool {
+        false
+    }
+
+    /// Whether `initialize` negotiated `tasks/cancel`, independently of task
+    /// creation support.
+    fn supports_task_cancel(&self) -> bool {
+        false
+    }
+
+    /// Start `tools/call` with MCP task augmentation. The protocol-management
+    /// methods remain adapter-internal and are never registered as model tools.
+    async fn call_tool_as_task(
+        &self,
+        _tool_name: &str,
+        _arguments: Value,
+        _ttl_ms: Option<u64>,
+    ) -> Result<CreateTaskResult, McpTransportError> {
+        Err(McpTransportError::NotSupported(
+            "task-augmented tools/call".to_string(),
+        ))
+    }
+
+    /// Read one task's current status (`tasks/get`).
+    async fn get_task(&self, _task_id: &str) -> Result<McpTask, McpTransportError> {
+        Err(McpTransportError::NotSupported("tasks/get".to_string()))
+    }
+
+    /// Retrieve a completed tool task's original `CallToolResult`
+    /// (`tasks/result`).
+    async fn get_task_result(&self, _task_id: &str) -> Result<CallToolResult, McpTransportError> {
+        Err(McpTransportError::NotSupported("tasks/result".to_string()))
+    }
+
+    /// Request cancellation and return the server's authoritative task status.
+    async fn cancel_task(&self, _task_id: &str) -> Result<McpTask, McpTransportError> {
+        Err(McpTransportError::NotSupported("tasks/cancel".to_string()))
+    }
+
     /// List the server's prompts (`prompts/list`). Defaults to none.
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         Ok(Vec::new())
@@ -232,6 +273,39 @@ impl McpToolTransport for RevocableMcpTransport {
         .await
     }
 
+    fn supports_task_tools_call(&self) -> bool {
+        // Negotiated semantics are immutable for this generation. Draining
+        // rejects operations through `run`; it must not reclassify a detached
+        // tool as foreground/model-visible while the registry is being replaced.
+        self.inner.supports_task_tools_call()
+    }
+
+    fn supports_task_cancel(&self) -> bool {
+        self.inner.supports_task_cancel()
+    }
+
+    async fn call_tool_as_task(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ttl_ms: Option<u64>,
+    ) -> Result<CreateTaskResult, McpTransportError> {
+        self.run(self.inner.call_tool_as_task(tool_name, arguments, ttl_ms))
+            .await
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
+        self.run(self.inner.get_task(task_id)).await
+    }
+
+    async fn get_task_result(&self, task_id: &str) -> Result<CallToolResult, McpTransportError> {
+        self.run(self.inner.get_task_result(task_id)).await
+    }
+
+    async fn cancel_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
+        self.run(self.inner.cancel_task(task_id)).await
+    }
+
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         self.run(self.inner.list_prompts()).await
     }
@@ -286,18 +360,28 @@ mod tests {
                 is_error: Some(false),
             })
         }
+
+        fn supports_task_tools_call(&self) -> bool {
+            true
+        }
+
+        fn supports_task_cancel(&self) -> bool {
+            true
+        }
     }
 
     #[tokio::test]
     async fn generation_drain_cancels_busy_calls_and_closes_new_admission() {
         // Cause/effect graph: C1 the generation accepts calls; C2 one call is
         // busy inside the transport; C3 drain closes the exact generation.
-        // Effects: E1 the busy future returns a revocation transport error; E2
-        // close waits for the in-flight guard to reach zero; E3 every later
-        // operation is rejected before touching the delegate. Decision rules:
+        // C4=this generation negotiated task capabilities. Effects: E1 the busy
+        // future returns a revocation transport error; E2 close waits for the
+        // in-flight guard to reach zero; E3 every later operation is rejected
+        // before touching the delegate; E4 negotiated semantic facts stay
+        // pinned while admission closes. Decision rules:
         // R1=C1+C2+!C3=>in-flight; R2=C1+C2+C3=>E1+E2;
-        // R3=!C1+C3=>E3. The fence is process-local effect state, never Session
-        // desired state or a replacement generation authority.
+        // R3=!C1+C3=>E3; R4=C3+C4=>E4. The fence is process-local effect state,
+        // never Session desired state or a replacement generation authority.
         let entered = Arc::new(Notify::new());
         let delegate = Arc::new(BlockingTransport {
             entered: entered.clone(),
@@ -323,6 +407,8 @@ mod tests {
             matches!(transport.list_tools().await, Err(McpTransportError::TransportError(message)) if message.contains("draining")),
             "R3/E3"
         );
+        assert!(transport.supports_task_tools_call(), "R4/E4");
+        assert!(transport.supports_task_cancel(), "R4/E4");
     }
 
     /// A tools-only transport: it implements only the two mandatory methods, so the
@@ -353,6 +439,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_tools_only_transport_defaults_the_optional_surfaces_fail_soft() {
+        // Cause/effect graph: C1=transport implements only list/call; C2=no
+        // initialize task evidence exists. Effects E1=list surfaces are empty
+        // and read surfaces explicitly unsupported; E2=task create/poll/cancel
+        // capabilities stay false and operations are rejected. Rules:
+        // D1=C1=>E1; D2=C1+C2=>E2. Defaults may preserve compatibility but
+        // must never synthesize protocol authority.
         let t = ToolsOnly;
         // List surfaces default to empty (a tools-only server has none), never an error.
         assert!(t.list_prompts().await.expect("prompts default").is_empty());
@@ -373,6 +465,18 @@ mod tests {
         ));
         // A stateless transport reports alive by default.
         assert!(t.is_alive());
+        // MCP Tasks are capability-negotiated. A legacy transport must never
+        // acquire task execution or cancellation through trait defaults.
+        assert!(!t.supports_task_tools_call());
+        assert!(!t.supports_task_cancel());
+        assert!(matches!(
+            t.call_tool_as_task("echo", Value::Null, None).await,
+            Err(McpTransportError::NotSupported(method)) if method == "task-augmented tools/call"
+        ));
+        assert!(matches!(
+            t.get_task("remote-1").await,
+            Err(McpTransportError::NotSupported(method)) if method == "tasks/get"
+        ));
     }
 
     #[tokio::test]

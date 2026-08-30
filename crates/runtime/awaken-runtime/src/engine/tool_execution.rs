@@ -400,6 +400,156 @@ pub(crate) struct ToolExecutionOrigin<'a> {
     pub operation_id: String,
 }
 
+pub(crate) enum DetachedToolAction<'a> {
+    Start,
+    Poll(&'a ToolTaskHandle),
+    Cancel(&'a ToolTaskHandle),
+}
+
+enum ToolExecutorAction<'a> {
+    Invoke,
+    Detached(DetachedToolAction<'a>),
+}
+
+pub(crate) enum ToolExecutorOutcome {
+    Output(ToolOutput),
+    Started(ToolTaskStart),
+    Polled(ToolTaskPoll),
+}
+
+// Keeping every execution coordinate explicit here makes this the one invoke,
+// start, poll, and cancel confluence; an argument-wrapper type would duplicate
+// RuntimeRunContext and ToolExecutionOrigin solely to appease this lint.
+#[allow(clippy::too_many_arguments)]
+async fn execute_tool_action(
+    runtime: &Runtime,
+    env: Option<&ResolvedExecutionEnv>,
+    resolved: Option<&ResolvedRun>,
+    call: &ToolCall,
+    context: &RuntimeRunContext,
+    origin: ToolExecutionOrigin<'_>,
+    state: &Store,
+    action: ToolExecutorAction<'_>,
+) -> Result<std::result::Result<ToolExecutorOutcome, ToolError>> {
+    let local = LocalToolExecutor { runtime, env };
+    let missing_sandbox = MissingSandboxExecutor;
+    let executor: &dyn ToolExecutor = match local.execution_target(&call.tool_id) {
+        Some(ToolExecutionTarget::Sandbox) => {
+            context.tool_executor.as_deref().unwrap_or(&missing_sandbox)
+        }
+        Some(ToolExecutionTarget::Brain) | None => &local,
+    };
+    let _admission = match context.tool_execution_admission.as_ref() {
+        Some(admission) => {
+            let claim = env.map_or_else(
+                || executor.concurrency(&call.tool_id, &call.arguments),
+                |env| tool_concurrency(runtime, env, context, call),
+            );
+            Some(
+                admission
+                    .clone()
+                    .acquire(claim)
+                    .await
+                    .map_err(|error| Error::Execution(error.to_string()))?,
+            )
+        }
+        None => None,
+    };
+    // Admission may have waited behind another Run. Recheck the claim fence at
+    // the actual effect boundary rather than trusting ownership from before it.
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    let started = std::time::Instant::now();
+    use futures_util::FutureExt;
+    let state_bound = env.and_then(|env| env.dynamic_tool_state_bound(&call.tool_id));
+    let executor_state = match state_bound {
+        Some(bound) => state.project(|key| bound.allows(&key.0)),
+        None => Store::new(),
+    };
+    let operation = async {
+        match action {
+            ToolExecutorAction::Invoke => {
+                executor.invoke(call).await.map(ToolExecutorOutcome::Output)
+            }
+            ToolExecutorAction::Detached(DetachedToolAction::Start) => executor
+                .start_task(call)
+                .await
+                .map(ToolExecutorOutcome::Started),
+            ToolExecutorAction::Detached(DetachedToolAction::Poll(task)) => executor
+                .poll_task(call, task)
+                .await
+                .map(ToolExecutorOutcome::Polled),
+            ToolExecutorAction::Detached(DetachedToolAction::Cancel(task)) => executor
+                .cancel_task(call, task)
+                .await
+                .map(ToolExecutorOutcome::Polled),
+        }
+    };
+    let invocation = with_tool_state_context(
+        executor_state,
+        with_tool_operation_context(
+            ToolOperationContext {
+                run_id: Some(origin.run_id.clone()),
+                thread_id: Some(origin.thread_id.clone()),
+                operation_id: origin.operation_id,
+                call_id: Some(call.call_id.clone()),
+                execution_scope: context.execution_scope.clone(),
+            },
+            async {
+                match resolved {
+                    Some(resolved) => {
+                        with_tool_execution_facts(
+                            Arc::new(CurrentToolExecutionFacts::new(
+                                runtime, env, resolved, context,
+                            )),
+                            operation,
+                        )
+                        .await
+                    }
+                    None => operation.await,
+                }
+            },
+        ),
+    );
+    let mut outcome = match std::panic::AssertUnwindSafe(invocation)
+        .catch_unwind()
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(_panic) => Err(ToolError::Execution(format!(
+            "tool `{}` panicked during execution",
+            call.tool_id
+        ))),
+    };
+    if let Ok(ToolExecutorOutcome::Started(ToolTaskStart::Pending(handle))) = &outcome {
+        outcome = handle
+            .validate()
+            .map(|()| ToolExecutorOutcome::Started(ToolTaskStart::Pending(handle.clone())));
+    }
+    if let Some(bound) = state_bound {
+        let invalid_command = match &outcome {
+            Ok(ToolExecutorOutcome::Output(output))
+            | Ok(ToolExecutorOutcome::Started(ToolTaskStart::Completed(output)))
+            | Ok(ToolExecutorOutcome::Polled(ToolTaskPoll::Completed(output))) => output
+                .state
+                .iter()
+                .find(|command| !bound.allows(&command.key.0)),
+            _ => None,
+        };
+        if let Some(command) = invalid_command {
+            outcome = Err(ToolError::Execution(format!(
+                "tool `{}` attempted state key {:?} outside its plugin capability",
+                call.tool_id, command.key.0
+            )));
+        }
+    }
+    runtime.metrics().record_tool(
+        &call.tool_id,
+        if outcome.is_err() { "error" } else { "ok" },
+        started.elapsed(),
+    );
+    Ok(outcome)
+}
+
 #[tracing::instrument(
     name = "execute_tool",
     skip_all,
@@ -423,80 +573,22 @@ pub(crate) async fn execute_tool(
     state: &Store,
 ) -> Result<ToolOutput> {
     let span = tracing::Span::current();
-    // Resolve placement per tool. A placed Hand must never capture Brain tools
-    // such as MCP or Skills, while a Sandbox tool must never silently execute in
-    // the Brain when placement is unavailable.
-    let local = LocalToolExecutor { runtime, env };
-    let missing_sandbox = MissingSandboxExecutor;
-    let executor: &dyn ToolExecutor = match local.execution_target(&call.tool_id) {
-        Some(ToolExecutionTarget::Sandbox) => {
-            context.tool_executor.as_deref().unwrap_or(&missing_sandbox)
-        }
-        Some(ToolExecutionTarget::Brain) | None => &local,
-    };
-    verify_attempt_ownership(context.ownership.as_deref()).await?;
-    let started = std::time::Instant::now();
-    // Fault isolation at the SPI boundary: a `RawTool` (MCP / plugin / skill — often
-    // third-party) that PANICS must not take down the run. Catch the unwind here, at
-    // the single execute-tool confluence, and map it to a model-visible error just like
-    // an `Err` — so unknown/invalid-args/execution/panic all fail closed identically.
-    use futures_util::FutureExt;
-    let state_bound = env.and_then(|env| env.dynamic_tool_state_bound(&call.tool_id));
-    let executor_state = match state_bound {
-        Some(bound) => state.project(|key| bound.allows(&key.0)),
-        None => Store::new(),
-    };
-    let invocation = with_tool_state_context(
-        executor_state,
-        with_tool_operation_context(
-            ToolOperationContext {
-                run_id: Some(origin.run_id.clone()),
-                thread_id: Some(origin.thread_id.clone()),
-                operation_id: origin.operation_id,
-                call_id: Some(call.call_id.clone()),
-                execution_scope: context.execution_scope.clone(),
-            },
-            async {
-                match resolved {
-                    Some(resolved) => {
-                        with_tool_execution_facts(
-                            Arc::new(CurrentToolExecutionFacts::new(
-                                runtime, env, resolved, context,
-                            )),
-                            executor.invoke(call),
-                        )
-                        .await
-                    }
-                    None => executor.invoke(call).await,
-                }
-            },
-        ),
-    );
-    let mut output = match std::panic::AssertUnwindSafe(invocation)
-        .catch_unwind()
-        .await
+    let output = match execute_tool_action(
+        runtime,
+        env,
+        resolved,
+        call,
+        context,
+        origin,
+        state,
+        ToolExecutorAction::Invoke,
+    )
+    .await?
     {
-        Ok(Ok(output)) => output,
-        Ok(Err(err)) => ToolOutput::error(&call.call_id, err.to_string()),
-        Err(_panic) => ToolOutput::error(
-            &call.call_id,
-            format!("tool `{}` panicked during execution", call.tool_id),
-        ),
+        Ok(ToolExecutorOutcome::Output(output)) => output,
+        Ok(_) => unreachable!("invoke action returns only ToolExecutorOutcome::Output"),
+        Err(error) => ToolOutput::error(&call.call_id, error.to_string()),
     };
-    if let Some(bound) = state_bound
-        && let Some(command) = output
-            .state
-            .iter()
-            .find(|command| !bound.allows(&command.key.0))
-    {
-        output = ToolOutput::error(
-            &call.call_id,
-            format!(
-                "tool `{}` attempted state key {:?} outside its plugin capability",
-                call.tool_id, command.key.0
-            ),
-        );
-    }
     // OTel: a tool that returned an error (unknown tool, invocation failure, or a
     // model-visible error result) marks the span ERROR with a `gen_ai`-shaped type.
     if output.is_error {
@@ -505,12 +597,31 @@ pub(crate) async fn execute_tool(
     }
     // Structure-only metric at the tool chokepoint (#2): tool id + outcome class +
     // latency. The tool id is a declared identifier, never content.
-    runtime.metrics().record_tool(
-        &call.tool_id,
-        if output.is_error { "error" } else { "ok" },
-        started.elapsed(),
-    );
     Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_detached_tool_action(
+    runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
+    resolved: &ResolvedRun,
+    call: &ToolCall,
+    context: &RuntimeRunContext,
+    origin: ToolExecutionOrigin<'_>,
+    state: &Store,
+    action: DetachedToolAction<'_>,
+) -> Result<std::result::Result<ToolExecutorOutcome, ToolError>> {
+    execute_tool_action(
+        runtime,
+        Some(env),
+        Some(resolved),
+        call,
+        context,
+        origin,
+        state,
+        ToolExecutorAction::Detached(action),
+    )
+    .await
 }
 
 /// The in-process `ToolExecutor` (ADR-0044 D1): the degenerate case where the
@@ -587,7 +698,9 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
         let descriptor = self
             .descriptors
             .get(&call.tool_id)
-            .filter(|descriptor| descriptor.kind == ToolKind::Regular)
+            .filter(|descriptor| {
+                matches!(descriptor.kind, ToolKind::Regular | ToolKind::DetachedOnly)
+            })
             .ok_or_else(|| ToolError::Unknown(call.tool_id.clone()))?;
         if self.stateful_dynamic_tools.contains(&call.tool_id) {
             return Err(ToolError::Execution(format!(
@@ -667,6 +780,38 @@ impl ToolExecutor for LocalToolExecutor<'_> {
         let tool = self.tool(&call.tool_id);
         match tool {
             Some(tool) => tool.invoke(call.clone()).await,
+            None => Err(ToolError::Unknown(call.tool_id.clone())),
+        }
+    }
+
+    async fn start_task(&self, call: &ToolCall) -> std::result::Result<ToolTaskStart, ToolError> {
+        let tool = self.tool(&call.tool_id);
+        match tool {
+            Some(tool) => tool.start_task(call.clone()).await,
+            None => Err(ToolError::Unknown(call.tool_id.clone())),
+        }
+    }
+
+    async fn poll_task(
+        &self,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> std::result::Result<ToolTaskPoll, ToolError> {
+        let tool = self.tool(&call.tool_id);
+        match tool {
+            Some(tool) => tool.poll_task(call, task).await,
+            None => Err(ToolError::Unknown(call.tool_id.clone())),
+        }
+    }
+
+    async fn cancel_task(
+        &self,
+        call: &ToolCall,
+        task: &ToolTaskHandle,
+    ) -> std::result::Result<ToolTaskPoll, ToolError> {
+        let tool = self.tool(&call.tool_id);
+        match tool {
+            Some(tool) => tool.cancel_task(call, task).await,
             None => Err(ToolError::Unknown(call.tool_id.clone())),
         }
     }

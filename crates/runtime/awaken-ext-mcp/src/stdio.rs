@@ -11,13 +11,14 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
 use awaken_mcp_wire::{
-    CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition,
+    CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult,
+    ListToolsResult, McpTask, McpToolDefinition, TaskIdParams, TaskMetadata,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -47,6 +48,11 @@ pub struct StdioTransport {
     sinks: Arc<NotificationSinks>,
     /// Allocates a unique `progressToken` per progress-tracked call.
     next_progress_token: AtomicI64,
+    /// Frozen capability facts learned from this connection's initialize
+    /// response. Absence remains false; tool definitions alone cannot grant a
+    /// task protocol operation.
+    task_tools_call: AtomicBool,
+    task_cancel: AtomicBool,
 }
 
 impl StdioTransport {
@@ -171,6 +177,8 @@ impl StdioTransport {
             child: child.map(Mutex::new),
             sinks,
             next_progress_token: AtomicI64::new(1),
+            task_tools_call: AtomicBool::new(false),
+            task_cancel: AtomicBool::new(false),
         };
         transport.initialize(config).await?;
         Ok(transport)
@@ -180,9 +188,16 @@ impl StdioTransport {
     /// `notifications/initialized` acknowledgement.
     async fn initialize(&self, config: Option<Value>) -> Result<(), McpTransportError> {
         let params = InitializeParams::new(config);
-        self.peer
+        let value = self
+            .peer
             .request("initialize", serde_json::to_value(&params)?, self.timeout)
             .await?;
+        let result: InitializeResult = serde_json::from_value(value)?;
+        let tasks = result.capabilities.tasks.unwrap_or_default();
+        self.task_tools_call
+            .store(tasks.supports_tool_call(), Ordering::SeqCst);
+        self.task_cancel
+            .store(tasks.supports_cancel(), Ordering::SeqCst);
         self.peer
             .notify("notifications/initialized", serde_json::json!({}))
             .await?;
@@ -276,6 +291,74 @@ impl McpToolTransport for StdioTransport {
         Ok(call_result)
     }
 
+    fn supports_task_tools_call(&self) -> bool {
+        self.task_tools_call.load(Ordering::SeqCst)
+    }
+
+    fn supports_task_cancel(&self) -> bool {
+        self.task_cancel.load(Ordering::SeqCst)
+    }
+
+    async fn call_tool_as_task(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ttl_ms: Option<u64>,
+    ) -> Result<CreateTaskResult, McpTransportError> {
+        if !self.supports_task_tools_call() {
+            return Err(McpTransportError::NotSupported(
+                "task-augmented tools/call".into(),
+            ));
+        }
+        let params = CallToolParams {
+            name: tool_name.to_string(),
+            arguments: Some(arguments),
+            task: Some(TaskMetadata { ttl: ttl_ms }),
+            meta: None,
+        };
+        let result = self
+            .peer
+            .request("tools/call", serde_json::to_value(&params)?, self.timeout)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
+        let params = TaskIdParams {
+            task_id: task_id.to_string(),
+        };
+        let result = self
+            .peer
+            .request("tasks/get", serde_json::to_value(params)?, self.timeout)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn get_task_result(&self, task_id: &str) -> Result<CallToolResult, McpTransportError> {
+        let params = TaskIdParams {
+            task_id: task_id.to_string(),
+        };
+        let result = self
+            .peer
+            .request("tasks/result", serde_json::to_value(params)?, self.timeout)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    async fn cancel_task(&self, task_id: &str) -> Result<McpTask, McpTransportError> {
+        if !self.supports_task_cancel() {
+            return Err(McpTransportError::NotSupported("tasks/cancel".into()));
+        }
+        let params = TaskIdParams {
+            task_id: task_id.to_string(),
+        };
+        let result = self
+            .peer
+            .request("tasks/cancel", serde_json::to_value(params)?, self.timeout)
+            .await?;
+        Ok(serde_json::from_value(result)?)
+    }
+
     async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
         let result = self
             .peer
@@ -366,5 +449,112 @@ mod stream_tests {
         let tools = transport.list_tools().await.unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "browser_navigate");
+        assert!(!transport.supports_task_tools_call());
+        assert!(!transport.supports_task_cancel());
+        assert!(matches!(
+            transport
+                .call_tool_as_task("browser_navigate", Value::Null, None)
+                .await,
+            Err(McpTransportError::NotSupported(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn negotiated_task_methods_follow_one_typed_stdio_path() {
+        // Cause/effect graph: C1=initialize advertises task tools/call and
+        // cancel; C2=augmented call carries TTL; C3=get/result/cancel address
+        // the returned taskId. Effects: E1=both capability gates open; E2=call
+        // returns a typed durable task; E3=status, original CallToolResult, and
+        // cancellation are decoded without creating model-visible management
+        // tools. Decision rule S1=C1+C2+C3=>E1+E2+E3.
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut lines = BufReader::new(reader).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let value: Value = serde_json::from_str(&line).unwrap();
+                let Some(id) = value.get("id").cloned() else {
+                    continue;
+                };
+                let result = match value["method"].as_str() {
+                    Some("initialize") => serde_json::json!({
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {"tasks": {
+                            "cancel": {},
+                            "requests": {"tools": {"call": {}}}
+                        }},
+                        "serverInfo": {"name": "tasks", "version": "1"}
+                    }),
+                    Some("tools/call") => {
+                        assert_eq!(value["params"]["name"], "slow");
+                        assert_eq!(value["params"]["task"]["ttl"], 5_000);
+                        serde_json::json!({"task": task_json("working")})
+                    }
+                    Some("tasks/get") => {
+                        assert_eq!(value["params"]["taskId"], "remote-stdio");
+                        task_json("working")
+                    }
+                    Some("tasks/result") => {
+                        assert_eq!(value["params"]["taskId"], "remote-stdio");
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": "done"}],
+                            "isError": false
+                        })
+                    }
+                    Some("tasks/cancel") => {
+                        assert_eq!(value["params"]["taskId"], "remote-stdio");
+                        task_json("cancelled")
+                    }
+                    method => panic!("unexpected method: {method:?}"),
+                };
+                let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
+                writer
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        fn task_json(status: &str) -> Value {
+            serde_json::json!({
+                "taskId": "remote-stdio",
+                "status": status,
+                "createdAt": "2026-08-30T00:00:00Z",
+                "lastUpdatedAt": "2026-08-30T00:00:01Z",
+                "ttl": 5_000,
+                "pollInterval": 25
+            })
+        }
+
+        let transport = StdioTransport::connect_stream(client, None, Duration::from_secs(2), None)
+            .await
+            .expect("S1 initializes");
+        assert!(transport.supports_task_tools_call(), "S1/E1");
+        assert!(transport.supports_task_cancel(), "S1/E1");
+        let created = transport
+            .call_tool_as_task("slow", serde_json::json!({"q": 1}), Some(5_000))
+            .await
+            .expect("S1/E2");
+        assert_eq!(created.task.task_id, "remote-stdio", "S1/E2");
+        assert_eq!(
+            transport.get_task("remote-stdio").await.unwrap().status,
+            awaken_mcp_wire::TaskStatus::Working,
+            "S1/E3"
+        );
+        assert_eq!(
+            transport
+                .get_task_result("remote-stdio")
+                .await
+                .unwrap()
+                .content
+                .len(),
+            1,
+            "S1/E3"
+        );
+        assert_eq!(
+            transport.cancel_task("remote-stdio").await.unwrap().status,
+            awaken_mcp_wire::TaskStatus::Cancelled,
+            "S1/E3"
+        );
     }
 }
