@@ -1954,6 +1954,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-ext-background-task",
+ "awaken-ext-compact",
  "awaken-runtime-contract",
  "awaken-store-inmem",
  "futures-util",

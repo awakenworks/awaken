@@ -67,8 +67,11 @@ fn chat_response_stop_reason_round_trips_and_defaults_when_absent() {
     let back: ChatResponse = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(response, back);
 
-    // A response recorded before the field existed still deserializes: the
-    // absent stop reason defaults to `None` (unknown).
+    // Cause/effect compatibility rule: a response recorded before the field
+    // existed has no classified provider reason, so it deserializes to the one
+    // legacy unspecified representation (`None`). Runtime treats that as a
+    // natural end; an explicit but unknown provider enum is a different case and
+    // must be rejected by the provider adapter before it reaches this contract.
     let legacy = r#"{"output":{"blocks":[{"type":"text","text":"hi"}]},"usage":null}"#;
     let back: ChatResponse = serde_json::from_str(legacy).expect("legacy deserializes");
     assert_eq!(back.stop_reason, None);
