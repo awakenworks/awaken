@@ -262,6 +262,8 @@ mod tests {
                 logical_path: Some(format!("outputs/{effect_id}.txt")),
                 harvest_key: Some(effect_id.into()),
                 deleted: false,
+            
+                artifact_idempotency_scope: None,
             },
         }
     }

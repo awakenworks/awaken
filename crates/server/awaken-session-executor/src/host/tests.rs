@@ -7491,6 +7491,8 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
             logical_path: None,
             harvest_key: None,
             deleted: false,
+        
+            artifact_idempotency_scope: None,
         })
         .await
         .unwrap();

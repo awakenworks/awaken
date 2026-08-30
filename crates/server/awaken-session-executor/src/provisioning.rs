@@ -889,6 +889,7 @@ impl ArtifactHarvester {
                 mime_type,
                 content_id,
                 bytes,
+                idempotency_scope: None,
                 fence: claim.clone(),
             };
             publication

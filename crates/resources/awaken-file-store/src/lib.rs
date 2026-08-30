@@ -196,7 +196,139 @@ fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
             "id, workspace, blob, filename, MIME type, and created_at are required".into(),
         ));
     }
+    if record
+        .artifact_idempotency_scope
+        .as_deref()
+        .is_some_and(|scope| scope.trim().is_empty())
+    {
+        return Err(FileCatalogError::Invalid(
+            "artifact idempotency scope must be nonempty".into(),
+        ));
+    }
+    if record.artifact_idempotency_scope.is_some()
+        && (record
+            .harvest_key
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+            || record
+                .scope_id
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            || record
+                .logical_path
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty()))
+    {
+        return Err(FileCatalogError::Invalid(
+            "terminal artifact association requires harvest, Session, and logical-path identity"
+                .into(),
+        ));
+    }
     Ok(())
+}
+
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
+#[derive(Debug)]
+enum ArtifactAssociationDecision {
+    Existing(FileRecord),
+    Associate(FileRecord),
+}
+
+/// Decide the one legal terminal association against every durable row for the
+/// same Workspace/harvest identity. Active rows are the current logical File;
+/// a single tombstone is recoverable only when no active row exists. Exact
+/// scope replay wins across later ordinary re-harvests, while ambiguous or
+/// foreign evidence fails closed.
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
+fn artifact_association_decision(
+    records: &[FileRecord],
+    candidate: &FileRecord,
+) -> Result<Option<ArtifactAssociationDecision>, FileCatalogError> {
+    let requested_scope = candidate
+        .artifact_idempotency_scope
+        .as_deref()
+        .ok_or_else(|| {
+            FileCatalogError::Invalid(
+                "artifact association requires a terminal idempotency scope".into(),
+            )
+        })?;
+    if records
+        .iter()
+        .any(|record| !same_harvest_identity(record, candidate))
+    {
+        return Err(FileCatalogError::Invalid(
+            "artifact harvest key is bound to different File identity".into(),
+        ));
+    }
+    let exact = records
+        .iter()
+        .filter(|record| record.artifact_idempotency_scope.as_deref() == Some(requested_scope))
+        .collect::<Vec<_>>();
+    match exact.as_slice() {
+        [] => {}
+        [record] => {
+            return Ok(Some(ArtifactAssociationDecision::Existing(
+                (*record).clone(),
+            )));
+        }
+        _ => {
+            return Err(FileCatalogError::Invalid(
+                "artifact File has duplicate terminal-operation evidence".into(),
+            ));
+        }
+    }
+
+    let active = records
+        .iter()
+        .filter(|record| !record.deleted)
+        .collect::<Vec<_>>();
+    let target = match active.as_slice() {
+        [] => match records {
+            [] => return Ok(None),
+            [record] => record,
+            _ => {
+                return Err(FileCatalogError::Invalid(
+                    "artifact File has ambiguous tombstoned harvest evidence".into(),
+                ));
+            }
+        },
+        [record] => *record,
+        _ => {
+            return Err(FileCatalogError::Invalid(
+                "artifact File has duplicate active harvest evidence".into(),
+            ));
+        }
+    };
+    match target.artifact_idempotency_scope.as_deref() {
+        None => Ok(Some(ArtifactAssociationDecision::Associate(target.clone()))),
+        Some(_) => Err(FileCatalogError::Invalid(
+            "artifact File is already associated with another terminal operation".into(),
+        )),
+    }
+}
+
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
+fn same_harvest_identity(left: &FileRecord, right: &FileRecord) -> bool {
+    left.workspace_id == right.workspace_id
+        && left.blob_id == right.blob_id
+        && left.scope_id == right.scope_id
+        && left.logical_path == right.logical_path
+        && left.harvest_key == right.harvest_key
 }
 
 #[async_trait]
@@ -208,14 +340,44 @@ impl FileCatalog for InMemoryFileStore {
     ) -> Result<CreateFileRecordOutcome, FileCatalogError> {
         validate_record(&record)?;
         let mut files = self.files.lock().await;
-        if let Some(key) = record.harvest_key.as_deref()
-            && let Some(existing) = files.values().find(|candidate| {
-                !candidate.deleted
-                    && candidate.workspace_id == record.workspace_id
-                    && candidate.harvest_key.as_deref() == Some(key)
-            })
-        {
-            return Ok(CreateFileRecordOutcome::Existing(existing.clone()));
+        if let Some(key) = record.harvest_key.as_deref() {
+            let matching = files
+                .values()
+                .filter(|candidate| {
+                    candidate.workspace_id == record.workspace_id
+                        && candidate.harvest_key.as_deref() == Some(key)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(requested) = record.artifact_idempotency_scope.as_deref() {
+                match artifact_association_decision(&matching, &record)? {
+                    Some(ArtifactAssociationDecision::Existing(existing)) => {
+                        return Ok(CreateFileRecordOutcome::Existing(existing));
+                    }
+                    Some(ArtifactAssociationDecision::Associate(target)) => {
+                        let existing = files.get_mut(&target.id).ok_or_else(|| {
+                            FileCatalogError::Storage(
+                                "artifact File disappeared during association".into(),
+                            )
+                        })?;
+                        existing.artifact_idempotency_scope = Some(requested.to_string());
+                        return Ok(CreateFileRecordOutcome::Existing(existing.clone()));
+                    }
+                    None if record.deleted => {
+                        return Err(FileCatalogError::Invalid(
+                            "terminal association cannot recreate a missing tombstone".into(),
+                        ));
+                    }
+                    None => {}
+                }
+            } else if let Some(existing) = matching.into_iter().find(|record| !record.deleted) {
+                if !same_harvest_identity(&existing, &record) {
+                    return Err(FileCatalogError::Invalid(
+                        "artifact harvest key is bound to different File identity".into(),
+                    ));
+                }
+                return Ok(CreateFileRecordOutcome::Existing(existing));
+            }
         }
         if files.contains_key(&record.id) {
             return Err(FileCatalogError::Invalid(format!(
@@ -257,6 +419,31 @@ impl FileCatalog for InMemoryFileStore {
             .filter(|record| {
                 !record.deleted
                     && record.workspace_id == workspace_id
+                    && scope_id.is_none_or(|scope| record.scope_id.as_deref() == Some(scope))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        Ok(records)
+    }
+
+    async fn list_files_including_deleted(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        let mut records = self
+            .files
+            .lock()
+            .await
+            .values()
+            .filter(|record| {
+                record.workspace_id == workspace_id
                     && scope_id.is_none_or(|scope| record.scope_id.as_deref() == Some(scope))
             })
             .cloned()
@@ -411,6 +598,7 @@ mod tests {
             scope_id: scope.map(str::to_string),
             logical_path: scope.map(|_| format!("{id}.txt")),
             harvest_key: harvest_key.map(str::to_string),
+            artifact_idempotency_scope: None,
             deleted: false,
         }
     }
@@ -418,10 +606,27 @@ mod tests {
     async fn catalog_contract(store: &dyn FileCatalog) {
         // Cause/effect graph:
         // C1 unique upload; C2 same harvest key; C3 Workspace/scope selector;
-        // C4 logical delete. Effects: E1 insert, E2 recover original idempotently,
-        // E3 isolation + newest-first order, E4 active-byte decrement and hidden read.
-        // Decision rules R1..R4 are exercised in order below for every backend.
+        // C4 terminal scope None/same/foreign; C5 logical delete; C6 terminal
+        // association after an ordinary row was tombstoned; C7 same key but a
+        // different Session/path/content identity. Effects: E1
+        // insert; E2 recover original idempotently; E3 isolation + newest-first
+        // order; E4 atomically upgrade the same row None->Some, replay exact,
+        // reject foreign; E5 active-byte decrement + hidden public read while
+        // recovery evidence remains listable; E6 associate the tombstone in
+        // place without resurrecting or duplicating it; E7 reject before any
+        // association mutation. Rules R1..R7 run for every backend.
         let old = file_record("file_old", "w1", "2026-01-01T00:00:00Z", None, None);
+        assert!(
+            store
+                .create_file(FileRecord {
+                    id: "file_unbound_terminal_scope".into(),
+                    artifact_idempotency_scope: Some("cleanup-unbound".into()),
+                    ..old.clone()
+                })
+                .await
+                .is_err(),
+            "R7 terminal scope requires canonical artifact identity"
+        );
         let harvest_key = harvest_idempotency_key("session-1", "out.txt", "hash");
         let scoped = file_record(
             "file_scoped",
@@ -481,6 +686,108 @@ mod tests {
         );
         assert_eq!(store.active_size_bytes("w1").await.unwrap(), 6);
 
+        let tombstone_key = harvest_idempotency_key("session-1", "old.txt", "old-hash");
+        let tombstone_before_terminal = file_record(
+            "file_tombstone_before_terminal",
+            "w1",
+            "2026-01-01T12:00:00Z",
+            Some("session-1"),
+            Some(&tombstone_key),
+        );
+        store
+            .create_file(tombstone_before_terminal.clone())
+            .await
+            .unwrap();
+        store
+            .mark_file_deleted("w1", &tombstone_before_terminal.id)
+            .await
+            .unwrap();
+        let associated_tombstone = store
+            .create_file(FileRecord {
+                artifact_idempotency_scope: Some("cleanup-tombstone".into()),
+                ..tombstone_before_terminal.clone()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            associated_tombstone.record().id,
+            tombstone_before_terminal.id,
+            "R6 preserves the logical File identity"
+        );
+        assert!(
+            associated_tombstone.record().deleted,
+            "R6 keeps the row tombstoned"
+        );
+        assert!(
+            store
+                .list_files("w1", Some("session-1"))
+                .await
+                .unwrap()
+                .into_iter()
+                .all(|record| record.harvest_key.as_deref() != Some(tombstone_key.as_str())),
+            "R6 creates no active replacement"
+        );
+        assert_eq!(
+            store
+                .list_files_including_deleted("w1", Some("session-1"))
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|record| record.harvest_key.as_deref() == Some(tombstone_key.as_str()))
+                .count(),
+            1,
+            "R6 leaves one durable row"
+        );
+
+        let terminal_candidate = FileRecord {
+            id: "file_terminal_candidate".into(),
+            artifact_idempotency_scope: Some("cleanup-a".into()),
+            ..scoped.clone()
+        };
+        let associated = store.create_file(terminal_candidate.clone()).await.unwrap();
+        assert_eq!(associated.record().id, scoped.id, "R4 same File identity");
+        assert_eq!(
+            associated.record().artifact_idempotency_scope.as_deref(),
+            Some("cleanup-a"),
+            "R4 None->Some"
+        );
+        assert_eq!(
+            store
+                .create_file(FileRecord {
+                    id: "file_terminal_replay".into(),
+                    ..terminal_candidate
+                })
+                .await
+                .unwrap()
+                .record()
+                .id,
+            scoped.id,
+            "R4 exact replay"
+        );
+        assert!(
+            store
+                .create_file(FileRecord {
+                    id: "file_terminal_foreign".into(),
+                    artifact_idempotency_scope: Some("cleanup-b".into()),
+                    ..scoped.clone()
+                })
+                .await
+                .is_err(),
+            "R4 foreign scope conflict"
+        );
+        assert!(
+            store
+                .create_file(FileRecord {
+                    id: "file_terminal_substitution".into(),
+                    blob_id: "foreign-content".into(),
+                    artifact_idempotency_scope: Some("cleanup-a".into()),
+                    ..scoped.clone()
+                })
+                .await
+                .is_err(),
+            "R7 a harvest key cannot substitute content identity"
+        );
+
         let tombstone = store
             .mark_file_deleted("w1", &scoped.id)
             .await
@@ -501,15 +808,43 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let durable = store
+            .list_files_including_deleted("w1", Some("session-1"))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|record| record.harvest_key.as_deref() == Some(harvest_key.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(durable.len(), 1, "R5 recovery sees tombstone");
+        assert!(durable[0].deleted, "R5");
+        assert_eq!(
+            durable[0].artifact_idempotency_scope.as_deref(),
+            Some("cleanup-a"),
+            "R5"
+        );
         assert_eq!(store.active_size_bytes("w1").await.unwrap(), 3);
         let replacement = FileRecord {
             id: "file_reharvested".into(),
             ..scoped
         };
         assert!(matches!(
-            store.create_file(replacement).await.unwrap(),
+            store.create_file(replacement.clone()).await.unwrap(),
             CreateFileRecordOutcome::Inserted(_)
         ));
+        assert_eq!(
+            store
+                .create_file(FileRecord {
+                    id: "file_terminal_after_reharvest".into(),
+                    artifact_idempotency_scope: Some("cleanup-a".into()),
+                    ..replacement
+                })
+                .await
+                .unwrap()
+                .record()
+                .id,
+            tombstone.id,
+            "R5 response-loss replay keeps the originally associated receipt even after re-harvest"
+        );
     }
 
     #[tokio::test]
@@ -794,6 +1129,7 @@ mod tests {
         let pool = sqlx::PgPool::connect(&url).await.unwrap();
         let full = file_store_bundle().unwrap();
         let legacy = MigrationBundle::new(BUNDLE_ID, full.migrations()[..3].to_vec()).unwrap();
+        let through_v4 = MigrationBundle::new(BUNDLE_ID, full.migrations()[..4].to_vec()).unwrap();
         let runner = PostgresMigrationRunner::with_prefix(pool.clone(), NS).unwrap();
         assert_eq!(runner.run_bundle(&legacy).await.unwrap().len(), 3);
 
@@ -828,7 +1164,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(runner.verify_bundle(&full).await.is_err(), "W1 pending V4");
+        assert!(
+            runner.verify_bundle(&through_v4).await.is_err(),
+            "W1 pending V4"
+        );
         let before = sqlx::query("SELECT downloadable, deleted FROM file_store_file WHERE id = $1")
             .bind("legacy-file")
             .fetch_one(&pool)
@@ -837,9 +1176,12 @@ mod tests {
         assert_eq!(before.get::<i32, _>("downloadable"), 1, "W1");
         assert_eq!(before.get::<i32, _>("deleted"), 0, "W1");
 
-        assert_eq!(runner.run_bundle(&full).await.unwrap().len(), 1, "W2");
-        runner.verify_bundle(&full).await.unwrap();
-        assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "W3");
+        assert_eq!(runner.run_bundle(&through_v4).await.unwrap().len(), 1, "W2");
+        runner.verify_bundle(&through_v4).await.unwrap();
+        assert!(
+            runner.run_bundle(&through_v4).await.unwrap().is_empty(),
+            "W3"
+        );
         let column_types = sqlx::query_scalar::<_, String>(
             "SELECT data_type FROM information_schema.columns \
              WHERE table_schema = current_schema() AND table_name = 'file_store_file' \
@@ -849,6 +1191,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(column_types, vec!["bigint", "bigint"], "W2");
+
+        assert_eq!(
+            runner.run_bundle(&full).await.unwrap().len(),
+            1,
+            "V5 terminal association is a separate additive migration"
+        );
+        runner.verify_bundle(&full).await.unwrap();
 
         let store = PgFileStore::with_existing_pool(pool).await.unwrap();
         let record = store

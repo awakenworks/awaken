@@ -172,6 +172,7 @@ mod tests {
                     scope_id: None,
                     logical_path: None,
                     harvest_key: None,
+                    artifact_idempotency_scope: None,
                     deleted: false,
                 })
                 .await
