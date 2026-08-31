@@ -19,18 +19,18 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::dispatch::{
-    AttemptCredentialBinding, CasOutcome, ClaimEpochStorageRow, Claimed, CommitEpochGuard,
-    ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
-    Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_attempt_credentials,
-    classify_completed_session_run_reservation, classify_exact_claim_mode,
-    classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_attempt_credential_bindings, decide_run_identity, ensure_session_child_capacity,
-    installed_worker_credential_capabilities, normalize_pending_millis,
-    retry_exhaustion_evidence_is_eligible, session_child_parent, session_child_thread,
-    validate_executable_dispatch_admission, validate_outbox_continuation,
+    AttemptAdmission, AttemptCredentialBinding, CasOutcome, ClaimEpochStorageRow, Claimed,
+    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
+    Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
+    can_admit_attempt_credentials, classify_completed_session_run_reservation,
+    classify_exact_claim_mode, classify_live_session_run_reservation,
+    classify_session_run_reservation_activation, compile_attempt_credential_bindings,
+    decide_run_identity, ensure_session_child_capacity, installed_worker_credential_capabilities,
+    normalize_pending_millis, retry_exhaustion_evidence_is_eligible, session_child_parent,
+    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_replacement_candidates,
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
@@ -473,8 +473,8 @@ mod migration_history_tests {
     fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
-         * with V1..V24 -> finish expanded V25..V29 then write one converged
-         * receipt; Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
+         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V2;
+         * Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
          * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
          */
         let connection = Connection::open_in_memory().expect("seed database");
@@ -512,6 +512,6 @@ mod migration_history_tests {
             )
             .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
-        assert_eq!(converged_count, 1, "Q2/Q3 exactly one convergence receipt");
+        assert_eq!(converged_count, 2, "Q2/Q3 exactly V1 seal + V2 slot");
     }
 }

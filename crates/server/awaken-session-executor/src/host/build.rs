@@ -1534,15 +1534,42 @@ impl SharedHost {
         }
     }
 
+    /// Pause only new claim admission while retaining all in-flight Run work.
+    pub async fn suspend_pool_admission(&self) {
+        if let Some(pool) = self.dispatch_pool.get() {
+            pool.suspend_admission().await;
+        }
+    }
+
+    /// Resume a temporary authority suspension. Returns false when the pool was
+    /// never started or has entered the absorbing graceful-drain state.
+    #[must_use]
+    pub async fn resume_pool_admission(&self) -> bool {
+        match self.dispatch_pool.get() {
+            Some(pool) => pool.resume_admission().await,
+            None => false,
+        }
+    }
+
     /// Whether the dispatch pool is up and still claiming work — the worker's
     /// readiness signal. `false` before the pool starts or once it is draining, so a
     /// readiness probe reports 503 in exactly the states where the worker should not
     /// receive (or keep being routed) new work.
     #[must_use]
-    pub fn pool_accepting_work(&self) -> bool {
-        self.dispatch_pool
-            .get()
-            .is_some_and(|pool| !pool.is_draining())
+    pub async fn pool_accepting_work(&self) -> bool {
+        match self.dispatch_pool.get() {
+            Some(pool) => pool.is_accepting().await,
+            None => false,
+        }
+    }
+
+    /// Whether a successful registry heartbeat may make this Worker ready.
+    #[must_use]
+    pub async fn pool_can_resume_work(&self) -> bool {
+        match self.dispatch_pool.get() {
+            Some(pool) => pool.can_resume().await,
+            None => false,
+        }
     }
 
     #[must_use]

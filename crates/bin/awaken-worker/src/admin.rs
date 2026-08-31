@@ -40,7 +40,7 @@ pub(crate) fn worker_admin_router_with_lifecycle(
 async fn lifecycle_readyz(
     State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
 ) -> impl IntoResponse {
-    if lifecycle.host.pool_accepting_work() {
+    if lifecycle.host.pool_accepting_work().await {
         (StatusCode::OK, "ready\n")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")

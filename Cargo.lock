@@ -2611,6 +2611,7 @@ dependencies = [
  "tokio",
  "toml",
  "tower",
+ "tracing",
 ]
 
 [[package]]

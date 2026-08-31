@@ -64,7 +64,10 @@ pub fn awaken_observability::init(&awaken_observability::ObservabilityConfig)
 pub fn awaken_observability::init_meters(&awaken_observability::OtelConfig) -> core::result::Result<opentelemetry_sdk::metrics::meter_provider::SdkMeterProvider, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn awaken_observability::init_otlp_tracer(&awaken_observability::OtelConfig) -> core::result::Result<(opentelemetry_sdk::trace::provider::SdkTracerProvider, opentelemetry_sdk::trace::tracer::SdkTracer), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn awaken_observability::record_hand_lifecycle(&'static str, &'static str, core::time::Duration)
+pub fn awaken_observability::record_worker_authority_heartbeat(&'static str, core::time::Duration, core::time::Duration, core::time::Duration)
+pub fn awaken_observability::record_worker_authority_loss(&'static str)
 pub fn awaken_observability::render_prometheus() -> alloc::string::String
+pub fn awaken_observability::set_worker_authority_proof_remaining(core::time::Duration)
 pub fn awaken_observability::shutdown()
 pub fn awaken_observability::span_with_remote_parent(tracing::span::Span, core::option::Option<&str>) -> tracing::span::Span
 pub async fn awaken_observability::trace_http(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

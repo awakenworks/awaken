@@ -194,9 +194,10 @@ production logic.
   instances that same kernel for a root Run and two child Runs. It also
   instances `SessionActivityKernel.tla` and `WorkQueueKernel.tla`, adding only
   cross-authority ordering for overlapping Session activities, one physical
-  Work owner, per-Thread execution exclusion, realization, committed Thread
-  observation, and settlement. A Work handoff may leave a physically running
-  stale attempt, but that attempt cannot produce an authoritative observation.
+  Work owner, realization, committed Thread observation, and settlement. Claim
+  authority and physical execution are separate variables: two Workers may
+  reclaim/race the former, while an exact predecessor slot remains occupied
+  until quiescence and the model checks at most one physical attempt per Thread.
 - `ThreadState.tla` covers atomic typed-state batch admission, exact Run-scope
   binding, crash/rejection stuttering, version advancement, deterministic
   materialization, and replay equality. The Rust state selectors are the same
@@ -336,8 +337,10 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   corresponding already-modeled kernels at product boundaries. The Session
   protocol additionally checks that reservation precedes activity, Reserved
   never executes, recovery claims grant admission work only, and execution
-  requires one Worker to own the exact Dispatch, WorkQueue, and realization
-  authorities. Their normal configurations check safety; the dedicated
+  requires one Worker to own the exact Dispatch, WorkQueue, realization, and
+  physical-attempt authorities. Its normal configuration contains two Workers
+  so reclaim and predecessor-quiescence combinations are explored. Their normal
+  configurations check safety; the dedicated
   reachability configurations witness the credential completion, deployment
   settlement, and resource reclamation goals without promoting environmental
   fairness into a theorem.
@@ -452,7 +455,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | --- | ---: | ---: | ---: |
 | RunIngress | 3,124 | 115 | 9 |
 | ThreadState | 15,001 | 3,031 | 5 |
-| SessionRunProtocol | 20,224,559 | 5,103,191 | 32 |
+| SessionRunProtocol | 473,826,797 | 88,910,945 | 38 |
 | WorkQueue | 26,521 | 4,206 | 15 |
 | SessionActivity | 436 | 79 | 7 |
 | SessionRoot | 58,273 | 8,073 | 13 |

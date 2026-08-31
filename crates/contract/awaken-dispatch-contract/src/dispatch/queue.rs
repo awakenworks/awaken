@@ -275,25 +275,33 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<bool, DispatchError>;
 
-    /// Renew, to `now_ms + lease_ms`, the lease on every running dispatch owned by
-    /// `owner` that is *within half a lease of expiring* — the daemon's heartbeat
-    /// that keeps its in-flight runs from being reclaimed while still executing
-    /// (ADR-0024). Returns how many leases were renewed.
+    /// Acquire the physical executor slot for one exact, live claim.
     ///
-    /// Renewing only near-expiry leases (`lease_until < now_ms + lease_ms/2`), not
-    /// every running row on every tick, bounds the write amplification of the
-    /// heartbeat: with hundreds of thousands of in-flight runs, a blanket renewal
-    /// every few seconds is a storm of no-op-equivalent writes. It stays safe as
-    /// long as the heartbeat cadence is under half the lease (the ADR-0024
-    /// recommendation), so a lease is always caught within the window before it
-    /// expires; a fresh claim, whose lease is a full length out, is skipped until
-    /// it approaches expiry.
-    async fn renew_owned_leases(
+    /// The slot is part of the existing Dispatch aggregate, not a second lease.
+    /// Reclaim may advance the durable claim epoch while the predecessor is
+    /// still unwinding, but a successor receives [`AttemptAdmission::Blocked`]
+    /// until [`finish_attempt`](Self::finish_attempt) records that predecessor's
+    /// model/tool/Sandbox future has actually returned. Implementations must make
+    /// an exact retry idempotent and return `Fenced` for a non-current claim.
+    async fn begin_attempt(
         &self,
-        owner: &str,
-        lease_ms: u64,
-        now_ms: u64,
-    ) -> Result<usize, DispatchError>;
+        _claim: &RunClaim,
+        _now_ms: u64,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not support physical attempt admission".to_string(),
+        ))
+    }
+
+    /// Acknowledge that the physical executor future owned by `claim` has
+    /// returned. This intentionally accepts the exact predecessor epoch after a
+    /// durable reclaim: it can only clear its own execution slot and grants no
+    /// commit, checkpoint, or settlement authority. A mismatched claim is fenced.
+    async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not support physical attempt quiescence".to_string(),
+        ))
+    }
 
     /// Return an exact, still-current claim to `pending` without consuming its
     /// crash retry budget.
