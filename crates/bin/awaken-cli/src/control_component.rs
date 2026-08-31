@@ -160,10 +160,9 @@ pub(super) async fn prepare_control_routers(
         #[cfg(not(any(test, feature = "test-support")))]
         None => panic!("Control process requires a derived enrollment signing key"),
     };
-    let execution_workspace = stores.workspace_root.as_deref().map_or_else(
-        SharedHost::provision_local_workspace,
-        SharedHost::provision_local_workspace_at,
-    );
+    // Store startup already resolved the one installation coordinate after all
+    // owned authorities opened; Control consumes it without a second publisher.
+    let execution_workspace = stores.platform_workspace.clone();
     let model_capabilities = process.model_supply.clone();
     let cloud_login = process.cloud_login.clone();
     let cloud_models_enabled = model_capabilities.cloud_models_enabled;

@@ -2304,3 +2304,346 @@ async fn postgres_owner_scope_is_recorded_and_survives_a_reopen() {
         Err(SessionRepositoryError::NotFound)
     );
 }
+
+
+
+fn directory_snapshot(directory: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+
+fn migration_prefix_through(
+    source: &awaken_scoped_migration::MigrationBundle,
+    tail: i64,
+) -> awaken_scoped_migration::MigrationBundle {
+    awaken_scoped_migration::MigrationBundle::new(
+        source.bundle_id(),
+        source
+            .migrations()
+            .iter()
+            .filter(|migration| migration.version() <= tail)
+            .cloned()
+            .collect(),
+    )
+    .expect("canonical Session migration prefix")
+}
+
+
+fn materialize_foundation_ledger_generation(
+    conn: &Connection,
+    ledger_exists: bool,
+    meta_exists: bool,
+) {
+    let ledger = awaken_scoped_migration::LedgerSchema::with_prefix(NS).unwrap();
+    let [create_ledger, create_meta, stamp_version] =
+        ledger.create_statements(awaken_scoped_migration::Dialect::Sqlite);
+    if ledger_exists {
+        conn.execute_batch(&create_ledger).unwrap();
+    }
+    if meta_exists {
+        conn.execute_batch(&create_meta).unwrap();
+        conn.execute_batch(&stamp_version).unwrap();
+    }
+}
+
+
+#[test]
+fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_read_only() {
+    /* Cause/effect graph: C1 an existing file has the current published and
+     * converged receipt prefixes, either still present only in an open WAL or
+     * checkpointed into the closed main file; C2 it has an exact original
+     * V1/V9/V12/V13/V22 or compacted V20 prefix with a legal pending tail; C3
+     * it is corrupt SQLite. Effects: E1 C1/C2 are accepted by the read-only
+     * probe and the same selected schema opens successfully; E2 C3 fails
+     * closed; E3 probing changes no source row, receipt, sidecar, or byte.
+     * Decision table: SP1a=C1(open WAL)=>E1+E3,
+     * SP1b=C1(closed/checkpointed)=>E1+E3,
+     * SP2a..SP2f=C2(each published prefix)=>E1+E3, SP3=C3=>E2+E3. The SP1a
+     * fixture proves the physical snapshot includes committed WAL pages rather
+     * than using SQLite immutable mode, which would ignore them. Prefix
+     * fixtures are sliced from the canonical published bundles; neither the
+     * probe nor this test repeats checksums or DDL. */
+    let directory = tempfile::tempdir().unwrap();
+
+    let current = directory.path().join("current.db");
+    let current_authority = SqliteManagedSessionRepository::open(&current.to_string_lossy())
+        .expect("SP1 current authority");
+    let current_wal = std::path::PathBuf::from(format!("{}-wal", current.display()));
+    assert!(
+        std::fs::metadata(&current_wal).unwrap().len() > 0,
+        "SP1a fixture retains committed migration pages in WAL"
+    );
+    let before = directory_snapshot(directory.path());
+    SqliteManagedSessionRepository::verify_existing(&current.to_string_lossy())
+        .expect("SP1a current WAL prefix is ready");
+    assert_eq!(directory_snapshot(directory.path()), before, "SP1a/E3");
+
+    drop(current_authority);
+    let before = directory_snapshot(directory.path());
+    SqliteManagedSessionRepository::verify_existing(&current.to_string_lossy())
+        .expect("SP1b checkpointed current prefix is ready");
+    assert_eq!(directory_snapshot(directory.path()), before, "SP1b/E3");
+
+    let original = original_published_session_bundle().unwrap();
+    let compacted = compacted_published_session_bundle().unwrap();
+    for (rule, name, source, tail) in [
+        ("SP2a", "original-v1", &original, 1),
+        ("SP2b", "original-v9", &original, 9),
+        ("SP2c", "original-v12", &original, 12),
+        ("SP2d", "original-v13", &original, 13),
+        ("SP2e", "original-v22", &original, 22),
+        ("SP2f", "compacted-v20", &compacted, 20),
+    ] {
+        let prefix = migration_prefix_through(source, tail);
+        let legacy = directory.path().join(format!("{name}.db"));
+        let conn = Connection::open(&legacy).unwrap();
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .unwrap()
+            .run_bundle(&conn, &prefix)
+            .unwrap();
+        drop(conn);
+
+        let before = directory_snapshot(directory.path());
+        SqliteManagedSessionRepository::verify_existing(&legacy.to_string_lossy())
+            .unwrap_or_else(|error| panic!("{rule} probe rejected {name}: {error}"));
+        assert_eq!(directory_snapshot(directory.path()), before, "{rule}/E3");
+
+        drop(
+            SqliteManagedSessionRepository::open(&legacy.to_string_lossy())
+                .unwrap_or_else(|error| panic!("{rule} opener rejected {name}: {error}")),
+        );
+        drop(
+            SqliteManagedSessionRepository::open(&legacy.to_string_lossy())
+                .unwrap_or_else(|error| panic!("{rule} converged reopen rejected {name}: {error}")),
+        );
+        SqliteManagedSessionRepository::verify_existing(&legacy.to_string_lossy())
+            .unwrap_or_else(|error| panic!("{rule} converged store rejected: {error}"));
+    }
+
+    let corrupt = directory.path().join("corrupt.db");
+    std::fs::write(&corrupt, b"SQLite format 3\0truncated").unwrap();
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&corrupt.to_string_lossy())
+        .expect_err("SP3 corrupt SQLite cannot be ready");
+    assert!(
+        error.contains("integrity") || error.contains("database disk image is malformed"),
+        "SP3/E2: {error}"
+    );
+    assert_eq!(directory_snapshot(directory.path()), before, "SP3/E3");
+}
+
+
+#[cfg(unix)]
+#[test]
+fn sqlite_existing_probe_rejects_filesystem_aliases_read_only() {
+    /* Alias-admission cause/effect table. Causes: C1 the configured path is a
+     * direct single-link regular file; C2 its final component is a symbolic
+     * link; C3 either name of its inode has multiple hard links. Effects: E1
+     * C1 proceeds to canonical ledger/schema verification (covered by SP1b);
+     * E2 C2/C3 fail before SQLite opens the source or its physical snapshot;
+     * E3 every source name and byte is unchanged. Rules: AL1=C1=>E1,
+     * AL2=C2=>E2+E3, AL3=C3=>E2+E3. The Unix link count is the platform
+     * authority; the test declares no migration/schema shape. */
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let authority = directory.path().join("authority.db");
+    drop(SqliteManagedSessionRepository::open(&authority.to_string_lossy()).unwrap());
+
+    let symbolic_alias = directory.path().join("symbolic.db");
+    symlink(&authority, &symbolic_alias).unwrap();
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&symbolic_alias.to_string_lossy())
+        .expect_err("AL2 symbolic alias cannot define the Session authority");
+    assert!(error.contains("symbolic link"), "AL2/E2: {error}");
+    assert_eq!(directory_snapshot(directory.path()), before, "AL2/E3");
+
+    let hard_alias = directory.path().join("hard.db");
+    std::fs::hard_link(&authority, &hard_alias).unwrap();
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&hard_alias.to_string_lossy())
+        .expect_err("AL3 hard-link alias cannot define the Session authority");
+    assert!(error.contains("hard links"), "AL3/E2: {error}");
+    assert_eq!(directory_snapshot(directory.path()), before, "AL3/E3");
+}
+
+
+#[test]
+fn sqlite_existing_probe_validates_the_foundation_ledger_generation_read_only() {
+    /* Cause/effect decision table derived from the ledger-generation graph:
+     *
+     * | Rule | ledger | meta | meta rows | version | Effect |
+     * | LG1  | no     | no   | n/a       | n/a     | MissingLedger |
+     * | LG2  | yes    | no   | n/a       | n/a     | IncompleteLedger |
+     * | LG3  | no     | yes  | one       | current | IncompleteLedger |
+     * | LG4  | yes    | yes  | zero/two  | n/a     | row-count error |
+     * | LG5  | yes    | yes  | one       | wrong   | version error |
+     *
+     * Effects shared by LG1..LG5: fail before receipt/schema admission and
+     * leave the database and sidecars byte-for-byte unchanged. Ledger names,
+     * presence decisions, creation statements, and current version remain
+     * foundation-owned. The fixture materializes an unrelated namespace from
+     * the canonical Session bundle and incomplete generations from
+     * `LedgerSchema`; this test owns no schema declaration. */
+    #[derive(Clone, Copy)]
+    enum Damage {
+        MissingBoth,
+        MissingMeta,
+        MissingLedger,
+        EmptyMeta,
+        DuplicateMeta,
+        WrongVersion,
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    for (rule, name, damage, expected) in [
+        (
+            "LG1",
+            "missing-both",
+            Damage::MissingBoth,
+            "no migration ledger",
+        ),
+        (
+            "LG2",
+            "missing-meta",
+            Damage::MissingMeta,
+            "incomplete migration ledger",
+        ),
+        (
+            "LG3",
+            "missing-ledger",
+            Damage::MissingLedger,
+            "incomplete migration ledger",
+        ),
+        ("LG4a", "empty-meta", Damage::EmptyMeta, "exactly one row"),
+        (
+            "LG4b",
+            "duplicate-meta",
+            Damage::DuplicateMeta,
+            "exactly one row",
+        ),
+        (
+            "LG5",
+            "wrong-version",
+            Damage::WrongVersion,
+            "stamped version",
+        ),
+    ] {
+        let path = directory.path().join(format!("{name}.db"));
+        match damage {
+            Damage::MissingBoth => {
+                let conn = Connection::open(&path).unwrap();
+                awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix("unrelated")
+                    .unwrap()
+                    .run_bundle(&conn, &session_bundle().unwrap())
+                    .unwrap();
+            }
+            Damage::MissingMeta | Damage::MissingLedger => {
+                let conn = Connection::open(&path).unwrap();
+                materialize_foundation_ledger_generation(
+                    &conn,
+                    matches!(damage, Damage::MissingMeta),
+                    matches!(damage, Damage::MissingLedger),
+                );
+            }
+            Damage::EmptyMeta | Damage::DuplicateMeta | Damage::WrongVersion => {
+                drop(SqliteManagedSessionRepository::open(&path.to_string_lossy()).unwrap());
+                let conn = Connection::open(&path).unwrap();
+                match damage {
+                    Damage::EmptyMeta => {
+                        conn.execute("DELETE FROM managed_schema_migrations_meta", [])
+                            .unwrap();
+                    }
+                    Damage::DuplicateMeta => {
+                        conn.execute(
+                            "INSERT INTO managed_schema_migrations_meta(ledger_version) \
+                             SELECT ledger_version FROM managed_schema_migrations_meta",
+                            [],
+                        )
+                        .unwrap();
+                    }
+                    Damage::WrongVersion => {
+                        conn.execute(
+                            "UPDATE managed_schema_migrations_meta SET ledger_version = ?1",
+                            params![awaken_scoped_migration::LEDGER_VERSION + 1],
+                        )
+                        .unwrap();
+                    }
+                    Damage::MissingBoth | Damage::MissingMeta | Damage::MissingLedger => {
+                        unreachable!()
+                    }
+                }
+            }
+        }
+        let before = directory_snapshot(directory.path());
+        let error =
+            SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy()).unwrap_err();
+        assert!(error.contains(expected), "{rule}: {error}");
+        assert_eq!(
+            directory_snapshot(directory.path()),
+            before,
+            "{rule} read-only"
+        );
+    }
+}
+
+
+#[test]
+fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
+    /* Cause/effect graph: C1 exact original receipts through V13 are present;
+     * C2 the canonical V13 migration body was not applied. Effects: E1 ledger
+     * plan alone would accept the contiguous prefix; E2 the receipt-derived
+     * in-memory shape disagrees and verification fails before startup; E3 the
+     * probe changes no database or sidecar bytes. Decision table:
+     * RS1=C1+!C2=>accept (covered by SP2d), RS2=C1+C2=>E1+E2+E3. Both physical
+     * prefixes and the forged receipt identity are derived from the selected
+     * canonical bundle, not repeated as test-owned schema. */
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("forged-current-schema.db");
+    let conn = Connection::open(&path).unwrap();
+    let original = original_published_session_bundle().unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .unwrap()
+        .run_bundle(&conn, &migration_prefix_through(&original, 12))
+        .unwrap();
+    let v13 = original
+        .migrations()
+        .iter()
+        .find(|migration| migration.version() == 13)
+        .expect("canonical V13 aggregate migration");
+    conn.execute(
+        "INSERT INTO managed_schema_migrations \
+            (bundle_id, version, checksum, description, applied_by) \
+         VALUES (?1, ?2, ?3, ?4, 'receipt-schema-probe')",
+        params![
+            original.bundle_id(),
+            v13.version(),
+            v13.checksum_for(awaken_scoped_migration::Dialect::Sqlite),
+            v13.ledger_description(),
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy())
+        .expect_err("RS2 receipt/schema disagreement must fail closed");
+    assert!(
+        error.contains("disagrees with migration receipts"),
+        "RS2/E2: {error}"
+    );
+    assert_eq!(directory_snapshot(directory.path()), before, "RS2/E3");
+    assert!(
+        SqliteManagedSessionRepository::open(&path.to_string_lossy()).is_err(),
+        "RS2/E1 canonical opener cannot read the forged shape"
+    );
+}

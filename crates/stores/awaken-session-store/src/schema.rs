@@ -22,6 +22,19 @@ impl PublishedSessionStream {
     }
 }
 
+/// The one selected migration lineage and its legacy normalization boundary.
+///
+/// A legacy database must first reach its last historically published shape so
+/// every column consumed by aggregate normalization exists. Only then may the
+/// branch-local convergence migration remove the retired columns. Keeping both
+/// bundles in this one selection result prevents SQLite and PostgreSQL openers
+/// from inventing their own version cutoffs or supported-history tables.
+pub(crate) struct SelectedSessionSchema {
+    pub(crate) stream: PublishedSessionStream,
+    pub(crate) pre_convergence: Option<MigrationBundle>,
+    pub(crate) complete: MigrationBundle,
+}
+
 /// V1 is the published current baseline. Later additions keep its checksum
 /// immutable and advance through the same ledger-owned migration stream.
 pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
@@ -123,9 +136,9 @@ pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
     )
 }
 
-pub(crate) fn selected_session_bundle(
+pub(crate) fn selected_session_schema(
     receipts: &BTreeMap<i64, String>,
-) -> Result<(PublishedSessionStream, MigrationBundle), MigrationError> {
+) -> Result<SelectedSessionSchema, MigrationError> {
     let stream = match receipts.get(&1).map(String::as_str) {
         Some(expanded::V1_CHECKSUM) => match receipts.get(&15).map(String::as_str) {
             Some(expanded::COMPACTED_V15_CHECKSUM) => PublishedSessionStream::Compacted,
@@ -133,12 +146,38 @@ pub(crate) fn selected_session_bundle(
         },
         _ => PublishedSessionStream::Compact,
     };
-    let bundle = match stream {
-        PublishedSessionStream::Compact => session_bundle(),
-        PublishedSessionStream::Original => expanded::bundle(expanded::ExpandedStream::Original),
-        PublishedSessionStream::Compacted => expanded::bundle(expanded::ExpandedStream::Compacted),
-    }?;
-    Ok((stream, bundle))
+    let (published, complete) = match stream {
+        PublishedSessionStream::Compact => (None, session_bundle()?),
+        PublishedSessionStream::Original => (
+            Some(expanded::published_bundle(
+                expanded::ExpandedStream::Original,
+            )?),
+            expanded::bundle(expanded::ExpandedStream::Original)?,
+        ),
+        PublishedSessionStream::Compacted => (
+            Some(expanded::published_bundle(
+                expanded::ExpandedStream::Compacted,
+            )?),
+            expanded::bundle(expanded::ExpandedStream::Compacted)?,
+        ),
+    };
+    // A fully converged legacy ledger must not be replayed against the shorter
+    // historical bundle: its valid convergence receipt would look "too new" to
+    // that bundle. Derive completion from the selected bundle's final migration,
+    // never from an adapter-owned version/checksum table.
+    let pre_convergence = published.and_then(|published| {
+        let convergence_version = complete
+            .migrations()
+            .last()
+            .expect("every Session bundle has a migration")
+            .version();
+        (!receipts.contains_key(&convergence_version)).then_some(published)
+    });
+    Ok(SelectedSessionSchema {
+        stream,
+        pre_convergence,
+        complete,
+    })
 }
 
 pub(crate) fn converged_session_bundle() -> Result<MigrationBundle, MigrationError> {
@@ -155,6 +194,11 @@ pub(crate) fn converged_session_bundle() -> Result<MigrationBundle, MigrationErr
 #[cfg(test)]
 pub(crate) fn original_published_session_bundle() -> Result<MigrationBundle, MigrationError> {
     expanded::published_bundle(expanded::ExpandedStream::Original)
+}
+
+#[cfg(test)]
+pub(crate) fn compacted_published_session_bundle() -> Result<MigrationBundle, MigrationError> {
+    expanded::published_bundle(expanded::ExpandedStream::Compacted)
 }
 
 #[cfg(test)]
@@ -203,33 +247,80 @@ mod tests {
     #[test]
     fn all_published_histories_select_exactly_and_converge_once() {
         // Causes: H1 empty/current compact V1; H2 original V1 with no/old V15;
-        // H3 original V1 plus compacted V15; H4 unknown V1/V15. Effects: E1
+        // H3 original V1 plus compacted V15; H4 fully converged legacy; H5
+        // unknown V1/V15. Effects: E1
         // compact V1/V2; E2 original V1..V23; E3 compacted V1..V21; E4 ordinary
-        // checksum failure; E5 one shared future append stream.
-        // Rules: H1=>E1+E5; H2=>E2+E5; H3=>E3+E5; H4=>E4.
+        // checksum failure; E5 one shared future append stream; E6 skip the
+        // shorter pre-convergence replay. Rules: H1=>E1+E5; H2=>E2+E5;
+        // H3=>E3+E5; H4=>E6; H5=>E4.
         let compact = session_bundle().unwrap();
         let compact_receipts =
             BTreeMap::from([(1, compact.migrations()[0].checksum_for(Dialect::Sqlite))]);
         assert_eq!(
-            selected_session_bundle(&compact_receipts).unwrap().0,
+            selected_session_schema(&compact_receipts).unwrap().stream,
             PublishedSessionStream::Compact,
             "H1"
         );
         let original_receipts = BTreeMap::from([(1, expanded::V1_CHECKSUM.to_owned())]);
-        let (stream, original) = selected_session_bundle(&original_receipts).unwrap();
-        assert_eq!(stream, PublishedSessionStream::Original, "H2");
-        assert_eq!(original.migrations().last().unwrap().version(), 23, "E2");
+        let original = selected_session_schema(&original_receipts).unwrap();
+        assert_eq!(original.stream, PublishedSessionStream::Original, "H2");
+        assert_eq!(
+            original
+                .pre_convergence
+                .as_ref()
+                .unwrap()
+                .migrations()
+                .last()
+                .unwrap()
+                .version(),
+            22,
+            "H2 shared normalization boundary"
+        );
+        assert_eq!(
+            original.complete.migrations().last().unwrap().version(),
+            23,
+            "E2"
+        );
         let compacted_receipts = BTreeMap::from([
             (1, expanded::V1_CHECKSUM.to_owned()),
             (15, expanded::COMPACTED_V15_CHECKSUM.to_owned()),
         ]);
-        let (stream, compacted) = selected_session_bundle(&compacted_receipts).unwrap();
-        assert_eq!(stream, PublishedSessionStream::Compacted, "H3");
-        assert_eq!(compacted.migrations().last().unwrap().version(), 21, "E3");
+        let compacted = selected_session_schema(&compacted_receipts).unwrap();
+        assert_eq!(compacted.stream, PublishedSessionStream::Compacted, "H3");
+        assert_eq!(
+            compacted
+                .pre_convergence
+                .as_ref()
+                .unwrap()
+                .migrations()
+                .last()
+                .unwrap()
+                .version(),
+            20,
+            "H3 shared normalization boundary"
+        );
+        assert_eq!(
+            compacted.complete.migrations().last().unwrap().version(),
+            21,
+            "E3"
+        );
+        let converged_original_receipts = original
+            .complete
+            .migrations()
+            .iter()
+            .map(|migration| (migration.version(), migration.checksum_for(Dialect::Sqlite)))
+            .collect();
+        assert!(
+            selected_session_schema(&converged_original_receipts)
+                .unwrap()
+                .pre_convergence
+                .is_none(),
+            "H4/E6"
+        );
         let unknown_v1 = BTreeMap::from([(1, "f".repeat(64))]);
         assert!(matches!(
             plan(
-                &selected_session_bundle(&unknown_v1).unwrap().1,
+                &selected_session_schema(&unknown_v1).unwrap().complete,
                 &unknown_v1,
                 Dialect::Sqlite,
             ),
@@ -239,7 +330,7 @@ mod tests {
             BTreeMap::from([(1, expanded::V1_CHECKSUM.to_owned()), (15, "f".repeat(64))]);
         assert!(matches!(
             plan(
-                &selected_session_bundle(&unknown_v15).unwrap().1,
+                &selected_session_schema(&unknown_v15).unwrap().complete,
                 &unknown_v15,
                 Dialect::Sqlite,
             ),

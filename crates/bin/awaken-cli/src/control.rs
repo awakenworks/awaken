@@ -232,24 +232,59 @@ async fn prepare_control_process_with_model_supply(
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
     additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
-    mut managed_services: ManagedServiceAdapters,
+    managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
+    let installations = installation_binding::verify_deployment_installations(deployment).await?;
+    prepare_control_process_with_model_supply_and_installations(
+        deployment,
+        key,
+        model_supply,
+        brokered_catalog,
+        web_search,
+        additional_lifecycle_delivery,
+        managed_services,
+        installations,
+    )
+    .await
+}
+
+pub(super) async fn prepare_control_process_with_installations(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    installations: installation_binding::PreparedDeploymentInstallations,
+) -> Result<PreparedProcess, String> {
+    prepare_control_process_with_model_supply_and_installations(
+        deployment,
+        key,
+        PublicationModelSupply::PublishedProviders,
+        None,
+        None,
+        None,
+        ManagedServiceAdapters::default(),
+        installations,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_control_process_with_model_supply_and_installations(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    model_supply: PublicationModelSupply,
+    brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
+    web_search: Option<(
+        awaken_ext_builtin_tools::WebSearchProviderRegistry,
+        Arc<dyn awaken_config_service::PluginPublicationResolver>,
+    )>,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
+    mut managed_services: ManagedServiceAdapters,
+    installations: installation_binding::PreparedDeploymentInstallations,
+) -> Result<PreparedProcess, String> {
+    let publish_local_workspace = installations.publishes_local_workspace();
+    let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let hosted_byok_enabled = managed_services.provider_credential_execution.is_some();
-    managed_platform::install_background_services(
-        &service_lifecycle,
-        &managed_services.background_services,
-    );
-    let identity = identity_wiring(
-        deployment.identity_mode,
-        Some(&deployment.data_dir),
-        &deployment.org_id,
-        &deployment.iam_workspaces,
-        &deployment.cloud_iam,
-        awaken_iam_client::CredentialCache::open(),
-        managed_services.entitlement_provider.take(),
-    )
-    .await?;
+    let background_services = std::mem::take(&mut managed_services.background_services);
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
@@ -257,10 +292,19 @@ async fn prepare_control_process_with_model_supply(
         // opens no File, Memory, Skill-content, or lifecycle authority.
         resources: None,
         workspace_root: deployment.data_dir.clone(),
+        platform_workspace,
+        publish_local_workspace,
         seal_key: Some(key),
         role: config::Role::Control,
         postgres_schema: PostgresSchemaMode::Verify,
     })
+    .await?;
+    let identity = identity_wiring(
+        deployment,
+        &stores.platform_workspace,
+        awaken_iam_client::CredentialCache::open(),
+        managed_services.entitlement_provider.take(),
+    )
     .await?;
     let catalog = stores
         .control
@@ -331,6 +375,10 @@ async fn prepare_control_process_with_model_supply(
         },
     )
     .await?;
+    managed_platform::install_background_services(
+        &prepared.service_lifecycle,
+        &background_services,
+    );
     Ok(PreparedProcess {
         public_router: prepared.public_router,
         private_router: prepared.private_router,

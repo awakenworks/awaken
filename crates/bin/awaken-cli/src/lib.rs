@@ -25,6 +25,7 @@ mod executable_environment_registration;
 mod executable_projection_refresh;
 mod hosted_model_publication;
 mod identity;
+mod installation_binding;
 #[cfg(any(test, feature = "test-support"))]
 mod local_process_stores;
 mod observation_reconcile;
@@ -91,15 +92,16 @@ use process_startup::{ProcessStartup, local_model_supply};
 use process_stores::role_hosts_resources;
 use process_stores::{
     ControlStores, CoordinatorStores, MigrationComponent, PostgresSchemaMode, ProcessStores,
-    migration_manifest, role_owns_control_component, role_owns_managed_execution,
+    ensure_store_parent, migration_manifest, open_application_access, open_environment_work,
+    open_session_store_views, role_owns_control_component, role_owns_managed_execution,
 };
 #[cfg(any(test, feature = "test-support"))]
 use resources::ephemeral_resources_application;
 use resources::open_resources_application;
 use runtime_process_router::prepare_runtime_routers;
 pub use service::{
-    ServiceRole, migrate_service, run_all_in_one_with_services, run_service, run_service_binary,
-    serve_prepared_control, serve_prepared_coordinator,
+    ServiceRole, migrate_service, migrate_service_with_request, run_all_in_one_with_services,
+    run_service, run_service_binary, serve_prepared_control, serve_prepared_coordinator,
 };
 
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -240,6 +242,13 @@ struct ProcessStoreOpenOptions<'a> {
     coordinator: config::CoordinatorStoreConfig,
     resources: Option<awaken_resource_application::ResourcesApplication>,
     workspace_root: std::path::PathBuf,
+    /// Exact deployment coordinate already proven by installation admission.
+    /// `None` lets the same local marker authority generate the first value.
+    platform_workspace: Option<String>,
+    /// Whether this role owns persistence under `workspace_root`. Mixed
+    /// local/PostgreSQL deployments publish the already-fenced remote coordinate
+    /// through the same local marker after every owned store succeeds.
+    publish_local_workspace: bool,
     seal_key: Option<&'a [u8; 32]>,
     role: config::Role,
     postgres_schema: PostgresSchemaMode,
@@ -255,30 +264,18 @@ async fn open_process_stores(
         coordinator: coordinator_cfg,
         resources,
         workspace_root,
+        platform_workspace: remote_platform_workspace,
+        publish_local_workspace,
         seal_key: key,
         role,
         postgres_schema,
     } = options;
 
-    // Create the parent directory for any SQLite path (a bundle dir or a custom path).
-    fn ensure_parent(backend: &StoreBackend) -> Result<(), String> {
-        if let StoreBackend::Sqlite(path) = backend
-            && let Some(parent) = path.parent()
-        {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "create control-store directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        Ok(())
-    }
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
 
     let opens_control = role_owns_control_component(role);
     let catalog: Option<Arc<dyn awaken_model_catalog::repo::CatalogRepo>> = if opens_control {
-        ensure_parent(&cfg.catalog)?;
+        ensure_store_parent(&cfg.catalog)?;
         Some(match &cfg.catalog {
             StoreBackend::Sqlite(p) => Arc::new(
                 awaken_model_catalog_store::SqliteCatalogRepo::open(&path(p))
@@ -302,7 +299,7 @@ async fn open_process_stores(
 
     // The credential repo and its sealed-secret blobs share the one credential backend.
     let (credentials, secrets) = if opens_control {
-        ensure_parent(&cfg.credential)?;
+        ensure_store_parent(&cfg.credential)?;
         let key = key.ok_or_else(|| "Control stores require the Control seal key".to_owned())?;
         let triple: (
             Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
@@ -354,7 +351,7 @@ async fn open_process_stores(
     let mut admin_resources: Option<Arc<dyn awaken_config_resolver::AgentInputBindingRepository>> =
         None;
     if opens_control {
-        ensure_parent(&cfg.admin)?;
+        ensure_store_parent(&cfg.admin)?;
         match &cfg.admin {
             StoreBackend::Sqlite(p) => {
                 let admin = awaken_admin_config_api::SqliteAdminStore::open(&path(p))
@@ -388,90 +385,39 @@ async fn open_process_stores(
         }
     }
 
-    let environment_work: Option<Arc<dyn awaken_session_contract::work_queue::WorkQueue>> =
-        if role_owns_managed_execution(role) {
-            ensure_parent(&coordinator_cfg.sessions)?;
-            Some(match &coordinator_cfg.sessions {
-                StoreBackend::Sqlite(path_value) => Arc::new(
-                    awaken_work_store::SqliteWorkQueue::open(&path(path_value))
-                        .map_err(|error| format!("open work queue SQLite: {error}"))?,
-                )
-                    as Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
-                StoreBackend::Postgres(url) => Arc::new(
-                    match postgres_schema {
-                        PostgresSchemaMode::Migrate => {
-                            awaken_work_store::PostgresWorkQueue::connect(url).await
-                        }
-                        PostgresSchemaMode::Verify => {
-                            awaken_work_store::PostgresWorkQueue::connect_existing(url).await
-                        }
-                    }
-                    .map_err(|error| format!("connect work queue Postgres: {error}"))?,
-                )
-                    as Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
-            })
-        } else {
-            None
-        };
+    // The Managed Session repository owns the shared coordinator database's
+    // canonical schema. Open it before WorkQueue or ApplicationAccess can
+    // create sibling ledgers in the same file/database, then retain every port
+    // view over this exact repository rather than opening it again below.
+    let mut session_views = if role_owns_managed_execution(role) {
+        Some(open_session_store_views(&coordinator_cfg.sessions, postgres_schema).await?)
+    } else {
+        None
+    };
+
+    // A remote coordinate was already fenced by the PostgreSQL installation
+    // gate. Local identity publication is deliberately deferred until every
+    // role-owned store below has opened successfully.
+    let mut platform_workspace = remote_platform_workspace;
+
+    let environment_work = if role_owns_managed_execution(role) {
+        Some(open_environment_work(&coordinator_cfg.sessions, postgres_schema).await?)
+    } else {
+        None
+    };
 
     let coordinator = if role_owns_managed_execution(role) {
-        ensure_parent(&coordinator_cfg.sessions)?;
-        ensure_parent(&coordinator_cfg.captured_content)?;
-        let application_access = Arc::new(match &coordinator_cfg.sessions {
-            StoreBackend::Sqlite(path_value) => {
-                awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
-                    &path(path_value),
-                )
-                .await
-                .map_err(|error| format!("open application access SQLite: {error}"))?
-            }
-            StoreBackend::Postgres(url) => match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_coordinator::application_access_store::ApplicationAccessStore::connect_postgres(url)
-                        .await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_coordinator::application_access_store::ApplicationAccessStore::connect_existing_postgres(url)
-                        .await
-                }
-            }
-            .map_err(|error| format!("connect application access Postgres: {error}"))?,
-        });
-        let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
-        let deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>;
-        let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>;
-        let dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>;
-        match &coordinator_cfg.sessions {
-            StoreBackend::Sqlite(p) => {
-                let repository = Arc::new(
-                    awaken_session_store::SqliteManagedSessionRepository::open(&path(p)).map_err(
-                        |error| format!("open sessions SQLite {}: {error}", p.display()),
-                    )?,
-                );
-                sessions = repository.clone();
-                deployments = repository.clone();
-                memory_extractions = repository.clone();
-                dream_process_store = repository;
-            }
-            StoreBackend::Postgres(url) => {
-                let repository = Arc::new(match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_session_store::PostgresManagedSessionRepository::connect(url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_session_store::PostgresManagedSessionRepository::connect_existing(
-                            url,
-                        )
-                        .await
-                    }
-                }
-                .map_err(|error| format!("connect sessions Postgres: {error}"))?);
-                sessions = repository.clone();
-                deployments = repository.clone();
-                memory_extractions = repository.clone();
-                dream_process_store = repository;
-            }
-        }
+        ensure_store_parent(&coordinator_cfg.captured_content)?;
+        let application_access =
+            open_application_access(&coordinator_cfg.sessions, postgres_schema).await?;
+        let process_stores::SessionStoreViews {
+            sessions,
+            deployments,
+            memory_extractions,
+            dream_process_store,
+        } = session_views
+            .take()
+            .expect("Managed Execution opens the canonical Session repository first");
         let (capture_sink, captured_content_eraser): (
             Arc<dyn awaken_runtime_contract::CaptureSink>,
             Arc<dyn awaken_runtime_contract::ContentEraser>,
@@ -517,7 +463,7 @@ async fn open_process_stores(
     };
 
     let config: Option<Arc<dyn awaken_agent_config::ScopedConfigRegistry>> = if opens_control {
-        ensure_parent(&cfg.config)?;
+        ensure_store_parent(&cfg.config)?;
         Some(match &cfg.config {
             StoreBackend::Sqlite(p) => Arc::new(
                 awaken_config_store::SqliteConfigStore::open(&path(p))
@@ -540,7 +486,7 @@ async fn open_process_stores(
     };
 
     let data_subject = if opens_control {
-        ensure_parent(&cfg.data_subject)?;
+        ensure_store_parent(&cfg.data_subject)?;
         let repo: Arc<dyn awaken_data_subject_application::DataSubjectRepo>;
         let jobs: Arc<dyn awaken_data_subject_application::ErasureJobRepo>;
         match &cfg.data_subject {
@@ -576,7 +522,7 @@ async fn open_process_stores(
     };
 
     let control_environment = if opens_control {
-        ensure_parent(&cfg.environment)?;
+        ensure_store_parent(&cfg.environment)?;
         Some(match &cfg.environment {
             StoreBackend::Sqlite(environment_path) => (
                 Arc::new(
@@ -624,8 +570,28 @@ async fn open_process_stores(
         None
     };
 
+    // Publish or reuse the one local installation coordinate only after every
+    // owned store has opened. A crash before this point leaves a store-first
+    // state that only an explicit initialization retry may complete; a marker
+    // created by Control/ACP remains insufficient evidence for Coordinator until
+    // its canonical Session store has also opened.
+    let platform_workspace = match platform_workspace.take() {
+        Some(workspace) if publish_local_workspace => {
+            SharedHost::publish_local_workspace_at(&workspace_root, &workspace).map_err(
+                |error| {
+                    format!(
+                        "publish platform Workspace identity under {}: {error}",
+                        workspace_root.display()
+                    )
+                },
+            )?
+        }
+        Some(workspace) => workspace,
+        None => SharedHost::provision_local_workspace_at(&workspace_root),
+    };
     Ok(ProcessStores {
         workspace_root: Some(workspace_root),
+        platform_workspace,
         control: if opens_control {
             let (environments, sandbox_policies) =
                 control_environment.expect("Control role opens Environment stores");
@@ -1332,6 +1298,40 @@ mod runtime_session_store_tests {
                 .baseline,
             SessionBaselineState::Preparing(creation_intent())
         );
+    }
+
+    #[tokio::test]
+    async fn local_store_startup_publishes_one_workspace_after_session_authority() {
+        /* Lower-level post-admission opener design: C1 an explicitly authorized
+         * migration supplies absent sessions.db (first install) or a canonical
+         * marker-free Session DB (store-first retry); C2 canonical Session open
+         * succeeds. Effects: E1 store startup completes;
+         * E2 one platform-workspace-id is published and the exact value is
+         * retained in ProcessStores for IAM/routers; E3 no sibling store owns a
+         * second publication. Decision table: SO1 absent+C2=>E1+E2+E3;
+         * SO2 canonical marker-free+C2=>E1+E2+E3. The ordinary entry cannot call
+         * these rows: installation_binding owns its exact-only preflight. */
+        for (rule, preopen_session) in [("SO1", false), ("SO2", true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let sessions = directory.path().join("sessions.db");
+            if preopen_session {
+                drop(
+                    awaken_session_store::SqliteManagedSessionRepository::open(
+                        &sessions.to_string_lossy(),
+                    )
+                    .unwrap(),
+                );
+            }
+            let marker = directory.path().join("platform-workspace-id");
+            assert!(!marker.exists(), "{rule} precondition");
+
+            let stores = open_local_process_stores(directory.path(), &[0x61; 32])
+                .await
+                .unwrap_or_else(|error| panic!("{rule} startup: {error}"));
+            let persisted = std::fs::read_to_string(&marker).unwrap();
+            assert_eq!(persisted.trim(), stores.platform_workspace, "{rule}/E2");
+            assert!(sessions.exists(), "{rule}/E1");
+        }
     }
 
     #[test]

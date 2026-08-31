@@ -51,6 +51,22 @@ impl SharedHost {
         resolve_local_workspace(Some(root))
     }
 
+    /// Read the exact existing installation Workspace coordinate without
+    /// creating a directory or publishing identity.
+    pub fn local_workspace_at(root: &std::path::Path) -> std::io::Result<Option<String>> {
+        read_local_workspace(&root.join(LOCAL_WORKSPACE_ID_FILE))
+    }
+
+    /// Atomically publish one caller-selected coordinate through the same local
+    /// marker authority. Exact replay succeeds; a concurrent or pre-existing
+    /// different coordinate fails closed without replacement.
+    pub fn publish_local_workspace_at(
+        root: &std::path::Path,
+        workspace_id: &str,
+    ) -> std::io::Result<String> {
+        publish_local_workspace(&root.join(LOCAL_WORKSPACE_ID_FILE), workspace_id)
+    }
+
     /// Test-support selection of the same local extraction repository used by
     /// volatile/local host fixtures. Product startup injects its role-owned
     /// repository directly into the production constructor.
@@ -1578,13 +1594,19 @@ impl SharedHost {
     }
 }
 
+const LOCAL_WORKSPACE_ID_FILE: &str = "platform-workspace-id";
+
 fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
-    let path = store_dir.map(|dir| dir.join("platform-workspace-id"));
-    if let Some(path) = &path
-        && let Ok(existing) = std::fs::read_to_string(path)
-        && !existing.trim().is_empty()
-    {
-        return existing.trim().to_string();
+    let path = store_dir.map(|dir| dir.join(LOCAL_WORKSPACE_ID_FILE));
+    if let Some(path) = &path {
+        match read_local_workspace(path) {
+            Ok(Some(existing)) => return existing,
+            Ok(None) => {}
+            Err(error) => panic!(
+                "read platform workspace identity `{}`: {error}",
+                path.display()
+            ),
+        }
     }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1592,23 +1614,84 @@ fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
         .unwrap_or(0);
     let generated = format!("workspace_local_{:x}_{nonce:x}", std::process::id());
     if let Some(path) = path {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create platform workspace directory");
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        std::io::Write::write_all(
-            &mut options.open(path).expect("create platform workspace id"),
-            generated.as_bytes(),
-        )
-        .expect("persist platform workspace id");
+        return match publish_local_workspace(&path, &generated) {
+            Ok(workspace) => workspace,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                read_local_workspace(&path)
+                    .expect("read concurrently published platform workspace identity")
+                    .expect("concurrent platform workspace publisher wrote an identity")
+            }
+            Err(error) => panic!(
+                "persist platform workspace identity `{}`: {error}",
+                path.display()
+            ),
+        };
     }
     generated
+}
+
+fn publish_local_workspace(path: &std::path::Path, workspace_id: &str) -> std::io::Result<String> {
+    if workspace_id.is_empty() || workspace_id.trim() != workspace_id {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "platform Workspace identity must be non-empty with no surrounding whitespace",
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match awaken_sandbox_fs::publish_file_noreplace(path, workspace_id.as_bytes()) {
+        Ok(()) => Ok(workspace_id.to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = read_local_workspace(path)?.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "concurrent platform Workspace publisher left no identity",
+                )
+            })?;
+            if existing == workspace_id {
+                Ok(existing)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "platform Workspace identity mismatch: requested {workspace_id:?}, found {existing:?}"
+                    ),
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn read_local_workspace(path: &std::path::Path) -> std::io::Result<Option<String>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    #[cfg(unix)]
+    let aliased = {
+        use std::os::unix::fs::MetadataExt as _;
+        metadata.nlink() != 1
+    };
+    #[cfg(not(unix))]
+    let aliased = false;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || aliased {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("`{}` is not a regular identity file", path.display()),
+        ));
+    }
+    let existing = std::fs::read_to_string(path)?;
+    let existing = existing.trim();
+    if existing.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("`{}` contains an empty identity", path.display()),
+        ));
+    }
+    Ok(Some(existing.to_owned()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
