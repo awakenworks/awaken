@@ -273,7 +273,7 @@ describe("API beta cause/effect graph", () => {
       id: "aat_1",
       object: "application_access_token",
       token_type: "Bearer",
-      access_token: "opaque-test-token",
+      access_token: "opaque-test-token", // awaken-allow: secret -- inert response fixture
       expires_at: "2026-08-28T00:00:00Z",
       protocols: ["ai-sdk"],
       operations: ["thread.run", "thread.messages.read"],
