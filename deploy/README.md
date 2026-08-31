@@ -58,6 +58,31 @@ plane may instead set `management_database_url_file` to an operator-projected
 secret file. It cannot be mixed with the per-store URL fields. Seal keys and
 Cloud workload credentials likewise use their existing file-backed settings.
 
+## Browser AI SDK origin admission
+
+Cross-origin browser access to `/v1/ai-sdk` is disabled by default. An
+AllInOne or Coordinator deployment may admit the exact Workspace UI origins
+that are allowed to present short-lived application-access Bearer tokens:
+
+```toml
+ai_sdk_browser_origins = [
+  "https://agents.example.com",
+  "https://agents-admin.example.com:8443",
+]
+```
+
+Each entry is a canonical origin, not a URL prefix: HTTPS is required except
+for loopback HTTP during local development, and paths, wildcards, credentials,
+query strings, fragments, duplicates, and more than 64 entries fail startup.
+The policy is installed only on the AI SDK application router; it does not
+grant access to AG-UI, Managed, authoring, or management routes. Actual
+requests still pass the application-token guard and cookies are never allowed.
+The preflight contract permits only `GET`/`HEAD`/`POST` with
+`Authorization`, `Content-Type`, and `Accept`, exposes the AI SDK stream marker
+and cache policy, and caches a successful preflight for at most ten minutes.
+Do not add a wildcard CORS policy at an ingress proxy; if a proxy also emits
+CORS headers, its allowlist must be identical and verified end to end.
+
 ## Split Worker
 
 A split Worker has database-free execution configuration. Credential material

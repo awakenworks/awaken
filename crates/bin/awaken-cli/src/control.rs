@@ -297,6 +297,7 @@ async fn prepare_control_process_with_model_supply(
                 awaken_data_subject_application::derive_enrollment_signing_key(key),
             ),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors::default(),
             role: config::Role::Control,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_developer_key_file: deployment.cloud_iam.developer_key_file.clone(),

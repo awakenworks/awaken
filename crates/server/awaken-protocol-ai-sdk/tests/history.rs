@@ -9,7 +9,7 @@ use awaken_session_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -86,7 +86,7 @@ fn runtime(messages: Vec<Message>) -> Arc<PersistedRuntime> {
     })
 }
 
-async fn get(rt: Arc<PersistedRuntime>, uri: &str) -> (StatusCode, Value) {
+async fn get(rt: Arc<PersistedRuntime>, uri: &str) -> (StatusCode, HeaderMap, Value) {
     let app = awaken_protocol_ai_sdk::router::router(rt);
     let response = app
         .oneshot(
@@ -99,15 +99,16 @@ async fn get(rt: Arc<PersistedRuntime>, uri: &str) -> (StatusCode, Value) {
         .await
         .unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
+    (status, headers, json)
 }
 
 #[tokio::test]
 async fn returns_the_persisted_transcript_as_ui_messages() {
     let rt = runtime(transcript(1));
-    let (status, body) = get(rt, "/v1/ai-sdk/threads/t-hist/messages").await;
+    let (status, _, body) = get(rt, "/v1/ai-sdk/threads/t-hist/messages").await;
     assert_eq!(status, StatusCode::OK);
     // House cursor-page envelope: { items, cursor }. `cursor` null = last page.
     assert_eq!(body["cursor"], Value::Null);
@@ -123,7 +124,7 @@ async fn returns_the_persisted_transcript_as_ui_messages() {
 async fn walks_the_thread_by_cursor() {
     let rt = runtime(transcript(3)); // u0 a0 u1 a1 u2 a2
 
-    let (_, page1) = get(Arc::clone(&rt), "/v1/ai-sdk/threads/t-hist/messages?size=2").await;
+    let (_, _, page1) = get(Arc::clone(&rt), "/v1/ai-sdk/threads/t-hist/messages?size=2").await;
     let ids1: Vec<&str> = page1["items"]
         .as_array()
         .unwrap()
@@ -133,7 +134,7 @@ async fn walks_the_thread_by_cursor() {
     assert_eq!(ids1, vec!["u0", "a0"]);
     assert_eq!(page1["cursor"], "a0");
 
-    let (_, page2) = get(
+    let (_, _, page2) = get(
         Arc::clone(&rt),
         "/v1/ai-sdk/threads/t-hist/messages?size=2&cursor=a0",
     )
@@ -150,7 +151,7 @@ async fn walks_the_thread_by_cursor() {
 #[tokio::test]
 async fn a_fabricated_cursor_is_a_400() {
     let rt = runtime(transcript(1));
-    let (status, _) = get(rt, "/v1/ai-sdk/threads/t-hist/messages?cursor=nope").await;
+    let (status, _, _) = get(rt, "/v1/ai-sdk/threads/t-hist/messages?cursor=nope").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -164,6 +165,30 @@ async fn an_unavailable_history_store_is_not_projected_as_an_empty_thread() {
         messages: Vec::new(),
         unavailable: true,
     });
-    let (status, _) = get(rt, "/v1/ai-sdk/threads/t-hist/messages").await;
+    let (status, _, _) = get(rt, "/v1/ai-sdk/threads/t-hist/messages").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R2");
+}
+
+/// Test design — history contains user/model content and must never become cacheable. The table
+/// spans a successful page, a caller-fault cursor, and an unavailable authority; every terminal
+/// response must carry the same no-store boundary so intermediaries cannot retain either content
+/// or failure-dependent existence signals.
+#[tokio::test]
+async fn every_history_response_is_no_store() {
+    let healthy = runtime(transcript(1));
+    for uri in [
+        "/v1/ai-sdk/threads/t-hist/messages",
+        "/v1/ai-sdk/threads/t-hist/messages?cursor=nope",
+    ] {
+        let (_, headers, _) = get(Arc::clone(&healthy), uri).await;
+        assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    }
+
+    let unavailable = Arc::new(PersistedRuntime {
+        thread: "t-hist".into(),
+        messages: Vec::new(),
+        unavailable: true,
+    });
+    let (_, headers, _) = get(unavailable, "/v1/ai-sdk/threads/t-hist/messages").await;
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
 }
