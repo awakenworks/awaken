@@ -3,6 +3,7 @@ import {
   APPLICATION_TOKEN_CURL,
   FRONTEND_AI_SDK,
   MANAGED_SDK,
+  managedSdkExample,
   PROTOCOL_HELP,
   PROTOCOL_EXTENSIONS,
   PROTOCOLS,
@@ -68,11 +69,6 @@ describe("built-in protocol guide", () => {
   });
 
   it("documents the complete backend exchange and frontend AI SDK wiring", () => {
-    // Cause/effect decision table: application/browser clients -> minted,
-    // Session-bound short-lived credentials; trusted Managed Agents backends
-    // -> service key through either the official Anthropic SDK or equivalent
-    // HTTP. Both Managed examples must converge on /v1/sessions and the same
-    // beta contract; no browser example may expose the service key.
     expect(APPLICATION_TOKEN_CURL).toContain("/v1/application-access-tokens");
     expect(APPLICATION_TOKEN_CURL).toContain("$AWAKEN_URL");
     expect(APPLICATION_TOKEN_CURL).toContain("$AWAKEN_API_KEY");
@@ -96,6 +92,25 @@ describe("built-in protocol guide", () => {
     expect(MANAGED_SDK).toContain("AWAKEN_ENVIRONMENT_ID");
     expect(MANAGED_SDK).toContain("Open in Console");
     expect(`${APPLICATION_TOKEN_CURL}${MANAGED_SDK}`).not.toContain("localhost:8080");
+  });
+
+  it("personalizes the one Managed SDK template without changing its credential boundary", () => {
+    // Cause/effect decision table: R1 absent context -> environment-variable
+    // placeholders; R2 Session Agent + Environment + Workspace -> safely
+    // quoted exact coordinates and an encoded Console path. Both rules retain
+    // backend-only API key/base URL variables and the same SDK lifecycle.
+    const contextual = managedSdkExample({
+      agentId: 'reviewer "one"',
+      environmentId: "env/one",
+      workspaceId: "team space",
+    });
+    expect(contextual).toContain('agent: "reviewer \\"one\\""');
+    expect(contextual).toContain('environment_id: "env/one"');
+    expect(contextual).toContain("/w/team%20space/sessions/${session.id}");
+    expect(contextual).toContain("apiKey: process.env.AWAKEN_API_KEY");
+    expect(contextual).toContain("baseURL: process.env.AWAKEN_BASE_URL");
+    expect(contextual).not.toContain("AWAKEN_AGENT_ID");
+    expect(contextual).not.toContain("AWAKEN_ENVIRONMENT_ID");
   });
 
 });

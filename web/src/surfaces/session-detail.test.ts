@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Environment, Session } from "../lib/api/types";
-import { managedMoneyLabel, outcomeTone, sessionConfigDestinations, sessionEnvironmentName, sessionMcpPolicies, sessionRuntime, sessionViewFromSearch } from "./session-detail";
+import { managedMoneyLabel, outcomeTone, sessionConfigDestinations, sessionEnvironmentName, sessionMcpPolicies, sessionRuntime, sessionViewFromSearch, withoutQuickstartProvenance } from "./session-detail";
 
 function session(model: string): Session {
   return {
@@ -43,6 +43,21 @@ describe("sessionViewFromSearch", () => {
     expect(sessionViewFromSearch("artifacts", "evt-1")).toBe("trace");
     expect(sessionViewFromSearch("unknown", null)).toBe("chat");
     expect(sessionViewFromSearch(null, null)).toBe("chat");
+  });
+});
+
+describe("withoutQuickstartProvenance", () => {
+  it("dismisses only the one-time handoff while preserving Session coordinates", () => {
+    // Cause/effect decision table: R1 Quickstart provenance with view/event ->
+    // remove only `from` and preserve both execution coordinates; R2 no
+    // provenance -> preserve the existing query. Dismissal affects guidance
+    // only and never changes durable Session state or its selected evidence.
+    expect(withoutQuickstartProvenance(new URLSearchParams(
+      "from=quickstart&view=trace&event=evt-1",
+    )).toString()).toBe("view=trace&event=evt-1");
+    expect(withoutQuickstartProvenance(new URLSearchParams(
+      "view=artifacts",
+    )).toString()).toBe("view=artifacts");
   });
 });
 
