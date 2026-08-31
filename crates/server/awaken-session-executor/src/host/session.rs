@@ -431,7 +431,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<Arc<SessionCtx>, HostError> {
-        self.ctx_for_snapshot_with_attempt(thread, agent, None, None, None, true)
+        self.ctx_for_snapshot_with_attempt(thread, agent, None, None, None, true, false)
             .await
     }
 
@@ -459,8 +459,16 @@ impl SharedHost {
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
         adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
-        self.ctx_for_snapshot_with_attempt(thread, agent, published_snapshot, adopted, None, false)
-            .await
+        self.ctx_for_snapshot_with_attempt(
+            thread,
+            agent,
+            published_snapshot,
+            adopted,
+            None,
+            false,
+            false,
+        )
+        .await
     }
 
     pub(crate) async fn ctx_for_claimed_snapshot_with_sandbox(
@@ -478,8 +486,14 @@ impl SharedHost {
             adopted,
             Some(attempt),
             false,
+            true,
         )
         .await
+    }
+
+    pub(crate) async fn ctx_for_resume(&self, thread: &str) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_snapshot_with_attempt(thread, None, None, None, None, false, true)
+            .await
     }
 
     async fn ctx_for_snapshot_with_attempt(
@@ -490,6 +504,7 @@ impl SharedHost {
         mut adopted: Option<crate::session_environment::SessionEnvironment>,
         claimed_attempt: Option<ClaimedRuntimeInput>,
         force_defer_environment: bool,
+        recover_revoked_legacy: bool,
     ) -> Result<Arc<SessionCtx>, HostError> {
         let lifecycle = self
             .session_slots
@@ -497,6 +512,23 @@ impl SharedHost {
         let _lifecycle = lifecycle.lock().await;
         self.retry_unpublished_session_environment_cleanup(thread)
             .await?;
+        if let Some(retired_handle) = if recover_revoked_legacy {
+            self.rebuild_claimed_legacy_environment_after_revocation(thread)
+                .await?
+        } else {
+            None
+        } {
+            self.session_slots
+                .update(thread, |slot| slot.runtime = None);
+            // A Managed claim may have resolved its adoption candidate before
+            // entering this lifecycle fence. If that candidate aliases the
+            // legacy owner just disposed above, it is now a terminated wrapper
+            // around the permanently closed Hand. Never install it into the
+            // rebuilt Runtime; a still-ready distinct adoption remains valid.
+            if adopted.as_ref().map(|candidate| candidate.handle()) == Some(retired_handle) {
+                adopted = None;
+            }
+        }
         if let Some(ctx) = self
             .session_slots
             .read(thread, |slot| slot.runtime.clone())
@@ -692,12 +724,9 @@ impl SharedHost {
         }
         // A legacy/direct Environment has no encoded durable binding to feed
         // through the ordinary adoption path. A new claimed attempt is the
-        // authority to reuse the exact Ready owner retained by realization
-        // revocation; unclaimed and remote-only paths remain fail-closed.
-        if claimed_attempt.is_some() && !a2a_only {
-            self.recover_claimed_legacy_environment_after_revocation(thread)
-                .await?;
-        }
+        // authority to dispose the quiesced owner retained by realization
+        // revocation and rebuild it; unclaimed and remote-only paths remain
+        // fail-closed.
         let retained = self
             .session_slots
             .read(thread, |slot| slot.environment_owner.resident())
