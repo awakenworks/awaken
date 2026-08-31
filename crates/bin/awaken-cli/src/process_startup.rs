@@ -20,6 +20,7 @@ pub(super) struct ProcessStartup {
     /// application. Required by every production role that owns Control.
     pub(super) enrollment_signing_key: Option<[u8; 32]>,
     pub(super) mcp_bearer_token: Option<String>,
+    pub(super) ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors,
     pub(super) role: config::Role,
     pub(super) cloud_api_base_url: Option<String>,
     pub(super) cloud_developer_key_file: Option<PathBuf>,

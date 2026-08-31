@@ -33,6 +33,9 @@ pub(super) struct FileConfig {
     pub(super) run_local_pool: Option<bool>,
     pub(super) no_browser: Option<bool>,
     pub(super) suite_hub_url: Option<String>,
+    /// Exact browser origins allowed to call the Coordinator AI SDK ingress.
+    /// Omitted or empty keeps cross-origin access disabled.
+    pub(super) ai_sdk_browser_origins: Option<Vec<String>>,
     pub(super) runtime_database_url: Option<String>,
     pub(super) runtime_database_url_file: Option<PathBuf>,
     pub(super) postgres_max_connections: Option<u32>,

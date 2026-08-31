@@ -14,6 +14,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use awaken_runtime_host::{ContentRedaction, PackageImageBuilder};
 use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
+mod browser_access;
 mod cloud_iam;
 mod deployment;
 mod file_schema;
@@ -59,6 +60,7 @@ pub struct ResolvedDeployment {
     pub no_browser: bool,
     /// Optional deployment-owned suite hub shown by the browser console.
     pub suite_hub_url: Option<String>,
+    pub ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors,
     pub run_local_pool: bool,
     pub worker_server: Option<String>,
     pub worker: WorkerBootstrap,
@@ -573,6 +575,12 @@ impl ResolvedDeployment {
             .as_deref()
             .map(|value| validate_suite_hub_url(value, mode))
             .transpose()?;
+        let (ai_sdk_browser_cors, ai_sdk_browser_origins_source) =
+            browser_access::resolve(file.ai_sdk_browser_origins.clone(), role)?;
+        origins.insert(
+            "ai_sdk_browser_origins".to_owned(),
+            ai_sdk_browser_origins_source.to_owned(),
+        );
         let internal_bind = service_boundary::resolve_internal_bind(
             role,
             file.internal_bind.clone(),
@@ -598,6 +606,7 @@ impl ResolvedDeployment {
             config_path,
             no_browser: overrides.no_browser.or(file.no_browser).unwrap_or(false),
             suite_hub_url,
+            ai_sdk_browser_cors,
             run_local_pool,
             worker_server,
             worker,

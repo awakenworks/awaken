@@ -80,6 +80,7 @@ impl ResolvedDeployment {
                 "config_file": self.config_path,
                 "config_file_exists": self.config_file_exists,
                 "no_browser": self.no_browser,
+                "ai_sdk_browser_origins": self.ai_sdk_browser_cors.origins(),
                 "run_local_pool": self.run_local_pool,
                 "identity_mode": identity_mode_name(self.identity_mode),
                 "cloud_models": self.cloud_models.as_str(),
@@ -102,7 +103,7 @@ impl ResolvedDeployment {
             .expect("configuration report is serializable");
         }
         let mut report = format!(
-            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  Cloud issuer         {cloud_issuer}\n  OAuth client         {oauth_client}\n  OAuth callback       {oauth_callback}\n  credential source    {credential_source}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
+            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  AI SDK browser CORS  {browser_cors}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  Cloud issuer         {cloud_issuer}\n  OAuth client         {oauth_client}\n  OAuth callback       {oauth_callback}\n  credential source    {credential_source}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
             role = self.role.as_str(),
             mode = self.mode.as_str(),
             bind = self.bind,
@@ -115,6 +116,11 @@ impl ResolvedDeployment {
                 "not created"
             },
             pool = self.run_local_pool,
+            browser_cors = if self.ai_sdk_browser_cors.origins().is_empty() {
+                "disabled".to_owned()
+            } else {
+                self.ai_sdk_browser_cors.origins().join(", ")
+            },
             identity = identity_mode_name(self.identity_mode),
             cloud_models = self.cloud_models.as_str(),
             cloud_issuer = self.cloud_iam.issuer,

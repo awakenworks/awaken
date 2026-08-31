@@ -55,6 +55,8 @@ pub struct CoordinatorDependencies {
     pub worker_skill_bundles:
         Arc<dyn awaken_session_contract::SkillBundleSource<awaken_run_ingress::RunClaim>>,
     pub application_access: Arc<ApplicationAccessStore>,
+    /// Explicit route-scoped browser admission for the AI SDK ingress.
+    pub ai_sdk_browser_cors: crate::AiSdkBrowserCors,
     pub model_inventory: Arc<dyn ExecutableAgentInventorySource>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
@@ -233,6 +235,7 @@ pub async fn build_coordinator_component(
         worker_file_application,
         worker_skill_bundles,
         application_access,
+        ai_sdk_browser_cors,
         model_inventory,
         dream_process_store,
         worker_authenticator,
@@ -284,6 +287,7 @@ pub async fn build_coordinator_component(
                 worker_placement_policy,
                 repository_transport_authorizer,
                 worker_directory,
+                ai_sdk_browser_cors,
             },
         )?;
     let managed = crate::with_local_workspace_scope(managed, default_workspace.clone());

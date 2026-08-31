@@ -118,7 +118,8 @@ axum = { version = "0.8", features = ["multipart"] }
 # oneshot-forwarding for the /projects/{id} prefix-stripping ingress proxy
 # (also used by the integration tests).
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+url.workspace = true
 
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
