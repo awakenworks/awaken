@@ -150,6 +150,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
             enrollment_signing_key: key
                 .map(awaken_data_subject_application::derive_enrollment_signing_key),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
+            ai_sdk_browser_cors: deployment.ai_sdk_browser_cors.clone(),
             role,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_developer_key_file: deployment.cloud_iam.developer_key_file.clone(),

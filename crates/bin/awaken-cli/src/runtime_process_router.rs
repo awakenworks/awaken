@@ -80,6 +80,7 @@ pub(super) async fn prepare_runtime_routers(
             Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()))
         });
     let mcp_bearer_token = process.mcp_bearer_token;
+    let ai_sdk_browser_cors = process.ai_sdk_browser_cors;
     // Cause/effect ownership rule: one selected ResourceAuthorities value is moved intact
     // into the Host. The management Skill API borrows the one additional view it
     // needs; no tuple decomposition or parallel Resources reconstruction.
@@ -731,6 +732,7 @@ pub(super) async fn prepare_runtime_routers(
             worker_file_application: resource_application.files(),
             worker_skill_bundles: resource_application.skill_bundle_source(),
             application_access,
+            ai_sdk_browser_cors,
             model_inventory,
             dream_process_store,
             worker_authenticator,

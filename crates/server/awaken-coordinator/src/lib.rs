@@ -25,6 +25,7 @@ pub mod admin;
 pub mod application_access;
 pub mod application_access_store;
 mod artifact_publication;
+mod browser_cors;
 pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
@@ -49,6 +50,7 @@ mod worker_registry;
 pub mod workspace_path;
 
 pub use artifact_publication::ClaimFencedArtifactPublisher;
+pub use browser_cors::AiSdkBrowserCors;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
     build_coordinator_component, register_application_access_retention,
@@ -706,6 +708,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             worker_placement_policy: None,
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
+            ai_sdk_browser_cors: AiSdkBrowserCors::default(),
         },
     )
     .expect("test-support Worker transport must assemble");
@@ -729,6 +732,8 @@ pub struct ManagedRoutingExtensions {
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
+    /// Exact browser origins admitted only to the AI SDK application router.
+    pub ai_sdk_browser_cors: AiSdkBrowserCors,
 }
 
 /// Application-layer authorities mounted together by the one managed data-plane
@@ -1077,6 +1082,7 @@ fn mount_with_managed_over(
                 worker_placement_policy: None,
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
+                ai_sdk_browser_cors: AiSdkBrowserCors::default(),
             },
         )
         .expect("test-support Worker transport must assemble");
@@ -1123,6 +1129,7 @@ fn mount_with_managed_over_and_models(
         worker_placement_policy,
         repository_transport_authorizer,
         worker_directory,
+        ai_sdk_browser_cors,
     } = routing;
     let weak_session_application = Arc::downgrade(&session_application);
     host.install_committed_progress_wakeup(Arc::new(move || {
@@ -1292,6 +1299,10 @@ fn mount_with_managed_over_and_models(
         #[cfg(feature = "test-support")]
         ApplicationAccessMount::ExplicitlyUnguardedTest => (ai_sdk, ag_ui),
     };
+    // CORS wraps the already guarded AI SDK router so a matching browser
+    // preflight is answered before bearer classification. It is deliberately
+    // applied before merging AG-UI, keeping every sibling protocol closed.
+    let ai_sdk = ai_sdk_browser_cors.apply(ai_sdk);
     let application = ai_sdk.merge(ag_ui);
     let a2a = awaken_protocol_a2a::router_with_storage_root(admitted_runs, host.storage_dir());
     // A coordinator-only Host owns both dispatch and committed Thread truth but
