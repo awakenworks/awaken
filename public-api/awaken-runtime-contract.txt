@@ -186,6 +186,16 @@ pub type awaken_runtime_contract::agent_bindings::ResolvedConfiguration::Target 
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::deref(&self) -> &Self::Target
 impl core::ops::deref::DerefMut for awaken_runtime_contract::agent_bindings::ResolvedConfiguration
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::deref_mut(&mut self) -> &mut Self::Target
+pub mod awaken_runtime_contract::authority_lease
+pub struct awaken_runtime_contract::authority_lease::AuthorityLeaseTiming
+impl awaken_runtime_contract::authority_lease::AuthorityLeaseTiming
+pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(u64) -> Self
+pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::lease_ttl(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::proof_window(self) -> core::time::Duration
+pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_after(self, core::time::Duration) -> core::time::Duration
+pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::renew_interval(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::request_timeout(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::retry_delay(self) -> core::time::Duration
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Await

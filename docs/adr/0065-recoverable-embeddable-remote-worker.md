@@ -43,6 +43,54 @@ The following invariants remain authoritative:
 - storage adapters implement the same logical coordinator protocol;
 - Worker code has no direct access to Control persistence.
 
+## 2026-08-31 amendment: registry proof and Run leases stay independent
+
+Control returns the positive Worker-registry TTL in registration and every
+applied heartbeat receipt. The Worker derives its cadence, request bound, retry
+delay, and conservative proof deadline from that value. It does not duplicate a
+deployment constant or treat one uncertain HTTP response as authoritative loss.
+
+```text
+applied heartbeat
+  -> refresh local proof deadline
+  -> keep claim admission open
+
+transport error or timeout while prior proof remains
+  -> suspend only new Pool claims
+  -> retain in-flight Run execution and each exact RunClaim renewal
+  -> retry with the next heartbeat sequence
+  -> Applied resumes admission
+  -> explicit registry rejection or proof expiry drains and cancels
+```
+
+The Pool has one admission state machine: `Open -> Suspended -> Open` is the
+reversible uncertainty path, while either live state may enter the absorbing
+`Draining` state. Suspension never cancels an in-flight Runtime token. Drain
+does, after the existing bounded cleanup. Every Run continues to use the one
+epoch-bearing `renew_lease` authority from ADR-0024; the removed owner-wide
+renewal route is not a compatibility path.
+
+Static ownership remains separated: `WorkerDirectory` owns the durable registry
+lease, `DispatchQueue` owns exact Run leases, `DispatchPool` owns only local
+claim admission, and `ThreadCommit` remains execution truth. Metrics expose
+heartbeat outcome/duration, scheduling lag, proof time remaining, and bounded
+loss cause without Worker, Run, prompt, or tenant labels.
+
+Registry proof or Run-lease loss cancels the old Runtime token, but cancellation
+is not physical quiescence until the owned executor Future returns. The signed
+Worker transport begins and finishes the exact Dispatch attempt slot defined by
+ADR-0024. A replacement Worker may acquire the new Run claim while it waits, but
+cannot enter model, tool, or Sandbox execution through that Dispatch. If the
+prior process vanished without an ACK, process/Pod termination proves only its
+process-bound tool or Sandbox work stopped. An opaque remote model request also
+requires an authoritative provider cancellation or terminal receipt; registry
+TTL alone is deliberately insufficient.
+
+Aborting or dropping the local executor Future is likewise not an ACK: it may
+stop local polling while provider-side work continues. The physical slot remains
+occupied until the Future explicitly returns. No timeout or destructor fabricates
+that terminal fact.
+
 ## 2026-08-12 amendment
 
 The former late Worker-authored Session-input design is superseded. Managed

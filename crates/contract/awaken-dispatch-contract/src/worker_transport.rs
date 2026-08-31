@@ -11,9 +11,9 @@ use awaken_runtime_contract::CredentialRealizationReceipt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClaimedCommitCommand, DispatchOutcome, PendingInput, RunClaim, RunDispatch,
-    SessionRunReservationResolution, SubmitOptions, WorkerHeartbeat, WorkerIdentity,
-    WorkerRegistration,
+    ClaimedCommitCommand, DispatchOutcome, PendingInput, RegisteredWorker, RegistryMutation,
+    RunClaim, RunDispatch, SessionRunReservationResolution, SubmitOptions, WorkerHeartbeat,
+    WorkerIdentity, WorkerRegistration,
 };
 
 /// Complete Worker-to-Coordinator envelope for one claim-fenced committed-truth
@@ -74,10 +74,28 @@ pub struct RegisterWorkerRequest {
     pub registration: WorkerRegistration,
 }
 
+/// Registration result plus the Coordinator-owned registry lease policy. The
+/// Worker derives only conservative local timing from this authoritative TTL;
+/// it never invents a competing deployment constant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerRegistrationReceipt {
+    pub worker: RegisteredWorker,
+    pub lease_ttl_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatWorkerRequest {
     pub identity: WorkerIdentity,
     pub heartbeat: WorkerHeartbeat,
+}
+
+/// Heartbeat mutation plus a renewed proof duration. Non-applied mutations do
+/// not carry a lease because they cannot prove continuing Worker authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerHeartbeatReceipt {
+    pub mutation: RegistryMutation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +149,16 @@ pub struct RenewRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelinquishRequest {
+    pub claim: RunClaim,
+    #[serde(default)]
+    pub identity: Option<WorkerIdentity>,
+}
+
+/// Exact claim request used by physical attempt begin/quiescence. The complete
+/// claim is required because a stale predecessor may acknowledge only its own
+/// execution epoch after the durable lease has advanced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptExecutionRequest {
     pub claim: RunClaim,
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,

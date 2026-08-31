@@ -13,6 +13,18 @@ use input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers, pre_authorized_tool_ids,
 };
 
+/// One named value for the optional authority inputs that distinguish fresh,
+/// claimed, adopted, and legacy-recovery Session opens. Keeping these fields
+/// together prevents positional `Option`/boolean arguments from silently
+/// selecting a different lifecycle path.
+struct SessionOpenRequest {
+    published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+    adopted: Option<crate::session_environment::SessionEnvironment>,
+    claimed_attempt: Option<ClaimedRuntimeInput>,
+    force_defer_environment: bool,
+    recover_revoked_legacy: bool,
+}
+
 impl SharedHost {
     /// Resolve the one immutable publication selected for a Session and enforce
     /// its projected Agent/backend fences. Context construction and cold
@@ -431,8 +443,18 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<Arc<SessionCtx>, HostError> {
-        self.ctx_for_snapshot_with_attempt(thread, agent, None, None, None, true, false)
-            .await
+        self.ctx_for_snapshot_with_attempt(
+            thread,
+            agent,
+            SessionOpenRequest {
+                published_snapshot: None,
+                adopted: None,
+                claimed_attempt: None,
+                force_defer_environment: true,
+                recover_revoked_legacy: false,
+            },
+        )
+        .await
     }
 
     /// Open a session over an already-adopted sandbox, or create one when this is
@@ -462,11 +484,13 @@ impl SharedHost {
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
-            published_snapshot,
-            adopted,
-            None,
-            false,
-            false,
+            SessionOpenRequest {
+                published_snapshot,
+                adopted,
+                claimed_attempt: None,
+                force_defer_environment: false,
+                recover_revoked_legacy: false,
+            },
         )
         .await
     }
@@ -482,30 +506,45 @@ impl SharedHost {
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
-            Some(published_snapshot),
-            adopted,
-            Some(attempt),
-            false,
-            true,
+            SessionOpenRequest {
+                published_snapshot: Some(published_snapshot),
+                adopted,
+                claimed_attempt: Some(attempt),
+                force_defer_environment: false,
+                recover_revoked_legacy: true,
+            },
         )
         .await
     }
 
     pub(crate) async fn ctx_for_resume(&self, thread: &str) -> Result<Arc<SessionCtx>, HostError> {
-        self.ctx_for_snapshot_with_attempt(thread, None, None, None, None, false, true)
-            .await
+        self.ctx_for_snapshot_with_attempt(
+            thread,
+            None,
+            SessionOpenRequest {
+                published_snapshot: None,
+                adopted: None,
+                claimed_attempt: None,
+                force_defer_environment: false,
+                recover_revoked_legacy: true,
+            },
+        )
+        .await
     }
 
     async fn ctx_for_snapshot_with_attempt(
         &self,
         thread: &str,
         agent: Option<&str>,
-        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        mut adopted: Option<crate::session_environment::SessionEnvironment>,
-        claimed_attempt: Option<ClaimedRuntimeInput>,
-        force_defer_environment: bool,
-        recover_revoked_legacy: bool,
+        request: SessionOpenRequest,
     ) -> Result<Arc<SessionCtx>, HostError> {
+        let SessionOpenRequest {
+            published_snapshot,
+            mut adopted,
+            claimed_attempt,
+            force_defer_environment,
+            recover_revoked_legacy,
+        } = request;
         let lifecycle = self
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());

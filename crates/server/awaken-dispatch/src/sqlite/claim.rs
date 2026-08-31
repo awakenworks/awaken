@@ -25,6 +25,7 @@ pub(super) fn claim_retry_exhausted_transaction(
                 "SELECT run_id FROM {prefix}_dispatch \
                  WHERE status = 'running' AND lease_until IS NOT NULL \
                  AND lease_until < ?1 AND attempt_count >= ?2 \
+                 AND active_attempt_epoch IS NULL \
                  ORDER BY created_at LIMIT 1"
             ),
             params![crate::clock::db_millis(now_ms), max_attempts_i64],

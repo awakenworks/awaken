@@ -45,6 +45,7 @@ use crate::dispatch::{
 use crate::worker_context::WorkerContext;
 
 mod claim_renewal;
+mod physical_attempt;
 
 pub(crate) use claim_renewal::{
     ClaimLeaseRenewal, combine_attempt_cancellation, renew_claim_while_active,
@@ -879,9 +880,23 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 clock.clone(),
                 Some(&attempt_cancellation),
             );
-            if let Err(error) = attempt_executor
-                .cancel(activation.clone(), context.clone())
-                .await
+            let cancel_executor = attempt_executor.clone();
+            let cancel_activation = activation.clone();
+            let cancel_context = context.clone();
+            if let Err(error) = self
+                .run_physical_attempt(
+                    &claim,
+                    claimed.request.thread_id(),
+                    &context,
+                    clock.clone(),
+                    &attempt_cancellation,
+                    move || async move {
+                        cancel_executor
+                            .cancel(cancel_activation, cancel_context)
+                            .await
+                    },
+                )
+                .await?
             {
                 return self
                     .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
@@ -1026,19 +1041,22 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Some(executor) = &model_executor {
             execution_context = execution_context.with_model_executor(executor.clone());
         }
-        let _attempt_tracking = self.runtime.track_active_attempt(
-            &run_id,
-            claimed.request.thread_id(),
-            &execution_context,
-        );
         let mut state = match self.reader.resume_ticket(&run_id) {
             // A committed ScheduledAction (ADR-0020): the system performs the
             // deferred action, not waits for external input. This also covers a
             // crash recovery of a scheduled await (no pending input is expected).
             Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
+                let scheduled_context = execution_context.clone();
                 match self
-                    .perform_scheduled(&claim, now_ms, execution_context.clone())
-                    .await
+                    .run_physical_attempt(
+                        &claim,
+                        claimed.request.thread_id(),
+                        &execution_context,
+                        clock.clone(),
+                        &attempt_cancellation,
+                        || self.perform_scheduled(&claim, now_ms, scheduled_context),
+                    )
+                    .await?
                 {
                     Ok(state) => state,
                     Err(err) => {
@@ -1064,9 +1082,23 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms)
                             .with_operation_id(input.message_id.clone())
                             .with_context_messages(input.context_messages);
-                        match attempt_executor
-                            .resume(activation.clone(), command, execution_context.clone())
-                            .await
+                        let resume_executor = attempt_executor.clone();
+                        let resume_activation = activation.clone();
+                        let resume_context = execution_context.clone();
+                        match self
+                            .run_physical_attempt(
+                                &claim,
+                                claimed.request.thread_id(),
+                                &execution_context,
+                                clock.clone(),
+                                &attempt_cancellation,
+                                move || async move {
+                                    resume_executor
+                                        .resume(resume_activation, command, resume_context)
+                                        .await
+                                },
+                            )
+                            .await?
                         {
                             Ok(state) => state,
                             Err(err) => {
@@ -1148,9 +1180,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     }
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
-                    match attempt_executor
-                        .execute(activation, execution_context.clone())
-                        .await
+                    let execute_executor = attempt_executor.clone();
+                    let execute_context = execution_context.clone();
+                    match self
+                        .run_physical_attempt(
+                            &claim,
+                            claimed.request.thread_id(),
+                            &execution_context,
+                            clock.clone(),
+                            &attempt_cancellation,
+                            move || async move {
+                                execute_executor.execute(activation, execute_context).await
+                            },
+                        )
+                        .await?
                     {
                         Ok(state) => state,
                         Err(err) => {
@@ -1169,9 +1212,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         while state == RunState::Awaiting {
             match self.reader.resume_ticket(&run_id) {
                 Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
+                    let scheduled_context = execution_context.clone();
                     state = match self
-                        .perform_scheduled(&claim, now_ms, execution_context.clone())
-                        .await
+                        .run_physical_attempt(
+                            &claim,
+                            claimed.request.thread_id(),
+                            &execution_context,
+                            clock.clone(),
+                            &attempt_cancellation,
+                            || self.perform_scheduled(&claim, now_ms, scheduled_context),
+                        )
+                        .await?
                     {
                         Ok(state) => state,
                         Err(err) => {

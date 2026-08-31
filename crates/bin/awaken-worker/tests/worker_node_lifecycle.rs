@@ -6,7 +6,7 @@ use awaken_worker_transport_security::{
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -69,11 +69,23 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
 #[derive(Default)]
 struct ExternalSessionProvider {
     ready: Option<Arc<AtomicBool>>,
+    stall_after_first_probe: bool,
+    probe_calls: AtomicUsize,
 }
 
 impl ExternalSessionProvider {
     fn with_readiness(ready: Arc<AtomicBool>) -> Self {
-        Self { ready: Some(ready) }
+        Self {
+            ready: Some(ready),
+            ..Self::default()
+        }
+    }
+
+    fn stalling_after_startup() -> Self {
+        Self {
+            stall_after_first_probe: true,
+            ..Self::default()
+        }
     }
 }
 
@@ -161,6 +173,9 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
     }
 
     async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        if self.stall_after_first_probe && self.probe_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            std::future::pending::<()>().await;
+        }
         if self
             .ready
             .as_ref()
@@ -724,6 +739,45 @@ async fn provider_evidence_drift_drains_before_the_next_heartbeat() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_provider_probe_is_bounded_and_loses_authority() {
+    // Cause/effect rule P4: startup evidence succeeds, then the same provider
+    // probe never returns. The heartbeat scheduler bounds the probe by its
+    // authority-derived request timeout, drains, and requires replacement; it
+    // cannot hang forever and silently cross the registry expiry.
+    let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-stall-test"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_session_container_provider(
+            "external-secure",
+            Arc::new(ExternalSessionProvider::stalling_after_startup()),
+        )
+        .with_hand_executor_factory(Arc::new(NoHandFactory))
+        .with_manifest(manifest())
+        .with_graceful_drain(Duration::ZERO)
+        .without_admin_surface()
+        .build()
+        .expect("valid provider-evidence topology")
+        .run_until(std::future::pending()),
+    )
+    .await
+    .expect("P4 bounded provider probe terminates")
+    .expect_err("P4 supervisor replacement required");
+    assert!(
+        result.to_string().contains("supervisor restart required"),
+        "P4"
+    );
+    assert_eq!(
+        upstream.heartbeat_sequences(),
+        vec![1],
+        "P4 no stale-evidence heartbeat is emitted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
     // Cause/effect decision table:
     // A1 initial heartbeat applied + periodic heartbeat applied -> Worker remains
@@ -769,6 +823,114 @@ async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
     assert!(
         requests.iter().any(|path| path == "/v1/worker/drain"),
         "A2 cleanup publishes drain when authority becomes reachable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transient_heartbeat_failure_pauses_then_resumes_claim_admission() {
+    // Cause/effect decision table for uncertain Worker-registry transport:
+    //
+    // | Rule | prior proof valid | heartbeat result | effect |
+    // |---|---|---|---|
+    // | H1 | yes | transport 503 | `/readyz`=503; in-flight authority retained |
+    // | H2 | yes | later Applied before proof deadline | admission resumes; process lives |
+    // | H3 | yes | graceful shutdown after H2 | ordinary terminal lifecycle |
+    let (upstream, recovery_release) =
+        FakeWorkerUpstream::start_transient_heartbeat_with_blocked_recovery();
+    let admin_addr = format!("127.0.0.1:{}", free_port());
+    WorkerNodeBuilder::new(
+        WorkerUpstream::new(upstream.url()).with_worker_id("worker-transient-heartbeat-test"),
+    )
+    .with_deployment_config(local_coordinator_deployment())
+    .with_manifest(manifest())
+    .with_admin_listen(&admin_addr)
+    .build()
+    .expect("valid Worker topology")
+    .run_until(async {
+        assert!(
+            poll_status(&admin_addr, "GET", "/readyz", 200),
+            "H1 precondition"
+        );
+        for _ in 0..400 {
+            if upstream.heartbeat_sequences().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(http_status(&admin_addr, "GET", "/readyz"), Some(503), "H1");
+        recovery_release.store(true, Ordering::Release);
+        assert!(poll_status(&admin_addr, "GET", "/readyz", 200), "H2");
+        Ok(WorkerShutdown::Prompt)
+    })
+    .await
+    .expect("H3 transient registry failure does not kill the incarnation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_applied_heartbeat_response_retries_with_a_higher_sequence() {
+    // Cause/effect decision table for an ambiguous response:
+    //
+    // | Rule | server applied | response observed | retry effect |
+    // |---|---|---|---|
+    // | S1 | yes | connection closes | suspend admission and retry |
+    // | S2 | yes | later Applied | strictly higher sequence converges; resume |
+    let upstream = FakeWorkerUpstream::start_dropping_one_heartbeat_response();
+    WorkerNodeBuilder::new(
+        WorkerUpstream::new(upstream.url()).with_worker_id("worker-lost-heartbeat-response-test"),
+    )
+    .with_deployment_config(local_coordinator_deployment())
+    .with_manifest(manifest())
+    .without_admin_surface()
+    .build()
+    .expect("valid Worker topology")
+    .run_until(async {
+        for _ in 0..800 {
+            if upstream.heartbeat_sequences().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let sequences = upstream.heartbeat_sequences();
+        assert!(sequences.len() >= 3, "S1/S2: {sequences:?}");
+        assert_eq!(&sequences[..3], &[1, 2, 3], "S2");
+        assert_eq!(upstream.applied_heartbeat_sequence(), 3, "S1/S2");
+        Ok(WorkerShutdown::Prompt)
+    })
+    .await
+    .expect("S2 ambiguous response converges without process replacement");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_transport_failure_drains_only_after_the_proof_deadline() {
+    // Cause/effect decision table for proof exhaustion:
+    //
+    // | Rule | heartbeat transport | proof window | effect |
+    // |---|---|---|---|
+    // | P1 | unavailable | remaining | retry; do not terminate immediately |
+    // | P2 | unavailable | exhausted | drain/cancel and require supervisor restart |
+    let upstream = FakeWorkerUpstream::start_unavailable_after_initial_heartbeat();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new(upstream.url()).with_worker_id("worker-proof-deadline-test"),
+        )
+        .with_deployment_config(local_coordinator_deployment())
+        .with_manifest(manifest())
+        .without_admin_surface()
+        .build()
+        .expect("valid Worker topology")
+        .run_until(std::future::pending()),
+    )
+    .await
+    .expect("P2 proof exhaustion terminates")
+    .expect_err("P2 supervisor restart is required");
+    assert!(
+        result.to_string().contains("supervisor restart required"),
+        "P2"
+    );
+    assert!(
+        upstream.heartbeat_sequences().len() > 2,
+        "P1 retries before P2"
     );
 }
 
