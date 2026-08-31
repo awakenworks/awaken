@@ -430,7 +430,7 @@ impl SharedHost {
     pub(crate) async fn rebuild_claimed_legacy_environment_after_revocation(
         &self,
         thread: &str,
-    ) -> Result<bool, HostError> {
+    ) -> Result<Option<awaken_provisioning_contract::SandboxHandle>, HostError> {
         let retiring = self
             .session_slots
             .read(thread, |slot| match &slot.environment_owner {
@@ -454,14 +454,15 @@ impl SharedHost {
             })
             .flatten();
         let Some(retiring) = retiring else {
-            return Ok(false);
+            return Ok(None);
         };
         let environment = retiring.owned.environment();
+        let retired_handle = environment.handle();
         match environment.status().await {
             Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
                 self.dispose_and_confirm_retirement(thread, &retiring)
                     .await?;
-                Ok(true)
+                Ok(Some(retired_handle))
             }
             Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
                 if !self.confirm_terminated_retirement(thread, &retiring) {
@@ -469,7 +470,7 @@ impl SharedHost {
                         "terminated legacy recovery owner lost its exact Retiring fence",
                     ));
                 }
-                Ok(true)
+                Ok(Some(retired_handle))
             }
             Ok(status) => Err(HostError::internal(format!(
                 "Session sandbox {} is not ready ({status:?})",

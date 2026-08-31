@@ -512,11 +512,12 @@ impl SharedHost {
         let _lifecycle = lifecycle.lock().await;
         self.retry_unpublished_session_environment_cleanup(thread)
             .await?;
-        if recover_revoked_legacy
-            && self
-                .rebuild_claimed_legacy_environment_after_revocation(thread)
+        if let Some(retired_handle) = if recover_revoked_legacy {
+            self.rebuild_claimed_legacy_environment_after_revocation(thread)
                 .await?
-        {
+        } else {
+            None
+        } {
             self.session_slots
                 .update(thread, |slot| slot.runtime = None);
             // A Managed claim may have resolved its adoption candidate before
@@ -524,25 +525,8 @@ impl SharedHost {
             // legacy owner just disposed above, it is now a terminated wrapper
             // around the permanently closed Hand. Never install it into the
             // rebuilt Runtime; a still-ready distinct adoption remains valid.
-            if let Some(candidate) = adopted.as_ref() {
-                match candidate.status().await {
-                    Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
-                        adopted = None;
-                    }
-                    Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {}
-                    Ok(status) => {
-                        return Err(HostError::internal(format!(
-                            "adopted Session sandbox {} is not ready ({status:?})",
-                            candidate.handle().sandbox_id,
-                        )));
-                    }
-                    Err(error) => {
-                        return Err(HostError::internal(format!(
-                            "could not inspect adopted Session sandbox {}: {error}",
-                            candidate.handle().sandbox_id,
-                        )));
-                    }
-                }
+            if adopted.as_ref().map(|candidate| candidate.handle()) == Some(retired_handle) {
+                adopted = None;
             }
         }
         if let Some(ctx) = self
