@@ -5,6 +5,7 @@ import {
   NAV,
   WORKSPACE_JOURNEY,
   navPath,
+  protocolHelpPath,
   quickstartSessionPath,
   titleForPath,
   visibleNavigation,
@@ -80,15 +81,38 @@ describe("console information architecture", () => {
   });
 
   it("routes Quickstart into the canonical durable Session with presentational provenance", () => {
-    // Cause/effect decision table: R1 explicit Workspace + Session -> their
+    // Cause/effect decision table: R1 safe Workspace + Session -> their
     // canonical detail route plus a non-authoritative source query; R2 empty
-    // Workspace -> existing default scope. The query changes only guidance and
-    // never creates a second Session route or onboarding state machine.
+    // Workspace -> existing default scope; R3 reserved route characters ->
+    // encoded coordinates. The query changes guidance only and never creates a
+    // second Session route or onboarding state machine.
     expect(quickstartSessionPath("workspace-a", "sesn_123")).toBe(
       "/w/workspace-a/sessions/sesn_123?from=quickstart",
     );
     expect(quickstartSessionPath("", "sesn_123")).toBe(
       "/w/default/sessions/sesn_123?from=quickstart",
+    );
+    expect(quickstartSessionPath("team space", "session/1")).toBe(
+      "/w/team%20space/sessions/session%2F1?from=quickstart",
+    );
+  });
+
+  it("deep-links every protocol CTA through one encoded route owner", () => {
+    // Cause/effect table: R1 explicit Workspace + protocol -> the matching
+    // help fragment; R2 empty Workspace -> default scope; R3 reserved
+    // characters -> encoded path/hash coordinates. All callers reuse this
+    // helper instead of copying protocol URL construction.
+    expect(protocolHelpPath("workspace-a", "managed")).toBe(
+      "/w/workspace-a/protocols#protocol-managed",
+    );
+    expect(protocolHelpPath("workspace-a", "acp")).toBe(
+      "/w/workspace-a/protocols#protocol-acp",
+    );
+    expect(protocolHelpPath("", "ai-sdk")).toBe(
+      "/w/default/protocols#protocol-ai-sdk",
+    );
+    expect(protocolHelpPath("team space", "custom/protocol")).toBe(
+      "/w/team%20space/protocols#protocol-custom%2Fprotocol",
     );
   });
 

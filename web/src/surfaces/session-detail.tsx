@@ -16,6 +16,7 @@ import { api, ws } from "../lib/api/client";
 import type { Environment, Page, Session, SessionAgent } from "../lib/api/types";
 import { mcpToolsetPolicySummary, type McpToolsetPolicySummary } from "../lib/agent-toolsets";
 import { useApp } from "../lib/app-state";
+import { protocolHelpPath } from "../lib/navigation/paths";
 import { sessionDisplayTitle } from "../lib/presentation";
 import { sessionErrorText } from "../lib/session-log";
 import { useSessionLog } from "../lib/useSessionLog";
@@ -125,6 +126,14 @@ type SessionView = typeof SESSION_VIEWS[number];
 export function sessionViewFromSearch(view: string | null, event: string | null): SessionView {
   if (event) return "trace";
   return SESSION_VIEWS.includes(view as SessionView) ? view as SessionView : "chat";
+}
+
+/** Remove only presentational Quickstart provenance; Session view and exact
+ * event coordinates remain owned by the existing URL projection. */
+export function withoutQuickstartProvenance(searchParams: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(searchParams);
+  next.delete("from");
+  return next;
 }
 
 export default function SessionDetailSurface() {
@@ -297,11 +306,23 @@ export default function SessionDetailSurface() {
       {controlResult && <div className="banner info">{controlResult}</div>}
       {fromQuickstart && (
         <div className="banner info">
-          {app.t(
-            "Your Agent is published and this durable Session is ready. Send a message here, then connect your application with the SDK example in API & protocols.",
-            "Agent 已发布，这个持久 Session 已就绪。先在此发送消息，再通过 API 与协议页的 SDK 示例连接你的应用。",
-          )}{" "}
-          <Link to={`/w/${wsId}/protocols`}>{app.t("Open SDK example", "查看 SDK 示例")}</Link>
+          <span>✓</span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {app.t(
+              "The Agent is published and its first task was submitted to this durable Session. Review the live result below, then connect the same Agent from your trusted backend with the Managed Agents SDK.",
+              "Agent 已发布，首次任务也已提交到这个持久 Session。先在下方检查实时结果，再通过可信后端使用 Managed Agents SDK 接入同一个 Agent。",
+            )}{" "}
+            <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
+              {app.t("Open Managed Agents SDK setup →", "打开 Managed Agents SDK 配置 →")}
+            </Link>
+          </span>
+          <Button
+            variant="ghost"
+            aria-label={app.t("Dismiss Quickstart guidance", "关闭 Quickstart 引导")}
+            onClick={() => setSearchParams(withoutQuickstartProvenance(searchParams), { replace: true })}
+          >
+            ✕
+          </Button>
         </div>
       )}
       {sessionLog.sendError && <div className="banner err">{sessionLog.sendError.message}</div>}

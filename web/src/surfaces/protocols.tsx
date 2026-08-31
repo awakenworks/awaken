@@ -2,7 +2,8 @@
 // production binary. Keep the paths here aligned with router conformance tests.
 
 import { useApp } from "../lib/app-state";
-import { Link, useParams } from "react-router";
+import { Link } from "react-router";
+import { useParams } from "react-router";
 import { Card, CopyButton, Pill } from "../components/ui";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";

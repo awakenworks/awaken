@@ -106,7 +106,12 @@ export function navPath(item: NavItem, workspaceId: string): string {
 /** Preserve the durable Session route while adding presentational provenance
  * for the one-time post-Quickstart integration hint. */
 export function quickstartSessionPath(workspaceId: string, sessionId: string): string {
-  return `/w/${workspaceId || "default"}/sessions/${sessionId}?from=quickstart`;
+  return `/w/${encodeURIComponent(workspaceId || "default")}/sessions/${encodeURIComponent(sessionId)}?from=quickstart`;
+}
+
+/** One canonical deep link into the protocol directory's connection help. */
+export function protocolHelpPath(workspaceId: string, protocolId: string): string {
+  return `/w/${encodeURIComponent(workspaceId || "default")}/protocols#protocol-${encodeURIComponent(protocolId)}`;
 }
 
 export function titleForPath(pathname: string): { scope: string; title: string } {

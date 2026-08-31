@@ -5,6 +5,7 @@ import {
   executionRuntimeId,
 } from "../../lib/agent-model-selection";
 import { useApp } from "../../lib/app-state";
+import { protocolHelpPath } from "../../lib/navigation/paths";
 import { runtimeStatus } from "../../lib/readiness";
 import { Link } from "react-router";
 import RuntimeCapabilitySummary from "./RuntimeCapabilitySummary";
@@ -77,7 +78,7 @@ export default function AgentModelSelectionEditor({
             {app.t("Manage models ↗", "管理模型 ↗")}
           </button>
         ) : (
-          <Link className="manage-link" to={`/w/${encodeURIComponent(app.workspaceId)}/protocols#protocol-acp`}>
+          <Link className="manage-link" to={protocolHelpPath(app.workspaceId, "acp")}>
             {app.t("ACP setup ↗", "ACP 设置 ↗")}
           </Link>
         )}

@@ -7,6 +7,7 @@ import { Link, useParams } from "react-router";
 import { api, isAbsent, workspaceFields, workspaceQuery, ws } from "../lib/api/client";
 import type { IamTokenMintResponse, IamTokenView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { protocolHelpPath } from "../lib/navigation/paths";
 import { entityDisplayName, identifierLabel } from "../lib/presentation";
 import GatedPage from "../components/app/GatedPage";
 import { Button, Card, CopyButton, Pill, TechnicalId, TextField, SelectField, useConfirm, useToast } from "../components/ui";
@@ -113,7 +114,7 @@ export default function AccessSurface() {
             <code>{minted.secret}</code>
           </span>
           <CopyButton value={minted.secret} label={app.t("Copy", "复制")} copiedLabel={app.t("Copied", "已复制")} />
-          <Link className="protocol-help-link" to={`/w/${encodeURIComponent(wsId)}/protocols#protocol-managed`}>
+          <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
             {app.t("Open SDK setup →", "打开 SDK 配置 →")}
           </Link>
           <Button variant="ghost" onClick={() => setMinted(null)}>
@@ -135,7 +136,7 @@ export default function AccessSurface() {
         <p className="hint">
           {app.t("Application access tokens are for browser and mobile protocols. They do not replace this service key for a trusted Managed Agents backend.", "Application Access Token 用于浏览器和移动端协议，不能替代可信 Managed Agents 后端使用的 Service API Key。")}
         </p>
-        <Link className="protocol-help-link" to={`/w/${encodeURIComponent(wsId)}/protocols#protocol-managed`}>
+        <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
           {app.t("Open Managed Agents SDK setup →", "打开 Managed Agents SDK 配置 →")}
         </Link>
       </Card>

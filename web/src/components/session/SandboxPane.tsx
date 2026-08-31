@@ -22,6 +22,7 @@ import {
 } from "@awaken/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
+import { protocolHelpPath } from "../../lib/navigation/paths";
 import {
   BUILTIN_LOCAL_ENVIRONMENT_ID,
   applicationProtocolFetch,
@@ -297,7 +298,7 @@ function ProtocolPreview({
         <span className="mut">
           {app.t("Use AI SDK or AG-UI with the same Session.", "使用 AI SDK 或 AG-UI 调试同一个 Session。")}
         </span>
-        <Link className="protocol-help-link" to={`/w/${encodeURIComponent(app.workspaceId)}/protocols#protocol-${protocol}`}>
+        <Link className="protocol-help-link" to={protocolHelpPath(app.workspaceId, protocol)}>
           {app.t("Connection and API key guide →", "连接与 API Key 指南 →")}
         </Link>
       </div>
