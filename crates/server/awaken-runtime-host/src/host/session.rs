@@ -692,10 +692,11 @@ impl SharedHost {
         }
         // A legacy/direct Environment has no encoded durable binding to feed
         // through the ordinary adoption path. A new claimed attempt is the
-        // authority to reuse the exact Ready owner retained by realization
-        // revocation; unclaimed and remote-only paths remain fail-closed.
+        // authority to dispose the quiesced owner retained by realization
+        // revocation and rebuild it; unclaimed and remote-only paths remain
+        // fail-closed.
         if claimed_attempt.is_some() && !a2a_only {
-            self.recover_claimed_legacy_environment_after_revocation(thread)
+            self.rebuild_claimed_legacy_environment_after_revocation(thread)
                 .await?;
         }
         let retained = self

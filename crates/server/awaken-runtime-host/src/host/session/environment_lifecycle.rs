@@ -422,15 +422,15 @@ impl SharedHost {
         .await
     }
 
-    /// Recover the exact process-local Environment retained when a prior
-    /// realization was revoked before the legacy/direct Session had published
-    /// a durable binding. The caller must own a newly claimed Runtime attempt;
-    /// ordinary direct callers cannot use this transition as realization
-    /// authority.
-    pub(crate) async fn recover_claimed_legacy_environment_after_revocation(
+    /// Retire the process-local Environment retained when a prior realization
+    /// was revoked before the legacy/direct Session had published a durable
+    /// binding. Quiescence permanently closes its Hand dispatch lifecycle, so a
+    /// new claimed attempt must rebuild through the ordinary creation path;
+    /// ordinary direct callers cannot use this transition as disposal authority.
+    pub(crate) async fn rebuild_claimed_legacy_environment_after_revocation(
         &self,
         thread: &str,
-    ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
+    ) -> Result<(), HostError> {
         let retiring = self
             .session_slots
             .read(thread, |slot| match &slot.environment_owner {
@@ -454,15 +454,14 @@ impl SharedHost {
             })
             .flatten();
         let Some(retiring) = retiring else {
-            return Ok(None);
+            return Ok(());
         };
         let environment = retiring.owned.environment();
         match environment.status().await {
             Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
-                self.session_slots.update(thread, |slot| {
-                    slot.environment_owner.reactivate_retiring(&retiring)
-                })?;
-                Ok(Some(environment))
+                self.dispose_and_confirm_retirement(thread, &retiring)
+                    .await?;
+                Ok(())
             }
             Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
                 if !self.confirm_terminated_retirement(thread, &retiring) {
@@ -470,7 +469,7 @@ impl SharedHost {
                         "terminated legacy recovery owner lost its exact Retiring fence",
                     ));
                 }
-                Ok(None)
+                Ok(())
             }
             Ok(status) => Err(HostError::internal(format!(
                 "Session sandbox {} is not ready ({status:?})",

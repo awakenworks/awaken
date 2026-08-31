@@ -660,7 +660,7 @@ async fn only_recovery_and_revocation_retirements_can_reactivate() {
 }
 
 #[tokio::test]
-async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
+async fn only_a_new_claim_rebuilds_a_revoked_legacy_direct_environment() {
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
 
     // Cross-protocol cause/effect table: C1 a first claimed Run creates one
@@ -668,8 +668,8 @@ async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
     // Unmaterialized; C2 realization revocation retains that exact Ready owner
     // as Retiring; C3 an unclaimed context lookup arrives; C4 a new claimed
     // attempt arrives with the immutable publication. Effects: E1 C3 fails
-    // closed and retains the exact Retiring owner; E2 C4 reactivates the same
-    // Arc without adoption or replacement and constructs the next Runtime.
+    // closed and retains the exact Retiring owner; E2 C4 disposes the
+    // quiesced owner and constructs a fresh Environment with an open Hand.
     // Rules CP1=C1+C2+C3=>E1, CP2=C1+C2+C4=>E2.
     let thread = "claimed-legacy-revocation";
     let root = tempfile::tempdir().unwrap();
@@ -774,13 +774,18 @@ async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
         .await
         .expect("CP2 claimed recovery");
     let recovered = context.env.as_ref().expect("CP2 Environment");
-    assert!(Arc::ptr_eq(recovered, &environment), "CP2/E2 exact Arc");
+    assert!(!Arc::ptr_eq(recovered, &environment), "CP2/E2 fresh Arc");
+    assert_eq!(
+        environment.status().await.unwrap(),
+        awaken_provisioning_contract::SandboxStatus::Terminated,
+        "CP2/E2 quiesced owner disposed"
+    );
     assert!(
         matches!(
             host.session_slots
                 .read(thread, |slot| slot.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Resident(owned))
-                if Arc::ptr_eq(&owned.environment, &environment)
+                if Arc::ptr_eq(&owned.environment, recovered)
         ),
         "CP2/E2 Resident"
     );
