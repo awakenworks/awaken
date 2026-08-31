@@ -6,7 +6,6 @@ use awaken_control::{
     AccountId, LocalBrowserAuth, LocalSetupHandoff, ManagementAuthz, ManagementIdentityMode,
     RemoteManagementAuthz,
 };
-use awaken_runtime_host::SharedHost;
 
 use crate::config;
 
@@ -63,25 +62,17 @@ pub(crate) struct IdentityWiring {
 }
 
 pub(crate) async fn identity_wiring(
-    identity_mode: ManagementIdentityMode,
-    data_dir: Option<&std::path::Path>,
-    org_id: &str,
-    iam_workspaces: &[String],
-    cloud_iam: &config::CloudIamConfig,
+    deployment: &config::ResolvedDeployment,
+    platform_workspace: &str,
     cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
 ) -> Result<IdentityWiring, String> {
-    let data_dir = data_dir.map(std::path::Path::to_path_buf);
-    let org_id = org_id.to_owned();
-    let iam_workspaces = iam_workspaces.to_vec();
-    let cloud_iam = cloud_iam.clone();
+    let deployment = deployment.clone();
+    let platform_workspace = platform_workspace.to_owned();
     tokio::task::spawn_blocking(move || {
         identity_wiring_blocking(
-            identity_mode,
-            data_dir.as_deref(),
-            &org_id,
-            &iam_workspaces,
-            &cloud_iam,
+            &deployment,
+            &platform_workspace,
             cloud_credential_cache,
             entitlement_provider,
         )
@@ -91,27 +82,27 @@ pub(crate) async fn identity_wiring(
 }
 
 fn identity_wiring_blocking(
-    identity_mode: ManagementIdentityMode,
-    data_dir: Option<&std::path::Path>,
-    org_id: &str,
-    iam_workspaces: &[String],
-    cloud_iam: &config::CloudIamConfig,
+    deployment: &config::ResolvedDeployment,
+    platform_workspace: &str,
     cloud_credential_cache: awaken_iam_client::CredentialCache,
     entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
 ) -> Result<IdentityWiring, String> {
-    match identity_mode {
+    match deployment.identity_mode {
         ManagementIdentityMode::SelfManaged => {
-            let dir = data_dir.ok_or_else(|| {
-                "self-managed IAM requires a persistent data directory".to_owned()
-            })?;
-            let workspace = SharedHost::provision_local_workspace_at(dir);
             let iam = match entitlement_provider {
                 Some(provider) => awaken_control::embedded_iam_for_tenant_with_entitlements(
-                    dir, org_id, &workspace, provider,
+                    &deployment.data_dir,
+                    &deployment.org_id,
+                    platform_workspace,
+                    provider,
                 ),
-                None => awaken_control::embedded_iam_for_tenant(dir, org_id, &workspace),
+                None => awaken_control::embedded_iam_for_tenant(
+                    &deployment.data_dir,
+                    &deployment.org_id,
+                    platform_workspace,
+                ),
             };
-            for workspace_id in iam_workspaces {
+            for workspace_id in &deployment.iam_workspaces {
                 iam.register_workspace(workspace_id);
             }
             let account_id = AccountId("local-console-admin".to_owned());
@@ -127,7 +118,7 @@ fn identity_wiring_blocking(
             })
         }
         ManagementIdentityMode::AwakenCloud => {
-            cloud_identity_wiring(cloud_iam, cloud_credential_cache)
+            cloud_identity_wiring(&deployment.cloud_iam, cloud_credential_cache)
         }
         ManagementIdentityMode::NoLogin => Ok(IdentityWiring {
             iam: None,
@@ -576,17 +567,10 @@ mod tests {
                 },
             )
             .unwrap();
-        let error = match identity_wiring(
-            ManagementIdentityMode::AwakenCloud,
-            None,
-            "org-test",
-            &[],
-            &config,
-            cache,
-            None,
-        )
-        .await
-        {
+        let mut deployment = config::local_test_deployment(directory.path().into());
+        deployment.identity_mode = ManagementIdentityMode::AwakenCloud;
+        deployment.cloud_iam = config;
+        let error = match identity_wiring(&deployment, "workspace-test", cache, None).await {
             Ok(_) => panic!("the unreachable fixture issuer must fail closed"),
             Err(error) => error,
         };

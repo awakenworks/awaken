@@ -231,6 +231,13 @@ impl BackgroundTaskTerminalObserver {
         }
     }
 
+    fn state_invalidated(fence: TaskFence) -> BackgroundTaskCompletion {
+        Self::indeterminate(
+            fence,
+            "detached task executor state became unavailable after dispatch",
+        )
+    }
+
     fn start_failure(
         fence: TaskFence,
         kind: ToolKind,
@@ -379,6 +386,18 @@ impl BackgroundTaskTerminalObserver {
                     Ok(ToolTaskStart::Completed(output)) => {
                         supervisor
                             .complete(task_id.clone(), Self::completion(fence.clone(), Ok(output)));
+                        publish_attention(
+                            attention,
+                            &thread_id,
+                            &task_id,
+                            &fence,
+                            BackgroundAttention::Terminal,
+                        )
+                        .await;
+                    }
+                    Err(awaken_runtime::DetachedToolError::StateInvalidated) => {
+                        supervisor
+                            .complete(task_id.clone(), Self::state_invalidated(fence.clone()));
                         publish_attention(
                             attention,
                             &thread_id,
@@ -602,6 +621,21 @@ impl BackgroundTaskTerminalObserver {
                         Ok(observed) => {
                             failures = 0;
                             observed
+                        }
+                        Err(awaken_runtime::DetachedToolError::StateInvalidated) => {
+                            supervisor.complete(
+                                task_id.clone(),
+                                Self::state_invalidated(fence.clone()),
+                            );
+                            publish_attention(
+                                attention,
+                                &thread_id,
+                                &task_id,
+                                &fence,
+                                BackgroundAttention::Terminal,
+                            )
+                            .await;
+                            return;
                         }
                         Err(error) => {
                             failures += 1;
@@ -956,6 +990,32 @@ mod tests {
         assert!(
             matches!(detached.end, BackgroundTaskEnd::Indeterminate { .. }),
             "R2"
+        );
+    }
+
+    #[test]
+    fn detached_state_invalidation_has_one_terminal_background_classification() {
+        // Cause/effect decision table: C1 the detached start, poll, or cancel
+        // crossed its dispatch boundary; C2 the executor then reports
+        // StateInvalidated. SI1 C1+C2 => preserve the exact fence and publish
+        // one Indeterminate candidate, never Failed/Completed. Both launch
+        // branches call this single classifier; Runtime continuation tests own
+        // the start/poll/cancel error mapping itself.
+        let fence = TaskFence {
+            worker_id: "worker".into(),
+            epoch: 9,
+        };
+
+        let completion = BackgroundTaskTerminalObserver::state_invalidated(fence.clone());
+
+        assert_eq!(completion.fence, fence, "SI1 exact claim fence");
+        assert!(
+            matches!(
+                completion.end,
+                BackgroundTaskEnd::Indeterminate { ref message }
+                    if message.contains("unavailable after dispatch")
+            ),
+            "SI1 terminal classification"
         );
     }
 

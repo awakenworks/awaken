@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
-  type AgentConfig,
-  type AgentToolsetMemberCap,
+    type AgentConfig,
+    type AgentToolsetCap,
   type Environment,
   type Page,
   type RuntimeCap,
@@ -92,7 +92,7 @@ export default function AgentQuickstart({
   allModels,
   runtimes,
   availableTools,
-  agentToolsetMembers,
+  agentToolset,
   availablePlugins,
   canRun,
   idEditable,
@@ -107,7 +107,7 @@ export default function AgentQuickstart({
   allModels: string[];
   runtimes: RuntimeCap[];
   availableTools: string[];
-  agentToolsetMembers: AgentToolsetMemberCap[];
+  agentToolset?: AgentToolsetCap;
   availablePlugins: string[];
   canRun: boolean;
   idEditable: boolean;
@@ -118,6 +118,7 @@ export default function AgentQuickstart({
   onReviewRun: (environmentId: string, task: string) => void;
 }) {
   const app = useApp();
+  const agentToolsetMembers = agentToolset?.members ?? [];
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [environmentId, setEnvironmentId] = useState(BUILTIN_LOCAL_ENVIRONMENT_ID);
   const [task, setTask] = useState(app.t(
@@ -140,11 +141,14 @@ export default function AgentQuickstart({
       description: app.t(template.description, template.descriptionZh),
       system: template.system,
       max_steps: template.maxSteps,
-      tools: withSelectedAgentTools(
-        config.tools,
-        Array.from(new Set([...selectedTools, ...tools])),
-        agentToolsetMembers,
-      ),
+      tools: agentToolset
+        ? withSelectedAgentTools(
+            config.tools,
+            Array.from(new Set([...selectedTools, ...tools])),
+            agentToolset.members,
+            agentToolset.default_config.permission_policy,
+          )
+        : config.tools,
       plugins: Array.from(new Set([...config.plugins, ...plugins])),
     });
     setTask(app.t(template.firstTask, template.firstTaskZh));

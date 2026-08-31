@@ -41,11 +41,13 @@ pub mod resource_plane {
 }
 
 pub use agent_config::{
-    AGENT_TOOLSET_TOOL_IDS, AgentTool, AgentToolConfig, AgentToolDefaultConfig,
-    AgentToolPermissionPolicy, AgentToolsetMember, AgentWebSearchUserLocation,
-    AgentWebSearchUserLocationKind, CustomToolInputSchema, ObjectSchemaKind, agent_toolset_members,
-    is_agent_toolset_member, is_controlled_modification_member, preserve_runtime_agent_overrides,
-    resolved_toolsets, toolset_policies, validate_agent_tools, validate_mcp_toolset_pairing,
+    AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget, AgentTool,
+    AgentToolConfig, AgentToolDefaultConfig, AgentToolPermissionPolicy, AgentToolsetMember,
+    AgentWebSearchUserLocation, AgentWebSearchUserLocationKind, CustomToolInputSchema,
+    ObjectSchemaKind, agent_toolset_members, apply_agent_permission_preset,
+    ensure_typed_mcp_toolset_policies, is_agent_toolset_member, is_controlled_modification_member,
+    preserve_runtime_agent_overrides, resolved_toolsets, toolset_policies, validate_agent_tools,
+    validate_mcp_toolset_pairing,
 };
 pub use awaken_agent_contract::{
     CanonicalJsonHashError, canonical_json_sha256, stable_fingerprint,

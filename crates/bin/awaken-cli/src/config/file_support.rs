@@ -8,6 +8,36 @@ use awaken_runtime_host::DispatchBackend;
 
 use super::{OperatingMode, Role};
 
+pub(super) fn resolve_data_dir(
+    command_line: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    home: Option<&Path>,
+) -> Result<(PathBuf, &'static str), String> {
+    if let Some(path) = command_line {
+        Ok((path, "command line"))
+    } else if let Some(path) = configured {
+        Ok((path, "config.toml"))
+    } else {
+        home.map(|home| (home.join(".awaken"), "default"))
+            .ok_or_else(|| "data_dir_unavailable: configure data_dir".to_owned())
+    }
+}
+
+pub(super) fn resolve_expected_platform_workspace_id(
+    configured: Option<&str>,
+) -> Result<Option<String>, String> {
+    configured
+        .map(str::trim)
+        .map(|value| {
+            if value.is_empty() {
+                Err("expected_platform_workspace_id must be non-empty".to_owned())
+            } else {
+                Ok(value.to_owned())
+            }
+        })
+        .transpose()
+}
+
 pub(super) fn validate_suite_hub_url(value: &str, mode: OperatingMode) -> Result<String, String> {
     if value.trim() != value || value.is_empty() {
         return Err("suite_hub_url must be a non-empty exact URL".to_owned());

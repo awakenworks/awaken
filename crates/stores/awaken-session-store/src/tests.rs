@@ -647,6 +647,422 @@ fn sample_with_credential_source(id: &str, source_id: &str) -> PersistedSession 
     session
 }
 
+fn directory_snapshot(directory: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                std::fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn migration_prefix_through(
+    source: &awaken_scoped_migration::MigrationBundle,
+    tail: i64,
+) -> awaken_scoped_migration::MigrationBundle {
+    awaken_scoped_migration::MigrationBundle::new(
+        source.bundle_id(),
+        source
+            .migrations()
+            .iter()
+            .filter(|migration| migration.version() <= tail)
+            .cloned()
+            .collect(),
+    )
+    .expect("canonical Session migration prefix")
+}
+
+fn materialize_foundation_ledger_generation(
+    conn: &Connection,
+    ledger_exists: bool,
+    meta_exists: bool,
+) {
+    let ledger = awaken_scoped_migration::LedgerSchema::with_prefix(NS).unwrap();
+    let [create_ledger, create_meta, stamp_version] =
+        ledger.create_statements(awaken_scoped_migration::Dialect::Sqlite);
+    if ledger_exists {
+        conn.execute_batch(&create_ledger).unwrap();
+    }
+    if meta_exists {
+        conn.execute_batch(&create_meta).unwrap();
+        conn.execute_batch(&stamp_version).unwrap();
+    }
+}
+
+async fn postgres_test_admin() -> Option<(String, sqlx::postgres::PgPool)> {
+    /* Postgres fixture admission decision table. Causes: C1 the caller
+     * explicitly configured AWAKEN_TEST_DATABASE_URL; C2 that database is
+     * reachable. Effects: E1 return the live pool; E2 allow an ordinary local
+     * self-skip; E3 fail the test. Rules: PG1=C1+C2=>E1,
+     * PG2=!C1+!C2=>E2, PG3=C1+!C2=>E3. A configured release-gate substrate can
+     * therefore never turn a connection regression into a green skip. */
+    let configured = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+        Ok(url) => Some(url),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("AWAKEN_TEST_DATABASE_URL is not valid Unicode")
+        }
+    };
+    let url = configured.clone().unwrap_or_else(|| {
+        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_owned()
+    });
+    match sqlx::postgres::PgPool::connect(&url).await {
+        Ok(pool) => Some((url, pool)),
+        Err(error) if configured.is_none() => {
+            println!("[skip] no Postgres reachable: {error}");
+            None
+        }
+        Err(error) => panic!("configured AWAKEN_TEST_DATABASE_URL is unreachable: {error}"),
+    }
+}
+
+fn scoped_postgres_url(base: &str, schema: &str) -> String {
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}options=-c%20search_path%3D{schema}")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PostgresSessionSnapshot {
+    roots: Vec<(String, String, i64)>,
+    reconciliation: Vec<(String, i64)>,
+    vaults: Vec<(String, String)>,
+    credential_sources: Vec<(String, String)>,
+    receipts: Vec<(String, i64, String)>,
+}
+
+async fn postgres_session_snapshot(pool: &sqlx::postgres::PgPool) -> PostgresSessionSnapshot {
+    PostgresSessionSnapshot {
+        roots: sqlx::query_as(
+            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+        reconciliation: sqlx::query_as(
+            "SELECT session_id, observed_revision FROM managed_session_reconciliation_work \
+             ORDER BY session_id, observed_revision",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+        vaults: sqlx::query_as(
+            "SELECT session_id, vault_id FROM managed_session_vault_reference \
+             ORDER BY session_id, vault_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+        credential_sources: sqlx::query_as(
+            "SELECT session_id, credential_source_id \
+             FROM managed_session_credential_source_reference \
+             ORDER BY session_id, credential_source_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+        receipts: sqlx::query_as(
+            "SELECT bundle_id, version, checksum FROM managed_schema_migrations \
+             ORDER BY bundle_id, version",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+    }
+}
+
+#[test]
+fn sqlite_existing_probe_accepts_migratable_history_and_rejects_invalid_storage_read_only() {
+    /* Cause/effect graph: C1 an existing file has the current published and
+     * converged receipt prefixes, either still present only in an open WAL or
+     * checkpointed into the closed main file; C2 it has an exact original
+     * V1/V9/V12/V13/V22 or compacted V20 prefix with a legal pending tail; C3
+     * it is corrupt SQLite. Effects: E1 C1/C2 are accepted by the read-only
+     * probe and the same selected schema opens successfully; E2 C3 fails
+     * closed; E3 probing changes no source row, receipt, sidecar, or byte.
+     * Decision table: SP1a=C1(open WAL)=>E1+E3,
+     * SP1b=C1(closed/checkpointed)=>E1+E3,
+     * SP2a..SP2f=C2(each published prefix)=>E1+E3, SP3=C3=>E2+E3. The SP1a
+     * fixture proves the physical snapshot includes committed WAL pages rather
+     * than using SQLite immutable mode, which would ignore them. Prefix
+     * fixtures are sliced from the canonical published bundles; neither the
+     * probe nor this test repeats checksums or DDL. */
+    let directory = tempfile::tempdir().unwrap();
+
+    let current = directory.path().join("current.db");
+    let current_authority = SqliteManagedSessionRepository::open(&current.to_string_lossy())
+        .expect("SP1 current authority");
+    let current_wal = std::path::PathBuf::from(format!("{}-wal", current.display()));
+    assert!(
+        std::fs::metadata(&current_wal).unwrap().len() > 0,
+        "SP1a fixture retains committed migration pages in WAL"
+    );
+    let before = directory_snapshot(directory.path());
+    SqliteManagedSessionRepository::verify_existing(&current.to_string_lossy())
+        .expect("SP1a current WAL prefix is ready");
+    assert_eq!(directory_snapshot(directory.path()), before, "SP1a/E3");
+
+    drop(current_authority);
+    let before = directory_snapshot(directory.path());
+    SqliteManagedSessionRepository::verify_existing(&current.to_string_lossy())
+        .expect("SP1b checkpointed current prefix is ready");
+    assert_eq!(directory_snapshot(directory.path()), before, "SP1b/E3");
+
+    let original = original_published_session_bundle().unwrap();
+    let compacted = compacted_published_session_bundle().unwrap();
+    for (rule, name, source, tail) in [
+        ("SP2a", "original-v1", &original, 1),
+        ("SP2b", "original-v9", &original, 9),
+        ("SP2c", "original-v12", &original, 12),
+        ("SP2d", "original-v13", &original, 13),
+        ("SP2e", "original-v22", &original, 22),
+        ("SP2f", "compacted-v20", &compacted, 20),
+    ] {
+        let prefix = migration_prefix_through(source, tail);
+        let legacy = directory.path().join(format!("{name}.db"));
+        let conn = Connection::open(&legacy).unwrap();
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .unwrap()
+            .run_bundle(&conn, &prefix)
+            .unwrap();
+        drop(conn);
+
+        let before = directory_snapshot(directory.path());
+        SqliteManagedSessionRepository::verify_existing(&legacy.to_string_lossy())
+            .unwrap_or_else(|error| panic!("{rule} probe rejected {name}: {error}"));
+        assert_eq!(directory_snapshot(directory.path()), before, "{rule}/E3");
+
+        drop(
+            SqliteManagedSessionRepository::open(&legacy.to_string_lossy())
+                .unwrap_or_else(|error| panic!("{rule} opener rejected {name}: {error}")),
+        );
+        drop(
+            SqliteManagedSessionRepository::open(&legacy.to_string_lossy())
+                .unwrap_or_else(|error| panic!("{rule} converged reopen rejected {name}: {error}")),
+        );
+        SqliteManagedSessionRepository::verify_existing(&legacy.to_string_lossy())
+            .unwrap_or_else(|error| panic!("{rule} converged store rejected: {error}"));
+    }
+
+    let corrupt = directory.path().join("corrupt.db");
+    std::fs::write(&corrupt, b"SQLite format 3\0truncated").unwrap();
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&corrupt.to_string_lossy())
+        .expect_err("SP3 corrupt SQLite cannot be ready");
+    assert!(
+        error.contains("integrity") || error.contains("database disk image is malformed"),
+        "SP3/E2: {error}"
+    );
+    assert_eq!(directory_snapshot(directory.path()), before, "SP3/E3");
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_existing_probe_rejects_filesystem_aliases_read_only() {
+    /* Alias-admission cause/effect table. Causes: C1 the configured path is a
+     * direct single-link regular file; C2 its final component is a symbolic
+     * link; C3 either name of its inode has multiple hard links. Effects: E1
+     * C1 proceeds to canonical ledger/schema verification (covered by SP1b);
+     * E2 C2/C3 fail before SQLite opens the source or its physical snapshot;
+     * E3 every source name and byte is unchanged. Rules: AL1=C1=>E1,
+     * AL2=C2=>E2+E3, AL3=C3=>E2+E3. The Unix link count is the platform
+     * authority; the test declares no migration/schema shape. */
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let authority = directory.path().join("authority.db");
+    drop(SqliteManagedSessionRepository::open(&authority.to_string_lossy()).unwrap());
+
+    let symbolic_alias = directory.path().join("symbolic.db");
+    symlink(&authority, &symbolic_alias).unwrap();
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&symbolic_alias.to_string_lossy())
+        .expect_err("AL2 symbolic alias cannot define the Session authority");
+    assert!(error.contains("symbolic link"), "AL2/E2: {error}");
+    assert_eq!(directory_snapshot(directory.path()), before, "AL2/E3");
+
+    let hard_alias = directory.path().join("hard.db");
+    std::fs::hard_link(&authority, &hard_alias).unwrap();
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&hard_alias.to_string_lossy())
+        .expect_err("AL3 hard-link alias cannot define the Session authority");
+    assert!(error.contains("hard links"), "AL3/E2: {error}");
+    assert_eq!(directory_snapshot(directory.path()), before, "AL3/E3");
+}
+
+#[test]
+fn sqlite_existing_probe_validates_the_foundation_ledger_generation_read_only() {
+    /* Cause/effect decision table derived from the ledger-generation graph:
+     *
+     * | Rule | ledger | meta | meta rows | version | Effect |
+     * | LG1  | no     | no   | n/a       | n/a     | MissingLedger |
+     * | LG2  | yes    | no   | n/a       | n/a     | IncompleteLedger |
+     * | LG3  | no     | yes  | one       | current | IncompleteLedger |
+     * | LG4  | yes    | yes  | zero/two  | n/a     | row-count error |
+     * | LG5  | yes    | yes  | one       | wrong   | version error |
+     *
+     * Effects shared by LG1..LG5: fail before receipt/schema admission and
+     * leave the database and sidecars byte-for-byte unchanged. Ledger names,
+     * presence decisions, creation statements, and current version remain
+     * foundation-owned. The fixture materializes an unrelated namespace from
+     * the canonical Session bundle and incomplete generations from
+     * `LedgerSchema`; this test owns no schema declaration. */
+    #[derive(Clone, Copy)]
+    enum Damage {
+        MissingBoth,
+        MissingMeta,
+        MissingLedger,
+        EmptyMeta,
+        DuplicateMeta,
+        WrongVersion,
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    for (rule, name, damage, expected) in [
+        (
+            "LG1",
+            "missing-both",
+            Damage::MissingBoth,
+            "no migration ledger",
+        ),
+        (
+            "LG2",
+            "missing-meta",
+            Damage::MissingMeta,
+            "incomplete migration ledger",
+        ),
+        (
+            "LG3",
+            "missing-ledger",
+            Damage::MissingLedger,
+            "incomplete migration ledger",
+        ),
+        ("LG4a", "empty-meta", Damage::EmptyMeta, "exactly one row"),
+        (
+            "LG4b",
+            "duplicate-meta",
+            Damage::DuplicateMeta,
+            "exactly one row",
+        ),
+        (
+            "LG5",
+            "wrong-version",
+            Damage::WrongVersion,
+            "stamped version",
+        ),
+    ] {
+        let path = directory.path().join(format!("{name}.db"));
+        match damage {
+            Damage::MissingBoth => {
+                let conn = Connection::open(&path).unwrap();
+                awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix("unrelated")
+                    .unwrap()
+                    .run_bundle(&conn, &session_bundle().unwrap())
+                    .unwrap();
+            }
+            Damage::MissingMeta | Damage::MissingLedger => {
+                let conn = Connection::open(&path).unwrap();
+                materialize_foundation_ledger_generation(
+                    &conn,
+                    matches!(damage, Damage::MissingMeta),
+                    matches!(damage, Damage::MissingLedger),
+                );
+            }
+            Damage::EmptyMeta | Damage::DuplicateMeta | Damage::WrongVersion => {
+                drop(SqliteManagedSessionRepository::open(&path.to_string_lossy()).unwrap());
+                let conn = Connection::open(&path).unwrap();
+                match damage {
+                    Damage::EmptyMeta => {
+                        conn.execute("DELETE FROM managed_schema_migrations_meta", [])
+                            .unwrap();
+                    }
+                    Damage::DuplicateMeta => {
+                        conn.execute(
+                            "INSERT INTO managed_schema_migrations_meta(ledger_version) \
+                             SELECT ledger_version FROM managed_schema_migrations_meta",
+                            [],
+                        )
+                        .unwrap();
+                    }
+                    Damage::WrongVersion => {
+                        conn.execute(
+                            "UPDATE managed_schema_migrations_meta SET ledger_version = ?1",
+                            params![awaken_scoped_migration::LEDGER_VERSION + 1],
+                        )
+                        .unwrap();
+                    }
+                    Damage::MissingBoth | Damage::MissingMeta | Damage::MissingLedger => {
+                        unreachable!()
+                    }
+                }
+            }
+        }
+        let before = directory_snapshot(directory.path());
+        let error =
+            SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy()).unwrap_err();
+        assert!(error.contains(expected), "{rule}: {error}");
+        assert_eq!(
+            directory_snapshot(directory.path()),
+            before,
+            "{rule} read-only"
+        );
+    }
+}
+
+#[test]
+fn sqlite_existing_probe_rejects_receipt_schema_disagreement_read_only() {
+    /* Cause/effect graph: C1 exact original receipts through V13 are present;
+     * C2 the canonical V13 migration body was not applied. Effects: E1 ledger
+     * plan alone would accept the contiguous prefix; E2 the receipt-derived
+     * in-memory shape disagrees and verification fails before startup; E3 the
+     * probe changes no database or sidecar bytes. Decision table:
+     * RS1=C1+!C2=>accept (covered by SP2d), RS2=C1+C2=>E1+E2+E3. Both physical
+     * prefixes and the forged receipt identity are derived from the selected
+     * canonical bundle, not repeated as test-owned schema. */
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("forged-current-schema.db");
+    let conn = Connection::open(&path).unwrap();
+    let original = original_published_session_bundle().unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .unwrap()
+        .run_bundle(&conn, &migration_prefix_through(&original, 12))
+        .unwrap();
+    let v13 = original
+        .migrations()
+        .iter()
+        .find(|migration| migration.version() == 13)
+        .expect("canonical V13 aggregate migration");
+    conn.execute(
+        "INSERT INTO managed_schema_migrations \
+            (bundle_id, version, checksum, description, applied_by) \
+         VALUES (?1, ?2, ?3, ?4, 'receipt-schema-probe')",
+        params![
+            original.bundle_id(),
+            v13.version(),
+            v13.checksum_for(awaken_scoped_migration::Dialect::Sqlite),
+            v13.ledger_description(),
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let before = directory_snapshot(directory.path());
+    let error = SqliteManagedSessionRepository::verify_existing(&path.to_string_lossy())
+        .expect_err("RS2 receipt/schema disagreement must fail closed");
+    assert!(
+        error.contains("disagrees with migration receipts"),
+        "RS2/E2: {error}"
+    );
+    assert_eq!(directory_snapshot(directory.path()), before, "RS2/E3");
+    assert!(
+        SqliteManagedSessionRepository::open(&path.to_string_lossy()).is_err(),
+        "RS2/E1 canonical opener cannot read the forged shape"
+    );
+}
+
 #[tokio::test]
 async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     // Causes: L1 exact original V1..V22 receipts; L2 canonical aggregate bytes
@@ -750,15 +1166,12 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     // and children must produce the same canonical aggregate, branch-local V23,
     // convergence receipt, preserved children, and normal post-upgrade writes.
     // The dialect-specific effect is in-place constraint/column conversion under
-    // the migration lock; an unreachable test database is an explicit skip.
+    // the migration lock. Only an unconfigured local database may self-skip;
+    // an explicitly configured but unreachable gate is a test failure.
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::PgPool;
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let Ok(admin) = PgPool::connect(&url).await else {
-        println!("[skip] no Postgres reachable");
+    let Some((url, admin)) = postgres_test_admin().await else {
         return;
     };
     let _ = admin
@@ -768,16 +1181,7 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
         .execute("CREATE SCHEMA t_session_original_upgrade")
         .await
         .unwrap();
-    let pool = PgPoolOptions::new()
-        .after_connect(|connection, _| {
-            Box::pin(async move {
-                connection
-                    .execute("SET search_path = t_session_original_upgrade")
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&url)
+    let pool = PgPool::connect(&scoped_postgres_url(&url, "t_session_original_upgrade"))
         .await
         .unwrap();
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
@@ -851,6 +1255,291 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     pool.close().await;
     admin
         .execute("DROP SCHEMA IF EXISTS t_session_original_upgrade CASCADE")
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+#[tokio::test]
+async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
+    /* PostgreSQL history/open cause-effect decision table. Causes: C1 the
+     * published lineage is original V1/V9/V12/V13/V22 or compacted V20; C2 a
+     * pre-V13 prefix has no canonical aggregate-bearing row; C3 a V13+ prefix
+     * has one decodable aggregate whose vault, credential source, and recovery
+     * predicates all project durable rows; C4 all current receipts and exact
+     * projections exist; C5 one row is missing from each derived projection;
+     * C6 a pre-V13 root exists and therefore cannot be reconstructed from the
+     * retired SQL columns; C7 a decodable root still uses the published
+     * pre-envelope encoding. Effects: E1 the operational opener reaches the one
+     * current lineage; E2 all three projections are rebuilt from the canonical
+     * root; E3 Server open succeeds without changing roots, projections, or
+     * receipts; E4 Server open rejects drift without repairing it; E5 rerunning
+     * the operational opener atomically repairs every projection; E6 C6 fails
+     * before convergence and never invents an aggregate; E7 Server rejects C7
+     * unchanged and operational migration canonicalizes it. Rules:
+     * PGV1..PGV3=C1+C2(V1/V9/V12)=>E1; PGV4..PGV6=C1+C3(V13/V22/V20)=>E1+E2;
+     * PGV7=C4=>E3; PGV8=C5=>E4+E5; PGV9=C6=>E6; PGV10=C7=>E7. Every prefix
+     * fixture is sliced from the canonical published bundle, so the test owns
+     * no copied DDL or checksum table. */
+    use sqlx::Executor;
+    use sqlx::postgres::PgPool;
+
+    let Some((url, admin)) = postgres_test_admin().await else {
+        return;
+    };
+    let original = original_published_session_bundle().unwrap();
+    let compacted = compacted_published_session_bundle().unwrap();
+
+    for (rule, schema, source, tail, seed_root, expected_main_receipts) in [
+        (
+            "PGV1",
+            "t_session_original_v1",
+            &original,
+            1,
+            false,
+            23_usize,
+        ),
+        ("PGV2", "t_session_original_v9", &original, 9, false, 23),
+        ("PGV3", "t_session_original_v12", &original, 12, false, 23),
+        ("PGV4", "t_session_original_v13", &original, 13, true, 23),
+        (
+            "PGV5",
+            "t_session_original_v22_matrix",
+            &original,
+            22,
+            true,
+            23,
+        ),
+        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 21),
+    ] {
+        let _ = admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await;
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .unwrap_or_else(|error| panic!("{rule} create schema: {error}"));
+        let scoped_url = scoped_postgres_url(&url, schema);
+        let pool = PgPool::connect(&scoped_url)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} connect schema: {error}"));
+        let prefix = migration_prefix_through(source, tail);
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .unwrap()
+            .run_bundle(&prefix)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} apply prefix: {error}"));
+
+        let seeded = seed_root.then(|| {
+            let mut session = sample_with_credential_source(
+                &format!("session-{rule}"),
+                &format!("credential-{rule}"),
+            );
+            let SessionBaselineState::Frozen(baseline) = &mut session.baseline else {
+                panic!("test sample must have a frozen baseline")
+            };
+            baseline.mcp_authoring.ordered_vault_ids = vec![format!("vault-{rule}")];
+            session.revision = SessionRevision(1);
+            session
+        });
+        if let Some(session) = &seeded {
+            assert!(
+                session.needs_reconciliation(),
+                "{rule} fixture precondition"
+            );
+            sqlx::query(
+                "INSERT INTO managed_session \
+                    (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
+                 VALUES ($1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,$2)",
+            )
+            .bind(&session.session_id)
+            .bind(serde_json::to_string(session).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} seed aggregate: {error}"));
+        }
+
+        let migrated = PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{rule}/E1 migrate prefix: {error}"));
+        if let Some(session) = &seeded {
+            assert_eq!(
+                migrated.get(&session.session_id).await.unwrap(),
+                session.clone(),
+                "{rule}/E1 canonical root"
+            );
+        }
+        drop(migrated);
+
+        let baseline = postgres_session_snapshot(&pool).await;
+        assert_eq!(
+            baseline
+                .receipts
+                .iter()
+                .filter(|(bundle, _, _)| bundle == BUNDLE_ID)
+                .count(),
+            expected_main_receipts,
+            "{rule}/E1 one selected lineage"
+        );
+        assert_eq!(
+            baseline
+                .receipts
+                .iter()
+                .filter(|(bundle, _, _)| bundle == CONVERGED_BUNDLE_ID)
+                .count(),
+            1,
+            "{rule}/E1 one convergence receipt"
+        );
+        let expected_projection_rows = if seed_root { 1 } else { 0 };
+        assert_eq!(
+            (
+                baseline.reconciliation.len(),
+                baseline.vaults.len(),
+                baseline.credential_sources.len(),
+            ),
+            (
+                expected_projection_rows,
+                expected_projection_rows,
+                expected_projection_rows,
+            ),
+            "{rule}/E2 all root-derived projections"
+        );
+
+        let verified = PostgresManagedSessionRepository::connect_existing(&scoped_url)
+            .await
+            .unwrap_or_else(|error| panic!("{rule}/PGV7 verify current state: {error}"));
+        verified.pool.close().await;
+        assert_eq!(
+            postgres_session_snapshot(&pool).await,
+            baseline,
+            "{rule}/PGV7/E3 read-only Server open"
+        );
+
+        if rule == "PGV6" {
+            sqlx::query("DELETE FROM managed_session_reconciliation_work")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM managed_session_vault_reference")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM managed_session_credential_source_reference")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let drifted = postgres_session_snapshot(&pool).await;
+            let error = match PostgresManagedSessionRepository::connect_existing(&scoped_url).await
+            {
+                Ok(_) => panic!("PGV8 Server open must not repair derived state"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("operational migration rebuild"),
+                "PGV8/E4: {error}"
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                drifted,
+                "PGV8/E4 rejection is read-only"
+            );
+            drop(
+                PostgresManagedSessionRepository::with_pool(pool.clone())
+                    .await
+                    .expect("PGV8/E5 operational repair"),
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                baseline,
+                "PGV8/E5 one transaction repairs all projections"
+            );
+
+            let session = seeded.as_ref().expect("PGV10 seeded Session");
+            sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
+                .bind(&session.session_id)
+                .bind(serde_json::to_string(session).unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
+            let noncanonical = postgres_session_snapshot(&pool).await;
+            let error = match PostgresManagedSessionRepository::connect_existing(&scoped_url).await
+            {
+                Ok(_) => panic!("PGV10 Server open must not normalize a root"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("operational migration normalization"),
+                "PGV10/E7: {error}"
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                noncanonical,
+                "PGV10/E7 rejection is read-only"
+            );
+            drop(
+                PostgresManagedSessionRepository::with_pool(pool.clone())
+                    .await
+                    .expect("PGV10/E7 operational normalization"),
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                baseline,
+                "PGV10/E7 migration restores canonical root and projections"
+            );
+        }
+
+        pool.close().await;
+        admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await
+            .unwrap_or_else(|error| panic!("{rule} drop schema: {error}"));
+    }
+
+    let schema = "t_session_original_v12_with_row";
+    let _ = admin
+        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .await;
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .unwrap();
+    let scoped_url = scoped_postgres_url(&url, schema);
+    let pool = PgPool::connect(&scoped_url).await.unwrap();
+    let v12 = migration_prefix_through(&original, 12);
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .unwrap()
+        .run_bundle(&v12)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO managed_session \
+            (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision) \
+         VALUES ('pre-aggregate','legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let error = match PostgresManagedSessionRepository::with_pool(pool.clone()).await {
+        Ok(_) => panic!("PGV9 must not reconstruct a pre-V13 root from retired columns"),
+        Err(error) => error,
+    };
+    assert!(error.contains("no canonical aggregate"), "PGV9/E6: {error}");
+    let aggregate: Option<String> =
+        sqlx::query_scalar("SELECT aggregate_json FROM managed_session WHERE session_id=$1")
+            .bind("pre-aggregate")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(aggregate, None, "PGV9/E6 no synthesized aggregate");
+    assert!(
+        PostgresManagedSessionRepository::connect_existing(&scoped_url)
+            .await
+            .is_err(),
+        "PGV9/E6 Server remains closed"
+    );
+    pool.close().await;
+    admin
+        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
         .await
         .unwrap();
     admin.close().await;
@@ -941,11 +1630,7 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
     healthy.revision = SessionRevision(1);
     let conn = Connection::open(&path).unwrap();
     let full = session_bundle().unwrap();
-    let v1 = awaken_scoped_migration::MigrationBundle::new(
-        full.bundle_id(),
-        full.migrations()[..1].to_vec(),
-    )
-    .unwrap();
+    let v1 = migration_prefix_through(&full, 1);
     awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
         .unwrap()
         .run_bundle(&conn, &v1)
@@ -1049,20 +1734,17 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
 }
 
 #[tokio::test]
-async fn postgres_v2_dependency_backfill_and_restart_use_the_same_root_decoder() {
+async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_root_decoder() {
     // Backend-parity rules reuse B1/B3 above: P1 a V1 canonical root plus
     // absent V2 -> apply additive DDL and rebuild; P2 V2 present plus missing
-    // derived row -> constructor rebuilds before service. Effects are the same
-    // exact Workspace+source discovery and unchanged canonical aggregate. The
-    // PostgreSQL table locks additionally serialize P1/P2 with root writers.
+    // derived row -> the operational migration opener rebuilds it. Effects are
+    // the same exact Workspace+source discovery and unchanged canonical
+    // aggregate. The PostgreSQL table locks additionally serialize P1/P2 with
+    // root writers. Server's read-only rejection is covered by PGV8 below.
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::PgPool;
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let Ok(admin) = PgPool::connect(&url).await else {
-        println!("[skip] no Postgres reachable");
+    let Some((url, admin)) = postgres_test_admin().await else {
         return;
     };
     let _ = admin
@@ -1072,24 +1754,11 @@ async fn postgres_v2_dependency_backfill_and_restart_use_the_same_root_decoder()
         .execute("CREATE SCHEMA t_session_source_backfill")
         .await
         .expect("create source-backfill schema");
-    let pool = PgPoolOptions::new()
-        .after_connect(|connection, _| {
-            Box::pin(async move {
-                connection
-                    .execute("SET search_path = t_session_source_backfill")
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&url)
+    let pool = PgPool::connect(&scoped_postgres_url(&url, "t_session_source_backfill"))
         .await
         .expect("connect source-backfill schema");
     let full = session_bundle().unwrap();
-    let v1 = awaken_scoped_migration::MigrationBundle::new(
-        full.bundle_id(),
-        full.migrations()[..1].to_vec(),
-    )
-    .unwrap();
+    let v1 = migration_prefix_through(&full, 1);
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .unwrap()
         .run_bundle(&v1)
@@ -2127,20 +2796,16 @@ async fn noncanonical_aggregate_fields_fail_closed() {
     ));
 }
 
-/// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres
-/// is reachable (`AWAKEN_TEST_DATABASE_URL`), proving the shared portable bundle
-/// and the same behavior on the network backend.
+/// Live Postgres round-trip, isolated in its own schema. An ordinary local run
+/// may skip when no database is configured or reachable; an explicitly
+/// configured `AWAKEN_TEST_DATABASE_URL` must connect or fail the test.
 #[tokio::test]
 async fn postgres_round_trips_and_upserts() {
     use awaken_ext_memory::{MemoryExtractionRepository, PutMemoryExtractionOutcome};
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::PgPool;
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let Ok(admin) = PgPool::connect(&url).await else {
-        println!("[skip] no Postgres reachable");
+    let Some((url, admin)) = postgres_test_admin().await else {
         return;
     };
     let _ = admin
@@ -2151,14 +2816,7 @@ async fn postgres_round_trips_and_upserts() {
         .await
         .expect("create schema");
     admin.close().await;
-    let pool = PgPoolOptions::new()
-        .after_connect(|conn, _meta| {
-            Box::pin(async move {
-                conn.execute("SET search_path = t_managed_session").await?;
-                Ok(())
-            })
-        })
-        .connect(&url)
+    let pool = PgPool::connect(&scoped_postgres_url(&url, "t_managed_session"))
         .await
         .expect("schema pool");
     let repo = PostgresManagedSessionRepository::with_pool(pool)
@@ -2333,18 +2991,14 @@ async fn postgres_round_trips_and_upserts() {
 /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic
 /// aggregate `create` / `commit_mutation` ownership assertions the SQLite test
 /// test has, which the pg test previously OMITTED. A second pool over the same schema
-/// stands in for a restart (the cross-process fence input the edge guard reads). Skips
-/// when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`), isolated in its schema.
+/// stands in for a restart (the cross-process fence input the edge guard reads).
+/// Only an unconfigured ordinary local run may self-skip.
 #[tokio::test]
 async fn postgres_owner_scope_is_recorded_and_survives_a_reopen() {
     use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use sqlx::postgres::PgPool;
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    });
-    let Ok(admin) = PgPool::connect(&url).await else {
-        println!("[skip] no Postgres reachable");
+    let Some((url, admin)) = postgres_test_admin().await else {
         return;
     };
     let _ = admin
@@ -2356,34 +3010,21 @@ async fn postgres_owner_scope_is_recorded_and_survives_a_reopen() {
         .expect("create schema");
     admin.close().await;
 
-    let pool = || {
-        let url = url.clone();
-        async move {
-            PgPoolOptions::new()
-                .after_connect(|conn, _meta| {
-                    Box::pin(async move {
-                        conn.execute("SET search_path = t_managed_session_owner")
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .connect(&url)
-                .await
-                .expect("schema pool")
-        }
-    };
+    let scoped_url = scoped_postgres_url(&url, "t_managed_session_owner");
+    let pool = || PgPool::connect(&scoped_url);
 
     // First "process": save the row and owner atomically.
-    let repo = PostgresManagedSessionRepository::with_pool(pool().await)
+    let repo = PostgresManagedSessionRepository::with_pool(pool().await.expect("schema pool"))
         .await
         .expect("store");
     create_fixture(&repo, "ws_a", sample("sesn_1"), Vec::new()).await;
     assert_eq!(repo.owner("sesn_1").await, Ok("ws_a".to_string()));
 
     // Second "process": a fresh pool over the same schema still reads the owner.
-    let reopened = PostgresManagedSessionRepository::with_pool(pool().await)
-        .await
-        .expect("store");
+    let reopened =
+        PostgresManagedSessionRepository::with_pool(pool().await.expect("reopen schema pool"))
+            .await
+            .expect("store");
     assert_eq!(reopened.owner("sesn_1").await, Ok("ws_a".to_string()));
     // A row saved but never owner-stamped defaults to the seeded scope.
     create_fixture(&reopened, "default", sample("sesn_2"), Vec::new()).await;

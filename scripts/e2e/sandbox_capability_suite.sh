@@ -10,6 +10,8 @@
 #      archive reaps the sandbox)       | protocol (SDK)   | (idempotent re-archive) ; 8x soak (no leak)
 #   G2 dispose (host + state)           | rust unit        | exact_terminal_cleanup_disposes_the_threads_sandbox ;
 #                                       |                  | delete/archive_session_disposes*
+#   G1 Namespace /workspace fidelity    | real bwrap       | SessionEnvironment process -> typed File -> ACP
+#                                       |                  | observe one canonical /workspace tree
 #   G1 container adapter (docker)       | real docker      | lifecycle ; open_channel dial ; wire exchange
 #   G1 mounts / read-only / egress      | real docker      | File/Inline/CacheVolume binds ; :ro rejects ;
 #                                       |                  | deny_egress confines (net UP vs DOWN)
@@ -25,6 +27,8 @@
 #
 # Env: KUBECONFIG (for the k8s layer) — a k3d cluster with busybox:latest + awaken-bb:1
 # imported (see k8s_container_e2e.sh). AWAKEN_SKIP_K8S=1 skips the k8s layer.
+# This runner alone sets AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE after the shared
+# bwrap capability probe succeeds, turning any internal Namespace skip into failure.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -68,7 +72,24 @@ else
   fi
 fi
 
-# ── Layer 3: real Docker daemon (G1 adapter, G5 cgroup, G2 adopt, G3) ─────────
+# ── Layer 3: real bwrap Namespace (G1 one /workspace) ────────────────────────
+step "G1 Namespace SessionEnvironment path fidelity against real bwrap"
+# Reuse the E2E graph's one bwrap/user-namespace probe instead of maintaining a
+# second shell approximation. Ordinary developer runs report a clean substrate
+# skip; required release profiles fail on that skip in the common summary below.
+if command -v node >/dev/null 2>&1 && node --input-type=module --eval \
+  'import { bwrapAvailable } from "./e2e/bwrap_capability.mjs"; process.exit(bwrapAvailable() ? 0 : 1);'
+then
+  run "bwrap:runtime-host-one-workspace" \
+    env AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE=1 \
+    cargo test -q -p awaken-runtime-host --lib \
+      session_environment::tests::namespace_native_process_and_agent_channel_share_one_live_environment \
+      -- --exact
+else
+  skip "bwrap/unprivileged user namespace unavailable"
+fi
+
+# ── Layer 4: real Docker daemon (G1 adapter, G5 cgroup, G2 adopt, G3) ─────────
 step "G1/G5/G2/G3 container tier against a real Docker daemon"
 if docker info >/dev/null 2>&1; then
   docker image inspect busybox:latest >/dev/null 2>&1 || docker pull busybox:latest >/dev/null
@@ -85,7 +106,7 @@ else
   skip "no reachable Docker daemon"
 fi
 
-# ── Layer 4: real Kubernetes (k3d) — G1 pod tier ─────────────────────────────
+# ── Layer 5: real Kubernetes (k3d) — G1 pod tier ─────────────────────────────
 step "G1 k8s pod tier against a real k3d cluster"
 if [ "$substrates_only" -eq 1 ]; then
   # The release graph already ran the canonical cluster owner immediately
@@ -120,7 +141,7 @@ else
   skip "no reachable k8s cluster (configure kubectl for a k3d cluster)"
 fi
 
-# ── Layer 5: real FUSE (G7 memoryd write-through) ────────────────────────────
+# ── Layer 6: real FUSE (G7 memoryd write-through) ────────────────────────────
 step "G7 MemoryMounter FUSE write-through"
 if [ -e /dev/fuse ] && { command -v fusermount >/dev/null || command -v fusermount3 >/dev/null; }; then
   run "MemoryMounter fuse kernel_vfs" cargo test -q -p awaken-sandbox-memoryd --test kernel_vfs

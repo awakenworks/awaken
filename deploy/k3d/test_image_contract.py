@@ -72,6 +72,21 @@ def main() -> None:
     assert '/usr/local/bin/awaken-coordinator", "--config"' in resources
     assert '/usr/local/bin/awaken", "coordinator"' not in resources
     assert '/usr/local/bin/awaken", "database", "migrate"' not in resources
+    # Installation-intent decision table: DB1 a repeatable rollout manifest ->
+    # ordinary exact-only migration and no retained initialization authority;
+    # DB2 a fresh disposable E2E cluster -> one explicit audited initialization
+    # Job per role, then the same ordinary Jobs converge. The fixture helper
+    # reuses the role commands and is not a second deployment manifest.
+    assert "--initialize-installation" not in resources
+    assert resources.count("suspend: true") == 2
+    e2e = (
+        Path(__file__).parent.parent.parent / "e2e" / "k3d" / "distributed_control_e2e.sh"
+    ).read_text()
+    assert "initialize_role_installation control" in e2e
+    assert "initialize_role_installation coordinator" in e2e
+    assert '"--initialize-installation", "--initialization-reference"' in e2e
+    assert 'patch job/control-migrate' in e2e
+    assert 'patch job/coordinator-migrate' in e2e
     # I4 the deterministic Control fixture changes only the publication resolver:
     # the scenario adapter consumes the deployment's one explicit Control config
     # and assembles the canonical split-Control application. The former HOME

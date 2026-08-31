@@ -587,6 +587,15 @@ pub(crate) async fn execute_tool(
     {
         Ok(ToolExecutorOutcome::Output(output)) => output,
         Ok(_) => unreachable!("invoke action returns only ToolExecutorOutcome::Output"),
+        Err(ToolError::StateInvalidatedAfterDispatch(detail)) => {
+            tracing::error!(
+                tool_id = %call.tool_id,
+                call_id = %call.call_id,
+                %detail,
+                "tool effect completed after its executor projection became unavailable"
+            );
+            return Err(Error::StateConflict);
+        }
         Err(error) => ToolOutput::error(&call.call_id, error.to_string()),
     };
     // OTel: a tool that returned an error (unknown tool, invocation failure, or a
@@ -611,7 +620,7 @@ pub(crate) async fn execute_detached_tool_action(
     state: &Store,
     action: DetachedToolAction<'_>,
 ) -> Result<std::result::Result<ToolExecutorOutcome, ToolError>> {
-    execute_tool_action(
+    let outcome = execute_tool_action(
         runtime,
         Some(env),
         Some(resolved),
@@ -621,7 +630,19 @@ pub(crate) async fn execute_detached_tool_action(
         state,
         ToolExecutorAction::Detached(action),
     )
-    .await
+    .await?;
+    match outcome {
+        Err(ToolError::StateInvalidatedAfterDispatch(detail)) => {
+            tracing::error!(
+                tool_id = %call.tool_id,
+                call_id = %call.call_id,
+                %detail,
+                "detached tool effect completed after its executor projection became unavailable"
+            );
+            Err(Error::StateConflict)
+        }
+        other => Ok(other),
+    }
 }
 
 /// The in-process `ToolExecutor` (ADR-0044 D1): the degenerate case where the

@@ -388,6 +388,7 @@ pub async fn awaken_runtime_host::SharedHost::prewarm_default_environment_capaci
 pub async fn awaken_runtime_host::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::foundation::SandboxError>
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace() -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace_at(&std::path::Path) -> alloc::string::String
+pub fn awaken_runtime_host::SharedHost::publish_local_workspace_at(&std::path::Path, &str) -> core::result::Result<alloc::string::String, std::io::error::Error>
 pub fn awaken_runtime_host::SharedHost::ready_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot) -> usize
 pub fn awaken_runtime_host::SharedHost::register_thread_delegates(&self, &str, alloc::vec::Vec<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)

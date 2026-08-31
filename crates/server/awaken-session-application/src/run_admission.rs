@@ -15,6 +15,7 @@ use awaken_session_contract::{
     StepOutcome, session_run_activity_operation_id,
 };
 
+use crate::creation::SessionCreationCompletion;
 use crate::{
     ConfiguredSessionRepository, CreateSessionCommand, McpAttachmentCandidate,
     McpAttachmentCandidateTarget, SessionApplication, SessionCreationError, SessionMutationError,
@@ -538,6 +539,32 @@ impl SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
+        self.create_profiled_session_with_completion(
+            command,
+            SessionCreationCompletion::AwaitRealization,
+        )
+        .await
+    }
+
+    /// Accept one product-authored Session at the durable-root boundary. The
+    /// original root remains the operation and lifecycle authority; the sole
+    /// supervisor realizes it asynchronously and replays never repeat effects.
+    pub async fn accept_profiled_session(
+        &self,
+        command: CreateProfiledSessionCommand,
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
+        self.create_profiled_session_with_completion(
+            command,
+            SessionCreationCompletion::AcceptDurableRoot,
+        )
+        .await
+    }
+
+    async fn create_profiled_session_with_completion(
+        &self,
+        command: CreateProfiledSessionCommand,
+        completion: SessionCreationCompletion,
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
         let CreateProfiledSessionCommand {
             owner_scope,
             session_id,
@@ -900,18 +927,21 @@ impl SessionApplication {
                 initial_mcp,
             },
         };
-        self.create_session(CreateSessionCommand {
-            owner_scope,
-            session_id,
-            intent,
-            title,
-            metadata,
-            tools,
-            budget: awaken_session_contract::SessionBudgetState::Absent,
-            repository_configurations,
-            idempotency,
-            initial_events: None,
-        })
+        self.create_session_with_completion(
+            CreateSessionCommand {
+                owner_scope,
+                session_id,
+                intent,
+                title,
+                metadata,
+                tools,
+                budget: awaken_session_contract::SessionBudgetState::Absent,
+                repository_configurations,
+                idempotency,
+                initial_events: None,
+            },
+            completion,
+        )
         .await
     }
 

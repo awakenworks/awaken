@@ -277,8 +277,8 @@ fails before Agent launch. Ordinary non-Dream Memory mounts retain their existin
 copy fallback.
 
 The built-in Session disables every tool by default and enables only
-`read`, `write`, `edit`, `move`, `delete`, `glob`, and `grep`; network policy is `None`. Writes are
-therefore limited to the only writable mount. MCP, shell, delegation, credential
+`read`, `write`, `edit`, `glob`, and `grep`; network policy is `None`. Writes are
+therefore limited to the only writable mount. Rename/delete and MCP, shell, delegation, credential
 access, extraction, and nested Dream capabilities are absent.
 
 The immutable platform prompt directs an evidence-first sequence:

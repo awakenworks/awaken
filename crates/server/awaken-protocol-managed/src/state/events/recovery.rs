@@ -289,9 +289,9 @@ impl ManagedState {
                 .iter()
                 .any(|ticket| &ticket.ticket.run_id == run_id)
             {
-                return Err(StateError::Run(RunError::bad_request(
+                return Err(StateError::projection_recovery_required(
                     "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
-                )));
+                ));
             }
             let audit_state =
                 Self::latest_recovery_run_state_change(snapshot, run_id).map(|(_, state)| state);
@@ -302,16 +302,16 @@ impl ManagedState {
                 audit_state,
                 Some(awaken_agent_contract::agent::run::RunState::Awaiting)
             ) {
-                return Err(StateError::Run(RunError::bad_request(
+                return Err(StateError::projection_recovery_required(
                     "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
-                )));
+                ));
             }
             return Ok(None);
         };
         if tickets.next().is_some() {
-            return Err(StateError::Run(RunError::bad_request(
+            return Err(StateError::projection_recovery_required(
                 "Runtime recovery exposed multiple answerable tickets for one Run; interrupt the Session to settle it",
-            )));
+            ));
         }
         if awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(
             &ticket.ticket,
@@ -320,9 +320,9 @@ impl ManagedState {
         )
         .is_err()
         {
-            return Err(StateError::Run(RunError::bad_request(
+            return Err(StateError::projection_recovery_required(
                 "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
-            )));
+            ));
         }
         let pending = Pending::from_resume_ticket(&ticket.ticket);
         Ok(pending.map(|pending| {
@@ -337,29 +337,30 @@ impl ManagedState {
     pub(super) fn pending_from_recovery_snapshot(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<Option<Pending>, StateError> {
-        match Self::pending_ticket_from_recovery_snapshot(snapshot) {
+        let ticket_error = match Self::pending_ticket_from_recovery_snapshot(snapshot) {
             Ok(Some((_, _, pending))) => return Ok(Some(pending)),
-            Ok(None) => {}
+            Ok(None) => None,
             Err(error) => {
                 tracing::error!(
                     awaken.thread.id = %snapshot.thread_id.0,
                     %error,
                     "projecting a damaged pending-tool ticket from its committed Awaiting audit"
                 );
+                Some(error)
             }
-        }
+        };
 
         let (run_id, current_state) = Self::current_recovery_run(snapshot);
         if !matches!(
             current_state,
             Some(awaken_agent_contract::agent::run::RunState::Awaiting)
         ) {
-            return Ok(None);
+            return ticket_error.map_or(Ok(None), Err);
         }
         let Some((event, awaken_agent_contract::agent::run::RunState::Awaiting)) =
             Self::latest_recovery_run_state_change(snapshot, run_id)
         else {
-            return Ok(None);
+            return ticket_error.map_or(Ok(None), Err);
         };
         let pending = event
             .payload
@@ -372,7 +373,11 @@ impl ManagedState {
                 .ok()
             })
             .and_then(|target| Pending::from_await_target(&target));
-        Ok(pending)
+        match (pending, ticket_error) {
+            (Some(pending), _) => Ok(Some(pending)),
+            (None, Some(error)) => Err(error),
+            (None, None) => Ok(None),
+        }
     }
 
     pub(super) fn public_tool_thread_id(session_id: &str, owner_thread_id: Option<&str>) -> String {

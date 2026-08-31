@@ -46,7 +46,7 @@ Owner: [tool-and-capability.md](../design/tool-and-capability.md).
 
 - Status: active
 - Owner: [Official builtin tools extension](../design/tool-and-capability.md#official-builtin-tools-extension)
-- Fact: runtime core provides no concrete model-callable tool ids; official hand, task, and delegation tools enter through `awaken-ext-builtin-tools`.
+- Fact: runtime core provides no concrete model-callable tool ids; first-party Hand/Web tools, native `agent_run`, and Managed `list_agents`/`send_to_agent` enter through `awaken-ext-builtin-tools`, which has no generic Task command family.
 - Links: [D14](../design/key-design-decisions.md#d14---concrete-tool-ids-live-outside-runtime-core); guardrails G2, G8, and G9
 - Verification: dependency/API checks proving runtime core has no concrete tool ids, plugin registration tests, and permission no-bypass tests.
 

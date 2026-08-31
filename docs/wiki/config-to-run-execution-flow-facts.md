@@ -41,3 +41,11 @@ Owner: [Configuration-to-application and request-to-response flows](../design/co
 - Fact: preview frames are optional, while committed facts drive terminal SSE delivery, HTTP receipts, replay, and reconnect backfill.
 - Links: [Commit taxonomy](../design/commit-fact-projection-taxonomy.md); guardrails G1, G13, and G23
 - Verification: recovery and response rules E8 and E9 in the owner document.
+
+## FACT-FLOW-005: PostgreSQL targets require one installation binding
+
+- Status: active
+- Owner: [Database and migration ownership](../design/config-to-run-execution-flow.md#database-and-migration-ownership)
+- Fact: Serve and Doctor verify the deployment's exact PostgreSQL installation identity read-only. Ordinary rollout migration accepts only exact bindings; fresh initialization and verified legacy adoption each require their own explicit operator switch and recorded audit reference after all-target preflight.
+- Links: [migration sequence](../design/config-to-run-execution-flow.md#database-and-migration-ownership); guardrail G51
+- Verification: installation rules E29 through E34 in the owner document.

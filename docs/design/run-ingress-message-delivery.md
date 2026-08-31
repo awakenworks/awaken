@@ -157,7 +157,7 @@ daemon drains the queue on a nudge or poll and recovers crashed leases on a
 layers run on Postgres or embedded SQLite over one portable schema
 ([ADR-0012](../adr/0012-sqlite-and-postgres-store-backends.md)). Pending input is
 mutable before consumption under revision-guarded `edit`/`retract`, and
-cross-thread delivery uses a transactional outbox with idempotent
+external cross-service delivery uses a transactional outbox with idempotent
 append-then-delete (no 2PC)
 ([ADR-0013](../adr/0013-pending-lifecycle-and-cross-thread-outbox.md)); a nullable
 `available_at` schedules a delivery the daemon fires when due, so `scheduled_wake`
@@ -394,7 +394,7 @@ For distributed deployment, `thread_id` is the shard and consistency key:
 | Wake records are hints. Durable pending input, committed facts, leases, and outboxes are the recovery truth. | lost or duplicate notifications do not change correctness |
 | Runtime reads and commits must use the same source or a fenced `RuntimeExecutionLink` equivalent. | resume cannot observe a torn mix of messages, run projection, and state |
 | Remote control requires an ack or minimum fence for read-your-writes paths. | callers can wait until a command is durably visible before reading projection state |
-| Cross-thread delivery uses transactional outbox and idempotent target append, not 2PC. | each thread remains an independent aggregate with local recovery |
+| External cross-service delivery uses transactional outbox and idempotent target append, not 2PC. | each thread remains an independent aggregate with local recovery |
 
 The distributed API should stay narrow: submit input, deliver live control, read
 committed events/projections, and inspect durable dispatch state. Pending edit,

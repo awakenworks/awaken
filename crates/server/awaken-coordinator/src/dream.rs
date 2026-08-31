@@ -322,17 +322,15 @@ fn dream_tool_configuration() -> SessionToolConfiguration {
             // Bash before selecting exact file operations. The Environment and
             // read-only input mounts remain the enforcement boundary; every
             // unrelated Agent tool stays disabled by the default-deny policy.
-            overrides: [
-                "bash", "read", "write", "edit", "glob", "grep", "move", "delete",
-            ]
-            .into_iter()
-            .map(|name| {
-                awaken_agent_contract::ToolPolicyOverride::new(
-                    name,
-                    awaken_agent_contract::ToolExecutionPolicy::default(),
-                )
-            })
-            .collect(),
+            overrides: ["bash", "read", "write", "edit", "glob", "grep"]
+                .into_iter()
+                .map(|name| {
+                    awaken_agent_contract::ToolPolicyOverride::new(
+                        name,
+                        awaken_agent_contract::ToolExecutionPolicy::default(),
+                    )
+                })
+                .collect(),
         }],
         client_tools: Vec::new(),
     }
@@ -759,12 +757,14 @@ mod tests {
 
     #[test]
     fn dream_tool_policy_allows_bash_and_files_but_denies_everything_else() {
-        // Cause/effect graph: C1 one of the eight Dream workspace tools is
+        // Cause/effect graph: C1 one of the six canonical Dream workspace tools is
         // selected -> E1 its explicit override is enabled and AlwaysAllow;
         // C2 any unlisted Agent tool is selected -> E2 the default-deny policy
         // remains authoritative; C3 a client tool is requested -> E3 none is
-        // exposed. Invariant: tool admission cannot widen the Environment and
-        // read-only mount boundaries. Decision rules R1=C1=>E1, R2=C2=>E2,
+        // exposed; C4 a rename/delete operation is requested -> E4 it has no
+        // parallel Hand-tool identity and can only be data in an admitted Bash
+        // call. Invariant: tool admission cannot widen the Environment and
+        // read-only mount boundaries. Decision rules R1=C1=>E1, R2=C2+C4=>E2+E4,
         // R3=C3=>E3 form the minimum partition coverage for this closed policy.
         let tools = dream_tool_configuration();
         assert!(tools.client_tools.is_empty());
@@ -778,12 +778,12 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             allowed,
-            [
-                "bash", "delete", "edit", "glob", "grep", "move", "read", "write"
-            ]
-            .into_iter()
-            .collect()
+            ["bash", "edit", "glob", "grep", "read", "write"]
+                .into_iter()
+                .collect()
         );
+        assert!(!allowed.contains("move"), "R2/E4 no parallel move tool");
+        assert!(!allowed.contains("delete"), "R2/E4 no parallel delete tool");
         assert!(policy.overrides.iter().all(|entry| {
             entry.policy.enabled
                 && entry.policy.permission

@@ -50,17 +50,18 @@ struct EnvSkillSource {
 }
 
 impl SkillSource for EnvSkillSource {
-    fn scan(&self) -> Vec<SkillFile> {
-        self.env
+    fn scan(&self) -> Result<Vec<SkillFile>, String> {
+        Ok(self
+            .env
             .scan_skill_dir(&self.subdir)
-            .unwrap_or_default()
+            .map_err(|error| error.to_string())?
             .into_iter()
             .map(|f| SkillFile {
                 id: f.id,
                 content: f.content,
                 dir: Some(f.dir),
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -79,32 +80,30 @@ struct SnapshotSkillSource {
 fn snapshot_repository_skill_files(
     env: &crate::session_environment::SessionEnvironment,
     roots: &[String],
-) -> Vec<SkillFile> {
-    roots
-        .iter()
-        .flat_map(|root| {
-            let visible_root = if root.starts_with("workspace/") {
-                format!("/{root}")
-            } else {
-                root.clone()
-            };
-            env.scan_skill_dir(root)
-                .unwrap_or_default()
-                .into_iter()
-                .map(move |file| SkillFile {
-                    // The path qualifies identity so same-named Skills from
-                    // multiple repositories remain independently visible.
-                    id: format!("repository:{root}:{}", file.id),
-                    content: file.content,
-                    // Preserve the frozen logical mount spelling and restore a
-                    // leading slash only when it is already workspace-qualified.
-                    // Legacy relative mounts remain relative until the shared
-                    // cross-provider Agent-visible path authority normalizes
-                    // them; do not duplicate that mapping in the Skill layer.
-                    dir: Some(format!("{visible_root}/{}", file.id)),
-                })
-        })
-        .collect()
+) -> Result<Vec<SkillFile>, String> {
+    let mut snapshot = Vec::new();
+    for root in roots {
+        let visible_root = if root.starts_with("workspace/") {
+            format!("/{root}")
+        } else {
+            root.clone()
+        };
+        let files = env
+            .scan_skill_dir(root)
+            .map_err(|error| error.to_string())?;
+        snapshot.extend(files.into_iter().map(|file| SkillFile {
+            // The path qualifies identity so same-named Skills from multiple
+            // repositories remain independently visible.
+            id: format!("repository:{root}:{}", file.id),
+            content: file.content,
+            // Preserve the frozen logical mount spelling and restore a leading
+            // slash only when it is already workspace-qualified. Legacy relative
+            // mounts remain relative until the shared cross-provider Agent-visible
+            // path authority normalizes them; do not duplicate that mapping here.
+            dir: Some(format!("{visible_root}/{}", file.id)),
+        }));
+    }
+    Ok(snapshot)
 }
 
 pub(crate) fn requires_filesystem(version: &SkillVersion, content: &str) -> bool {
@@ -131,8 +130,8 @@ pub(crate) fn version_requires_environment(version: &SkillVersion) -> bool {
 }
 
 impl SkillSource for SnapshotSkillSource {
-    fn scan(&self) -> Vec<SkillFile> {
-        self.files.clone()
+    fn scan(&self) -> Result<Vec<SkillFile>, String> {
+        Ok(self.files.clone())
     }
 }
 
@@ -235,26 +234,32 @@ pub(crate) async fn build_skill_registry(
         for root in roots {
             env.register_skill_dir(root);
         }
-        if let Err(error) = env.refresh_skills().await {
-            tracing::warn!(error = %error, "failed to seed container skill catalog");
-        }
+        env.refresh_skills()
+            .await
+            .map_err(|error| error.to_string())?;
     }
     // Repository discovery is frozen once with the Session environment. A
     // later commit or in-sandbox write cannot mutate the announced catalog;
     // the next Session receives a new snapshot from its own checkout.
-    let repository_files = env.as_ref().map_or_else(Vec::new, |env| {
-        skill_source_roots.map_or_else(Vec::new, |roots| {
-            snapshot_repository_skill_files(env, roots)
-        })
-    });
+    let repository_files = match (env.as_ref(), skill_source_roots) {
+        (Some(env), Some(roots)) => snapshot_repository_skill_files(env, roots)?,
+        _ => Vec::new(),
+    };
+    let live_authored_environment = env
+        .as_ref()
+        .filter(|_| skill_source_roots.is_some_and(<[String]>::is_empty))
+        .cloned();
     // Store availability is not a capability grant. Build a projection only
     // when this exact Session has a static, external, delivered, or repository
-    // Skill. A later direct Run may reload its catalog; an empty store never
-    // creates an ambient Skill surface by itself.
+    // Skill, or explicitly enables the direct live-authored source. That source
+    // must exist while initially empty so a Skill written later in this same Run
+    // becomes discoverable; an empty store alone never creates an ambient Skill
+    // surface.
     if configured.is_empty()
         && external_registries.is_empty()
         && delivered.as_ref().is_none_or(Vec::is_empty)
         && repository_files.is_empty()
+        && live_authored_environment.is_none()
     {
         return Ok(None);
     }
@@ -386,12 +391,10 @@ pub(crate) async fn build_skill_registry(
             SkillProvenance::Repository,
         )));
     }
-    if skill_source_roots.is_some_and(<[String]>::is_empty)
-        && let Some(env) = &env
-    {
+    if let Some(env) = live_authored_environment {
         registries.push(Arc::new(SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
-                env: env.clone(),
+                env,
                 subdir: authored_skills_subdir.to_string(),
             }),
             SkillProvenance::AgentCreated,
@@ -450,9 +453,11 @@ pub(crate) fn semantic_skill_adapter(
 /// Anthropic-compatible progressive-disclosure metadata. The prompt carries
 /// only name, description, and the exact `SKILL.md` path; the model reads full
 /// instructions with ordinary file tools when the Skill is relevant.
-pub(crate) fn filesystem_skill_prompt(registry: &dyn SkillRegistry) -> Option<String> {
+pub(crate) fn filesystem_skill_prompt(
+    registry: &dyn SkillRegistry,
+) -> Result<Option<String>, String> {
     let entries = registry
-        .list()
+        .list()?
         .into_iter()
         .filter(|skill| skill.model_invocable)
         .filter_map(|skill| {
@@ -461,12 +466,12 @@ pub(crate) fn filesystem_skill_prompt(registry: &dyn SkillRegistry) -> Option<St
                 .map(|dir| format!("- {}: {} (`{dir}/SKILL.md`)", skill.name, skill.description))
         })
         .collect::<Vec<_>>();
-    (!entries.is_empty()).then(|| {
+    Ok((!entries.is_empty()).then(|| {
         format!(
             "Available Skills are listed below. When a Skill is relevant, read its `SKILL.md` from the given path before acting.\n{}",
             entries.join("\n")
         )
-    })
+    }))
 }
 
 fn list_skills_descriptor() -> ToolDescriptor {
@@ -582,13 +587,16 @@ mod tests {
             dir: None,
         }];
         let source = SnapshotSkillSource { files };
-        let files = source.scan();
+        let files = source.scan().unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].id, "greet");
         assert!(files[0].content.contains("HELLO"));
 
         let reg = SourceSkillRegistry::new(Arc::new(source), SkillProvenance::Delivered);
-        let spec = reg.get("greet").expect("delivered skill resolves");
+        let spec = reg
+            .get("greet")
+            .expect("delivered Skill source is readable")
+            .expect("delivered skill resolves");
         assert_eq!(spec.description, "say hi");
         assert_eq!(spec.provenance, SkillProvenance::Delivered);
         assert!(spec.body.contains("HELLO"));
@@ -597,8 +605,14 @@ mod tests {
 
     #[tokio::test]
     async fn agent_authored_skill_is_discovered_live_from_the_workspace() {
-        // A skill the agent writes under the workspace this run is discovered live,
-        // tagged AgentCreated (ADR-0036 D6/D8), without rebuilding or exposing root.
+        // Cause/effect graph: C1 direct compatibility explicitly supplies the
+        // live-authored source as `Some([])`; C2 its directory starts empty; C3
+        // the agent writes one valid SKILL.md later in the same Run. Effects:
+        // E1 C1+C2 still constructs the one canonical registry with an empty
+        // list; E2 C3 is discovered live and tagged AgentCreated without a
+        // registry rebuild or exposed sandbox root. Decision rules:
+        // LA1=C1+C2=>E1; LA2=C1+C2+C3=>E1+E2. An absent source remains the
+        // existing no-Skill `None` path; Managed never supplies this live root.
         let base = std::env::temp_dir().join(format!("awaken-authored-{}", std::process::id()));
         let provider = LocalProvider::new(&base);
         let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
@@ -607,15 +621,23 @@ mod tests {
                 .await
                 .unwrap(),
         ));
-
-        let registry = SourceSkillRegistry::new(
-            Arc::new(EnvSkillSource {
-                env: env.clone(),
-                subdir: DEFAULT_SKILLS_SUBDIR.to_string(),
-            }),
-            SkillProvenance::AgentCreated,
+        let live_roots = Vec::<String>::new();
+        let registry = build_skill_registry(
+            &[],
+            Vec::new(),
+            None,
+            Some(env.clone()),
+            DEFAULT_SKILLS_SUBDIR,
+            Some(&live_roots),
+            false,
+        )
+        .await
+        .expect("LA1 live source is readable")
+        .expect("LA1 initially empty live source still owns one registry");
+        assert!(
+            registry.list().unwrap().is_empty(),
+            "LA1/E1 nothing authored yet"
         );
-        assert!(registry.list().is_empty(), "nothing authored yet");
 
         let skill_dir = base.join("t").join(DEFAULT_SKILLS_SUBDIR).join("notes");
         std::fs::create_dir_all(&skill_dir).unwrap();
@@ -627,7 +649,8 @@ mod tests {
 
         let found = registry
             .get("notes")
-            .expect("authored skill discovered live");
+            .expect("authored Skill source is readable")
+            .expect("LA2/E2 authored skill discovered live");
         assert_eq!(found.description, "my notes");
         assert_eq!(found.provenance, SkillProvenance::AgentCreated);
         assert_eq!(found.dir.as_deref(), Some("skills/notes"));
@@ -684,10 +707,12 @@ mod tests {
         .await
         .unwrap()
         .expect("R1/R3/R7 frozen Managed registry");
-        let listed = registry.list();
+        let listed = registry.list().unwrap();
         assert_eq!(listed.len(), 1, "R1/R3/R7 no parallel workspace entry");
         assert_eq!(listed[0].id, "test", "R1 exact frozen id");
-        let prompt = filesystem_skill_prompt(registry.as_ref()).expect("R1 prompt");
+        let prompt = filesystem_skill_prompt(registry.as_ref())
+            .unwrap()
+            .expect("R1 prompt");
         assert!(
             prompt.contains("Frozen") && !prompt.contains("Unbound"),
             "R3/R7"
@@ -722,7 +747,7 @@ mod tests {
         std::fs::create_dir_all(&default_dir).unwrap();
         std::fs::write(default_dir.join("SKILL.md"), "---\ndescription: no\n---\n").unwrap();
         assert!(
-            registry.get("ignored").is_none(),
+            registry.get("ignored").unwrap().is_none(),
             "the default dir is not scanned"
         );
 
@@ -734,7 +759,10 @@ mod tests {
             "---\ndescription: bake\n---\nmix",
         )
         .unwrap();
-        let found = registry.get("bake").expect("skill in the negotiated dir");
+        let found = registry
+            .get("bake")
+            .unwrap()
+            .expect("skill in the negotiated dir");
         assert_eq!(found.description, "bake");
         assert_eq!(found.dir.as_deref(), Some("recipes/bake"));
 
@@ -801,7 +829,7 @@ mod tests {
         .await
         .unwrap()
         .expect("R2 one attached-plus-repository registry");
-        let initial = frozen.list();
+        let initial = frozen.list().unwrap();
         assert_eq!(initial.len(), 3, "R2/R4 only admitted exact entries");
         assert!(initial.iter().all(|skill| skill.name == "Shared"));
         let repository = initial
@@ -817,7 +845,9 @@ mod tests {
             repository[0].dir, repository[1].dir,
             "R5 distinct sandbox paths"
         );
-        let prompt = filesystem_skill_prompt(frozen.as_ref()).expect("R2 prompt metadata");
+        let prompt = filesystem_skill_prompt(frozen.as_ref())
+            .unwrap()
+            .expect("R2 prompt metadata");
         assert_eq!(
             prompt.matches("- Shared:").count(),
             3,
@@ -840,7 +870,7 @@ mod tests {
             "---\nname: Late\ndescription: late\n---\nLATE",
         )
         .unwrap();
-        let still_frozen = frozen.list();
+        let still_frozen = frozen.list().unwrap();
         assert_eq!(still_frozen.len(), 3, "R6 no mid-Session discovery");
         assert!(still_frozen.iter().any(|skill| skill.body.contains("A-v1")));
         assert!(
@@ -861,7 +891,8 @@ mod tests {
         .await
         .unwrap()
         .expect("R6 next Session registry")
-        .list();
+        .list()
+        .unwrap();
         assert_eq!(next.len(), 4, "R6 new Session snapshot");
         assert!(next.iter().any(|skill| skill.body.contains("A-v2")));
         assert!(next.iter().any(|skill| skill.name == "Late"));
@@ -871,14 +902,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(
-        expected = "KNOWN GAP: a repository Skill scan failure must not become an empty catalog"
-    )]
     async fn repository_skill_snapshot_propagates_scan_failure() {
-        /* Temporary expected-failure regression; remove `should_panic` when
-         * the production fix lands.
-         *
-         * Cause/effect graph: C1 a fixed Managed repository root is admitted;
+        /* Cause/effect graph: C1 a fixed Managed repository root is admitted;
          * C2 the root is absent, readable, or returns a structural/UTF-8 scan
          * error. Effects: E1 absence is a legitimate empty snapshot; E2 valid
          * files use the existing path-qualified snapshot path; E3 scan errors
@@ -925,9 +950,7 @@ mod tests {
         .await
         {
             Err(error) => error,
-            Ok(_) => panic!(
-                "KNOWN GAP: a repository Skill scan failure must not become an empty catalog"
-            ),
+            Ok(_) => panic!("a repository Skill scan failure must not become an empty catalog"),
         };
         assert!(error.contains("UTF-8"), "SS3: {error}");
 

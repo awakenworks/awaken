@@ -267,11 +267,77 @@ mod tests {
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    const FAILED_POSTGRES_URL: &str = "postgres://127.0.0.1:1/awaken-managed-background-startup";
+
     struct HostedRolloutTarget;
 
     struct ProgressTarget {
         progress: ManagedCredentialAdoptionProgress,
         calls: Arc<AtomicUsize>,
+    }
+
+    struct CountingBackgroundService {
+        installations: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ManagedBackgroundService for CountingBackgroundService {
+        fn name(&self) -> &'static str {
+            self.installations.fetch_add(1, Ordering::SeqCst);
+            "counting-managed-background-service"
+        }
+
+        async fn run(
+            &self,
+            cancellation: tokio_util::sync::CancellationToken,
+        ) -> Result<(), String> {
+            cancellation.cancelled().await;
+            Ok(())
+        }
+    }
+
+    fn managed_services_with_installation_counter(
+        installations: Arc<AtomicUsize>,
+    ) -> ManagedServiceAdapters {
+        ManagedServiceAdapters::default()
+            .with_background_service(Arc::new(CountingBackgroundService { installations }))
+    }
+
+    fn postgres_failure_deployment(
+        directory: &std::path::Path,
+        role: crate::config::Role,
+    ) -> crate::config::ResolvedDeployment {
+        let mut deployment = crate::config::local_test_deployment(directory.to_owned());
+        deployment.role = role;
+        deployment.mode = crate::config::OperatingMode::Server;
+        deployment.expected_platform_workspace_id = Some("workspace-background-test".into());
+        deployment.runtime.store = awaken_runtime_host::StoreKind::Postgres;
+        deployment.runtime.dispatch_backend = awaken_runtime_host::DispatchBackend::Postgres;
+        deployment.runtime.database_url = Some(FAILED_POSTGRES_URL.to_owned());
+        deployment.resources =
+            crate::config::ResourceStoreBackend::Postgres(FAILED_POSTGRES_URL.to_owned());
+        deployment.coordinator.sessions = failed_postgres_store();
+        deployment.coordinator.captured_content = failed_postgres_store();
+        deployment.control = awaken_control::ControlStoreConfig {
+            catalog: failed_postgres_store(),
+            credential: failed_postgres_store(),
+            config: failed_postgres_store(),
+            admin: failed_postgres_store(),
+            data_subject: failed_postgres_store(),
+            environment: failed_postgres_store(),
+        };
+        deployment
+    }
+
+    fn failed_postgres_store() -> awaken_control::StoreBackend {
+        awaken_control::StoreBackend::Postgres(FAILED_POSTGRES_URL.to_owned())
+    }
+
+    fn failed<T>(result: Result<T, String>, rule: &str) -> String {
+        match result {
+            Ok(_) => panic!("{rule}: invalid remote store unexpectedly built the process"),
+            Err(error) => error,
+        }
     }
 
     #[async_trait::async_trait]
@@ -360,6 +426,132 @@ mod tests {
         assert_eq!(progress, ManagedCredentialAdoptionProgress::Pending);
         assert_eq!(local_calls.load(Ordering::Relaxed), 1);
         assert_eq!(external_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_background_services_install_only_after_process_build_succeeds() {
+        /* Cause/effect graph: C1 process role is Control, Coordinator, or
+         * AllInOne; C2 continuity is admitted; C3 every remote store and router
+         * dependency builds successfully; C4 one managed background service is
+         * supplied. Effects: E1 a failure after C2 but before C3 returns the
+         * canonical startup error and never calls the service registration
+         * boundary; E2 C2+C3+C4 installs the service exactly once on the
+         * returned process lifecycle. Decision table: B1 Control+remote Control
+         * store failure=>E1; B2 Coordinator+remote runtime-store failure=>E1;
+         * B3 AllInOne+remote runtime-store failure=>E1; B4 explicitly
+         * initialized AllInOne+all local build dependencies ready=>E2. B4 uses
+         * the canonical admission and migration owners to establish its local
+         * installation prerequisite; the same two production call sites own
+         * the three roles, so no test-only startup path or second lifecycle is
+         * introduced. `name()` is the synchronous ServiceLifecycle
+         * registration observation; counting `run()` would race lifecycle drop
+         * and would not prove that a failed build avoided registration. */
+        let control_dir = tempfile::tempdir().unwrap();
+        let control = postgres_failure_deployment(control_dir.path(), crate::config::Role::Control);
+        let control_installations = Arc::new(AtomicUsize::new(0));
+        let providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
+        let control_error = failed(
+            crate::prepare_control_process_with_managed_services(
+                &control,
+                &[0x61; 32],
+                Arc::new(crate::exact_host_model::ExactHostModelPublicationResolver {
+                    binding: awaken_runtime_contract::resolved::ModelBinding::new(
+                        "test-provider",
+                        "test-model",
+                        "test-backend",
+                    ),
+                }),
+                None,
+                providers.clone(),
+                Arc::new(
+                    crate::web_search_publication::WebSearchPublicationResolver::new(providers),
+                ),
+                None,
+                managed_services_with_installation_counter(Arc::clone(&control_installations)),
+            )
+            .await,
+            "B1",
+        );
+        assert!(
+            control_error.contains("postgres_installation_unavailable"),
+            "B1: {control_error}"
+        );
+        assert_eq!(control_installations.load(Ordering::SeqCst), 0, "B1/E1");
+
+        for (rule, role) in [
+            ("B2", crate::config::Role::Coordinator),
+            ("B3", crate::config::Role::AllInOne),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let deployment = postgres_failure_deployment(directory.path(), role);
+            let installations = Arc::new(AtomicUsize::new(0));
+            let result = match role {
+                crate::config::Role::Coordinator => {
+                    crate::prepare_coordinator_process_with_services(
+                        &deployment,
+                        managed_services_with_installation_counter(Arc::clone(&installations)),
+                        CoordinatorServiceAdapters::default(),
+                    )
+                    .await
+                }
+                crate::config::Role::AllInOne => {
+                    crate::prepare_all_in_one_process_with_services(
+                        &deployment,
+                        &[0x62; 32],
+                        managed_services_with_installation_counter(Arc::clone(&installations)),
+                        CoordinatorServiceAdapters::default(),
+                    )
+                    .await
+                }
+                _ => unreachable!(),
+            };
+            let error = failed(result, rule);
+            assert!(
+                error.contains("postgres_installation_unavailable"),
+                "{rule}: {error}"
+            );
+            assert_eq!(installations.load(Ordering::SeqCst), 0, "{rule}/E1");
+        }
+
+        let success_dir = tempfile::tempdir().unwrap();
+        let mut success = crate::config::local_test_deployment(success_dir.path().to_owned());
+        success.identity_mode = awaken_control::ManagementIdentityMode::NoLogin;
+        success.cloud_models = crate::config::CloudModelMode::Disabled;
+        success.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        let success_authorization = crate::installation_binding::InstallationAuthorization::new(
+            Some("managed-background-services-b4".into()),
+            None,
+        )
+        .unwrap();
+        let success_prepared = crate::installation_binding::prepare_deployment_installations(
+            &success,
+            &success_authorization,
+        )
+        .await
+        .expect("B4 explicit local installation admission");
+        success.ensure_data_layout().unwrap();
+        crate::deployment_process::migrate_deployment_schema_prepared(
+            &success,
+            Some(&[0x63; 32]),
+            success_prepared,
+        )
+        .await
+        .expect("B4 explicit local installation migration");
+        let success_installations = Arc::new(AtomicUsize::new(0));
+        let process = crate::prepare_all_in_one_process_with_services(
+            &success,
+            &[0x63; 32],
+            managed_services_with_installation_counter(Arc::clone(&success_installations)),
+            CoordinatorServiceAdapters::default(),
+        )
+        .await
+        .expect("B4 complete local process build");
+        assert_eq!(success_installations.load(Ordering::SeqCst), 1, "B4/E2");
+        process
+            .service_lifecycle
+            .shutdown(std::time::Duration::from_secs(1))
+            .await
+            .expect("B4 background service shuts down through the process lifecycle");
     }
 
     // Cause/effect table: C1=product supplies a verified entitlement provider;

@@ -14,12 +14,12 @@ authority, credential secrets, or public protocol DTOs.
 | Toolset | Default role | Execution owner | Notes |
 |---|---|---|---|
 | `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`; the two Web tools use the shared configurable Web provider catalog |
-| `builtin-task-tools` | runtime task control | Runtime extension plus live control | `cancel_task` |
 | `builtin-delegation-tools` | Agent delegation | Runtime extension (local or remote child Run) | one `agent_run` tool with `agent_id` argument |
-| `builtin-coordination-tools` | Agent roster and messaging | Runtime extension plus Session coordination | `list_agents`, one `send_message` backed by source Thread state and a deterministic target Run |
+| `builtin-coordination-tools` | Session-scoped Agent roster and messaging | Runtime extension plus Session coordination | fixed `list_agents` and `send_message`; projected only for a Managed primary Session and backed by source Thread state plus a deterministic target Run |
 
-Each toolset is independently enabled. Installing the package does not make every
-tool visible to every agent.
+Installing the package does not make every tool visible to every agent. Hand and
+native delegation descriptors follow publication selection; the Managed host
+projects its fixed coordination pair only into a Managed primary execution clone.
 
 ## Common Contract
 
@@ -103,11 +103,14 @@ Gateway route remains ineligible for that policy until its route contract can
 prove target-redirect enforcement, because the open adapter can observe only its
 Gateway hop and must not invent a parallel policy inside Cloud.
 
-## Task Tools
+## No Generic Task Command Toolset
 
-Task tools are ordinary runtime extension tools over existing live-control
-ports. They must not create a second task runtime. Agent messaging belongs to
-the separate Coordination toolset and must not be reintroduced here.
+The official catalog has no generic builtin Task command family. Managed
+cross-Agent messaging uses only the fixed `list_agents`/`send_message`
+coordination surface, while native delegation uses `agent_run`. Protocol and MCP
+Task cancellation, A2A messaging, generic `RawTool` async-task control, and
+operator recovery remain separate typed boundaries; none is duplicated as a
+model-callable builtin Task command.
 
 ## Delegation Tool
 
@@ -123,6 +126,14 @@ Invocation rules:
 5. route execution through normal backend/ingress ports.
 
 Do not generate `agent_run_<agent_id>` descriptors.
+
+## Managed Coordination Tools
+
+A Managed primary Session replaces native delegation descriptors with exactly
+`list_agents` and `send_message`. A Managed child receives neither native
+delegation nor another coordination surface. `send_message` commits its request
+through source Thread state and freezes its input in the deterministic target
+Run; it does not install a second mailbox or pending store.
 
 ## First Vertical Slice
 

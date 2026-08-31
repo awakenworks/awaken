@@ -43,8 +43,22 @@ pub enum DetachedToolError {
     NotExecutable(String),
     #[error("tool `{tool_id}` is not pre-authorized for detached execution: {reason}")]
     NotAuthorized { tool_id: String, reason: String },
+    /// The tool crossed its effect boundary and then invalidated the executor
+    /// projection required to interpret the result. Callers must terminate the
+    /// detached observation; polling or replaying could duplicate the effect.
+    #[error("detached tool executor state invalidated after dispatch")]
+    StateInvalidated,
     #[error("execute detached tool: {0}")]
     Execution(String),
+}
+
+fn map_runtime_error(error: awaken_runtime_contract::execution::Error) -> DetachedToolError {
+    match error {
+        awaken_runtime_contract::execution::Error::StateConflict => {
+            DetachedToolError::StateInvalidated
+        }
+        other => DetachedToolError::Execution(other.to_string()),
+    }
 }
 
 /// One immutable Runtime resolution reused by claim and invocation.
@@ -138,7 +152,7 @@ impl PreparedToolExecutor {
             state,
         )
         .await
-        .map_err(|error| DetachedToolError::Execution(error.to_string()))?;
+        .map_err(map_runtime_error)?;
         spill_tool_output(&self.context, run_id, output)
             .await
             .map_err(|error| DetachedToolError::Execution(error.to_string()))
@@ -179,7 +193,7 @@ impl PreparedToolExecutor {
             DetachedToolAction::Start,
         )
         .await
-        .map_err(|error| DetachedToolError::Execution(error.to_string()))?
+        .map_err(map_runtime_error)?
         .map_err(|error| DetachedToolError::Execution(error.to_string()))?;
         match outcome {
             ToolExecutorOutcome::Started(ToolTaskStart::Completed(output)) => {
@@ -267,7 +281,7 @@ impl PreparedToolExecutor {
             action,
         )
         .await
-        .map_err(|error| DetachedToolError::Execution(error.to_string()))?
+        .map_err(map_runtime_error)?
         .map_err(|error| DetachedToolError::Execution(error.to_string()))?;
         match outcome {
             ToolExecutorOutcome::Polled(ToolTaskPoll::Completed(output)) => {

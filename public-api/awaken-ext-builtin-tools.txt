@@ -14,7 +14,6 @@ pub enum awaken_ext_builtin_tools::Toolset
 pub awaken_ext_builtin_tools::Toolset::Coordination
 pub awaken_ext_builtin_tools::Toolset::Delegation
 pub awaken_ext_builtin_tools::Toolset::Hand
-pub awaken_ext_builtin_tools::Toolset::Task
 pub enum awaken_ext_builtin_tools::WebDomainFilter
 pub awaken_ext_builtin_tools::WebDomainFilter::Allow(alloc::vec::Vec<alloc::string::String>)
 pub awaken_ext_builtin_tools::WebDomainFilter::Block(alloc::vec::Vec<alloc::string::String>)
@@ -79,28 +78,6 @@ impl awaken_ext_builtin_tools::BuiltinTool
 pub const fn awaken_ext_builtin_tools::BuiltinTool::descriptor(&self) -> &awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_builtin_tools::BuiltinTool::into_descriptor(self) -> awaken_runtime_contract::resolved::ToolDescriptor
 pub const fn awaken_ext_builtin_tools::BuiltinTool::toolset(&self) -> awaken_ext_builtin_tools::Toolset
-pub struct awaken_ext_builtin_tools::CancelTaskArgs
-pub awaken_ext_builtin_tools::CancelTaskArgs::task_id: alloc::string::String
-pub struct awaken_ext_builtin_tools::CancelTaskTool(_)
-impl awaken_ext_builtin_tools::CancelTaskTool
-pub fn awaken_ext_builtin_tools::CancelTaskTool::new(alloc::sync::Arc<dyn awaken_ext_builtin_tools::TaskCanceller>) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::CancelTaskTool
-pub type awaken_ext_builtin_tools::CancelTaskTool::Args = awaken_ext_builtin_tools::CancelTaskArgs
-pub type awaken_ext_builtin_tools::CancelTaskTool::Output = alloc::string::String
-pub const awaken_ext_builtin_tools::CancelTaskTool::DESCRIPTION: &'static str
-pub const awaken_ext_builtin_tools::CancelTaskTool::ID: &'static str
-pub fn awaken_ext_builtin_tools::CancelTaskTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::CancelTaskArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_ext_builtin_tools::DeleteArgs
-pub awaken_ext_builtin_tools::DeleteArgs::path: alloc::string::String
-pub struct awaken_ext_builtin_tools::DeleteTool(_)
-impl awaken_ext_builtin_tools::DeleteTool
-pub fn awaken_ext_builtin_tools::DeleteTool::new(&awaken_ext_builtin_tools::HandToolContext) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::DeleteTool
-pub type awaken_ext_builtin_tools::DeleteTool::Args = awaken_ext_builtin_tools::DeleteArgs
-pub type awaken_ext_builtin_tools::DeleteTool::Output = alloc::string::String
-pub const awaken_ext_builtin_tools::DeleteTool::DESCRIPTION: &'static str
-pub const awaken_ext_builtin_tools::DeleteTool::ID: &'static str
-pub fn awaken_ext_builtin_tools::DeleteTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::DeleteArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_ext_builtin_tools::DuckDuckGoProvider
 impl awaken_ext_builtin_tools::WebSearchProvider for awaken_ext_builtin_tools::DuckDuckGoProvider
 pub fn awaken_ext_builtin_tools::DuckDuckGoProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebSearchProviderDescriptor
@@ -188,24 +165,6 @@ pub struct awaken_ext_builtin_tools::ManagedWebGatewayEndpoint
 pub awaken_ext_builtin_tools::ManagedWebGatewayEndpoint::gateway_base_url: alloc::string::String
 pub awaken_ext_builtin_tools::ManagedWebGatewayEndpoint::lease_token: awaken_agent_contract::secret::RedactedString
 pub awaken_ext_builtin_tools::ManagedWebGatewayEndpoint::route_ref: alloc::string::String
-pub struct awaken_ext_builtin_tools::MessageSendRequest
-pub awaken_ext_builtin_tools::MessageSendRequest::content: alloc::string::String
-pub awaken_ext_builtin_tools::MessageSendRequest::idempotency_key: core::option::Option<alloc::string::String>
-pub awaken_ext_builtin_tools::MessageSendRequest::operation_id: alloc::string::String
-pub awaken_ext_builtin_tools::MessageSendRequest::source_run_id: alloc::string::String
-pub awaken_ext_builtin_tools::MessageSendRequest::target_thread: alloc::string::String
-pub struct awaken_ext_builtin_tools::MoveArgs
-pub awaken_ext_builtin_tools::MoveArgs::destination: alloc::string::String
-pub awaken_ext_builtin_tools::MoveArgs::source: alloc::string::String
-pub struct awaken_ext_builtin_tools::MoveTool(_)
-impl awaken_ext_builtin_tools::MoveTool
-pub fn awaken_ext_builtin_tools::MoveTool::new(&awaken_ext_builtin_tools::HandToolContext) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::MoveTool
-pub type awaken_ext_builtin_tools::MoveTool::Args = awaken_ext_builtin_tools::MoveArgs
-pub type awaken_ext_builtin_tools::MoveTool::Output = alloc::string::String
-pub const awaken_ext_builtin_tools::MoveTool::DESCRIPTION: &'static str
-pub const awaken_ext_builtin_tools::MoveTool::ID: &'static str
-pub fn awaken_ext_builtin_tools::MoveTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::MoveArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_ext_builtin_tools::ReadArgs
 pub awaken_ext_builtin_tools::ReadArgs::path: alloc::string::String
 pub awaken_ext_builtin_tools::ReadArgs::view_range: core::option::Option<[i64; 2]>
@@ -218,30 +177,6 @@ pub type awaken_ext_builtin_tools::ReadTool::Output = alloc::string::String
 pub const awaken_ext_builtin_tools::ReadTool::DESCRIPTION: &'static str
 pub const awaken_ext_builtin_tools::ReadTool::ID: &'static str
 pub fn awaken_ext_builtin_tools::ReadTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::ReadArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_ext_builtin_tools::RecoverFailedMessagesArgs
-pub struct awaken_ext_builtin_tools::RecoverFailedMessagesTool(_)
-impl awaken_ext_builtin_tools::RecoverFailedMessagesTool
-pub fn awaken_ext_builtin_tools::RecoverFailedMessagesTool::new(alloc::sync::Arc<dyn awaken_ext_builtin_tools::MessageRecovery>) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::RecoverFailedMessagesTool
-pub type awaken_ext_builtin_tools::RecoverFailedMessagesTool::Args = awaken_ext_builtin_tools::RecoverFailedMessagesArgs
-pub type awaken_ext_builtin_tools::RecoverFailedMessagesTool::Output = alloc::string::String
-pub const awaken_ext_builtin_tools::RecoverFailedMessagesTool::DESCRIPTION: &'static str
-pub const awaken_ext_builtin_tools::RecoverFailedMessagesTool::ID: &'static str
-pub fn awaken_ext_builtin_tools::RecoverFailedMessagesTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::RecoverFailedMessagesArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_ext_builtin_tools::SendMessageArgs
-pub awaken_ext_builtin_tools::SendMessageArgs::content: alloc::string::String
-pub awaken_ext_builtin_tools::SendMessageArgs::idempotency_key: core::option::Option<alloc::string::String>
-pub awaken_ext_builtin_tools::SendMessageArgs::target_thread: alloc::string::String
-pub struct awaken_ext_builtin_tools::SendMessageTool(_)
-impl awaken_ext_builtin_tools::SendMessageTool
-pub fn awaken_ext_builtin_tools::SendMessageTool::new(alloc::sync::Arc<dyn awaken_ext_builtin_tools::MessageSender>) -> Self
-impl awaken_runtime_contract::tool::Tool for awaken_ext_builtin_tools::SendMessageTool
-pub type awaken_ext_builtin_tools::SendMessageTool::Args = awaken_ext_builtin_tools::SendMessageArgs
-pub type awaken_ext_builtin_tools::SendMessageTool::Output = alloc::string::String
-pub const awaken_ext_builtin_tools::SendMessageTool::DESCRIPTION: &'static str
-pub const awaken_ext_builtin_tools::SendMessageTool::ID: &'static str
-pub fn awaken_ext_builtin_tools::SendMessageTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::SendMessageArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_ext_builtin_tools::SendMessageTool::recovery_capability(&self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub struct awaken_ext_builtin_tools::SendToAgentArgs
 pub awaken_ext_builtin_tools::SendToAgentArgs::agent_id: core::option::Option<alloc::string::String>
 pub awaken_ext_builtin_tools::SendToAgentArgs::message: alloc::string::String
@@ -354,7 +289,6 @@ pub const awaken_ext_builtin_tools::BRAVE_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::DUCKDUCKGO_PROVIDER_ID: &str
 pub const awaken_ext_builtin_tools::LIST_AGENTS: &str
 pub const awaken_ext_builtin_tools::OPENROUTER_PROVIDER_ID: &str
-pub const awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID: &str
 pub const awaken_ext_builtin_tools::SEND_TO_AGENT: &str
 pub const awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID: &str
 pub const awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID: &str
@@ -365,12 +299,6 @@ pub fn awaken_ext_builtin_tools::AgentCoordinator::list_agents<'life0, 'async_tr
 pub fn awaken_ext_builtin_tools::AgentCoordinator::send_to_agent<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::AgentMessageRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_builtin_tools::AgentMessageReceipt, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_ext_builtin_tools::ManagedWebRouteResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_builtin_tools::ManagedWebRouteResolver::resolve<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::tool::ToolOperationContext, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_builtin_tools::ManagedWebGatewayEndpoint, awaken_ext_builtin_tools::ManagedWebRouteError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub trait awaken_ext_builtin_tools::MessageRecovery: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_builtin_tools::MessageRecovery::recover<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_ext_builtin_tools::MessageSender: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_builtin_tools::MessageSender::send<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::MessageSendRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_ext_builtin_tools::TaskCanceller: core::marker::Send + core::marker::Sync
-pub fn awaken_ext_builtin_tools::TaskCanceller::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_ext_builtin_tools::WebFetchProvider: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_builtin_tools::WebFetchProvider::descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor
 pub fn awaken_ext_builtin_tools::WebFetchProvider::enforces_domain_filter(&self) -> bool
@@ -414,7 +342,6 @@ pub fn awaken_ext_builtin_tools::executable_hand_tools_in(awaken_ext_builtin_too
 pub async fn awaken_ext_builtin_tools::invoke_auxiliary_agent(&dyn awaken_runtime_contract::tool::RawTool, impl core::convert::Into<alloc::string::String>, awaken_ext_builtin_tools::AuxiliaryAgentInput, core::option::Option<&tokio_util::sync::cancellation_token::CancellationToken>) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
 pub fn awaken_ext_builtin_tools::managed_web_route_ref<'a>(&str, &'a serde_json::value::Value) -> core::option::Option<&'a str>
 pub fn awaken_ext_builtin_tools::selected_hand_recovery_modes(&[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::collections::btree::set::BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>
-pub fn awaken_ext_builtin_tools::task_tools(alloc::sync::Arc<dyn awaken_ext_builtin_tools::MessageSender>, alloc::sync::Arc<dyn awaken_ext_builtin_tools::TaskCanceller>, alloc::sync::Arc<dyn awaken_ext_builtin_tools::MessageRecovery>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_ext_builtin_tools::web_fetch_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_ext_builtin_tools::web_fetch_execution_configuration(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> core::result::Result<core::option::Option<awaken_ext_builtin_tools::WebFetchExecutionConfiguration>, alloc::string::String>
 pub fn awaken_ext_builtin_tools::web_search_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor

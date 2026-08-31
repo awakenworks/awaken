@@ -393,6 +393,14 @@ impl DraftValidator for ConfigServiceDraftValidator {
             .await
             .map_err(|issue| issue.message)
     }
+
+    async fn runtime_agent_override_ids(
+        &self,
+        draft: &AgentConfig,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        let scope = self.workspace.resolve()?;
+        Ok(self.plane.runtime_agent_override_ids(&scope, draft))
+    }
 }
 
 /// Persists and reads back the admin assistant's drafts as **unpublished** config

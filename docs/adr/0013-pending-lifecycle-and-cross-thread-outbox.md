@@ -49,8 +49,9 @@ relay is a local transaction; the same shape extends to a distributed
 sender-outbox/target-append without two-phase commit.
 
 The daemon relays each tick before draining; `DurableRunIngress` exposes
-`stage_cross_thread` and `relay_outbox`, and `DispatchService` a `send`. Wiring a
-runtime `send_message` tool/effect to these is deferred (a runtime-side concern).
+`stage_cross_thread` and `relay_outbox`, and `DispatchService` a `send`. A
+higher-level authenticated adapter decides when to admit a message; the outbox
+does not define a model-visible command.
 
 ## Consequences
 

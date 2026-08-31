@@ -317,32 +317,13 @@ impl ManagedState {
             .await
     }
 
-    pub async fn accept_session(
-        &self,
-        req: SessionCreateParams,
-        workspace_id: Option<String>,
-    ) -> Result<Session, StateError> {
-        self.accept_session_with_identity(req, workspace_id, None)
-            .await
-    }
-
     pub(super) async fn create_session_with_identity(
         &self,
         req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity_from(req, workspace_id, explicit_id, None, false)
-            .await
-    }
-
-    pub(super) async fn accept_session_with_identity(
-        &self,
-        req: SessionCreateParams,
-        workspace_id: Option<String>,
-        explicit_id: Option<String>,
-    ) -> Result<Session, StateError> {
-        self.create_session_with_identity_from(req, workspace_id, explicit_id, None, true)
+        self.create_session_with_identity_from(req, workspace_id, explicit_id, None)
             .await
     }
 
@@ -355,7 +336,6 @@ impl ManagedState {
         workspace_id: Option<String>,
         explicit_id: Option<String>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
-        accept_durable_root: bool,
     ) -> Result<Session, StateError> {
         req.validate_common()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
@@ -929,12 +909,9 @@ impl ManagedState {
             idempotency: None,
             initial_events,
         };
-        let persisted = if accept_durable_root {
-            Box::pin(self.application.accept_session(creation)).await
-        } else {
-            Box::pin(self.application.create_session(creation)).await
-        }
-        .map_err(Self::map_creation_error)?;
+        let persisted = Box::pin(self.application.create_session(creation))
+            .await
+            .map_err(Self::map_creation_error)?;
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session_tools = project::managed_tools(&effective_tools);
         let session_multiagent =

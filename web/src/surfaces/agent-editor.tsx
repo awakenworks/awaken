@@ -5,10 +5,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import AgentEditorHeader from "../components/agent/AgentEditorHeader";
 import {
+  agentModelIsRunnable,
   AgentEditorStageNavigation,
   AgentValidationIssues,
   AttachedAgentContext,
   BLANK_AGENT_CONFIG,
+  buildAgentDraftBody,
 } from "../components/agent/AgentEditorChrome";
 import AgentEditorStages from "../components/agent/AgentEditorStages";
 import AgentPublicationModals, {
@@ -100,6 +102,7 @@ export default function AgentEditorSurface() {
   const [rawValid, setRawValid] = useState(true);
   const [integrationsValid, setIntegrationsValid] = useState(true);
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
+  const [permissionPreset, setPermissionPreset] = useState<"controlled_modifications" | null>(null);
   const [dirty, setDirty] = useState(false);
   const [resourceInputs, setResourceInputs] = useState<InputBinding[]>([]);
   const [resourceRevision, setResourceRevision] = useState(0);
@@ -130,9 +133,6 @@ export default function AgentEditorSurface() {
     retry: (attempt, error) => !isAbsent(error) && attempt < 2,
   });
   const caps = useCapabilities();
-  const agentToolsetMembers = (caps.data?.toolsets ?? [])
-    .find((toolset) => toolset.type === "agent_toolset_20260401")
-    ?.members ?? [];
   const credentials = useQuery({
     queryKey: ["credentials", wsId],
     queryFn: () => api.get<CredentialSource[]>(
@@ -145,18 +145,8 @@ export default function AgentEditorSurface() {
     && integrationsValid
     && targetId().length > 0
     && (cfg.system ?? "").trim().length > 0;
-  const body = () => ({ ...cfg, id: targetId() });
-
-  const modelIsRunnable = useMemo(() => {
-    if (typeof cfg.model === "string") return models.includes(cfg.model);
-    if ("id" in cfg.model) return models.includes(cfg.model.id);
-    if (cfg.model.mode === "backend_default" || cfg.model.mode === "backend_exact") {
-      const backendRef = cfg.model.backend_ref;
-      return (caps.data?.runtimes ?? []).some((runtime) =>
-        runtime.id === backendRef && runtime.local?.detected !== false);
-    }
-    return models.length > 0;
-  }, [cfg.model, models, caps.data?.runtimes]);
+  const body = () => buildAgentDraftBody(cfg, targetId(), permissionPreset);
+  const modelIsRunnable = agentModelIsRunnable(cfg.model, models, caps.data?.runtimes ?? []);
 
   const saveConfig = async (): Promise<number | undefined> => {
     const result = await api.put<{ id: string; generation?: number }>(
@@ -166,6 +156,7 @@ export default function AgentEditorSurface() {
     if (result.generation !== undefined) {
       setCfg((current) => ({ ...current, generation: result.generation }));
     }
+    setPermissionPreset(null);
     return result.generation;
   };
   const saveResources = async (): Promise<number> => {
@@ -227,6 +218,7 @@ export default function AgentEditorSurface() {
     setResourceInputs([]);
     setResourceRevision(0);
     setResourcesDirty(false);
+    setPermissionPreset(null);
     importedMemory.current = "";
     attachedAuxiliary.current = "";
     review.reset();
@@ -238,6 +230,7 @@ export default function AgentEditorSurface() {
 
   useEffect(() => {
     if (!existing.data) return;
+    setPermissionPreset(null);
     const { published: _published, ...rest } = existing.data;
     const auxiliary = Boolean(rest.metadata?.[AUXILIARY_PARENT_KEY]);
     const needsDefaultAuxiliary = !auxiliary && rest.multiagent == null;
@@ -354,12 +347,16 @@ export default function AgentEditorSurface() {
   }, [existing.data]);
   const patch = (value: Partial<AgentConfig>) => {
     setCfg((current) => ({ ...current, ...value }));
+    if (["tools", "plugins", "plugin_config"].some((key) => key in value)) {
+      setPermissionPreset(null);
+    }
     setDirty(true);
     review.onManualEdit(Object.keys(value));
     if (issues.length) setIssues([]);
   };
   const replaceRaw = (value: AgentConfig) => {
     setCfg({ ...BLANK, ...value });
+    setPermissionPreset(null);
     setDirty(true);
     review.onManualEdit(Object.keys(value));
     setIntegrationsValid(true);
@@ -396,6 +393,7 @@ export default function AgentEditorSurface() {
       review.markSaved();
       toast.ok(app.t("Saved.", "已保存。"));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
+      void qc.invalidateQueries({ queryKey: ["config-agent", wsId, targetId()] });
       if (isNew) setSavedId(targetId());
     },
     onError: (error) => toast.err(error instanceof Error ? error.message : "error"),
@@ -538,9 +536,10 @@ export default function AgentEditorSurface() {
           resourceRevision={resourceRevision} isNew={isNew} published={existing.data?.published === true}
           canRun={managedRuntime && canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
           readyModels={models} allModels={allModels} runtimes={caps.data?.runtimes ?? []}
-          tools={caps.data?.tools ?? []} agentToolsetMembers={agentToolsetMembers} plugins={caps.data?.plugins ?? []}
+          tools={caps.data?.tools ?? []} plugins={caps.data?.plugins ?? []}
           toolsets={caps.data?.toolsets ?? []}
           credentials={credentials.data ?? []} changed={changed} onPatch={patch} onRawChange={replaceRaw}
+          onApplyControlledModifications={() => { setPermissionPreset("controlled_modifications"); setDirty(true); }}
           onManageModels={() => setManageModels(true)}
           onReviewRun={(environmentId, task) => { quickRun.reset(); setQuickRunIntent({ environmentId, task }); }}
           onBuilderSectionChange={setBuilderSection} onAdvancedSectionChange={setAdvancedSection}

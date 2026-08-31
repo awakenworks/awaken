@@ -1,4 +1,4 @@
-import type { AgentConfig, ValidationIssue } from "../../lib/api/types";
+import type { AgentConfig, RuntimeCap, ValidationIssue } from "../../lib/api/types";
 import { labelForPath } from "../../lib/config-diff";
 import { CONSERVATIVE_DELEGATION_LIMITS } from "../../lib/agent-collaboration";
 import { useApp } from "../../lib/app-state";
@@ -21,6 +21,32 @@ export const BLANK_AGENT_CONFIG: AgentConfig = {
   plugin_config: {},
   context_policy: { kind: "keep_all" },
 };
+
+export function buildAgentDraftBody(
+  config: AgentConfig,
+  id: string,
+  permissionPreset: "controlled_modifications" | null,
+): AgentConfig & { permission_preset?: "controlled_modifications" } {
+  return {
+    ...config,
+    id,
+    ...(permissionPreset ? { permission_preset: permissionPreset } : {}),
+  };
+}
+
+export function agentModelIsRunnable(
+  model: AgentConfig["model"],
+  readyModels: readonly string[],
+  runtimes: readonly RuntimeCap[],
+): boolean {
+  if (typeof model === "string") return readyModels.includes(model);
+  if ("id" in model) return readyModels.includes(model.id);
+  if (model.mode === "backend_default" || model.mode === "backend_exact") {
+    return runtimes.some((runtime) =>
+      runtime.id === model.backend_ref && runtime.local?.detected !== false);
+  }
+  return readyModels.length > 0;
+}
 
 const STAGES: Array<{
   key: AuthorStage;

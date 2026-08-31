@@ -51,6 +51,22 @@ impl SharedHost {
         resolve_local_workspace(Some(root))
     }
 
+    /// Read the exact existing installation Workspace coordinate without
+    /// creating a directory or publishing identity.
+    pub fn local_workspace_at(root: &std::path::Path) -> std::io::Result<Option<String>> {
+        read_local_workspace(&root.join(LOCAL_WORKSPACE_ID_FILE))
+    }
+
+    /// Atomically publish one caller-selected coordinate through the same local
+    /// marker authority. Exact replay succeeds; a concurrent or pre-existing
+    /// different coordinate fails closed without replacement.
+    pub fn publish_local_workspace_at(
+        root: &std::path::Path,
+        workspace_id: &str,
+    ) -> std::io::Result<String> {
+        publish_local_workspace(&root.join(LOCAL_WORKSPACE_ID_FILE), workspace_id)
+    }
+
     /// Test-support selection of the same local extraction repository used by
     /// volatile/local host fixtures. Product startup injects its role-owned
     /// repository directly into the production constructor.
@@ -1595,8 +1611,10 @@ impl SharedHost {
     }
 }
 
+const LOCAL_WORKSPACE_ID_FILE: &str = "platform-workspace-id";
+
 fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
-    let path = store_dir.map(|dir| dir.join("platform-workspace-id"));
+    let path = store_dir.map(|dir| dir.join(LOCAL_WORKSPACE_ID_FILE));
     if let Some(path) = &path {
         match read_local_workspace(path) {
             Ok(Some(existing)) => return existing,
@@ -1613,23 +1631,54 @@ fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
         .unwrap_or(0);
     let generated = format!("workspace_local_{:x}_{nonce:x}", std::process::id());
     if let Some(path) = path {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("create platform workspace directory");
-        }
-        match awaken_sandbox_fs::publish_file_noreplace(&path, generated.as_bytes()) {
-            Ok(()) => {}
+        return match publish_local_workspace(&path, &generated) {
+            Ok(workspace) => workspace,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return read_local_workspace(&path)
+                read_local_workspace(&path)
                     .expect("read concurrently published platform workspace identity")
-                    .expect("concurrent platform workspace publisher wrote an identity");
+                    .expect("concurrent platform workspace publisher wrote an identity")
             }
             Err(error) => panic!(
                 "persist platform workspace identity `{}`: {error}",
                 path.display()
             ),
-        }
+        };
     }
     generated
+}
+
+fn publish_local_workspace(path: &std::path::Path, workspace_id: &str) -> std::io::Result<String> {
+    if workspace_id.is_empty() || workspace_id.trim() != workspace_id {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "platform Workspace identity must be non-empty with no surrounding whitespace",
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match awaken_sandbox_fs::publish_file_noreplace(path, workspace_id.as_bytes()) {
+        Ok(()) => Ok(workspace_id.to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = read_local_workspace(path)?.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "concurrent platform Workspace publisher left no identity",
+                )
+            })?;
+            if existing == workspace_id {
+                Ok(existing)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "platform Workspace identity mismatch: requested {workspace_id:?}, found {existing:?}"
+                    ),
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn read_local_workspace(path: &std::path::Path) -> std::io::Result<Option<String>> {
@@ -1691,12 +1740,23 @@ mod startup_tests {
     #[test]
     fn durable_workspace_identity_publication_is_atomic_and_fail_closed() {
         // Cause/effect table: C1 identity absent/valid/empty/non-regular; C2 one
-        // or two startup processes publish concurrently. R1 absent+one writes a
+        // or two startup processes publish concurrently; C3 a deployment asks
+        // to publish an exact coordinate. R1 absent+one writes a
         // complete durable identity; R2 absent+two returns the same winning
         // identity to both and never truncates it; R3 valid replays byte-for-byte;
         // R4 empty or non-regular fails closed without replacement. The
         // policy-free no-replace syscall remains owned by awaken-sandbox-fs.
+        // The read-only owner projects the same table: absent=>None, valid=>the
+        // exact coordinate, malformed/non-regular=>error without publication. R5 an
+        // exact first publish/replay returns that coordinate, while a conflicting
+        // C3 fails without replacing it.
         let directory = tempfile::tempdir().unwrap();
+        assert!(
+            SharedHost::local_workspace_at(directory.path())
+                .unwrap()
+                .is_none(),
+            "R1 read-only absent probe"
+        );
         let root = std::sync::Arc::new(directory.path().to_path_buf());
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let spawn = |root: std::sync::Arc<std::path::PathBuf>,
@@ -1712,9 +1772,44 @@ mod startup_tests {
         let two = two.join().unwrap();
         assert_eq!(one, two, "R2");
         assert_eq!(resolve_local_workspace(Some(root.as_path())), one, "R3");
+        assert_eq!(
+            SharedHost::local_workspace_at(root.as_path())
+                .unwrap()
+                .as_deref(),
+            Some(one.as_str()),
+            "R3 read-only exact identity"
+        );
+
+        let exact = tempfile::tempdir().unwrap();
+        assert_eq!(
+            SharedHost::publish_local_workspace_at(exact.path(), "workspace-exact").unwrap(),
+            "workspace-exact",
+            "R5 first publish"
+        );
+        assert_eq!(
+            SharedHost::publish_local_workspace_at(exact.path(), "workspace-exact").unwrap(),
+            "workspace-exact",
+            "R5 exact replay"
+        );
+        assert_eq!(
+            SharedHost::publish_local_workspace_at(exact.path(), "workspace-other")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "R5 mismatch"
+        );
+        assert_eq!(
+            std::fs::read_to_string(exact.path().join("platform-workspace-id")).unwrap(),
+            "workspace-exact",
+            "R5 no replacement"
+        );
 
         let invalid = tempfile::tempdir().unwrap();
         std::fs::write(invalid.path().join("platform-workspace-id"), b"").unwrap();
+        assert!(
+            SharedHost::local_workspace_at(invalid.path()).is_err(),
+            "R4 read-only malformed probe"
+        );
         assert!(
             std::panic::catch_unwind(|| resolve_local_workspace(Some(invalid.path()))).is_err(),
             "R4"

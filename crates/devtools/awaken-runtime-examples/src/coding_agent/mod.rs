@@ -25,7 +25,7 @@ use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_ext_builtin_tools::{HandToolContext, Toolset, builtin_tools, executable_hand_tools_in};
+use awaken_ext_builtin_tools::{HandToolContext, Toolset, all_hand_tools_in, builtin_tools};
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
@@ -132,7 +132,7 @@ impl CodingSession {
         // This publish=false, opt-in example deliberately supplies a
         // single-process Hand. Production Sessions obtain the same ToolExecutor
         // port only from their realized SessionEnvironment (ADR-0073).
-        let tools = executable_hand_tools_in(hand_context);
+        let tools = all_hand_tools_in(hand_context);
         let tool_executor = Arc::new(RawToolRegistry::new(tools.iter().cloned()));
         for tool in tools {
             runtime = runtime.with_tool(tool);

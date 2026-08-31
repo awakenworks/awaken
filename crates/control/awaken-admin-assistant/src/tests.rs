@@ -76,6 +76,22 @@ impl DraftValidator for FakeValidator {
             Ok(())
         }
     }
+
+    async fn runtime_agent_override_ids(
+        &self,
+        draft: &AgentConfig,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        // The fake catalog contains one AgentDelegation descriptor. Mirror the
+        // production catalog+semantic-role projection without giving arbitrary
+        // regular/custom names compatibility authority.
+        Ok(draft
+            .multiagent
+            .as_ref()
+            .is_some_and(awaken_agent_config::MultiagentConfig::has_delegation_target)
+            .then(|| "agent_run".to_string())
+            .into_iter()
+            .collect())
+    }
 }
 
 /// An in-memory stand-in for the host's `ConfigServiceDraftStore`: `put` overwrites by
@@ -672,16 +688,20 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
     // controlled patch replaces it; C4 a fresh draft declares MCP; C5 a historical
     // legacy permission owns an MCP binding without typed MCP policy; C6 an existing
     // draft already has typed MCP and client-executed policy; C7 that draft also
-    // carries a Runtime-only Agent override; C8 a canonical noncontrolled member is
-    // disabled but has execution configuration. Effects: E1 one Agent Toolset owns permission;
-    // E2 write/edit/bash are always_ask; E3 no preset marker is persisted; E4 direct
+    // carries a catalog-backed Agent-delegation override; C8 a canonical
+    // noncontrolled member is disabled but has execution configuration; C9
+    // retired/unknown overrides collide with a same-named client tool. Effects:
+    // E1 one Agent Toolset owns permission;
+    // E2 Bash/write/edit are enabled as authored and always_ask; E3 no preset
+    // marker is persisted; E4 direct
     // legacy authoring fails before the config write; E5 explicit replacement removes
     // the legacy section instead of combining two permission owners; E6 fresh MCP gets
     // one fail-closed default-ask Toolset; E7 unrepresentable legacy MCP fails with
     // no write; E8 existing typed MCP policy and client tool remain byte-identical;
-    // E9 the Runtime-only override remains byte-identical for the Runtime gate;
-    // E10 the disabled execution configuration remains byte-identical. A1's
-    // create and A3-A8's patch routes share `apply_permission_preset`, so both
+    // E9 the delegation override remains byte-identical for the Runtime gate;
+    // E10 the disabled execution configuration remains byte-identical; E11 C9
+    // is pruned and cannot authorize the client/dynamic collision. A1's
+    // create and A3-A9's patch routes share `apply_permission_preset`, so both
     // entry points project the same typed-policy effects and error boundary.
     //
     // Decision table:
@@ -692,8 +712,9 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
     // | A4   | no + MCP     | fresh controlled draft    | Agent ask + paired MCP ask |
     // | A5   | yes + MCP    | controlled preset patch   | migration_required, zero write |
     // | A6   | typed MCP    | controlled preset patch   | preserve MCP + client tool |
-    // | A7   | runtime-only | controlled preset patch   | preserve exact override |
+    // | A7   | catalog delegation + typed roster | controlled patch | preserve exact override |
     // | A8   | disabled configured canonical member     | preserve exact override |
+    // | A9   | retired/unknown + client name collision  | controlled patch | prune collision |
     let h = Harness::new();
     let controlled = h
         .tool(CREATE_DRAFT_TOOL)
@@ -719,6 +740,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
             "A1/E2 {name}"
         );
     }
+    assert!(policy.policy_for("bash").enabled, "A1/E2 Bash enabled");
     assert!(!stored.plugin_config.contains_key("permission"), "A1/E3");
     assert!(
         !serde_json::to_value(&stored)
@@ -884,7 +906,7 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
         )],
     };
     let client_tool = ToolDescriptor::client_executed(
-        "local_review",
+        "delete",
         "review in the local client",
         serde_json::json!({ "type": "object", "required": ["patch_id"] }),
     );
@@ -917,6 +939,8 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
             ToolPolicyOverride::new("read", ToolExecutionPolicy::default()),
             ToolPolicyOverride::new("write", ToolExecutionPolicy::default()),
             runtime_only.clone(),
+            ToolPolicyOverride::new("delete", ToolExecutionPolicy::default()),
+            ToolPolicyOverride::new("custom_dynamic", ToolExecutionPolicy::default()),
             disabled_web_fetch.clone(),
         ],
     };
@@ -929,6 +953,9 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
         mcp_servers: historical_mcp.mcp_servers.clone(),
         toolsets: vec![existing_agent, typed_mcp.clone()],
         client_tools: vec![client_tool.clone()],
+        multiagent: Some(awaken_agent_config::MultiagentConfig {
+            agents: vec![awaken_agent_config::MultiagentTarget::SelfReference],
+        }),
         ..Default::default()
     };
     typed_existing
@@ -974,6 +1001,13 @@ async fn assistant_authors_only_typed_controlled_permissions_and_never_legacy_pl
             .expect("A7 Runtime-only override"),
         &runtime_only,
         "A7/E9"
+    );
+    assert!(
+        controlled
+            .overrides
+            .iter()
+            .all(|entry| !matches!(entry.name.as_str(), "delete" | "custom_dynamic")),
+        "A7 retired and client/dynamic collisions are not compatibility authority"
     );
     assert_eq!(
         controlled

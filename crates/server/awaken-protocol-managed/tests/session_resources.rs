@@ -4848,20 +4848,19 @@ async fn persist_profiled_publication_source(
 }
 
 #[tokio::test]
-#[should_panic(expected = "Q1/E1 profiled create waited on the stalled physical realization")]
 async fn profiled_create_accepts_the_durable_root_without_waiting_for_realization() {
     // Profiled-create cause/effect graph: C1 the typed request and complete
     // preflight are valid; C2 the atomic Session root/receipt is absent or an
     // exact replay; C3 physical Runtime projection cannot complete. Effects:
     // E1 a new request returns the stable Session id after the complete root is
     // durable; E2 the root remains Preparing and the Runtime effect is still
-    // unentered. Exact receipt replay is already owned by the adjacent profiled
-    // creation/idempotency tests; this probe owns only the missing asynchronous
-    // product-route boundary. The sole lifecycle supervisor owns later retry.
+    // unentered; E3 exact replay returns the same operation identity without a
+    // second physical effect. The sole lifecycle supervisor owns later retry.
     //
     // | Rule | request | receipt | realization | Effect |
     // |---|---|---|---|---|
-    // | Q1 | valid | absent | stalled | E1+E2 |
+    // | Q1 | valid | absent | stalled | 202 + E1+E2 |
+    // | Q2 | valid | exact | stalled | 202 + E1+E2+E3 |
     // | Q3 | invalid preflight | absent | n/a | reject and no root (adjacent admission tests) |
     //
     // Constraint: the Session id/root is the asynchronous operation authority;
@@ -4889,7 +4888,7 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
 
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        call(&app, "POST", "/v1/awaken/sessions", Some(request)),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request.clone())),
     )
     .await;
 
@@ -4904,8 +4903,107 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
     let (status, body) = response.unwrap_or_else(|_| {
         panic!("Q1/E1 profiled create waited on the stalled physical realization")
     });
-    assert!(status.is_success(), "Q1/E1: {status} {body}");
+    assert_eq!(status, StatusCode::ACCEPTED, "Q1/E1: {status} {body}");
     assert_eq!(body["id"], "profiled-durable-accept", "Q1/E1");
+
+    let durable_before_replay = sessions.get("profiled-durable-accept").await.unwrap();
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request)),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("Q2/E3 exact receipt replay waited on realization"));
+    assert_eq!(replay.0, StatusCode::ACCEPTED, "Q2/E3: {}", replay.1);
+    assert_eq!(replay.1, body, "Q2/E3 same operation identity/projection");
+    assert_eq!(
+        sessions.get("profiled-durable-accept").await.unwrap(),
+        durable_before_replay,
+        "Q2/E3 replay does not mutate durable operation truth"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "Q2/E3");
+}
+
+#[tokio::test]
+async fn profiled_create_replays_activation_failed_root_without_restarting_effects() {
+    // Failed-replay cause/effect graph: C1 one atomic profiled-create receipt
+    // exists; C2 its Session root has reached ActivationFailed with a durable
+    // reason; C3 the private request fingerprint and owner are exact; C4 the
+    // target Runtime would stall if entered. Effects: E1 POST returns 202 with
+    // the same Session id; E2 failure state/reason remain byte-identical; E3 no
+    // Runtime preparation, replacement operation, or second durable mutation.
+    //
+    // | rule | receipt | owner/hash | lifecycle | effect |
+    // | F1 | failed root | exact | ActivationFailed | 202 + E1+E2+E3 |
+    // | F2 | failed root | mismatch | any | conflict, no effect (adjacent receipt tests) |
+    let request = json!({
+        "session_id": "profiled-failed-replay",
+        "mode": "work_unit",
+        "agent_id": "coder",
+        "metadata": { "case": "failed-replay" }
+    });
+
+    let seed_sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("seed Session repository"),
+    );
+    let seed_state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(seed_sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let seed_app = profiled_router(seed_state, "default");
+    let (status, body) = call(
+        &seed_app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "F1 seed: {body}");
+    let mut failed = seed_sessions
+        .get("profiled-failed-replay")
+        .await
+        .expect("seed Session root");
+    failed.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
+    failed.realization_progress.last_error = Some("sandbox realization failed".into());
+    failed.revision = Default::default();
+
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("target Session repository"),
+    );
+    let typed: awaken_protocol_awaken::ProfiledSessionCreate =
+        serde_json::from_value(request.clone()).expect("typed private request");
+    let receipt = awaken_session_contract::IdempotencyRecord {
+        key: "profiled:create:profiled-failed-replay".into(),
+        payload_hash: awaken_session_contract::stable_fingerprint(&typed),
+    };
+    sessions
+        .create("default", failed.clone(), receipt, Vec::new())
+        .await
+        .expect("seed failed root and atomic receipt");
+    let runtime = AcceptingFake::default();
+    runtime
+        .stall_projection_install
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state, "default");
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request)),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("F1 replay entered stalled physical realization"));
+    assert_eq!(replay.0, StatusCode::ACCEPTED, "F1/E1: {}", replay.1);
+    assert_eq!(replay.1["id"], "profiled-failed-replay", "F1/E1");
+    assert_eq!(
+        sessions.get("profiled-failed-replay").await.unwrap(),
+        failed,
+        "F1/E2 failure state/reason and operation root are retained"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "F1/E3");
 }
 
 #[tokio::test]
@@ -4954,7 +5052,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             Some(historical_create.clone()),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "B1 {replay}: {body}");
+        assert_eq!(status, StatusCode::ACCEPTED, "B1 {replay}: {body}");
     }
     let historical_binding = concat!(
         "profiled:profiled-historical-binding:repository:",
@@ -5049,7 +5147,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     let mut current_wire = legacy_wire.clone();
     current_wire["repositories"][0]["mount_path"] = json!("/workspace/repository");
     let (status, body) = call(&seed_app, "POST", "/v1/awaken/sessions", Some(current_wire)).await;
-    assert_eq!(status, StatusCode::OK, "H1 seed: {body}");
+    assert_eq!(status, StatusCode::ACCEPTED, "H1 seed: {body}");
     let mut historical = seed_sessions
         .get("profiled-legacy-path-replay")
         .await
@@ -5095,7 +5193,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     );
     let app = profiled_router(state, "default");
     let (status, replayed) = call(&app, "POST", "/v1/awaken/sessions", Some(legacy_wire)).await;
-    assert_eq!(status, StatusCode::OK, "H1/E1: {replayed}");
+    assert_eq!(status, StatusCode::ACCEPTED, "H1/E1: {replayed}");
     assert_eq!(
         sessions
             .get("profiled-legacy-path-replay")
@@ -5164,7 +5262,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
         Some(create_with_repository("profiled-publication")),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "P2 create: {created}");
+    assert_eq!(status, StatusCode::ACCEPTED, "P2 create: {created}");
     persist_profiled_publication_source(&sessions, "profiled-publication").await;
 
     let request = json!({
@@ -5246,7 +5344,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
         Some(create_with_repository("profiled-publication-wrong-binding")),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "P5 create: {created}");
+    assert_eq!(status, StatusCode::ACCEPTED, "P5 create: {created}");
     let (status, _) = call(
         &app,
         "POST",
@@ -5275,7 +5373,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "P1 create: {created}");
+    assert_eq!(status, StatusCode::ACCEPTED, "P1 create: {created}");
     let (status, released) = call(
         &app,
         "POST",

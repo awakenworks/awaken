@@ -15,7 +15,6 @@ awaken-runtime-contract.workspace = true
 awaken-run-ingress-contract = { workspace = true }
 awaken-session-contract.workspace = true
 awaken-runtime = { workspace = true }
-awaken-ext-builtin-tools = { workspace = true }
 # W3C traceparent capture (submit) + `wake.dispatch` span (worker) so a durably
 # dispatched run continues the admitting request's trace across the queue boundary.
 awaken-observability = { workspace = true }

@@ -374,9 +374,12 @@ extension package with independently enabled toolsets:
 | Toolset | Example ids | Ownership rule |
 |---|---|---|
 | `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep` | registers filesystem and shell tools that execute in-process; `web_fetch` and `web_search` each have one separately configured plugin owner |
-| `builtin-task-tools` | `cancel_task` | registers live task-control tools over the runtime control seam |
 | `builtin-delegation-tools` | `agent_run` | registers one delegation tool; target agent is an argument, not a generated tool id |
-| `builtin-coordination-tools` | `list_agents`, `send_message` | registers the one Thread-owned Managed Agent coordination surface; no generic Task duplicate exists |
+| `builtin-coordination-tools` | `list_agents`, `send_message` | the Managed primary replaces native delegation with this one Thread-owned roster/follow-up surface; Managed children receive neither family |
+
+There is no generic builtin Task command family. Cancellation, recovery, A2A/MCP
+Task operations, and generic async-tool control retain their existing typed
+owners instead of being duplicated as model commands.
 
 The delegation tool is deliberately unified. The runtime must not generate
 `agent_run_<agent_id>` descriptors. A resolved run may specialize the single
@@ -408,7 +411,7 @@ Examples include:
 | Tool id | Owner | Visibility rule |
 |---|---|---|
 | `admin_get_platform_capabilities` | Admin / Server | bound only to the admin assistant route |
-| `admin_create_agent_draft` | Admin / Server | creates an unpublished draft value only |
+| `admin_draft_agent` | Admin / Server | creates an unpublished draft value only |
 | `admin_validate_agent` | Admin / Server | runs server-side validation without granting publish authority |
 
 Admin tools are route- or service-bound by admin auth. They are hidden from

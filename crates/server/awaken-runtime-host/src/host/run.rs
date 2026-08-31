@@ -581,6 +581,7 @@ impl SharedHost {
         let input = match &ctx.skill_registry {
             Some(registry) => {
                 awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
+                    .map_err(HostError::internal)?
             }
             None => input,
         };

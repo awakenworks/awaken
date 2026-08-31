@@ -1009,7 +1009,8 @@ impl SharedHost {
                 if content_delivery
                     == crate::session_slot::ManagedContentDelivery::ManagedFilesystem
                 {
-                    let prompt = crate::skills::filesystem_skill_prompt(registry.as_ref());
+                    let prompt = crate::skills::filesystem_skill_prompt(registry.as_ref())
+                        .map_err(HostError::internal)?;
                     self.session_slots
                         .update(thread, |slot| slot.skill_prompt = prompt);
                 } else {

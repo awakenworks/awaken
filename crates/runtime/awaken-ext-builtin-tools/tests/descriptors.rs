@@ -1,55 +1,20 @@
-//! Drift guards tying the `Toolset::Hand` descriptors to the erased hand-tool
-//! implementations and the closed built-in catalog pairings.
+//! Placement and descriptor-kind drift guards for the closed builtin catalog.
 
-use awaken_ext_builtin_tools::{Toolset, all_hand_tools, builtin_tools, executable_hand_tools};
+use awaken_ext_builtin_tools::{Toolset, all_hand_tools, builtin_tools};
 use awaken_runtime_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
 
-/// The static `hand` toolset's model-visible descriptors and registered
-/// implementations must match exactly. The two Web capabilities belong only to
-/// their configured plugins, so neither may enter this catalog.
-#[test]
-fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
-    // Registry cause/effect rules: C1 every static hand descriptor -> E1 one
-    // static implementation; C2 every static implementation -> E2 one
-    // descriptor; C3 WebFetch/WebSearch -> E3 absent from both sets because
-    // their configured plugins are the single execution owners. Decision rules:
-    // R1=C1|C2 => exact set equality; R2=C3 => neither Web id is present.
-    let descriptor_ids: BTreeSet<String> = builtin_tools()
-        .into_iter()
-        .filter(|tool| tool.toolset() == Toolset::Hand)
-        .map(|tool| tool.into_descriptor().id)
-        .collect();
-
-    let implementation_ids: BTreeSet<String> = all_hand_tools()
-        .iter()
-        .map(|tool| tool.id().to_string())
-        .collect();
-
-    assert_eq!(
-        descriptor_ids.len(),
-        8,
-        "the static hand toolset is exactly the 8 sandbox descriptors"
-    );
-    assert_eq!(
-        descriptor_ids, implementation_ids,
-        "every hand descriptor has a matching erased implementation and vice versa"
-    );
-    assert!(!descriptor_ids.contains("web_fetch"), "R2/E3");
-    assert!(!descriptor_ids.contains("web_search"), "R2/E3");
-    assert_eq!(executable_hand_tools().len(), 8);
-}
-
 #[test]
 fn hand_tool_execution_targets_follow_the_placement_decision_table() {
-    // Cause/effect graph: C1 the eight filesystem/shell implementations enter
-    // through `executable_hand_tools`. E1 every member targets Sandbox and is
-    // therefore dispatched only by the SessionEnvironment-owned executor.
+    // Cause/effect graph: C1 the six filesystem/shell implementations enter
+    // through the canonical `all_hand_tools` registry. E1 every member targets
+    // Sandbox and is therefore dispatched only by the SessionEnvironment-owned
+    // executor.
     // Constraint K1: `all_hand_tools` is the closed canonical union; configured
     // `web_fetch` and `web_search` retain their separate plugin owners and are
     // not second members. Decision rule P1=C1=>E1. Coverage rationale: iterating
-    // the closed registry covers all eight static placements, while the preceding
-    // membership test guards the exact dependency-expanded domain.
+    // the closed registry covers all six static placements, while the canonical
+    // unit test in `lib.rs` guards the exact descriptor/executor membership.
     for tool in all_hand_tools() {
         assert_eq!(
             tool.execution_target(),
@@ -84,19 +49,56 @@ fn grep_descriptor_exposes_every_executor_input() {
 
 #[test]
 fn catalog_pairs_each_execution_family_with_its_only_legal_descriptor_kind() {
-    // Cause/effect graph: C1 Hand, C2 Task, and C3 Coordination are ordinary
-    // executable families; C4 Delegation enters the kernel-owned resolver path.
-    // Effects: E1 C1/C2/C3 => Regular; E2 C4 => AgentDelegation.
+    // Cause/effect graph: C1 Hand and C2 Coordination are ordinary executable
+    // families; C3 Delegation enters the kernel-owned resolver path.
+    // Effects: E1 C1/C2 => Regular; E2 C3 => AgentDelegation.
     // Constraints: `BuiltinTool` has no public constructor, mutable fields, or
     // serde input, so the decision table enumerates every constructible pairing.
-    // Decision rules: R1=C1|C2|C3=>E1; R2=C4=>E2.
+    // Decision rules: R1=C1|C2=>E1; R2=C3=>E2.
     for tool in builtin_tools() {
         let expected = match tool.toolset() {
-            Toolset::Hand | Toolset::Task | Toolset::Coordination => {
+            Toolset::Hand | Toolset::Coordination => {
                 awaken_runtime_contract::resolved::ToolKind::Regular
             }
             Toolset::Delegation => awaken_runtime_contract::resolved::ToolKind::AgentDelegation,
         };
         assert_eq!(tool.descriptor().kind, expected);
     }
+}
+
+#[test]
+fn builtin_catalog_is_the_exact_non_overlapping_command_surface() {
+    // Cause/effect graph: C1 native delegation uses `agent_run`; C2 Managed
+    // coordination uses `list_agents`/`send_to_agent`; C3 the abandoned Task
+    // model commands name overlapping ingress/control/recovery effects.
+    // Effects: E1 C1/C2 remain in the one closed catalog; E2 C3 and every
+    // Git/repository-specific command are absent because Bash is their sole owner.
+    //
+    // | Rule | command family | catalog effect |
+    // | R1 | native delegation | exactly `agent_run` |
+    // | R2 | Managed coordination | exactly list/send |
+    // | R3 | legacy Task, Git, repository, move/delete commands | none |
+    //
+    // This is a membership guard, not a string-only implementation test: the
+    // preceding exhaustive Toolset match also proves there is no Task family
+    // into which these ids could be registered.
+    let ids = builtin_tools()
+        .into_iter()
+        .map(|tool| tool.into_descriptor().id)
+        .collect::<BTreeSet<_>>();
+    let expected = [
+        "agent_run",
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "list_agents",
+        "read",
+        "send_to_agent",
+        "write",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    assert_eq!(ids, expected, "R1-R3/E1-E2");
 }

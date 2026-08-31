@@ -1,6 +1,6 @@
 import type {
   AgentConfig,
-  AgentToolsetMemberCap,
+  AgentToolsetCap,
   ContextPolicy,
   CredentialSource,
   InputBinding,
@@ -12,7 +12,6 @@ import type {
 import { useEffect, useState } from "react";
 import {
   controlledModificationMemberNames,
-  controlledModificationPatch,
   selectedAgentToolIds,
   withSelectedAgentTools,
 } from "../../lib/agent-toolsets";
@@ -45,7 +44,7 @@ export default function AgentBuilder({
   runtimes,
   tools,
   toolsets,
-  agentToolsetMembers,
+  agentToolset,
   plugins,
   credentials,
   resources,
@@ -54,6 +53,7 @@ export default function AgentBuilder({
   changed,
   onSectionChange,
   onPatch,
+  onApplyControlledModifications,
   onManageModels,
   onResourcesChange,
   onRetryResources,
@@ -67,7 +67,7 @@ export default function AgentBuilder({
   runtimes: RuntimeCap[];
   tools: Array<{ id: string; description: string }>;
   toolsets: ManagedToolsetCap[];
-  agentToolsetMembers: AgentToolsetMemberCap[];
+  agentToolset?: AgentToolsetCap;
   plugins: PluginCap[];
   credentials: CredentialSource[];
   resources: InputBinding[];
@@ -76,12 +76,14 @@ export default function AgentBuilder({
   changed: (path: string) => boolean;
   onSectionChange: (section: BuilderSection) => void;
   onPatch: (patch: Partial<AgentConfig>) => void;
+  onApplyControlledModifications: () => void;
   onManageModels: () => void;
   onResourcesChange: (inputs: InputBinding[]) => void;
   onRetryResources: () => void;
   onValidityChange: (valid: boolean) => void;
 }) {
   const app = useApp();
+  const agentToolsetMembers = agentToolset?.members ?? [];
   const [toolsValid, setToolsValid] = useState(true);
   const [integrationsValid, setIntegrationsValid] = useState(true);
   useEffect(() => {
@@ -285,23 +287,31 @@ export default function AgentBuilder({
                   .map((id) => ({ id })),
               ]}
               selected={selectedToolIds}
-              onChange={(value) => onPatch({
-                tools: withSelectedAgentTools(config.tools, value, agentToolsetMembers),
-              })}
+              onChange={(value) => {
+                if (!agentToolset) return;
+                onPatch({
+                  tools: withSelectedAgentTools(
+                    config.tools,
+                    value,
+                    agentToolset.members,
+                    agentToolset.default_config.permission_policy,
+                  ),
+                });
+              }}
               empty={app.t("No tools advertised.", "没有可用工具。")}
             />
           </div>
           <div className="field">
             <label>{app.t("Permission preset", "权限预设")}</label>
             <span className="mut">{app.t(
-              `Controlled modifications require approval for ${controlledMemberDescription}. This updates the typed Agent toolset directly.`,
-              `受控修改会要求批准 ${controlledMemberDescription}，并直接更新 typed Agent toolset。`,
+              `Controlled modifications are projected by the server from its typed ${controlledMemberDescription} authority when you save.`,
+              `保存时，服务端会依据 typed ${controlledMemberDescription} 权威投影受控修改策略。`,
             )}</span>
             <div>
               <Button
                 variant="ghost"
                 disabled={!controlledPresetAvailable}
-                onClick={() => onPatch(controlledModificationPatch(config, agentToolsetMembers))}
+                onClick={onApplyControlledModifications}
               >
                 {app.t("Apply controlled modifications", "应用受控修改")}
               </Button>

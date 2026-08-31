@@ -104,6 +104,7 @@ one bundle id per aggregate-safe scope.
 
 | Service owner | Bundle id / prefix | Business tables (indexes, triggers, and PostgreSQL sequences omitted) |
 |---|---|---|
+| Deployment assembly (CLI-private) | `awaken.installation_binding` / `awaken_installation` | `awaken_installation_binding`; one singleton binds the effective PostgreSQL target to `expected_platform_workspace_id` before any component bundle is opened |
 | Control | `iam.identity`, `iam.authz`, `iam.entitlement`, `iam.audit` / `iam` | `iam_accounts`, `iam_external_identities`, `iam_sessions`, `iam_login_flows`, `iam_api_tokens`, `iam_oauth_clients`, `iam_grants`, `iam_role_bindings`, `iam_resource_edges`, `iam_orgs`, `iam_groups`, `iam_roles`, `iam_fence`, `iam_authorization_profiles`, `iam_authorization_profile_heads`, `iam_workspace_org_edges`, `iam_plans`, `iam_subscriptions`, `iam_audit_events` |
 | Control | `awaken.catalog` / `catalog` | `catalog_provider`, `catalog_protocol_endpoint`, `catalog_offering`, `catalog_model_attributes` |
 | Control | `awaken.credential` / `credential` | `credential_source`, `credential_secret`, `credential_pool`, `credential_creation_intent` |
@@ -155,7 +156,15 @@ Schema execution is deterministic:
 
 ```text
 database migrate
-  -> select the role's immutable migration manifest
+  -> require the configured expected_platform_workspace_id for Server/PostgreSQL
+  -> enumerate and deduplicate every role-owned effective PostgreSQL target
+  -> read-only preflight every target before writing any target
+  -> exact binding: continue, including ordinary rollout migration retries
+  -> empty schema: fail with zero DDL unless the operator supplied both explicit
+     first-initialization flags and an audit reference; then bind as fresh_initialization
+  -> existing unbound schema: fail unless the operator supplied both explicit
+     legacy-adoption flags and an audit reference, then bind as legacy_adoption
+  -> select the role's immutable component migration manifest
   -> acquire only those component stores
   -> Coordinator additionally applies dispatch + worker-registry + commit bundles
   -> ledger lock + exact ledger-state read
@@ -164,6 +173,8 @@ database migrate
   -> partial/drift/unknown version: fail; never probe-and-skip an object
 
 server process start
+  -> read-only verify every role-owned PostgreSQL binding is exact
+  -> use that configured coordinate directly; do not mint a local-marker identity
   -> connect_existing
   -> verify exact ledger
   -> serve, or fail closed without DDL
@@ -183,6 +194,15 @@ rejected by the repository fitness check. Since this repository is still
 developers must recreate pre-change local databases. After the first stable
 release, an applied migration is immutable and every change appends a new
 version—never edits or renumbers history.
+
+The installation binding is infrastructure admission, not a second domain
+store. Session, Control, IAM, tenant, and component-ledger rows cannot substitute
+for it, and the local `platform-workspace-id` remains authoritative only for
+SQLite/embedded persistence. Doctor performs the same PostgreSQL check read-only.
+An empty, wrong target is therefore distinguishable from a fresh target only by
+the deployment's explicit expected id; an existing unbound target is never
+auto-adopted. All target preflights precede binding DDL, while a partial command
+may leave only exact singleton bindings that are safe to replay.
 
 ## Static Fact Publication
 
@@ -699,6 +719,12 @@ cite the rule they cover.
 | E26 | a product retries creation or attempts post-create completion | exact receipt preflight or concurrent `Replayed` returns current durable truth with no repeated effect; a mismatched payload or private profiled whole-manifest write fails without a parallel authoring path |
 | E27 | exact create replay names `ActivationFailed`, a tombstone, or corrupt receipt/identity state | return typed 409 for terminal occupation and typed internal failure for corruption; never resurrect, backfill, or execute external effects |
 | E28 | a product submits or retries one exact Run for an existing profiled Session | canonical Session admission preserves exact identities and requirements, returns one stable receipt, and projects committed truth through the existing Managed read surface |
+| E29 | Server or any role-owned PostgreSQL target has no `expected_platform_workspace_id` | reject before target acquisition, component DDL, listeners, or background services |
+| E30 | any target is empty and ordinary rollout migration carries no initialization authorization | leave every target unchanged and reject; a lost/replaced/incorrect empty database can never be rebound or rebuilt as the configured Workspace |
+| E31 | any target contains existing objects without an installation binding | leave every target unchanged and reject by default; only the explicit adoption switch plus a nonempty operator reference records `legacy_adoption` |
+| E32 | Serve or Doctor observes a missing, mismatched, partial, drifted, or rowless installation binding | fail read-only with the affected role-owned target labels; never infer identity from Session, Control, IAM, tenant, component-ledger, or local-marker state |
+| E33 | every empty target has explicit `--initialize-installation --initialization-reference <REF>`, and every legacy target has its separate explicit adoption pair | after all-target preflight, record `fresh_initialization` or `legacy_adoption` plus the exact operator reference in the single installation-binding row, then run component manifests |
+| E34 | a later ordinary migration sees the exact Workspace binding | verify the row and scoped ledger, apply only pending component versions idempotently, and never require or retain first-install authority |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the

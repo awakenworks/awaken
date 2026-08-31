@@ -44,7 +44,7 @@ use awaken_runtime_contract::tool::{
 };
 use serde::{Deserialize, Serialize};
 
-/// The five management tool ids. They are namespaced `admin_*` and are only ever
+/// The six management tool ids. They are namespaced `admin_*` and are only ever
 /// nameable in the reserved scope (the fence is the scope-keyed catalog projection,
 /// ADR-0052 D3 — enforced in the host, not here).
 pub const CAPABILITIES_TOOL: &str = "admin_get_platform_capabilities";
@@ -80,7 +80,7 @@ pub fn admin_tool_ids() -> Vec<String> {
 }
 
 /// The seed [`AgentConfig`] for the management assistant (ADR-0052 D1/D3/D4): an
-/// **ordinary** config — instructions + the five admin tool ids + an `Auto` model
+/// **ordinary** config — instructions + the six admin tool ids + an `Auto` model
 /// binding — with the native backend (no sandbox). The host publishes it into the
 /// reserved scope through the ordinary publish path, so it becomes a compiled,
 /// content-addressed `ExecutableAgentSnapshot` like any agent (no builder bypass).
@@ -217,6 +217,16 @@ pub trait ResourceInventory: Send + Sync {
 pub trait DraftValidator: Send + Sync {
     /// `Ok(())` if the draft compiles; `Err(message)` with the compile error.
     async fn validate(&self, draft: &AgentConfig) -> Result<(), String>;
+
+    /// Runtime-only Agent override ids proven by the same scoped catalog and
+    /// semantic-role inputs used by the compile dry-run. The default is empty
+    /// for validators that expose no catalog authority.
+    async fn runtime_agent_override_ids(
+        &self,
+        _draft: &AgentConfig,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        Ok(std::collections::BTreeSet::new())
+    }
 }
 
 /// Neutral assistant-tool DTO for one Agent input. The host ACL maps this leaf
@@ -339,9 +349,9 @@ pub struct PluginInfo {
     pub config_schema: Option<serde_json::Value>,
 }
 
-// ---- The five descriptors --------------------------------------------------------
+// ---- The six descriptors ---------------------------------------------------------
 
-/// The five management tool descriptors (D3). These are handed to the host's
+/// The six management tool descriptors (D3). These are handed to the host's
 /// scope-keyed catalog so they are nameable **only** in the reserved scope; a config
 /// in any other scope that names one hits `UnknownTool` at compile (fail-closed).
 #[must_use]
@@ -1043,7 +1053,7 @@ struct DraftArgs {
     #[serde(default)]
     tool_discovery: awaken_runtime_contract::resolved::ToolDiscoverySettings,
     #[serde(default)]
-    permission_preset: Option<PermissionPreset>,
+    permission_preset: Option<awaken_session_contract::AgentPermissionPreset>,
     #[serde(default)]
     plugin_config: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -1066,126 +1076,31 @@ struct DraftAgent {
     audit: Arc<dyn AuditSink>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum PermissionPreset {
-    ControlledModifications,
-}
-
 fn ensure_typed_mcp_policies(config: &mut AgentConfig) -> Result<(), String> {
-    use awaken_runtime_contract::agent_bindings::{
-        ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
-    };
-
-    let typed_servers = config
-        .toolsets
-        .iter()
-        .filter_map(|toolset| match &toolset.source {
-            ToolsetSource::Mcp { server_name } => Some(server_name.as_str()),
-            ToolsetSource::Agent => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    let missing = config
-        .mcp_servers
-        .iter()
-        .filter(|server| !typed_servers.contains(server.name.as_str()))
-        .map(|server| server.name.clone())
-        .collect::<Vec<_>>();
-    if config.plugin_config.contains_key("permission") && !missing.is_empty() {
-        return Err(format!(
-            "permission migration_required: MCP servers {missing:?} have no typed MCP policy; historical plugin_config.permission semantics cannot be inferred"
-        ));
-    }
-    for server_name in missing {
-        config.toolsets.push(ToolsetPolicy {
-            source: ToolsetSource::Mcp { server_name },
-            default: ToolExecutionPolicy {
-                enabled: true,
-                permission: ToolPermissionRequirement::AlwaysAsk,
-            },
-            overrides: Vec::new(),
-        });
-    }
-    Ok(())
+    awaken_session_contract::ensure_typed_mcp_toolset_policies(
+        &mut config.toolsets,
+        &config.mcp_servers,
+        config.plugin_config.contains_key("permission"),
+    )
 }
 
-fn apply_permission_preset(
+async fn apply_permission_preset(
     config: &mut AgentConfig,
-    preset: PermissionPreset,
+    preset: awaken_session_contract::AgentPermissionPreset,
+    validator: &dyn DraftValidator,
 ) -> Result<(), String> {
-    use awaken_runtime_contract::agent_bindings::{
-        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
-        ToolsetSource,
-    };
-
-    ensure_typed_mcp_policies(config)?;
-    let existing = config
-        .toolsets
-        .iter()
-        .find(|toolset| toolset.source == ToolsetSource::Agent)
-        .cloned();
-    let selected_exact = config
-        .tool_ids
-        .iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut overrides = Vec::new();
-    for name in awaken_session_contract::agent_toolset_members() {
-        let existing_override = existing
-            .as_ref()
-            .and_then(|toolset| toolset.overrides.iter().find(|entry| entry.name == name));
-        let existing_policy = existing.as_ref().map(|toolset| toolset.policy_for(name));
-        let enabled =
-            selected_exact.contains(name) || existing_policy.is_some_and(|policy| policy.enabled);
-        let controlled_member = awaken_session_contract::is_controlled_modification_member(name);
-        if !controlled_member && let Some(existing_override) = existing_override {
-            overrides.push(existing_override.clone());
-            continue;
-        }
-        if !enabled && !controlled_member {
-            continue;
-        }
-        let permission = match preset {
-            PermissionPreset::ControlledModifications if controlled_member => {
-                ToolPermissionRequirement::AlwaysAsk
-            }
-            PermissionPreset::ControlledModifications => existing_policy
-                .map(|policy| policy.permission)
-                .unwrap_or(ToolPermissionRequirement::AlwaysAllow),
-        };
-        overrides.push(ToolPolicyOverride::with_optional_configuration(
-            name,
-            ToolExecutionPolicy {
-                enabled,
-                permission,
-            },
-            existing
-                .as_ref()
-                .and_then(|toolset| toolset.configuration_for(name))
-                .cloned(),
-        ));
-    }
-    config
-        .tool_ids
-        .retain(|name| !awaken_session_contract::is_agent_toolset_member(name));
-    let mut replacement = vec![ToolsetPolicy {
-        source: ToolsetSource::Agent,
-        default: ToolExecutionPolicy {
-            enabled: false,
-            permission: ToolPermissionRequirement::AlwaysAllow,
+    let allowed_runtime_override_ids = validator.runtime_agent_override_ids(config).await?;
+    awaken_session_contract::apply_agent_permission_preset(
+        awaken_session_contract::AgentPermissionPresetTarget {
+            tool_ids: &mut config.tool_ids,
+            toolsets: &mut config.toolsets,
+            mcp_servers: &config.mcp_servers,
+            plugin_ids: &mut config.plugin_ids,
+            plugin_config: &mut config.plugin_config,
+            allowed_runtime_override_ids: &allowed_runtime_override_ids,
         },
-        overrides,
-    }];
-    awaken_session_contract::preserve_runtime_agent_overrides(&config.toolsets, &mut replacement);
-    config
-        .toolsets
-        .retain(|toolset| toolset.source != ToolsetSource::Agent);
-    config
-        .toolsets
-        .insert(0, replacement.pop().expect("one Agent replacement"));
-    config.plugin_config.remove("permission");
-    config.plugin_ids.retain(|id| id != "permission");
-    Ok(())
+        preset,
+    )
 }
 
 #[async_trait]
@@ -1261,7 +1176,8 @@ impl RawTool for DraftAgent {
             compaction: None,
         };
         if let Some(preset) = args.permission_preset
-            && let Err(error) = apply_permission_preset(&mut config, preset)
+            && let Err(error) =
+                apply_permission_preset(&mut config, preset, self.validator.as_ref()).await
         {
             return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
         }
@@ -1314,7 +1230,7 @@ struct PatchFields {
     #[serde(default)]
     tool_discovery: Option<awaken_runtime_contract::resolved::ToolDiscoverySettings>,
     #[serde(default)]
-    permission_preset: Option<PermissionPreset>,
+    permission_preset: Option<awaken_session_contract::AgentPermissionPreset>,
     #[serde(default)]
     plugin_config: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
@@ -1447,7 +1363,8 @@ impl RawTool for PatchAgent {
         // Re-derive plugin_ids from the merged plugin_config so the two never drift.
         config.plugin_ids = plugin_ids_of(&config.plugin_config);
         if let Some(preset) = patch.permission_preset
-            && let Err(error) = apply_permission_preset(&mut config, preset)
+            && let Err(error) =
+                apply_permission_preset(&mut config, preset, self.validator.as_ref()).await
         {
             return error_or_committed(call.call_id, &self.store, &audit_event, error).await;
         }

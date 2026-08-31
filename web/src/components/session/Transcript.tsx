@@ -169,19 +169,22 @@ export function TranscriptView({
 }: TranscriptViewProps) {
   const app = useApp();
   const {
-    admission,
     log,
     results,
-    pendingIds,
-    running,
+    presentation,
     freshCount,
     applyPending,
     send,
-    sendPending,
     sendError,
     loadError,
     projectionError,
   } = sessionLog;
+  const {
+    active,
+    admission,
+    pendingToolIds: pendingIds,
+    sending,
+  } = presentation;
   const [draft, setDraft] = useState("");
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const handledTools = useRef(new Set<string>());
@@ -192,9 +195,9 @@ export function TranscriptView({
   const agentMsgCount = log.filter((e) => e.type === "agent.message").length;
   const prevMsgCount = useRef(agentMsgCount);
   useEffect(() => {
-    onRunStateChange?.(running || sendPending);
+    onRunStateChange?.(active);
     return () => onRunStateChange?.(false);
-  }, [onRunStateChange, running, sendPending]);
+  }, [active, onRunStateChange]);
   useEffect(() => {
     if (sentAt.current != null && agentMsgCount > prevMsgCount.current) {
       onLatency?.(Date.now() - sentAt.current);
@@ -241,20 +244,20 @@ export function TranscriptView({
   };
 
   useEffect(() => {
-    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sendPending || !admission.canSendMessage) return;
+    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sending || !admission.canSendMessage) return;
     handledAutoMessage.current = autoMessage.id;
     sendText(autoMessage.text);
   // `sendText` intentionally uses the current session/context. An auto-message id is
   // the idempotency boundary; changing render-local callback identities must not resend.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [admission.canSendMessage, autoMessage?.id, sendPending]);
+  }, [admission.canSendMessage, autoMessage?.id, sending]);
 
   useEffect(() => {
-    if (!admission.canSendMessage || sendPending) return;
+    if (!admission.canSendMessage || sending) return;
     if (!hadLocalActivity.current) return;
     hadLocalActivity.current = false;
     onRunSettled?.();
-  }, [admission.canSendMessage, onRunSettled, sendPending]);
+  }, [admission.canSendMessage, onRunSettled, sending]);
 
   const confirm = (ev: SessionEvent, allow: boolean, note: string) => {
     if (!admission.canResolveTools) return;
@@ -277,7 +280,7 @@ export function TranscriptView({
   };
 
   const submit = () => {
-    if (!draft.trim() || sendPending || !admission.canSendMessage) return;
+    if (!draft.trim() || sending || !admission.canSendMessage) return;
     // Preserve the operator's exact multiline text (indentation and trailing newline
     // can be meaningful in code/prompts); trimming is only the emptiness check above.
     const userText = draft;
@@ -305,9 +308,9 @@ export function TranscriptView({
         viewportClassName="transcript-chat-list__viewport"
         ariaLabel={app.t("Session conversation", "Session 对话")}
         jumpLabel={app.t("Latest", "回到底部")}
-        busy={running || sendPending}
+        busy={active}
       >
-        {log.length === 0 && !pendingMessage && !running && !sendPending && (
+        {log.length === 0 && !pendingMessage && !active && (
           <div className="transcript-empty-state">
             <strong>{app.t("Start with the result you need", "先说明你需要的结果")}</strong>
             <span>{app.t(
@@ -408,13 +411,13 @@ export function TranscriptView({
             <span className={sendError ? "err" : "mut"} style={{ fontSize: 10.5 }}>
               {sendError
                 ? app.t("send failed — message retained", "发送失败——消息已保留")
-                : sendPending || running
+                : sending || active
                   ? app.t("sending…", "发送中…")
                   : app.t("sent ✓", "已发送 ✓")}
             </span>
           </ChatMessage>
         )}
-        {(running || sendPending) && pendingIds.size === 0 && (
+        {active && pendingIds.size === 0 && (
           <ChatThinking
             className="agent-working"
             label={app.t("Agent is working…", "Agent 正在处理…")}
@@ -429,15 +432,15 @@ export function TranscriptView({
           value={draft}
           onChange={setDraft}
           onSubmit={submit}
-          busy={sendPending || !admission.canSendMessage}
+          busy={sending || !admission.canSendMessage}
           ariaLabel={app.t("Message to agent", "给 Agent 的消息")}
           placeholder={pendingIds.size > 0
             ? app.t("Resolve the pending tool request before sending a message.", "请先处理待审批工具，再发送消息。")
             : !admission.canSendMessage
               ? app.t("Session input is not available in the current state.", "当前状态下无法向 Session 发送输入。")
               : placeholder ?? app.t("Message…", "输入消息…")}
-          sendLabel={sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
-          sendIcon={<span>{sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}</span>}
+          sendLabel={sending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
+          sendIcon={<span>{sending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}</span>}
           hint={app.t(
             "Enter to send · Shift+Enter for a new line · State the goal; tools and skills handle the details.",
             "Enter 发送 · Shift+Enter 换行 · 只需说明目标，细节交给工具和 Skill。",

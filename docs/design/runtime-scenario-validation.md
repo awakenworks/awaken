@@ -47,7 +47,7 @@ Use this rule:
 | multi-agent delegation behavior | yes | this document, `RS-MA-*` |
 | internal or external message delivery behavior | yes | this document, `RS-MSG-*` |
 | scheduled/deferred work, resume, wake, retry, or recovery | yes | this document, `RS-SCH-*` or `RS-REC-*` |
-| builtin tool contribution such as `agent_run` or `send_message` | yes when it changes agent-visible behavior or runtime effects | this document plus builtin tool tests |
+| builtin tool contribution such as `agent_run` or Managed `send_message` | yes when it changes agent-visible behavior or runtime effects | this document plus builtin tool tests |
 | arch hook or packaging rule only | no GWT; use enforcement docs and hook tests | [packaging-enforcement-matrix.md](packaging-enforcement-matrix.md) |
 | UI/protocol projection only | only if it changes runtime-visible semantics | protocol/product owner |
 
@@ -84,7 +84,7 @@ crates/awaken-runtime/tests/
 crates/awaken-ext-builtin-tools/tests/
   scenarios/
     delegation_tool.rs
-    task_tools.rs
+    coordination_tools.rs
   support/
 
 crates/awaken-runtime-contract/tests/
@@ -96,9 +96,10 @@ resume validation, permission/capability gates, dispatch handoff, idempotency,
 append fences, and recovery after lost wake or crash points.
 
 `awaken-ext-builtin-tools` scenario tests own concrete first-party tool
-contributions: `agent_run`, `send_message`, cancellation, and recovery tools.
+contributions: native `agent_run` and Managed `list_agents`/`send_message`.
 Those tests must prove tools produce runtime effects through registered seams and
-never mutate runtime state directly.
+never mutate runtime state directly. The closed-catalog tests also prove that no
+parallel generic sender, cancellation, or recovery command family can re-enter.
 
 Contract-crate tests own stable wire shapes, serde, descriptor fingerprints,
 capability values, command/result envelopes, and compatibility fixtures.
@@ -169,7 +170,7 @@ tests may reuse the same scenario ids later.
 | RS-EXT-002 | unselected builtin extension | `awaken-ext-builtin-tools` is installed but not selected for the run | resolution builds model-visible tools | builtin descriptors and hooks are absent, so agent behavior is unchanged |
 | RS-EXT-003 | model capability fails closed | a resolved run requires model-serving support for a tool, continuation, decision, or modality feature | the selected `BackendProfile` does not advertise that feature | execution fails before runtime starts rather than silently degrading behavior |
 | RS-TOOL-001 | builtin tool ids live outside core | runtime core is built without `awaken-ext-builtin-tools` selected | resolution builds model-visible descriptors | concrete builtin tool ids such as `bash`, `send_message`, and `agent_run` are absent; core contributes only neutral tool mechanisms |
-| RS-TOOL-002 | one Agent-message tool owner | the builtin catalog includes Task and Coordination toolsets | a Managed Agent profile resolves its descriptors | exactly one `send_message` descriptor exists, owned by Coordination; Task contributes no competing sender or recovery surface |
+| RS-TOOL-002 | one Agent-message tool owner | the closed builtin catalog and Managed/native projections are assembled | descriptors and executors are selected | native exposes `agent_run`; a Managed primary exposes exactly `list_agents`/`send_message`, while a Managed child exposes neither family; no generic Task sender or recovery command competes with Coordination |
 | RS-PLG-001 | hook cannot bypass commit | a selected plugin hook wants to mutate runtime state or schedule work | the hook runs during a runtime phase | it returns `StateCommand` or effects for validation/staging; it cannot write durable state or dispatch work directly |
 | RS-PLG-002 | installed plugin is inert until selected | a plugin package is installed but absent from the resolved run config | runtime resolves hooks, tools, state keys, and action kinds | the plugin contributes no descriptors, hooks, state keys, scheduled-action kinds, or behavior |
 | RS-MEM-001 | recall uses current Run input | a Thread has historical User messages and a new Run input | Memory Recall builds its query | only the current Run input drives selection and recalled messages are request-only |

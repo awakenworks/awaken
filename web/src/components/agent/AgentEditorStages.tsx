@@ -1,6 +1,6 @@
 import type {
   AgentConfig,
-  AgentToolsetMemberCap,
+  AgentToolsetCap,
   CredentialSource,
   InputBinding,
   ManagedToolsetCap,
@@ -34,11 +34,11 @@ interface Props {
   runtimes: RuntimeCap[];
   tools: ToolCap[];
   toolsets: ManagedToolsetCap[];
-  agentToolsetMembers: AgentToolsetMemberCap[];
   plugins: PluginCap[];
   credentials: CredentialSource[];
   changed: (path: string) => boolean;
   onPatch: (value: Partial<AgentConfig>) => void;
+  onApplyControlledModifications: () => void;
   onRawChange: (value: AgentConfig) => void;
   onManageModels: () => void;
   onReviewRun: (environmentId: string, task: string) => void;
@@ -52,6 +52,9 @@ interface Props {
 }
 
 export default function AgentEditorStages(props: Props) {
+  const agentToolset = props.toolsets.find(
+    (toolset): toolset is AgentToolsetCap => toolset.type === "agent_toolset_20260401",
+  );
   if (props.stage === "quickstart") {
     return (
       <AgentQuickstart
@@ -60,7 +63,7 @@ export default function AgentEditorStages(props: Props) {
         allModels={props.allModels}
         runtimes={props.runtimes}
         availableTools={props.tools.map((tool) => tool.id)}
-        agentToolsetMembers={props.agentToolsetMembers}
+        agentToolset={agentToolset}
         availablePlugins={props.plugins.map((plugin) => plugin.id)}
         canRun={props.canRun}
         idEditable={props.isNew}
@@ -83,7 +86,7 @@ export default function AgentEditorStages(props: Props) {
         runtimes={props.runtimes}
         tools={props.tools}
         toolsets={props.toolsets}
-        agentToolsetMembers={props.agentToolsetMembers}
+        agentToolset={agentToolset}
         plugins={props.plugins}
         credentials={props.credentials}
         resources={props.resources}
@@ -92,6 +95,7 @@ export default function AgentEditorStages(props: Props) {
         changed={props.changed}
         onSectionChange={props.onBuilderSectionChange}
         onPatch={props.onPatch}
+        onApplyControlledModifications={props.onApplyControlledModifications}
         onManageModels={props.onManageModels}
         onResourcesChange={props.onResourcesChange}
         onRetryResources={props.onRetryResources}

@@ -18,11 +18,11 @@ use crate::spec::{SkillEnvironment, SkillProvenance, SkillSpec, parse_skill_md};
 #[async_trait]
 pub trait SkillRegistry: Send + Sync {
     /// Look up one skill by its id.
-    fn get(&self, id: &str) -> Option<SkillSpec>;
+    fn get(&self, id: &str) -> Result<Option<SkillSpec>, String>;
 
     /// Every skill, in a stable order. The tool filters to model-invocable ones
     /// when it renders the catalog.
-    fn list(&self) -> Vec<SkillSpec>;
+    fn list(&self) -> Result<Vec<SkillSpec>, String>;
 
     /// Resolve the instruction body for one activation. Static/file registries
     /// return their stored spec; remote registries can fetch the body lazily.
@@ -31,7 +31,7 @@ pub trait SkillRegistry: Send + Sync {
         id: &str,
         _arguments: Option<Value>,
     ) -> Result<Option<SkillSpec>, String> {
-        Ok(self.get(id))
+        self.get(id)
     }
 }
 
@@ -49,7 +49,7 @@ pub struct SkillFile {
 /// Where skill files come from. Scanned **live** on each registry query, so a
 /// skill the agent authored this run is discovered (ADR-0036 D6/D8).
 pub trait SkillSource: Send + Sync {
-    fn scan(&self) -> Vec<SkillFile>;
+    fn scan(&self) -> Result<Vec<SkillFile>, String>;
 }
 
 /// A registry backed by a [`SkillSource`]: parses each scanned `SKILL.md` into a
@@ -68,13 +68,14 @@ impl SourceSkillRegistry {
 
 #[async_trait]
 impl SkillRegistry for SourceSkillRegistry {
-    fn get(&self, id: &str) -> Option<SkillSpec> {
-        self.list().into_iter().find(|s| s.id == id)
+    fn get(&self, id: &str) -> Result<Option<SkillSpec>, String> {
+        Ok(self.list()?.into_iter().find(|s| s.id == id))
     }
 
-    fn list(&self) -> Vec<SkillSpec> {
-        self.source
-            .scan()
+    fn list(&self) -> Result<Vec<SkillSpec>, String> {
+        Ok(self
+            .source
+            .scan()?
             .into_iter()
             .map(|file| {
                 let mut spec = parse_skill_md(file.id, &file.content);
@@ -85,7 +86,7 @@ impl SkillRegistry for SourceSkillRegistry {
                 spec.provenance = self.provenance;
                 spec
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -104,21 +105,26 @@ impl CompositeSkillRegistry {
 
 #[async_trait]
 impl SkillRegistry for CompositeSkillRegistry {
-    fn get(&self, id: &str) -> Option<SkillSpec> {
-        self.registries.iter().find_map(|r| r.get(id))
+    fn get(&self, id: &str) -> Result<Option<SkillSpec>, String> {
+        for registry in &self.registries {
+            if let Some(skill) = registry.get(id)? {
+                return Ok(Some(skill));
+            }
+        }
+        Ok(None)
     }
 
-    fn list(&self) -> Vec<SkillSpec> {
+    fn list(&self) -> Result<Vec<SkillSpec>, String> {
         let mut seen = std::collections::BTreeSet::new();
         let mut out = Vec::new();
         for registry in &self.registries {
-            for spec in registry.list() {
+            for spec in registry.list()? {
                 if seen.insert(spec.id.clone()) {
                     out.push(spec);
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     async fn resolve(
@@ -127,7 +133,7 @@ impl SkillRegistry for CompositeSkillRegistry {
         arguments: Option<Value>,
     ) -> Result<Option<SkillSpec>, String> {
         for registry in &self.registries {
-            if registry.get(id).is_some() {
+            if registry.get(id)?.is_some() {
                 return registry.resolve(id, arguments).await;
             }
         }
@@ -171,12 +177,12 @@ impl FixedSkillRegistry {
 
 #[async_trait]
 impl SkillRegistry for FixedSkillRegistry {
-    fn get(&self, id: &str) -> Option<SkillSpec> {
-        self.skills.get(id).cloned()
+    fn get(&self, id: &str) -> Result<Option<SkillSpec>, String> {
+        Ok(self.skills.get(id).cloned())
     }
 
-    fn list(&self) -> Vec<SkillSpec> {
-        self.skills.values().cloned().collect()
+    fn list(&self) -> Result<Vec<SkillSpec>, String> {
+        Ok(self.skills.values().cloned().collect())
     }
 }
 
@@ -194,16 +200,16 @@ mod tests {
             SkillSpec::new("b", "B", "second", "body-b"),
             SkillSpec::new("a", "A", "first", "body-a"),
         ]);
-        let ids: Vec<_> = registry.list().into_iter().map(|s| s.id).collect();
+        let ids: Vec<_> = registry.list().unwrap().into_iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["a", "b"]);
-        assert_eq!(registry.get("a").unwrap().body, "body-a");
-        assert!(registry.get("missing").is_none());
+        assert_eq!(registry.get("a").unwrap().unwrap().body, "body-a");
+        assert!(registry.get("missing").unwrap().is_none());
     }
 
     struct FakeSource(Vec<SkillFile>);
     impl SkillSource for FakeSource {
-        fn scan(&self) -> Vec<SkillFile> {
-            self.0.clone()
+        fn scan(&self) -> Result<Vec<SkillFile>, String> {
+            Ok(self.0.clone())
         }
     }
 
@@ -215,7 +221,7 @@ mod tests {
             dir: Some("skills/deploy".into()),
         }]));
         let reg = SourceSkillRegistry::new(source, SkillProvenance::AgentCreated);
-        let s = reg.get("deploy").unwrap();
+        let s = reg.get("deploy").unwrap().unwrap();
         assert_eq!(s.description, "ship it");
         assert_eq!(s.provenance, SkillProvenance::AgentCreated);
         assert_eq!(s.dir.as_deref(), Some("skills/deploy"));
@@ -246,8 +252,13 @@ mod tests {
         ));
         let composite = CompositeSkillRegistry::new(vec![delivered, authored]);
         // delivered shadows the agent-created dup.
-        assert_eq!(composite.get("dup").unwrap().name, "Delivered");
-        let ids: Vec<_> = composite.list().into_iter().map(|s| s.id).collect();
+        assert_eq!(composite.get("dup").unwrap().unwrap().name, "Delivered");
+        let ids: Vec<_> = composite
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
         assert_eq!(ids, vec!["dup", "extra"]);
     }
 
@@ -257,8 +268,8 @@ mod tests {
             SkillSpec::new("a", "A", "old", "old-body"),
             SkillSpec::new("a", "A", "new", "new-body"),
         ]);
-        assert_eq!(registry.list().len(), 1);
-        assert_eq!(registry.get("a").unwrap().body, "new-body");
+        assert_eq!(registry.list().unwrap().len(), 1);
+        assert_eq!(registry.get("a").unwrap().unwrap().body, "new-body");
     }
 
     // SECURITY (ADR-0036 D6): provenance is derived from the trust root a skill was
@@ -276,7 +287,7 @@ mod tests {
             dir: None,
         }]));
         let reg = SourceSkillRegistry::new(source, SkillProvenance::AgentCreated);
-        let s = reg.get("sneaky").unwrap();
+        let s = reg.get("sneaky").unwrap().unwrap();
         assert_eq!(
             s.provenance,
             SkillProvenance::AgentCreated,
@@ -285,6 +296,7 @@ mod tests {
         // The stamp holds through `list` too (the catalog path).
         assert!(
             reg.list()
+                .unwrap()
                 .iter()
                 .all(|s| s.provenance == SkillProvenance::AgentCreated)
         );
@@ -307,8 +319,8 @@ mod tests {
         }
     }
     impl SkillSource for MutableSource {
-        fn scan(&self) -> Vec<SkillFile> {
-            self.0.lock().unwrap().clone()
+        fn scan(&self) -> Result<Vec<SkillFile>, String> {
+            Ok(self.0.lock().unwrap().clone())
         }
     }
 
@@ -317,24 +329,54 @@ mod tests {
         let source = Arc::new(MutableSource::new());
         let reg = SourceSkillRegistry::new(source.clone(), SkillProvenance::AgentCreated);
         // Nothing authored yet.
-        assert!(reg.list().is_empty());
-        assert!(reg.get("fresh").is_none());
+        assert!(reg.list().unwrap().is_empty());
+        assert!(reg.get("fresh").unwrap().is_none());
 
         // The agent authors a skill this run; a *re-scan* (no registry rebuild)
         // must surface it.
         source.author("fresh", "---\ndescription: just written\n---\nsteps");
-        let listed = reg.list();
+        let listed = reg.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "fresh");
         let got = reg
             .get("fresh")
+            .unwrap()
             .expect("authored-this-run skill is discovered");
         assert_eq!(got.description, "just written");
         assert_eq!(got.provenance, SkillProvenance::AgentCreated);
 
         // A second authored skill shows up on the next query as well.
         source.author("second", "body only");
-        let ids: Vec<_> = reg.list().into_iter().map(|s| s.id).collect();
+        let ids: Vec<_> = reg.list().unwrap().into_iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["fresh", "second"]);
+    }
+
+    struct FailingSource;
+
+    impl SkillSource for FailingSource {
+        fn scan(&self) -> Result<Vec<SkillFile>, String> {
+            Err("skill source unavailable".into())
+        }
+    }
+
+    #[test]
+    fn source_registry_propagates_scan_failure_instead_of_publishing_empty() {
+        /* Cause/effect decision table: SR1 source scan succeeds => the parsed
+         * snapshot is returned (covered by the live-source test); SR2 source
+         * scan fails => both lookup and catalog fail with the source diagnostic,
+         * never `None`/empty. This is the one fallible registry seam used by
+         * direct discovery, slash expansion, and semantic Skill tools. */
+        let registry =
+            SourceSkillRegistry::new(Arc::new(FailingSource), SkillProvenance::AgentCreated);
+        assert_eq!(
+            registry.list().unwrap_err(),
+            "skill source unavailable",
+            "SR2"
+        );
+        assert_eq!(
+            registry.get("missing").unwrap_err(),
+            "skill source unavailable",
+            "SR2"
+        );
     }
 }

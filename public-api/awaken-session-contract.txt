@@ -163,6 +163,14 @@ impl awaken_session_contract::AdmittedSessionRun
 pub fn awaken_session_contract::AdmittedSessionRun::delivery(&self) -> core::option::Option<&awaken_session_contract::SessionRunDelivery>
 pub fn awaken_session_contract::AdmittedSessionRun::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_session_contract::AdmittedSessionRun::session_id(&self) -> &str
+pub enum awaken_session_contract::AgentPermissionPreset
+pub awaken_session_contract::AgentPermissionPreset::ControlledModifications
+pub struct awaken_session_contract::AgentPermissionPresetTarget<'a>
+pub awaken_session_contract::AgentPermissionPresetTarget::mcp_servers: &'a [awaken_runtime_contract::agent_bindings::AgentMcpServerBinding]
+pub awaken_session_contract::AgentPermissionPresetTarget::plugin_config: &'a mut alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+pub awaken_session_contract::AgentPermissionPresetTarget::plugin_ids: &'a mut alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::AgentPermissionPresetTarget::tool_ids: &'a mut alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::AgentPermissionPresetTarget::toolsets: &'a mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub enum awaken_session_contract::AgentTool
 pub awaken_session_contract::AgentTool::AgentToolset20260401
 pub awaken_session_contract::AgentTool::AgentToolset20260401::configs: alloc::vec::Vec<awaken_session_contract::AgentToolConfig>
@@ -2124,6 +2132,7 @@ pub fn awaken_session_contract::SkillCatalogApplication::publish_authored<'life0
 pub fn awaken_session_contract::SkillCatalogApplication::resolve_custom<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ResolvedSkillBinding, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_contract::SkillCatalogApplication::snapshot_latest<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::SkillVersion>, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::agent_toolset_members() -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &'static str> + core::iter::traits::double_ended::DoubleEndedIterator
+pub fn awaken_session_contract::apply_agent_permission_preset(awaken_session_contract::AgentPermissionPresetTarget<'_>, awaken_session_contract::AgentPermissionPreset) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::blocks_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
 pub const fn awaken_session_contract::checkpoint_source_disposal_authorized(awaken_session_contract::SuspendPhase, bool, bool) -> bool
 pub const fn awaken_session_contract::checkpoint_source_preparation_authorized(awaken_session_contract::SuspendPhase, bool, bool) -> bool
@@ -2132,6 +2141,7 @@ pub fn awaken_session_contract::coordinated_thread_id(&str, &awaken_agent_contra
 pub fn awaken_session_contract::decode_session_event_batch_operation(&str) -> core::option::Option<awaken_session_contract::SessionEventBatchOperation<'_>>
 pub async fn awaken_session_contract::drive_session_realization(&str, core::option::Option<awaken_agent_contract::agent::run::Id>, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionProjectionSynchronizer, &dyn awaken_session_contract::McpAttachmentRealizer, awaken_session_contract::SessionRealizationDirective) -> core::result::Result<(), awaken_session_contract::SessionRealizationDriveError>
 pub async fn awaken_session_contract::drive_session_terminal_cleanup(&str, &awaken_session_contract::SessionRealizationLease, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionRuntime) -> core::result::Result<awaken_session_contract::SessionTerminalCleanupDriveOutcome, awaken_session_contract::SessionRealizationDriveError>
+pub fn awaken_session_contract::ensure_typed_mcp_toolset_policies(&mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &[awaken_runtime_contract::agent_bindings::AgentMcpServerBinding], bool) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::epoch_millis_to_rfc3339(u64) -> alloc::string::String
 pub fn awaken_session_contract::frozen_agent_publication_decision(&awaken_session_contract::SessionBaseline, core::option::Option<&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> awaken_session_contract::FrozenAgentPublicationDecision
 pub fn awaken_session_contract::frozen_sandbox_layout_publication_decision(&awaken_session_contract::SessionSandboxLayout, core::option::Option<&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> awaken_session_contract::FrozenAgentPublicationDecision

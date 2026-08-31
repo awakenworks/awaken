@@ -42,27 +42,31 @@ impl PostgresManagedSessionRepository {
     /// Build from an existing pool: apply the session migrations.
     pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
         let receipts = Self::migration_receipts(&pool).await?;
-        let (stream, published) =
-            selected_session_bundle(&receipts).map_err(|error| error.to_string())?;
+        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         awaken_scoped_migration::plan(
-            &published,
+            &selected.complete,
             &receipts,
             awaken_scoped_migration::Dialect::Postgres,
         )
         .map_err(|error| error.to_string())?;
-        if stream.is_legacy() {
-            Self::normalize_session_aggregates(&pool)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
         let converged = converged_session_bundle().map_err(|error| error.to_string())?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
             NS,
         )
         .map_err(|error| error.to_string())?;
+        if let Some(pre_convergence) = &selected.pre_convergence {
+            runner
+                .run_bundle(pre_convergence)
+                .await
+                .map_err(|error| error.to_string())?;
+            Self::normalize_session_aggregates(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         runner
-            .run_bundle(&published)
+            .run_bundle(&selected.complete)
             .await
             .map_err(|error| error.to_string())?;
         runner
@@ -72,7 +76,7 @@ impl PostgresManagedSessionRepository {
         Self::normalize_session_aggregates(&pool)
             .await
             .map_err(|error| error.to_string())?;
-        Self::rebuild_credential_source_index(&pool)
+        Self::rebuild_session_indexes(&pool)
             .await
             .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -81,15 +85,18 @@ impl PostgresManagedSessionRepository {
         })
     }
 
-    /// Connect to a schema migrated by an operational command without DDL.
+    /// Connect to a schema migrated by an operational command without DDL or
+    /// data repair. Server startup verifies the canonical roots and every
+    /// root-derived Session index; only the operational migration opener may
+    /// normalize or rebuild them.
     pub async fn connect_existing(url: &str) -> Result<Self, String> {
         let pool = pool_options()
             .connect(url)
             .await
             .map_err(|e| e.to_string())?;
         let receipts = Self::migration_receipts(&pool).await?;
-        let (_, published) =
-            selected_session_bundle(&receipts).map_err(|error| error.to_string())?;
+        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         let converged = converged_session_bundle().map_err(|error| error.to_string())?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
@@ -97,19 +104,16 @@ impl PostgresManagedSessionRepository {
         )
         .map_err(|error| error.to_string())?;
         runner
-            .verify_bundle(&published)
+            .verify_bundle(&selected.complete)
             .await
             .map_err(|error| error.to_string())?;
         runner
             .verify_bundle(&converged)
             .await
             .map_err(|error| error.to_string())?;
-        Self::normalize_session_aggregates(&pool)
+        Self::verify_session_state(&pool)
             .await
             .map_err(|error| error.to_string())?;
-        Self::rebuild_credential_source_index(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
         Ok(Self {
             pool,
             handle: tokio::runtime::Handle::current(),
@@ -236,7 +240,7 @@ impl PostgresManagedSessionRepository {
         Ok(())
     }
 
-    async fn rebuild_credential_source_index(pool: &PgPool) -> Result<(), SessionRepositoryError> {
+    async fn rebuild_session_indexes(pool: &PgPool) -> Result<(), SessionRepositoryError> {
         let mut tx = pool.begin().await.map_err(storage)?;
         // Session-root writers take ROW EXCLUSIVE on managed_session before
         // synchronizing its indexes. This stronger lock serializes startup
@@ -246,7 +250,19 @@ impl PostgresManagedSessionRepository {
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
-        sqlx::query("LOCK TABLE managed_session_credential_source_reference IN EXCLUSIVE MODE")
+        sqlx::query(
+            "LOCK TABLE managed_session_reconciliation_work, \
+                        managed_session_vault_reference, \
+                        managed_session_credential_source_reference IN EXCLUSIVE MODE",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        sqlx::query("DELETE FROM managed_session_reconciliation_work")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        sqlx::query("DELETE FROM managed_session_vault_reference")
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -272,8 +288,111 @@ impl PostgresManagedSessionRepository {
                     "managed Session aggregate id does not match its index",
                 ));
             }
-            Self::sync_credential_source_index(&mut tx, &session).await?;
+            Self::sync_session_indexes(&mut tx, &session).await?;
         }
+        tx.commit().await.map_err(storage)
+    }
+
+    async fn verify_session_state(pool: &PgPool) -> Result<(), SessionRepositoryError> {
+        let mut tx = pool.begin().await.map_err(storage)?;
+        // This is both the consistent-snapshot boundary and an executable guard
+        // against accidentally reintroducing startup repair into Server mode.
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+
+        let rows = sqlx::query(
+            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let mut session_ids = BTreeSet::new();
+        let mut expected_reconciliation = BTreeSet::new();
+        let mut expected_vaults = BTreeSet::new();
+        let mut expected_credential_sources = BTreeSet::new();
+        for row in rows {
+            let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
+            if !session_ids.insert(stored_session_id.clone()) {
+                return Err(corrupt("duplicate managed Session root id"));
+            }
+            let aggregate_json: Option<String> = row.try_get("aggregate_json").map_err(storage)?;
+            let aggregate_json = aggregate_json.ok_or_else(|| {
+                corrupt("published managed Session row has no canonical aggregate")
+            })?;
+            let revision: i64 = row.try_get("revision").map_err(storage)?;
+            let session = decode(EncodedSessionRow {
+                aggregate_json: aggregate_json.clone(),
+                revision,
+            })
+            .map_err(corrupt)?;
+            if session.session_id != stored_session_id {
+                return Err(corrupt(
+                    "managed Session aggregate id does not match its index",
+                ));
+            }
+            if aggregate_str(&session)? != aggregate_json {
+                return Err(corrupt(
+                    "managed Session aggregate requires operational migration normalization",
+                ));
+            }
+            if session.needs_reconciliation() {
+                expected_reconciliation.insert((stored_session_id.clone(), revision));
+            }
+            expected_vaults.extend(
+                referenced_vault_ids(&session)
+                    .into_iter()
+                    .map(|vault_id| (stored_session_id.clone(), vault_id)),
+            );
+            expected_credential_sources.extend(
+                referenced_mcp_credential_source_ids(&session)
+                    .into_iter()
+                    .map(|source_id| (stored_session_id.clone(), source_id)),
+            );
+        }
+
+        let actual_reconciliation = sqlx::query_as::<_, (String, i64)>(
+            "SELECT session_id, observed_revision FROM managed_session_reconciliation_work \
+             ORDER BY session_id, observed_revision",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if actual_reconciliation != expected_reconciliation.into_iter().collect::<Vec<_>>() {
+            return Err(corrupt(
+                "managed Session reconciliation index requires operational migration rebuild",
+            ));
+        }
+
+        let actual_vaults = sqlx::query_as::<_, (String, String)>(
+            "SELECT session_id, vault_id FROM managed_session_vault_reference \
+             ORDER BY session_id, vault_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if actual_vaults != expected_vaults.into_iter().collect::<Vec<_>>() {
+            return Err(corrupt(
+                "managed Session vault index requires operational migration rebuild",
+            ));
+        }
+
+        let actual_credential_sources = sqlx::query_as::<_, (String, String)>(
+            "SELECT session_id, credential_source_id \
+             FROM managed_session_credential_source_reference \
+             ORDER BY session_id, credential_source_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        if actual_credential_sources != expected_credential_sources.into_iter().collect::<Vec<_>>()
+        {
+            return Err(corrupt(
+                "managed Session credential-source index requires operational migration rebuild",
+            ));
+        }
+
         tx.commit().await.map_err(storage)
     }
 

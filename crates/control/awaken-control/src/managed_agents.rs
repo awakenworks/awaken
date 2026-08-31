@@ -486,17 +486,23 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if let Some(skills) = params.skills {
             config.skills = typed_skills(skills.unwrap_or_default());
         }
+        if let Some(multiagent) = params.multiagent {
+            config.multiagent = multiagent.map(typed_multiagent);
+        }
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();
             validate_agent_tools(&tools).map_err(ManagedAgentError::Invalid)?;
             config.tool_ids.clear();
             let mut replacement = toolset_policies(&tools);
-            preserve_runtime_agent_overrides(&current.config.toolsets, &mut replacement);
+            let allowed_runtime_override_ids =
+                self.plane.runtime_agent_override_ids(&scope, &config);
+            preserve_runtime_agent_overrides(
+                &current.config.toolsets,
+                &mut replacement,
+                &allowed_runtime_override_ids,
+            );
             config.toolsets = replacement;
             config.client_tools = client_tools(&tools);
-        }
-        if let Some(multiagent) = params.multiagent {
-            config.multiagent = multiagent.map(typed_multiagent);
         }
         validate_managed_agent_config(&config)?;
         self.resolve_multiagent_references(workspace_id, &mut config)
@@ -953,18 +959,25 @@ mod tests {
     #[tokio::test]
     async fn managed_update_preserves_versioned_runtime_only_policy() {
         // Cause/effect table for the Managed repository caller of the shared codec:
-        // | rule | current opaque | replacement wire | effect |
-        // | M1   | agent_run ask  | closed tools     | exact opaque persists and publishes ask |
+        // | rule | current opaque              | catalog/role | effect |
+        // | M1   | agent_run ask               | delegation + self | retain exact |
+        // | M2   | delete/custom_dynamic allow | no AgentDelegation descriptor | prune |
         // The retrieval projection omits the opaque member; only the versioned current
-        // config can supply it to the revision-fenced update.
+        // config can supply it to the revision-fenced update, and only the
+        // catalog's semantic delegation owner may survive.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("managed-opaque.sqlite");
         let (plane, executable) = plane_with_delegation_and_catalog(path.to_str().unwrap());
         let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
-        let created = repository
-            .create("workspace-a", create_params("opaque"))
-            .await
-            .unwrap();
+        let mut create = create_params("opaque");
+        create.multiagent = Some(
+            serde_json::from_value(json!({
+                "type": "coordinator",
+                "agents": [{ "type": "self" }]
+            }))
+            .unwrap(),
+        );
+        let created = repository.create("workspace-a", create).await.unwrap();
         let scope = ScopeId::from("workspace-a");
         let current = plane
             .get_versioned(&scope, &created.id)
@@ -986,7 +999,11 @@ mod tests {
                 enabled: false,
                 permission: ToolPermissionRequirement::AlwaysAllow,
             },
-            overrides: vec![runtime_only.clone()],
+            overrides: vec![
+                runtime_only.clone(),
+                ToolPolicyOverride::new("delete", ToolExecutionPolicy::default()),
+                ToolPolicyOverride::new("custom_dynamic", ToolExecutionPolicy::default()),
+            ],
         });
         assert!(matches!(
             plane
@@ -1045,6 +1062,13 @@ mod tests {
                 .unwrap(),
             &runtime_only,
             "M1 exact opaque"
+        );
+        assert!(
+            agent
+                .overrides
+                .iter()
+                .all(|entry| !matches!(entry.name.as_str(), "delete" | "custom_dynamic")),
+            "M2 retired/unknown overrides"
         );
         let runtime = executable
             .current("workspace-a", &created.id)

@@ -65,6 +65,35 @@ impl ConfigPlane {
         self.tools.catalog_for(scope)
     }
 
+    /// Exact Runtime-only Agent overrides that a mutable write may carry across
+    /// a closed Managed-toolset projection. Membership must be present in the
+    /// scope's current catalog and must carry the Agent-delegation semantic role;
+    /// the candidate config must also retain a typed delegation target. Regular,
+    /// client, advisor, and detached descriptors can never inherit a historical
+    /// Agent permission by name.
+    #[must_use]
+    pub fn runtime_agent_override_ids(
+        &self,
+        scope: &ScopeId,
+        config: &AgentConfig,
+    ) -> std::collections::BTreeSet<String> {
+        use awaken_runtime_contract::resolved::ToolKind;
+
+        let delegation = config
+            .multiagent
+            .as_ref()
+            .is_some_and(awaken_agent_config::MultiagentConfig::has_delegation_target);
+        self.catalog_for(scope)
+            .into_iter()
+            .filter(|descriptor| {
+                !awaken_session_contract::is_agent_toolset_member(&descriptor.id)
+                    && descriptor.kind == ToolKind::AgentDelegation
+                    && delegation
+            })
+            .map(|descriptor| descriptor.id)
+            .collect()
+    }
+
     /// A scope-bound registry (a `ScopedConfig` decorator, ADR-0051): every read
     /// filters by `scope` and every write stamps it, so the service stays scope-free.
     pub fn registry_for(&self, scope: &ScopeId) -> ScopedConfig<dyn ScopedConfigRegistry> {

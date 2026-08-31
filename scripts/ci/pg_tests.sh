@@ -60,8 +60,12 @@ self_test() {
     echo "Postgres gate omits Session and Deployment repository conformance" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-session-store --features test-support postgres_round_trips_and_upserts" "$0" || {
-    echo "Postgres gate omits Session quarantine and migration parity" >&2
+  grep -Fqx 'cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \' "$0" || {
+    echo "Postgres gate omits Session history, read-only open, and repository parity" >&2
+    return 1
+  }
+  grep -Fqx 'cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || status=1' "$0" || {
+    echo "Postgres gate omits exact CLI installation-binding continuity" >&2
     return 1
   }
   grep -Fqx "cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || status=1" "$0" || {
@@ -233,9 +237,10 @@ then
 fi
 
 # The Postgres-backed suites. `--test <name>` targets the integration tests that gate
-# on a DB; each still self-skips a case if its schema pool cannot connect, but with the
-# URL set they run for real. Single-threaded is unnecessary — each test isolates itself
-# in a fresh schema.
+# on a DB. Optional local runs may self-skip only when no URL was configured; this
+# script exports one, so a connection failure is red. Single-threaded is unnecessary
+# where each test isolates itself in a fresh schema; the Session history matrix is
+# serialized explicitly while it creates and drops its canonical-prefix fixtures.
 status=0
 cargo test -p awaken-run-ingress \
   --features test-support \
@@ -252,8 +257,9 @@ cargo test -p awaken-run-ingress-http --test active_active_postgres -- --test-th
   || status=1
 cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
   || status=1
-cargo test -p awaken-session-store --features test-support postgres_round_trips_and_upserts -- --test-threads=1 \
+cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
   || status=1
+cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || status=1
 cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || status=1
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1

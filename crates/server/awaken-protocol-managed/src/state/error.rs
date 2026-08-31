@@ -1,6 +1,8 @@
 //! Managed Session command failures and their protocol-facing classification.
 
-use awaken_session_contract::{LiveInboxError, RunError};
+use awaken_session_contract::{LiveInboxError, RunError, RunErrorKind};
+
+const SESSION_PROJECTION_RECOVERY_REQUIRED_CODE: &str = "session_projection_recovery_required";
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +37,27 @@ pub enum StateError {
     LiveInbox(#[from] LiveInboxError),
 }
 
+impl StateError {
+    /// Classify a damaged committed Awaiting projection without weakening
+    /// strict reply admission. Event reads expose the existing non-2xx health
+    /// seam, while the Session route may still return root-owned lifecycle
+    /// truth so a client can authorize the pure Interrupt recovery control.
+    pub(crate) fn projection_recovery_required(message: impl Into<String>) -> Self {
+        Self::Run(RunError {
+            message: message.into(),
+            kind: RunErrorKind::BadRequest,
+            code: SESSION_PROJECTION_RECOVERY_REQUIRED_CODE.into(),
+        })
+    }
+
+    pub(crate) fn is_projection_recovery_required(&self) -> bool {
+        matches!(
+            self,
+            Self::Run(error) if error.code == SESSION_PROJECTION_RECOVERY_REQUIRED_CODE
+        )
+    }
+}
+
 impl From<awaken_session_contract::SessionRepositoryError> for StateError {
     fn from(error: awaken_session_contract::SessionRepositoryError) -> Self {
         match error {
@@ -51,9 +74,7 @@ impl From<awaken_session_contract::SessionRepositoryError> for StateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_contract::{
-        RunErrorKind, SessionRepositoryConflict, SessionRepositoryError,
-    };
+    use awaken_session_contract::{SessionRepositoryConflict, SessionRepositoryError};
 
     #[test]
     fn repository_causes_survive_the_managed_boundary() {
@@ -95,6 +116,31 @@ mod tests {
                 })
             ),
             "R4"
+        );
+    }
+
+    #[test]
+    fn projection_recovery_classification_is_narrow_and_caller_safe() {
+        // Cause/effect table: P1 an unreconstructable committed Awaiting
+        // projection => stable recovery classification plus caller-safe 400;
+        // P2 an ordinary bad request => not the Session-root read exception.
+        // The route-level DI table proves only P1 can leave aggregate GET
+        // readable while Events GET remains unhealthy.
+        let damaged = StateError::projection_recovery_required("damaged await");
+        assert!(damaged.is_projection_recovery_required(), "P1");
+        assert!(
+            matches!(
+                damaged,
+                StateError::Run(RunError {
+                    kind: RunErrorKind::BadRequest,
+                    ..
+                })
+            ),
+            "P1"
+        );
+        assert!(
+            !StateError::Run(RunError::bad_request("ordinary")).is_projection_recovery_required(),
+            "P2"
         );
     }
 }

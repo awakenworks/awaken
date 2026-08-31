@@ -7,9 +7,9 @@ import {
 } from "@awaken/managed-session-projection";
 import type { SessionEvent } from "./api/types";
 import {
-  gateManagedSessionAdmissionWhileSending,
   isInitialManagedSessionPreparation,
   mergeCommittedSessionCache,
+  projectSessionLogPresentation,
   reconcileSessionSendResponse,
   sessionProjectionErrorKey,
 } from "./useSessionLog";
@@ -147,23 +147,91 @@ describe("Session receipt-to-query projection decision table", () => {
   });
 
   /**
-   * Cause/effect table: C1 one shared detail input transport is pending/not
-   * pending. E1 pending denies message, approval, and interrupt together; E2
-   * settled transport exposes the unchanged committed-projection admission.
-   * This prevents two controls from creating concurrent transport intents.
+   * Cause/effect graph: C1 committed phase is idle/terminal; C2 the one Events
+   * POST is pending/settled; C3 projection is healthy/damaged. Effects: E1 one
+   * presentation drives phase, activity, and every input control; E2 sending
+   * overlays submitting and denies concurrent input; E3 terminal truth is
+   * absorbing; E4 damaged nonterminal projection exposes only recovery.
+   *
+   * | Rule | Durable | Send | Projection | Effects |
+   * |---|---|---|---|---|
+   * | S1 | idle | settled | healthy | idle/inactive/message |
+   * | S2 | idle | pending | healthy | submitting/active/deny all |
+   * | S3 | terminal | pending | damaged | terminal/inactive/deny all |
+   * | S4 | idle | settled | Events GET error | recovery-only |
+   * | S5 | idle | pending | Events GET error | submitting/active/deny all |
    */
-  it("gates every input control with the one shared pending transport", () => {
-    const projected = {
-      canSendMessage: true,
-      canResolveTools: true,
-      canInterrupt: true,
-    };
-    expect(gateManagedSessionAdmissionWhileSending(projected, true)).toEqual({
-      canSendMessage: false,
-      canResolveTools: false,
-      canInterrupt: false,
+  it("projects one presentation for status, Transcript, and every input control", () => {
+    const runtime = projectManagedSessionRuntime([idle]);
+    expect(projectSessionLogPresentation({
+      runtime,
+      sessionStatus: "idle",
+      projectionHealthy: true,
+      initialPreparation: false,
+      sendPending: false,
+    })).toMatchObject({
+      phase: "idle",
+      active: false,
+      sending: false,
+      needsRecovery: false,
+      admission: { canSendMessage: true, canResolveTools: false, canInterrupt: false },
     });
-    expect(gateManagedSessionAdmissionWhileSending(projected, false)).toBe(projected);
+    expect(projectSessionLogPresentation({
+      runtime,
+      sessionStatus: "idle",
+      projectionHealthy: true,
+      initialPreparation: false,
+      sendPending: true,
+    })).toMatchObject({
+      phase: "submitting",
+      active: true,
+      sending: true,
+      needsRecovery: false,
+      admission: { canSendMessage: false, canResolveTools: false, canInterrupt: false },
+    });
+    const terminal = projectManagedSessionRuntime([event({
+      id: "terminated",
+      type: "session.status_terminated",
+      processed_at: "t1",
+    })]);
+    expect(projectSessionLogPresentation({
+      runtime: terminal,
+      sessionStatus: "terminated",
+      projectionHealthy: false,
+      initialPreparation: false,
+      sendPending: true,
+    })).toMatchObject({
+      phase: "terminated",
+      active: false,
+      sending: true,
+      needsRecovery: false,
+      admission: { canSendMessage: false, canResolveTools: false, canInterrupt: false },
+    });
+    expect(projectSessionLogPresentation({
+      runtime,
+      sessionStatus: "idle",
+      projectionHealthy: false,
+      initialPreparation: false,
+      sendPending: false,
+    })).toMatchObject({
+      phase: "idle",
+      active: false,
+      needsRecovery: true,
+      admission: { canSendMessage: false, canResolveTools: false, canInterrupt: true },
+    });
+    expect(projectSessionLogPresentation({
+      runtime,
+      sessionStatus: "idle",
+      projectionHealthy: false,
+      initialPreparation: false,
+      sendPending: true,
+    })).toMatchObject({
+      phase: "submitting",
+      active: true,
+      sending: true,
+      needsRecovery: true,
+      admission: { canSendMessage: false, canResolveTools: false, canInterrupt: false },
+    });
   });
 
   /**

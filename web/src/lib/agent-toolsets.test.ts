@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type {
   AgentConfig,
+  AgentManagedToolset,
   AgentMcpServer,
   AgentTool,
   AgentToolsetMemberCap,
 } from "./api/types";
 import {
   controlledModificationMemberNames,
-  controlledModificationPatch,
   mcpDefaultConfig,
   mcpIntegrationsValid,
   mcpToolsetPolicySummary,
@@ -195,7 +195,10 @@ describe("MCP Integration aggregate", () => {
   });
 });
 
-function member(name: string, controlledModification: boolean): AgentToolsetMemberCap {
+function member(
+  name: string,
+  controlledModification: boolean,
+): AgentToolsetMemberCap {
   return {
     name,
     available: true,
@@ -214,24 +217,7 @@ const members = [
   member("web_fetch", false),
   member("web_search", false),
 ];
-
-function config(tools: AgentTool[]): AgentConfig {
-  return {
-    id: "coding-agent",
-    model: { mode: "auto" },
-    system: "work carefully",
-    tools,
-    mcp_servers: [],
-    skills: [],
-    max_steps: 8,
-    plugins: ["permission", "memory"],
-    plugin_config: {
-      permission: { default_behavior: "ask" },
-      memory: { enabled: true },
-    },
-    context_policy: { kind: "keep_all" },
-  };
-}
+const advertisedAllow = { type: "always_allow" } as const;
 
 describe("canonical Agent toolset authoring", () => {
   it("derives the controlled description roster from capability members", () => {
@@ -245,103 +231,79 @@ describe("canonical Agent toolset authoring", () => {
     ])).toEqual(["shell", "replace"]);
   });
 
-  it("projects selection and the controlled preset into one existing Managed tools union", () => {
-    // Cause/effect graph: C1 exact official strings and C2 an MCP Toolset enter
-    // the editor; C3 the operator selects controlled modifications. Effects:
-    // E1 official membership moves into exactly one agent_toolset_20260401;
-    // E2 write/edit/bash are always_ask without enabling previously absent tools;
-    // E3 MCP/custom objects, unrelated exact ids, and Runtime-only Agent
-    // overrides survive byte-exactly; E4 retired legacy
-    // permission/plugin residue is removed; E5 no preset state is persisted.
-    //
-    // Decision table:
-    // | rule | official selected | controlled member | enabled | permission |
-    // | P1   | yes               | no                | true    | allow      |
-    // | P2   | yes               | yes               | true    | ask        |
-    // | P3   | no                | yes               | false   | ask        |
-    // | P4   | no                | no                | omitted | default    |
-    const mcp: AgentTool = {
-      type: "mcp_toolset",
-      mcp_server_name: "docs",
-      default_config: {
-        enabled: true,
-        permission_policy: { type: "always_ask" },
-      },
-      configs: [],
-    };
-    const custom: AgentTool = {
-      type: "custom",
-      name: "local_review",
-      description: "review in the local client",
-      input_schema: { type: "object", required: ["patch_id"] },
-    };
-    const runtimeOnly = {
-      name: "agent_run",
-      enabled: true,
-      permission_policy: { type: "always_ask" as const },
-    };
-    const disabledConfigured = {
-      name: "web_fetch",
-      type: "web_fetch",
-      enabled: false,
-      permission_policy: { type: "always_allow" as const },
-      allowed_domains: ["docs.example.com"],
-      max_content_tokens: 4096,
-    };
-    const priorAgent: AgentTool = {
+  it("replaces official selection without creating a parallel exact-id path", () => {
+    // Causes: C1 a server-preset Toolset contains explicit asks; C2 the picker
+    // changes the selected official members; C3 a newly selected member has no
+    // explicit policy. Effects: E1 one Toolset remains; E2 official strings are
+    // absent; E3 the server-authored Bash ask survives; E4 fresh Edit uses the
+    // advertised ordinary allow default; E5 repeating the projection is stable.
+    // Rules: S1=C1+C2+C3 => E1-E4; S2=replay S1 => E5.
+    // The server-authored preset result is input here; Web owns only picker
+    // selection and must preserve, not recreate, its permission decisions.
+    const controlled: AgentTool[] = [{
       type: "agent_toolset_20260401",
       default_config: { enabled: false, permission_policy: { type: "always_allow" } },
-      configs: [runtimeOnly, disabledConfigured],
-    };
-    const patch = controlledModificationPatch(
-      config(["read", "write", "custom_static", priorAgent, mcp, custom]),
-      members,
-    );
-    const tools = patch.tools ?? [];
-    const agent = tools.filter(
-      (tool) => typeof tool !== "string" && tool.type === "agent_toolset_20260401",
-    );
-    expect(agent).toHaveLength(1);
-    expect(agent[0]).toMatchObject({
-      type: "agent_toolset_20260401",
-      default_config: {
-        enabled: false,
-        permission_policy: { type: "always_allow" },
-      },
-      configs: expect.arrayContaining([
+      configs: [
         { name: "read", enabled: true, permission_policy: { type: "always_allow" } },
         { name: "write", enabled: true, permission_policy: { type: "always_ask" } },
-        { name: "edit", enabled: false, permission_policy: { type: "always_ask" } },
-        { name: "bash", enabled: false, permission_policy: { type: "always_ask" } },
-      ]),
-    });
-    expect(tools).toContain("custom_static");
-    expect(tools).toContainEqual(mcp);
-    expect(tools).toContainEqual(custom);
-    expect(agent[0].configs).toContainEqual(runtimeOnly);
-    expect(agent[0].configs).toContainEqual(disabledConfigured);
-    expect(patch.plugin_config).toEqual({ memory: { enabled: true } });
-    expect(patch.plugins).toEqual(["memory"]);
-    expect(patch).not.toHaveProperty("permission_preset");
-    expect(selectedAgentToolIds(tools, members)).toEqual(["read", "write", "custom_static"]);
-  });
-
-  it("replaces official selection without creating a parallel exact-id path", () => {
-    // Causes: C1 a canonical typed Toolset exists; C2 the picker changes the
-    // selected official members. Effects: E1 one Toolset remains; E2 official
-    // strings are absent; E3 controlled asks survive for still-selected members;
-    // E4 repeating the same projection is byte-stable.
-    // Rules: S1 select read+edit -> typed enabled set {read,edit}; S2 replay S1
-    // -> identical JSON.
-    const controlled = controlledModificationPatch(config(["read", "write"]), members).tools!;
-    const first = withSelectedAgentTools(controlled, ["read", "edit", "custom_static"], members);
-    const second = withSelectedAgentTools(first, ["read", "edit", "custom_static"], members);
+        { name: "bash", enabled: true, permission_policy: { type: "always_ask" } },
+      ],
+    }];
+    const selection = ["bash", "read", "edit", "custom_static"];
+    const first = withSelectedAgentTools(controlled, selection, members, advertisedAllow);
+    const second = withSelectedAgentTools(first, selection, members, advertisedAllow);
     expect(second).toEqual(first);
-    expect(selectedAgentToolIds(first, members)).toEqual(["read", "edit", "custom_static"]);
+    expect(selectedAgentToolIds(first, members)).toEqual(selection);
     expect(first.filter(
       (tool) => typeof tool !== "string" && tool.type === "agent_toolset_20260401",
     )).toHaveLength(1);
     expect(first).not.toContain("read");
     expect(first).not.toContain("edit");
+    const policies = Object.fromEntries((first.find(
+      (tool): tool is AgentManagedToolset =>
+        typeof tool === "object" && tool.type === "agent_toolset_20260401",
+    )?.configs ?? []).map((entry) => [entry.name, entry.permission_policy?.type]));
+    expect(policies).toEqual(expect.objectContaining({
+      bash: "always_ask",
+      edit: "always_allow",
+    }));
+  });
+
+  it("keeps an ordinary save on the advertised allow default", () => {
+    // Cause/effect graph: C1 Web selects fresh official members; C2 capability
+    // metadata projects the Agent Toolset default allow; C3 no transient server
+    // preset was requested. Effects: E1 Bash/read/write are all allow; E2 the Web
+    // projection does not infer asks from controlled-modification flags. Rule
+    // O1=C1+C2+C3=>E1+E2. The preceding S1 rule covers the paired server-preset
+    // outcome: an explicit ask returned by that owner remains ask.
+    const projected = withSelectedAgentTools(
+      [],
+      ["bash", "read", "write"],
+      members,
+      advertisedAllow,
+    );
+    const toolset = projected.find(
+      (tool): tool is AgentManagedToolset =>
+        typeof tool === "object" && tool.type === "agent_toolset_20260401",
+    );
+    expect(toolset).toBeDefined();
+    const policies = Object.fromEntries(
+      (toolset?.configs ?? []).map((entry) => [entry.name, entry.permission_policy?.type]),
+    );
+    expect(policies).toEqual(expect.objectContaining({
+      bash: "always_allow",
+      read: "always_allow",
+      write: "always_allow",
+    }));
+    const alternateCapability = withSelectedAgentTools(
+      [],
+      ["read"],
+      members,
+      { type: "always_ask" },
+    ).find(
+      (tool): tool is AgentManagedToolset =>
+        typeof tool === "object" && tool.type === "agent_toolset_20260401",
+    );
+    expect(alternateCapability?.configs?.[0]?.permission_policy?.type).toBe("always_ask");
   });
 });

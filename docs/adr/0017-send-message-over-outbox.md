@@ -7,7 +7,7 @@
 
 ## Context
 
-The former generic `send_message` host adapter read a target Thread's current
+The former generic server-side message adapter read a target Thread's current
 `ResumeTicket` and then staged a separately durable `PendingInput` in the
 Dispatch outbox. Managed coordination also reused that infrastructure for an
 Agent follow-up even though it already owned a deterministic fresh Run.
@@ -35,17 +35,18 @@ is the acceptance receipt. Replay uses the existing deterministic operation and
 child-Run identities. There is no Agent-message table, relationship registry,
 or Dispatch outbox intent.
 
-The unsupported `OutboxMessageSender` read-then-stage adapter is removed.
-Dispatch exposes no `awaiting_run` query and never selects a target Run from a
-Thread status cache.
+That unsupported read-then-stage adapter is removed. Dispatch exposes no
+`awaiting_run` query and never selects a target Run from a Thread status cache.
 
 ### D2: The target fresh Run owns the accepted message
 
-Spawn, follow-up, and a terminal child's report freeze exactly one user message in the target
-`RunActivation.input`. The deterministic `RunDispatch` carries that complete
-activation through the canonical queue admission; backend Run-id idempotency rejects a
-same-id/different-payload collision. When the Worker commits, the message becomes
-ordinary target-Thread transcript truth through `ThreadCommit.messages`.
+Spawn and follow-up freeze exactly one user message in the target
+`RunActivation.input` and enter through `enqueue_session_child`. A terminal
+child's report likewise freezes one user message in a deterministic root
+`RunActivation.input`, but enters through the root `enqueue` admission. Backend
+Run-id idempotency rejects a same-id/different-payload collision. When the
+Worker commits, the message becomes ordinary target-Thread transcript truth
+through `ThreadCommit.messages`.
 
 Dispatch therefore owns only delivery, claim, lease, retry, and settlement of
 the already-frozen Run. It does not own Agent-message acceptance and does not
@@ -55,10 +56,9 @@ write a parallel `PendingInput`.
 
 ADR-0021's unbound pending-input representation remains an ingress primitive for
 input already accepted by an external application before a Run exists. It is
-not the internal Agent messaging mechanism. A future generic model-visible
-`send_message` implementation must be a Thread-scoped `StateCommand`/reducer
-with commit-coupled recovery, following the same ownership shape as
-`ActiveToolBatch`; it must not recreate the removed server adapter.
+not the internal Agent messaging mechanism. The sole model-visible coordination
+command is the Thread-scoped `send_message`; no generic server sender or
+read-then-outbox compatibility path remains.
 
 ### D4: Refine every command from committed source truth
 
@@ -83,6 +83,8 @@ does not inject live input and never consumes that Run's `ResumeTicket`.
 - Spawn and follow-up use one admission path and one idempotency boundary.
 - Child-to-parent reports use that same activation-input boundary and create no
   root Inbox or Outbox record.
+- A Managed primary Session projects exactly `list_agents` and `send_message`;
+  Managed children receive neither coordination nor native delegation tools.
 - Dispatch cannot resume an unrelated Awaiting Run or strand input on a stale
   ticket because it never performs that classification.
 - External pending input and internal Agent coordination remain distinct

@@ -567,6 +567,24 @@ pub struct MultiagentConfig {
 }
 
 impl MultiagentConfig {
+    /// Whether the roster grants the ordinary Agent-delegation semantic role.
+    /// Compilation and authoring compatibility use this one decision instead of
+    /// independently inferring a concrete tool id.
+    #[must_use]
+    pub fn has_delegation_target(&self) -> bool {
+        self.agents
+            .iter()
+            .any(|target| target.advisor_model().is_none())
+    }
+
+    /// Whether the roster grants the advisor semantic role.
+    #[must_use]
+    pub fn has_advisor_target(&self) -> bool {
+        self.agents
+            .iter()
+            .any(|target| target.advisor_model().is_some())
+    }
+
     /// Validate the roster's representation-independent invariants once. Managed
     /// admission and publication compilation both call this owner so malformed
     /// generic-config writes cannot bypass the HTTP edge without duplicating the

@@ -12,6 +12,10 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub(super) struct FileConfig {
     pub(super) data_dir: Option<PathBuf>,
+    /// Deployment-owned installation identity. Presence means this process is
+    /// resuming that exact installation rather than initializing an arbitrary
+    /// empty data directory.
+    pub(super) expected_platform_workspace_id: Option<String>,
     pub(super) bind: Option<String>,
     pub(super) internal_bind: Option<String>,
     pub(super) mode: Option<String>,

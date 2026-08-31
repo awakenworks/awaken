@@ -127,6 +127,7 @@ toml.workspace = true
 base64 = "0.22"
 url.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 
 [features]
 # Volatile startup helpers used by integration/scenario harnesses. The default

@@ -924,7 +924,14 @@ impl ToolExecutor for SessionHandExecutor {
             && let Some((sandbox, skills)) = &self.container_skills
             && let Err(error) = skills.refresh(sandbox.as_ref()).await
         {
-            tracing::warn!(error = %error, "failed to refresh container skill catalog");
+            let detail =
+                format!("refresh container Skill catalog after workspace mutation: {error}");
+            // The mutation has already crossed the Hand boundary. Refresh
+            // atomically removed the last-good catalog; close the one Session
+            // lifecycle before returning the Runtime-only fatal signal,
+            // because reacquiring or replaying could duplicate the effect.
+            self.lifecycle.close();
+            return Err(ToolError::StateInvalidatedAfterDispatch(detail));
         }
         let _ = self.lifecycle.touch();
         result

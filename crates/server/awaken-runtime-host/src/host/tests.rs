@@ -3068,10 +3068,12 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     // Cause/effect graph: C1 an ACP publication; C2 reservation preflight leaves
     // an envelope-only cached context; C3 execution wins the race before the
     // reservation caller evicts it; C4 the admitted Namespace provider preserves
-    // one path for arbitrary ACP processes. Effects: E1 execution replaces that
-    // context; E2 the replacement owns a physical Environment, which is the
-    // prerequisite for registering the exact ACP executor. Decision table:
-    // ACP+C1-C4=>E1+E2; ACP+C1-C3+split-Workdir=>fail before effects (owned by
+    // one path for arbitrary ACP processes; C5 the direct live-authored Skill
+    // source exists while initially empty and therefore requires the canonical
+    // ACP tool-export adapter. Effects: E1 execution replaces that context; E2
+    // the replacement owns a physical Environment; E3 Skill tools cross the
+    // existing ACP MCP export boundary. Decision table:
+    // ACP+C1-C5=>E1+E2+E3; ACP+C1-C3+split-Workdir=>fail before effects (owned by
     // `projected_acp_rejects_a_provider_with_split_tool_and_process_paths`);
     // Native on-tool-use/A2A contexts remain eligible for environment-free reuse.
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
@@ -3091,7 +3093,10 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
         .with_agent_publications(Arc::new(publications))
         .with_acp(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
             source,
-        )));
+        )))
+        .with_acp_tool_exporter(Arc::new(
+            crate::acp_tool_export::RecordingAcpToolExporter::default(),
+        ));
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.path(),
@@ -20997,15 +21002,18 @@ fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
         ADVISOR_TOOL_ID, ModelBinding, ResolvedModelCandidate, ToolDescriptor, ToolKind,
     };
 
-    // Cause/effect graph: C1 root/child role selects the public coordination
-    // surface; C2 generated/inherited vs immutable publication selects whether
-    // Session toolsets enter the executable clone; C3 an explicit Session client
-    // descriptor replaces published client ownership. Effects: E1 only a primary
-    // exposes exactly one fixed list/send pair; E2 every child loses nested delegation/advisor;
-    // E3 generated/self-child embeds Session toolsets; E4 published/non-self
-    // retains its publication toolsets; E5 explicit client tools exact-replace.
+    // Cause/effect graph: C1 native vs Managed root/child role selects exactly
+    // one coordination surface; C2 generated/inherited vs immutable publication
+    // selects whether Session toolsets enter the executable clone; C3 an explicit
+    // Session client descriptor replaces published client ownership. Effects:
+    // E1 Managed primary replaces native `agent_run` with fixed list/send;
+    // E2 every Managed child loses nested delegation/advisor and receives no
+    // coordination command; E3 generated/self-child embeds Session toolsets;
+    // E4 published/non-self retains its publication toolsets; E5 explicit client
+    // tools exact-replace. No obsolete Task descriptor participates in projection.
     //
     // | Rule | role | snapshot owner | Session overlay | Effects |
+    // | M0 | native | published | preserve | agent_run only; no Managed/Task commands |
     // | M1 | primary | generated | project | E1,E3,E5 |
     // | M2 | primary | published | preserve | E1,E4,E5 |
     // | M3 | child | self/inherited | project | E2,E3,E5 |
@@ -21043,6 +21051,29 @@ fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
             .expect("canonical builtin descriptor")
             .into_descriptor()
     };
+    let native_ids = crate::config::advertised_tools(
+        &HashSet::new(),
+        &HashSet::from(["worker".to_string()]),
+        &[],
+    )
+    .into_iter()
+    .map(|descriptor| descriptor.id)
+    .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        native_ids.contains(awaken_ext_builtin_tools::AGENT_RUN),
+        "M0 native delegation"
+    );
+    for forbidden in [
+        awaken_ext_builtin_tools::LIST_AGENTS,
+        awaken_ext_builtin_tools::SEND_MESSAGE,
+        "cancel_task",
+        "recover_failed_messages",
+    ] {
+        assert!(
+            !native_ids.contains(forbidden),
+            "M0 forbids parallel command {forbidden}"
+        );
+    }
     let mut base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
         .model(test_model_binding())
         .build();

@@ -397,6 +397,14 @@ placement changes transport only: mounts, environment variables, prompts, MCP
 credential references, and network policy are frozen by the same application
 owner before the root insert.
 
+The HTTP edge accepts both a first create and an exact receipt replay with
+`202 Accepted` as soon as that complete root is durable. The returned Session id
+is the asynchronous operation identity; no Job record exists. Neither response
+waits for disposable Managed projection or physical realization, and an exact
+replay of `Preparing` or `ActivationFailed` returns the same root identity
+without repeating effects. Subsequent Session reads project the root's current
+state and durable failure reason.
+
 Profiled Repository inputs use the same rule. The extension may carry a
 Repository URL, mount path, and exact secret-free `CredentialRef`, but it lowers
 them into the existing Resource Catalog and Session credential pin before the

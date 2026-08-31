@@ -8,6 +8,16 @@ pub struct ServiceArgs {
     pub cloud_models: Option<crate::config::CloudModelMode>,
 }
 
+/// One validated operator migration request shared by the product and
+/// role-specific binaries. Each reference is present only when the operator
+/// supplied its complete explicit authorization pair.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DatabaseMigrateArgs {
+    pub config_path: Option<std::path::PathBuf>,
+    pub initialization_reference: Option<String>,
+    pub adoption_reference: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     AllInOne(ServiceArgs),
@@ -16,9 +26,7 @@ pub enum Command {
     ControlIamProfile,
     ControlIamRuntimeProfile,
     ControlHostedRuntimeRouteProfile,
-    DatabaseMigrate {
-        config_path: Option<std::path::PathBuf>,
-    },
+    DatabaseMigrate(DatabaseMigrateArgs),
     Config {
         json: bool,
         config_path: Option<std::path::PathBuf>,
@@ -37,9 +45,7 @@ pub enum Command {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceBinaryCommand {
     Serve(ServiceArgs),
-    DatabaseMigrate {
-        config_path: Option<std::path::PathBuf>,
-    },
+    DatabaseMigrate(DatabaseMigrateArgs),
     Help,
 }
 
@@ -197,6 +203,10 @@ fn parse_database_args(args: &[String]) -> Result<Command, String> {
         return Err("database requires the `migrate` subcommand".to_owned());
     }
     let mut config_path = None;
+    let mut initialize_installation = false;
+    let mut initialization_reference = None;
+    let mut adopt_unbound_existing = false;
+    let mut adoption_reference = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -207,11 +217,88 @@ fn parse_database_args(args: &[String]) -> Result<Command, String> {
             value if value.starts_with("--config=") => {
                 config_path = Some(parse_path(Some(&value[9..]), "--config")?);
             }
+            "--initialize-installation" if !initialize_installation => {
+                initialize_installation = true;
+            }
+            "--initialize-installation" => {
+                return Err("--initialize-installation may be supplied only once".into());
+            }
+            "--initialization-reference" if initialization_reference.is_none() => {
+                index += 1;
+                initialization_reference = Some(parse_exact_value(
+                    args.get(index).map(String::as_str),
+                    "--initialization-reference",
+                )?);
+            }
+            value
+                if value.starts_with("--initialization-reference=")
+                    && initialization_reference.is_none() =>
+            {
+                initialization_reference = Some(parse_exact_value(
+                    Some(&value[27..]),
+                    "--initialization-reference",
+                )?);
+            }
+            value if value.starts_with("--initialization-reference=") => {
+                return Err(format!("duplicate database migrate argument {value:?}"));
+            }
+            "--adopt-unbound-existing" if !adopt_unbound_existing => {
+                adopt_unbound_existing = true;
+            }
+            "--adopt-unbound-existing" => {
+                return Err("--adopt-unbound-existing may be supplied only once".into());
+            }
+            "--adoption-reference" if adoption_reference.is_none() => {
+                index += 1;
+                adoption_reference = Some(parse_exact_value(
+                    args.get(index).map(String::as_str),
+                    "--adoption-reference",
+                )?);
+            }
+            value if value.starts_with("--adoption-reference=") && adoption_reference.is_none() => {
+                adoption_reference = Some(parse_exact_value(
+                    Some(&value[21..]),
+                    "--adoption-reference",
+                )?);
+            }
+            value if value.starts_with("--adoption-reference=") => {
+                return Err(format!("duplicate database migrate argument {value:?}"));
+            }
             other => return Err(format!("unexpected database migrate argument {other:?}")),
         }
         index += 1;
     }
-    Ok(Command::DatabaseMigrate { config_path })
+    let initialization_reference = complete_authorization_pair(
+        initialize_installation,
+        initialization_reference,
+        "--initialize-installation",
+        "--initialization-reference",
+    )?;
+    let adoption_reference = complete_authorization_pair(
+        adopt_unbound_existing,
+        adoption_reference,
+        "--adopt-unbound-existing",
+        "--adoption-reference",
+    )?;
+    Ok(Command::DatabaseMigrate(DatabaseMigrateArgs {
+        config_path,
+        initialization_reference,
+        adoption_reference,
+    }))
+}
+
+fn complete_authorization_pair(
+    enabled: bool,
+    reference: Option<String>,
+    switch: &str,
+    reference_flag: &str,
+) -> Result<Option<String>, String> {
+    match (enabled, reference) {
+        (false, None) => Ok(None),
+        (true, Some(reference)) => Ok(Some(reference)),
+        (true, None) => Err(format!("{switch} requires {reference_flag} <REF>")),
+        (false, Some(_)) => Err(format!("{reference_flag} requires {switch}")),
+    }
 }
 
 fn parse_port(value: Option<&str>) -> Result<u16, String> {
@@ -247,13 +334,20 @@ fn parse_path(value: Option<&str>, flag: &str) -> Result<std::path::PathBuf, Str
         .ok_or_else(|| format!("{flag} needs a non-empty path"))
 }
 
+fn parse_exact_value(value: Option<&str>, flag: &str) -> Result<String, String> {
+    value
+        .filter(|value| !value.is_empty() && value.trim() == *value)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{flag} needs a non-empty value without surrounding whitespace"))
+}
+
 fn is_help(value: &str) -> bool {
     value == "-h" || value == "--help"
 }
 
 pub fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor [--json]                 Check configuration, storage, and listener readiness\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Verify installation identity, apply deployment schema migrations, and exit\n    doctor [--json]                 Check configuration, storage, and listener readiness\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH                  Read typed configuration from PATH\n    --port PORT                    Override the listen port\n    --data-dir PATH                Override the persistent data root (default ~/.awaken)\n    --no-browser                   Do not open the browser\n    --identity-mode MODE           no-login, self-managed, or awaken-cloud\n    --cloud-models MODE            disabled or enabled (requires awaken-cloud identity)\n    --initialize-installation      Database-migrate-only first-install switch\n    --initialization-reference REF Required operator reference authorizing initialization\n    --adopt-unbound-existing       Database-migrate-only legacy adoption switch\n    --adoption-reference REF       Required operator reference authorizing legacy adoption\n    -h, --help                     Print this help\n\nThe execution service is the separate `awaken-worker` binary."
     );
 }
 
@@ -268,9 +362,7 @@ pub fn parse_service_binary_command(
     }
     if args.first().is_some_and(|argument| argument == "database") {
         return parse_database_args(&args[1..]).map(|command| match command {
-            Command::DatabaseMigrate { config_path } => {
-                ServiceBinaryCommand::DatabaseMigrate { config_path }
-            }
+            Command::DatabaseMigrate(args) => ServiceBinaryCommand::DatabaseMigrate(args),
             _ => unreachable!("database parser returns only migration"),
         });
     }
@@ -279,7 +371,7 @@ pub fn parse_service_binary_command(
 
 pub fn print_service_help(binary: &str) {
     println!(
-        "{binary}\n\nUSAGE:\n    {binary} [OPTIONS]\n    {binary} database migrate [--config PATH]\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled\n    -h, --help            Print this help"
+        "{binary}\n\nUSAGE:\n    {binary} [OPTIONS]\n    {binary} database migrate [--config PATH] [INSTALLATION AUTHORIZATION]\n\nOPTIONS:\n    --config PATH                  Read typed configuration from PATH\n    --initialize-installation      Explicitly initialize local storage or a verified empty PostgreSQL target\n    --initialization-reference REF Required operator change/ticket reference for initialization\n    --adopt-unbound-existing       Explicitly adopt a verified legacy PostgreSQL target\n    --adoption-reference REF       Required operator change/ticket reference for legacy adoption\n    --port PORT                    Override the listen port\n    --data-dir PATH                Override the persistent data root\n    --identity-mode MODE           no-login, self-managed, or awaken-cloud\n    --cloud-models MODE            disabled or enabled\n    -h, --help                     Print this help"
     );
 }
 
@@ -357,7 +449,7 @@ mod tests {
         );
         assert_eq!(
             parse_args(["database".into(), "migrate".into()]).unwrap(),
-            Command::DatabaseMigrate { config_path: None }
+            Command::DatabaseMigrate(DatabaseMigrateArgs::default())
         );
         assert_eq!(
             parse_args([
@@ -367,9 +459,11 @@ mod tests {
                 "/etc/awaken/config.toml".into(),
             ])
             .unwrap(),
-            Command::DatabaseMigrate {
-                config_path: Some("/etc/awaken/config.toml".into())
-            }
+            Command::DatabaseMigrate(DatabaseMigrateArgs {
+                config_path: Some("/etc/awaken/config.toml".into()),
+                initialization_reference: None,
+                adoption_reference: None,
+            })
         );
         assert_eq!(parse_args(["--help".into()]).unwrap(), Command::Help);
         assert_eq!(
@@ -458,10 +552,83 @@ mod tests {
                 "--config=/etc/awaken/control.toml".into(),
             ])
             .unwrap(),
-            ServiceBinaryCommand::DatabaseMigrate {
-                config_path: Some("/etc/awaken/control.toml".into())
-            },
+            ServiceBinaryCommand::DatabaseMigrate(DatabaseMigrateArgs {
+                config_path: Some("/etc/awaken/control.toml".into()),
+                initialization_reference: None,
+                adoption_reference: None,
+            }),
             "B4 migration remains inside the executable's fixed role"
         );
+    }
+
+    #[test]
+    fn database_installation_authority_requires_complete_explicit_pairs() {
+        /* Cause/effect graph: C1 initialization pair absent/complete/partial;
+         * C2 adoption pair absent/complete/partial; C3 either value is blank or
+         * duplicated. Effects: E1 ordinary migrate carries no bind authority;
+         * E2 each complete pair carries its exact audit reference and both may
+         * coexist for mixed physical targets; E3 every partial, ambiguous, or
+         * blank request rejects before config/database access. Decision table:
+         * A1 !C1+!C2=>E1; A2 complete C1+complete C2=>E2; A3 partial C1=>E3;
+         * A4 partial C2=>E3; A5 blank/duplicate=>E3. */
+        assert_eq!(
+            parse_args(["database".into(), "migrate".into()]).unwrap(),
+            Command::DatabaseMigrate(DatabaseMigrateArgs::default()),
+            "A1"
+        );
+        assert_eq!(
+            parse_args([
+                "database".into(),
+                "migrate".into(),
+                "--initialize-installation".into(),
+                "--initialization-reference=install-2048".into(),
+                "--adopt-unbound-existing".into(),
+                "--adoption-reference=change-2048".into(),
+            ])
+            .unwrap(),
+            Command::DatabaseMigrate(DatabaseMigrateArgs {
+                config_path: None,
+                initialization_reference: Some("install-2048".into()),
+                adoption_reference: Some("change-2048".into()),
+            }),
+            "A2"
+        );
+        for (rule, args) in [
+            (
+                "A3",
+                vec![
+                    "database".into(),
+                    "migrate".into(),
+                    "--initialize-installation".into(),
+                ],
+            ),
+            (
+                "A4",
+                vec![
+                    "database".into(),
+                    "migrate".into(),
+                    "--initialization-reference=install-2048".into(),
+                ],
+            ),
+            (
+                "A5",
+                vec![
+                    "database".into(),
+                    "migrate".into(),
+                    "--adopt-unbound-existing".into(),
+                    "--adoption-reference= ".into(),
+                ],
+            ),
+            (
+                "A4 adoption",
+                vec![
+                    "database".into(),
+                    "migrate".into(),
+                    "--adoption-reference=change-2048".into(),
+                ],
+            ),
+        ] {
+            assert!(parse_args(args).is_err(), "{rule}");
+        }
     }
 }

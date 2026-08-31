@@ -880,13 +880,16 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     // E3 Runtime, activation revision, WorkQueue, and outbox counts do not change;
     // C4 a concurrent winner has durably entered ActivationFailed before the
     // replay result is returned; E4 the loser receives typed terminal conflict
-    // and still performs no external effect.
+    // and still performs no external effect; C5 an AcceptDurableRoot caller
+    // replays that same failed operation; E5 it receives the failed root without
+    // changing the historical await-realization contract or repeating effects.
     //
     // | Rule | Receipt | Lowering | Durable root | Effect |
     // |---|---|---|---|---|
     // | R1 | absent | first | absent | E1 |
     // | R2 | exact | changed | activated | E2+E3 |
     // | R3 | exact | same | ActivationFailed | E3+E4 |
+    // | R4 | exact accept | same | ActivationFailed | E3+E5 |
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("create replay repository"),
@@ -994,6 +997,30 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         environments.dispatch_calls.load(Ordering::SeqCst),
         1,
         "R3/E3"
+    );
+
+    let mut accepted_terminal_replay = creation_command("create-replay-effects");
+    accepted_terminal_replay.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    accepted_terminal_replay.idempotency = Some(awaken_session_contract::IdempotencyRecord {
+        key: "create-replay-effects".into(),
+        payload_hash: "stable-product-request".into(),
+    });
+    let accepted_failed = application
+        .accept_session(accepted_terminal_replay)
+        .await
+        .expect("R4/E5 accepted failed operation root");
+    assert_eq!(
+        accepted_failed.execution,
+        awaken_session_contract::SessionExecutionState::ActivationFailed,
+        "R4/E5"
+    );
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R4/E3");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R4/E3");
+    assert_eq!(
+        environments.dispatch_calls.load(Ordering::SeqCst),
+        1,
+        "R4/E3"
     );
 }
 

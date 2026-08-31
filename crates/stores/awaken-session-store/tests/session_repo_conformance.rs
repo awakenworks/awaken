@@ -1888,12 +1888,25 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
-    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+    // Fixture admission table: no configured URL + unreachable local default
+    // may skip; configured URL + unreachable database must fail the gate.
+    let configured = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+        Ok(url) => Some(url),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("AWAKEN_TEST_DATABASE_URL is not valid Unicode")
+        }
+    };
+    let url = configured.clone().unwrap_or_else(|| {
+        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_owned()
     });
-    let Ok(admin) = PgPool::connect(&url).await else {
-        println!("[skip] no Postgres reachable");
-        return;
+    let admin = match PgPool::connect(&url).await {
+        Ok(pool) => pool,
+        Err(error) if configured.is_none() => {
+            println!("[skip] no Postgres reachable: {error}");
+            return;
+        }
+        Err(error) => panic!("configured AWAKEN_TEST_DATABASE_URL is unreachable: {error}"),
     };
     let _ = admin
         .execute("DROP SCHEMA IF EXISTS t_session_root_cas CASCADE")

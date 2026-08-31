@@ -1,6 +1,55 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::Role;
+
+#[derive(Debug, Clone)]
+pub struct CoordinatorStoreConfig {
+    pub sessions: awaken_control::StoreBackend,
+    pub captured_content: awaken_control::StoreBackend,
+}
+
+/// Fully resolved bootstrap truth shared by the command, server process, and
+/// runtime host. Database URLs and key material are intentionally absent from
+/// its rendered reports.
+#[derive(Debug, Clone)]
+pub struct ResolvedDeployment {
+    pub role: Role,
+    pub mode: OperatingMode,
+    pub bind: String,
+    pub internal_bind: Option<String>,
+    pub data_dir: PathBuf,
+    pub expected_platform_workspace_id: Option<String>,
+    pub config_path: PathBuf,
+    pub config_file_exists: bool,
+    pub no_browser: bool,
+    pub suite_hub_url: Option<String>,
+    pub ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors,
+    pub run_local_pool: bool,
+    pub worker_server: Option<String>,
+    pub worker: super::WorkerBootstrap,
+    pub worker_trust_credentials_file: Option<PathBuf>,
+    pub identity_mode: awaken_control::ManagementIdentityMode,
+    pub cloud_models: CloudModelMode,
+    pub org_id: String,
+    pub iam_workspaces: Vec<String>,
+    pub cloud_iam: super::CloudIamConfig,
+    pub executable_agent_registration: super::ExecutableAgentRegistrationConfig,
+    pub control_service: super::ControlServiceConfig,
+    pub mcp_bearer_token: Option<String>,
+    pub admin_listen: Option<String>,
+    pub runtime: awaken_runtime_host::DeploymentConfig,
+    pub observability: awaken_observability::ObservabilityConfig,
+    pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
+    pub configured_acp_clis: Option<Vec<String>>,
+    pub control: awaken_control::ControlStoreConfig,
+    pub coordinator: CoordinatorStoreConfig,
+    pub resources: ResourceStoreBackend,
+    pub(crate) workspace_data_lease_guard: Option<super::WorkspaceDataLeaseGuard>,
+    pub seal_key: super::SealKeySource,
+    pub deprecations: Vec<String>,
+    pub origins: BTreeMap<String, String>,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OperatingMode {

@@ -28,6 +28,7 @@ rusqlite = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 tokio.workspace = true
 tracing = "0.1"
+tempfile = "3"
 # The portable scoped-migration bundle (one `managed_session` schema, both backends).
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
@@ -35,8 +36,6 @@ awaken-scoped-migration-sqlite.workspace = true
 [dev-dependencies]
 awaken-provisioning-contract.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-# The sqlite backend tests open a temp on-disk database.
-tempfile = "3"
 # Property-based verification of the tenant-isolation fence (ADR-0059).
 proptest = { workspace = true }
 

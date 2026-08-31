@@ -51,10 +51,16 @@ EXTENSION_CRATES = {
     "awaken-ext-permission",
 }
 FORBIDDEN_NEUTRAL_TERMS = {"managed"}
-BUILTIN_TOOL_IDS = {
+ACTIVE_BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
-    "send_message", "cancel_task", "recover_failed_messages", "agent_run",
+    "agent_run", "list_agents", "send_to_agent",
 }
+RETIRED_BUILTIN_TOOL_IDS = {
+    "move", "delete", "repository_inspect", "repository_commit",
+    "send_message", "cancel_task", "recover_failed_messages",
+}
+FORBIDDEN_BUILTIN_TOOL_ID_PREFIXES = ("git_", "repository_")
+BUILTIN_TOOL_IDS = ACTIVE_BUILTIN_TOOL_IDS | RETIRED_BUILTIN_TOOL_IDS
 FORBIDDEN_NEUTRAL_TYPE_NAMES = {
     "TypedTool": "use Tool for the typed API and RawTool for the low-level adapter",
     "BackgroundTask": "detached-tool state belongs in awaken-ext-background-task",
@@ -66,11 +72,19 @@ FORBIDDEN_NEUTRAL_PHRASES = {
     "worker placement": "worker placement is outside runtime core",
     "sandbox placement": "sandbox placement is outside runtime core",
 }
+ACTIVE_BUILTIN_SYMBOLS = {
+    "AgentRun", "Bash", "Edit", "Glob", "Grep", "ListAgents", "Read",
+    "SendToAgent", "WebFetch", "WebSearch", "Write",
+}
+RETIRED_BUILTIN_SYMBOLS = {
+    "CancelTask", "DeleteTool", "MoveTool", "RecoverFailedMessages",
+    "RepositoryCommitTool", "RepositoryInspectTool", "SendMessage",
+}
 FORBIDDEN_NEUTRAL_SYMBOLS = {
-    **{name: f"{name} is a concrete builtin owned by awaken-ext-builtin-tools" for name in (
-        "AgentRun", "Bash", "CancelTask", "Edit", "Glob", "Grep", "Read",
-        "RecoverFailedMessages", "SendMessage", "WebFetch", "WebSearch", "Write",
-    )},
+    **{name: f"{name} is a concrete active builtin owned by awaken-ext-builtin-tools"
+       for name in ACTIVE_BUILTIN_SYMBOLS},
+    **{name: f"{name} is a retired builtin and must not be reintroduced"
+       for name in RETIRED_BUILTIN_SYMBOLS},
     "ConfigPublicationCoordinator": "configuration publication stays outside runtime core",
     "RegistryCompiler": "registry compilation stays outside runtime core",
 }
@@ -130,11 +144,69 @@ def check_neutral_code_boundaries() -> list[str]:
     return errors
 
 
+def _forbidden_builtin_source_errors(rel: Path, content: str) -> list[str]:
+    errors: list[str] = []
+    retired_ids = {
+        tool: re.compile(rf'"{re.escape(tool)}"')
+        for tool in RETIRED_BUILTIN_TOOL_IDS
+    }
+    retired_symbols = _patterns(RETIRED_BUILTIN_SYMBOLS)
+    string_literal = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"')
+    for tool, pattern in retired_ids.items():
+        if pattern.search(content):
+            errors.append(f"{rel}: retired builtin tool id {tool!r} must not be reintroduced")
+    for symbol, pattern in retired_symbols.items():
+        if pattern.search(content):
+            errors.append(f"{rel}: retired builtin tool symbol {symbol!r} must not be reintroduced")
+    for literal in string_literal.findall(content):
+        if literal in RETIRED_BUILTIN_TOOL_IDS:
+            continue
+        if literal == "git" or literal.startswith(FORBIDDEN_BUILTIN_TOOL_ID_PREFIXES):
+            errors.append(
+                f"{rel}: Git/repository-specific builtin tool id {literal!r} "
+                "must remain opaque Bash data"
+            )
+    return errors
+
+
+def selftest_builtin_tool_ownership() -> None:
+    # Cause/effect decision table: C1=safe Bash/protocol wording => E1 accepted;
+    # C2=retired exact ID, C3=Git/repository ID, C4=retired tool type => E2 rejected.
+    # Rules S1=C1=>E1; S2=C2|C3|C4=>E2. This tests the same helper used on source.
+    rel = Path("crates/runtime/awaken-ext-builtin-tools/src/example.rs")
+    assert not _forbidden_builtin_source_errors(
+        rel,
+        'const ID: &str = "bash"; async fn cancel_task() {}',
+    ), "S1/E1"
+    for forbidden in (
+        'const ID: &str = "send_message";',
+        'const ID: &str = "git_status";',
+        'const ID: &str = "repository_apply";',
+        "struct RepositoryInspectTool;",
+    ):
+        assert _forbidden_builtin_source_errors(rel, forbidden), f"S2/E2: {forbidden}"
+
+
 def check_builtin_tool_ownership() -> list[str]:
+    """Keep retired and Git-specific commands out of the builtin owner.
+
+    Cause/effect decision table: C1=an exact retired id literal is present;
+    C2=a Git/repository-specific id literal is present; C3=a retired concrete
+    tool symbol is present. R1=C1|C2|C3 => fail before the command can enter the
+    model catalog. The Rust catalog test independently fixes the complete active
+    set; this static check catches the forbidden source even without compiling.
+    """
     errors: list[str] = []
     for crate_name in EXTENSION_CRATES:
         if next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None) is None:
             errors.append(f"missing required extension crate {crate_name!r}")
+    manifest = next(CRATES.glob("*/awaken-ext-builtin-tools/Cargo.toml"), None)
+    if manifest is None:
+        return errors
+    for path in sorted((manifest.parent / "src").rglob("*.rs")):
+        rel = path.relative_to(REPO_ROOT)
+        content = path.read_text(encoding="utf-8")
+        errors.extend(_forbidden_builtin_source_errors(rel, content))
     return errors
 
 
@@ -234,6 +306,7 @@ def main() -> int:
     _execution_ownership_fitness.selftest()
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
+    selftest_builtin_tool_ownership()
     errors = (
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
         + check_neutral_code_boundaries()

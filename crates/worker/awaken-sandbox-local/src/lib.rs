@@ -852,25 +852,6 @@ fn jail_args(
     _deny_egress: bool,
 ) -> Result<Value, ToolError> {
     let escape = |e: EscapeError| ToolError::Execution(e.to_string());
-    let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
-        if let Some(Value::String(p)) = args.get(key) {
-            let jailed = root.resolve(p).map_err(escape)?;
-            let relative = jailed
-                .strip_prefix(root.root())
-                .map_err(|_| ToolError::Execution(format!("path `{p}` escaped its environment")))?;
-            // `outputs/...` is an Agent-facing logical alias for the single
-            // SandboxSpec output directory. Inspect the normalized relative path
-            // so `outputs/../x` stays workspace `x` instead of escaping through a
-            // raw `host_outputs.join("../x")`.
-            let resolved = if let Ok(suffix) = relative.strip_prefix("outputs") {
-                host_outputs.join(suffix)
-            } else {
-                jailed
-            };
-            args[key] = Value::String(resolved.to_string_lossy().into_owned());
-        }
-        Ok(())
-    };
     let map_output_alias =
         |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
             let Some(Value::String(input)) = args.get(key) else {
@@ -907,11 +888,6 @@ fn jail_args(
             map_output_alias(&mut args, "path", root)?;
         }
         "grep" => map_output_alias(&mut args, "path", root)?,
-        "delete" => rebase(&mut args, "path", root)?,
-        "move" => {
-            rebase(&mut args, "source", root)?;
-            rebase(&mut args, "destination", root)?;
-        }
         "glob" => map_output_alias(&mut args, "path", root)?,
         // Bash is confined when its persistent process is launched. Wrapping an
         // individual command here would create a fresh inner shell and lose
@@ -1530,34 +1506,6 @@ mod tests {
     }
 
     #[test]
-    fn jail_rebases_both_move_endpoints_and_rejects_move_or_delete_escape() {
-        // Path-boundary decision table: C1 move has two in-root endpoints -> E1
-        // both are rebased; C2 either move endpoint traverses above root -> E2
-        // reject the whole call; C3 delete traverses above root -> E3 reject.
-        // This proves Dream's rename/delete capabilities cannot widen its mount.
-        let root = IsolatedRoot::new("/env");
-        let moved = jail_args(
-            "move",
-            serde_json::json!({"source":"old.md", "destination":"topic/new.md"}),
-            &root,
-            test_outputs(),
-            false,
-        )
-        .unwrap();
-        assert_eq!(moved["source"], "/env/old.md");
-        assert_eq!(moved["destination"], "/env/topic/new.md");
-        for (tool, arguments) in [
-            (
-                "move",
-                serde_json::json!({"source":"old.md", "destination":"../escape.md"}),
-            ),
-            ("delete", serde_json::json!({"path":"../escape.md"})),
-        ] {
-            assert!(jail_args(tool, arguments, &root, test_outputs(), false).is_err());
-        }
-    }
-
-    #[test]
     fn deny_egress_bash_commands_are_not_wrapped_per_call() {
         // Per-call wrapping would start an inner shell and discard `cd`,
         // exports, aliases, and functions after every invocation.
@@ -1657,9 +1605,7 @@ mod tests {
             false,
         );
         let ids: Vec<_> = tools.iter().map(|t| t.id().to_string()).collect();
-        for expected in [
-            "read", "write", "edit", "move", "delete", "glob", "grep", "bash",
-        ] {
+        for expected in ["read", "write", "edit", "glob", "grep", "bash"] {
             assert!(ids.contains(&expected.to_string()), "missing {expected}");
         }
     }

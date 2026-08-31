@@ -510,18 +510,22 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
 
 #[tokio::test]
 async fn namespace_native_process_and_agent_channel_share_one_live_environment() {
-    // Namespace Workspace-path cause/effect graph: C1 the admitted provider
+    // Namespace Workspace-path cause/effect graph: C0 the caller is an ordinary
+    // developer run or the required substrate profile; C1 the admitted provider
     // offers tool transparency and path fidelity; C2 a sandbox process writes
     // through the canonical absolute `/workspace`; C3 the typed file surface
     // reads/writes that Session-owned tree; C4 an ACP process reads the same
     // canonical absolute paths. Effects: E1 the typed read sees C2's bytes and
-    // E2 the ACP process sees both C2 and C3 without an alias or path rewrite.
+    // E2 the ACP process sees both C2 and C3 without an alias or path rewrite;
+    // E3 an unavailable optional substrate is reported and skipped; E4 the
+    // required profile fails rather than converting a skipped proof to green.
     //
-    // | Rule | provider admitted | process write | typed file I/O | ACP read | Effect |
-    // |---|---|---|---|---|---|
-    // | N1 | yes | yes | read process bytes | no | E1 |
-    // | N2 | yes | yes | write typed bytes | yes | E1+E2 |
-    // | N0 | no path fidelity | any | any | any | fail before environment creation (provisioning decision table) |
+    // | Rule | required profile | provider admitted | process write | typed file I/O | ACP read | Effect |
+    // |---|---|---|---|---|---|---|
+    // | N0 | no | no | no | no | no | E3 plus fail-closed provider-selection assertion |
+    // | NR | yes | no | no | no | no | E4 |
+    // | N1 | either | yes | yes | read process bytes | no | E1 |
+    // | N2 | either | yes | yes | write typed bytes | yes | E1+E2 |
     //
     // Constraint: WorkspaceLayout plus Sandbox capability admission remain the
     // sole path authority. This test must not add a host-path alias, symlink, or
@@ -531,7 +535,13 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     namespace_spec.scope = "session-namespace".into();
     namespace_spec.isolation = IsolationClass::Namespace;
     let provider = NamespaceProvider::new(base.path());
+    let namespace_workspace_required =
+        std::env::var("AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE").as_deref() == Ok("1");
     if let Err(probe_error) = provider.probe_ready().await {
+        assert!(
+            !namespace_workspace_required,
+            "NR/E4 required Namespace /workspace substrate is unavailable: {probe_error}"
+        );
         let rejection = crate::sandbox_source::resolve_sandbox_tier(
             crate::deployment_config::SandboxTier::Namespace,
             false,
@@ -545,6 +555,10 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     }
     let capabilities = provider.capabilities();
     if !capabilities.path_fidelity {
+        assert!(
+            !namespace_workspace_required,
+            "NR/E4 required Namespace provider lacks /workspace path fidelity"
+        );
         let requirements = pc::SandboxRequirements::from_spec(&namespace_spec, true);
         assert!(requirements.path_fidelity, "N0 path requirement");
         assert!(
@@ -702,14 +716,8 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
 }
 
 #[tokio::test]
-#[should_panic(
-    expected = "KNOWN GAP: a container Skill read failure must not become an empty registry"
-)]
 async fn managed_skill_refresh_propagates_container_read_failure() {
-    /* Temporary expected-failure regression; remove `should_panic` when the
-     * production fix lands.
-     *
-     * Cause/effect graph: C1 a Managed repository Skill root is admitted;
+    /* Cause/effect graph: C1 a Managed repository Skill root is admitted;
      * C2 the container read backing the registered-root refresh succeeds or
      * fails. Effects: E1 success may build the one repository registry (the
      * neighboring container test owns that row); E2 failure aborts registry
@@ -751,7 +759,7 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
     {
         Err(error) => error,
         Ok(_) => {
-            panic!("KNOWN GAP: a container Skill read failure must not become an empty registry")
+            panic!("a container Skill read failure must not become an empty registry")
         }
     };
     assert!(error.contains("scripted Skill read outage"), "SR2: {error}");
@@ -759,14 +767,85 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
 }
 
 #[tokio::test]
-#[should_panic(
-    expected = "KNOWN GAP: invalid UTF-8 from container Skill refresh must not become an empty registry"
-)]
+async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
+    /* Cause/effect graph: C1 the tool changes workspace bytes (Bash/Write/Edit)
+     * or is read-only perception; C2 the post-dispatch catalog refresh succeeds
+     * or fails. Effects: E1 perception keeps its result without refreshing; E2
+     * mutation+refresh failure clears the last-good catalog,
+     * closes the Hand, and returns the Runtime-only fatal signal; E3 neither a
+     * stale catalog nor a second dispatch is admitted. Decision table:
+     * PT1=content-mutation+refresh-ok=>normal result (neighboring bound-hand
+     * test); PT2=perception+refresh-fails-if-run=>normal result here;
+     * PT3=content-mutation+refresh-error=>E2+E3 here. */
+    let provider = Arc::new(FakeContainerProvider::default());
+    let environment = SessionEnvironmentProvider::container(
+        provider.clone(),
+        Vec::new(),
+        Arc::new(FakeHandExecutorFactory),
+        "/usr/local/bin/awaken-sandbox",
+    )
+    .create(&spec())
+    .await
+    .unwrap();
+    environment.register_skill_dir("skills");
+    provider
+        .shared
+        .lock()
+        .unwrap()
+        .insert("__fail_skill_read".into(), Vec::new());
+
+    let perception = environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "read-only".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"path": "SKILL.md"}),
+        })
+        .await
+        .expect("PT2 perception does not mutate Skill files");
+    assert_eq!(perception.text(), "bound-hand-ok", "PT2");
+
+    let error = environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "controlled-refresh".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "true"}),
+        })
+        .await
+        .expect_err("PT2 stale post-modification Skill cache must fail closed");
+    assert!(
+        matches!(
+            &error,
+            awaken_runtime_contract::tool::ToolError::StateInvalidatedAfterDispatch(detail)
+                if detail.contains("scripted Skill read outage")
+        ),
+        "PT3 original refresh diagnostic: {error}"
+    );
+    let stale = environment
+        .scan_skill_dir("skills")
+        .expect_err("PT3 invalidation must not expose the last-good catalog");
+    assert!(stale.to_string().contains("unavailable"), "PT3: {stale}");
+    assert!(
+        matches!(
+            environment
+                .tool_executor()
+                .invoke(&ToolCall {
+                    call_id: "no-replay".into(),
+                    tool_id: "bash".into(),
+                    arguments: serde_json::json!({"command": "true"}),
+                })
+                .await,
+            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        ),
+        "PT3 closed Hand rejects every later dispatch"
+    );
+    environment.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
-    /* Temporary expected-failure regression; remove `should_panic` when the
-     * production fix lands.
-     *
-     * Cause/effect graph: C1 the container refresh returns an exact
+    /* Cause/effect graph: C1 the container refresh returns an exact
      * `<id>/SKILL.md`; C2 its bytes are valid or invalid UTF-8. Effects: E1
      * valid bytes enter the one repository snapshot; E2 invalid bytes surface
      * a construction error; E3 invalid bytes never disappear into a healthy
@@ -804,9 +883,9 @@ async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
     .await
     {
         Err(error) => error,
-        Ok(_) => panic!(
-            "KNOWN GAP: invalid UTF-8 from container Skill refresh must not become an empty registry"
-        ),
+        Ok(_) => {
+            panic!("invalid UTF-8 from Skill refresh must not become an empty registry")
+        }
     };
     assert!(error.contains("UTF-8"), "SU2: {error}");
     environment.dispose().await.unwrap();

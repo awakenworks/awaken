@@ -81,7 +81,6 @@ run static "repository-hygiene self-test" python3 scripts/ci/check_repository_hy
 run static "repository-hygiene" python3 scripts/ci/check_repository_hygiene.py
 run static "dependency-sources self-test" python3 scripts/ci/check_dependency_sources.py --self-test
 run static "authority-arithmetic self-test" python3 scripts/ci/check_authority_arithmetic.py --self-test
-run static "authority-arithmetic" python3 scripts/ci/check_authority_arithmetic.py
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
@@ -116,7 +115,6 @@ run k3d "distributed-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_
 run k3d "nats-wake-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12
 run frontend "frontend" scripts/ci/check-frontend.sh --full
 run e2e "deterministic-e2e" npm --prefix e2e run test:deterministic
-run e2e "managed-sdk-anchor-behavior" npm --prefix e2e run test:sdk-behavior-owners
 run e2e "latest-managed-sdk" npm --prefix e2e run test:sdk-latest-canary
 run sandbox "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates
 

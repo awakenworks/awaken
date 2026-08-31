@@ -13,6 +13,9 @@ use crate::config;
 pub(super) struct ProcessStores {
     /// Durable installation root used to persist the platform Workspace id.
     pub(super) workspace_root: Option<std::path::PathBuf>,
+    /// The one installation Workspace coordinate resolved by store startup and
+    /// passed unchanged to IAM, Control, and Coordinator adapters.
+    pub(super) platform_workspace: String,
     pub(super) control: Option<ControlStores>,
     pub(super) coordinator: Option<CoordinatorStores>,
 }
@@ -62,10 +65,135 @@ pub(super) struct CoordinatorStores {
     pub(super) environment_work: Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
 }
 
+/// Every typed port backed by the one canonical Managed Session repository.
+/// Process assembly retains these views and never opens the shared store twice.
+pub(super) struct SessionStoreViews {
+    pub(super) sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,
+    pub(super) memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+    pub(super) dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PostgresSchemaMode {
     Migrate,
     Verify,
+}
+
+pub(super) fn ensure_store_parent(backend: &awaken_control::StoreBackend) -> Result<(), String> {
+    if let awaken_control::StoreBackend::Sqlite(path) = backend
+        && let Some(parent) = path.parent()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create store directory {}: {error}", parent.display()))?;
+    }
+    Ok(())
+}
+
+/// Open the shared coordinator database's canonical schema owner before any
+/// sibling WorkQueue/ApplicationAccess adapter can create its own ledger.
+pub(super) async fn open_session_store_views(
+    backend: &awaken_control::StoreBackend,
+    postgres_schema: PostgresSchemaMode,
+) -> Result<SessionStoreViews, String> {
+    use awaken_control::StoreBackend;
+
+    ensure_store_parent(backend)?;
+    match backend {
+        StoreBackend::Sqlite(path) => {
+            let repository = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                    .map_err(|error| format!("open sessions SQLite {}: {error}", path.display()))?,
+            );
+            Ok(SessionStoreViews {
+                sessions: repository.clone(),
+                deployments: repository.clone(),
+                memory_extractions: repository.clone(),
+                dream_process_store: repository,
+            })
+        }
+        StoreBackend::Postgres(url) => {
+            let repository = Arc::new(
+                match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_session_store::PostgresManagedSessionRepository::connect(url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_session_store::PostgresManagedSessionRepository::connect_existing(
+                            url,
+                        )
+                        .await
+                    }
+                }
+                .map_err(|error| format!("connect sessions Postgres: {error}"))?,
+            );
+            Ok(SessionStoreViews {
+                sessions: repository.clone(),
+                deployments: repository.clone(),
+                memory_extractions: repository.clone(),
+                dream_process_store: repository,
+            })
+        }
+    }
+}
+
+pub(super) async fn open_environment_work(
+    backend: &awaken_control::StoreBackend,
+    postgres_schema: PostgresSchemaMode,
+) -> Result<Arc<dyn awaken_session_contract::work_queue::WorkQueue>, String> {
+    use awaken_control::StoreBackend;
+
+    ensure_store_parent(backend)?;
+    match backend {
+        StoreBackend::Sqlite(path) => Ok(Arc::new(
+            awaken_work_store::SqliteWorkQueue::open(&path.to_string_lossy())
+                .map_err(|error| format!("open work queue SQLite: {error}"))?,
+        )),
+        StoreBackend::Postgres(url) => Ok(Arc::new(
+            match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_work_store::PostgresWorkQueue::connect(url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_work_store::PostgresWorkQueue::connect_existing(url).await
+                }
+            }
+            .map_err(|error| format!("connect work queue Postgres: {error}"))?,
+        )),
+    }
+}
+
+pub(super) async fn open_application_access(
+    backend: &awaken_control::StoreBackend,
+    postgres_schema: PostgresSchemaMode,
+) -> Result<Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, String> {
+    use awaken_control::StoreBackend;
+
+    let store = match backend {
+        StoreBackend::Sqlite(path) => {
+            awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
+                &path.to_string_lossy(),
+            )
+            .await
+            .map_err(|error| format!("open application access SQLite: {error}"))?
+        }
+        StoreBackend::Postgres(url) => match postgres_schema {
+            PostgresSchemaMode::Migrate => {
+                awaken_coordinator::application_access_store::ApplicationAccessStore::connect_postgres(
+                    url,
+                )
+                .await
+            }
+            PostgresSchemaMode::Verify => {
+                awaken_coordinator::application_access_store::ApplicationAccessStore::connect_existing_postgres(
+                    url,
+                )
+                .await
+            }
+        }
+        .map_err(|error| format!("connect application access Postgres: {error}"))?,
+    };
+    Ok(Arc::new(store))
 }
 
 /// One independently owned schema group selected by the deployment role. The

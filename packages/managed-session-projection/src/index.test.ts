@@ -346,7 +346,8 @@ describe("Managed Session Runtime and admission decision table", () => {
    * nonterminal active/recovery work. Decision rules A1 idle+unknown/idle/error+
    * empty+healthy=>message; A2 any non-idle aggregate=>deny message; A3 any gate
    * =>deny message; A4 idle+pending=>tool reply/interrupt. Projection-unhealthy
-   * recovery is isolated below so its expected failure cannot mask this table.
+   * recovery has its own table below, so it cannot weaken these ordinary
+   * admission expectations.
    */
   it("conservatively joins aggregate and Event truth for every input consumer", () => {
     const unknown = projectManagedSessionRuntime([]);
@@ -396,12 +397,10 @@ describe("Managed Session Runtime and admission decision table", () => {
    * | D1 | idle/nonterminal | unhealthy | none/unknown | E1 + E2 |
    * | D2 | terminated | any | any | deny every control (terminal table above) |
    *
-   * Known-gap characterization: current admission makes projection health a
-   * prerequisite for Interrupt. The single current-behavior assertion fails
-   * when recovery admission is separated from message/reply admission and must
-   * then be flipped to the target `canInterrupt: true`; setup errors stay red.
+   * The aggregate is the nonterminal fence for control-only recovery; an
+   * unknown aggregate or any terminal source remains fully denied.
    */
-  it("currently disables force recovery when pending projection is damaged", () => {
+  it("keeps only force recovery available when pending projection is damaged", () => {
     const noVisiblePending = projectManagedSessionRuntime([event({
       id: "idle-before-damage",
       type: "session.status_idle",
@@ -415,9 +414,19 @@ describe("Managed Session Runtime and admission decision table", () => {
       admission: {
         canSendMessage: false,
         canResolveTools: false,
-        canInterrupt: false,
+        canInterrupt: true,
       },
       pendingToolCount: 0,
+    });
+    expect(managedSessionAdmission(noVisiblePending, undefined, false)).toEqual({
+      canSendMessage: false,
+      canResolveTools: false,
+      canInterrupt: false,
+    });
+    expect(managedSessionAdmission(noVisiblePending, "terminated", false)).toEqual({
+      canSendMessage: false,
+      canResolveTools: false,
+      canInterrupt: false,
     });
   });
 

@@ -205,6 +205,10 @@ fn resource_input_capability() -> Value {
 /// the wire contract while descriptions and input schemas come from the live
 /// runtime catalog, so authoring clients do not duplicate either authority.
 fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
+    let agent_default_config = json!({
+        "enabled": true,
+        "permission_policy": { "type": "always_allow" }
+    });
     let members = awaken_session_contract::AGENT_TOOLSET_TOOL_IDS
         .iter()
         .map(|name| {
@@ -241,10 +245,7 @@ fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
             "type": "agent_toolset_20260401",
             "source_kind": "agent",
             "dynamic_members": false,
-            "default_config": {
-                "enabled": true,
-                "permission_policy": { "type": "always_allow" }
-            },
+            "default_config": agent_default_config,
             "members": members,
         }),
         json!({
@@ -442,6 +443,15 @@ mod tests {
 
     #[test]
     fn managed_toolset_catalog_uses_contract_members_and_source_specific_defaults() {
+        // Capability cause/effect table: C1 Agent Toolset default is allow; C2 a
+        // member is/is not controlled by the separate transient preset; C3 its
+        // descriptor is present/absent. Effects: E1 the one Toolset default owns
+        // ordinary picker permission; E2 C2 is only classification metadata; E3
+        // C3 projects exact availability/schema. R1 Bash=C1+controlled+present
+        // => allow default+flagged+available; R2 read=C1+ordinary+absent => allow
+        // default+unflagged+unavailable. No member-level default is emitted. The
+        // server preset transform is tested by
+        // its Session-contract owner and is not rebuilt by this capability view.
         let tools = vec![ToolDescriptor::pinned(
             "builtin:test",
             "bash",
@@ -473,11 +483,13 @@ mod tests {
         assert_eq!(bash["available"], true);
         assert_eq!(bash["description"], "Run a shell command.");
         assert_eq!(bash["controlled_modification"], true);
+        assert!(bash.get("default_permission_policy").is_none());
         let read = members
             .iter()
             .find(|member| member["name"] == "read")
             .unwrap();
         assert_eq!(read["controlled_modification"], false);
+        assert!(read.get("default_permission_policy").is_none());
         let web_search = members
             .iter()
             .find(|member| member["name"] == "web_search")

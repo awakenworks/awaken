@@ -158,6 +158,17 @@ transitional Environment binding in `runtime`; Coordinator receives `runtime`
 and the co-located Resources component's `resources`; Workers receive no
 database URL or seal key. The two role-specific migration Jobs use the same
 configuration and therefore migrate only schemas their target role can acquire.
+Those rollout Jobs intentionally run ordinary `database migrate` and never carry
+first-install authority. Production orchestration must create the database and
+configuration first, then run one disposable Job per role with the same image,
+mounts, network policy, and config plus
+`--initialize-installation --initialization-reference <CHANGE>`. Only after both
+one-time Jobs succeed may it release the unchanged rollout Jobs. The K3D E2E
+implements that sequence with `initialize_role_installation`; it does not add a
+second manifest or identity source. Later rollouts use ordinary exact-only
+migration. Replacing or losing a database therefore makes the rollout Jobs fail
+closed instead of silently constructing an empty system under the old Workspace
+identity.
 Coordinator calls Control's audit, secret-free credential-selection, and
 webhook-delivery ports through the dedicated bearer-authenticated boundary;
 this token grants no database connection.

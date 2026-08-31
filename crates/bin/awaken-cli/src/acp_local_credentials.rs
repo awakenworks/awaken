@@ -39,7 +39,18 @@ pub async fn prepare_local_worker(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
 ) -> Result<PreparedLocalWorker, String> {
-    let prepared = prepare_local_acp(deployment, seal_key).await?;
+    let installations =
+        crate::installation_binding::verify_deployment_installations(deployment).await?;
+    let workspace = installations.platform_workspace_before_write()?;
+    prepare_local_worker_with_workspace(deployment, seal_key, workspace).await
+}
+
+pub(crate) async fn prepare_local_worker_with_workspace(
+    deployment: &mut crate::config::ResolvedDeployment,
+    seal_key: &[u8; 32],
+    workspace: Option<String>,
+) -> Result<PreparedLocalWorker, String> {
+    let prepared = prepare_local_acp_with_workspace(deployment, seal_key, workspace).await?;
     let worker = match prepared {
         Some(prepared) => PreparedLocalWorker {
             resolver: Some(prepared.resolver),
@@ -82,6 +93,17 @@ pub async fn prepare_local_acp(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
 ) -> Result<Option<PreparedLocalAcp>, String> {
+    let installations =
+        crate::installation_binding::verify_deployment_installations(deployment).await?;
+    let workspace = installations.platform_workspace_before_write()?;
+    prepare_local_acp_with_workspace(deployment, seal_key, workspace).await
+}
+
+async fn prepare_local_acp_with_workspace(
+    deployment: &mut crate::config::ResolvedDeployment,
+    seal_key: &[u8; 32],
+    workspace: Option<String>,
+) -> Result<Option<PreparedLocalAcp>, String> {
     if !uses_host_acp_discovery(deployment) {
         // Container-backed ACP executables belong to the configured image/Pod,
         // not the coordinator host. Host discovery would incorrectly erase a
@@ -98,7 +120,13 @@ pub async fn prepare_local_acp(
     ));
     let stores =
         awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
-    prepare_local_acp_with(deployment, discovery, installer, negotiator, stores).await
+    let workspace = workspace.ok_or_else(|| {
+        "local ACP preparation requires the admitted platform Workspace coordinate".to_owned()
+    })?;
+    prepare_local_acp_with(
+        deployment, discovery, installer, negotiator, stores, workspace,
+    )
+    .await
 }
 
 /// Provide the one registration-bound Memory adapter at the executable edge.
@@ -185,14 +213,13 @@ async fn prepare_local_acp_with(
     installer: Arc<dyn AcpWrapperInstaller>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
     stores: awaken_control::InferenceMaterializationStores,
+    workspace: String,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     let wrapper_root = deployment.data_dir.join("acp-wrappers");
     let selected_cli_ids = deployment
         .configured_acp_clis
         .as_ref()
         .map(|cli_ids| cli_ids.iter().cloned().collect::<BTreeSet<_>>());
-    let workspace =
-        awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
     let probe_cwd = deployment.data_dir.join("acp-probe");
     tokio::fs::create_dir_all(&probe_cwd)
         .await
@@ -509,6 +536,62 @@ mod tests {
 
     fn fixed_negotiator() -> Arc<dyn AcpCapabilityNegotiator> {
         Arc::new(FixedNegotiator { fail: false })
+    }
+
+    #[tokio::test]
+    async fn continuity_fence_precedes_public_acp_effects() {
+        /* Cause/effect graph: C1 expected Workspace marker matches; C2 Session
+         * authority is corrupt. Effects: E1 the canonical
+         * session_storage_invalid diagnostic terminates the public ACP entry;
+         * E2 the data tree and deployment flags remain unchanged; therefore E3
+         * discovery, acquisition, credential-store opening/registration,
+         * probe/workspace provisioning, and wrapper installation are never
+         * reached. Decision rule A1=C1+C2=>E1+E2+E3. The valid fresh continuity
+         * row is owned by the config/report decision table; the
+         * startup-discovery test below covers the post-gate injected seam. That
+         * seam starts only after this public entry's store boundary and does not
+         * duplicate the continuity gate. */
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("platform-workspace-id"),
+            "workspace_expected",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("sessions.db"),
+            b"SQLite format 3\0truncated",
+        )
+        .unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        deployment.expected_platform_workspace_id = Some("workspace_expected".into());
+        let snapshot = || {
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let before = snapshot();
+        let initial_disable_local_pool = deployment.runtime.disable_local_pool;
+        let initial_run_local_pool = deployment.run_local_pool;
+
+        let error = match prepare_local_acp(&mut deployment, &[0x61; 32]).await {
+            Ok(_) => panic!("A1 corrupt Session authority must stop public ACP preparation"),
+            Err(error) => error,
+        };
+        assert!(error.starts_with("session_storage_invalid:"), "A1: {error}");
+        assert_eq!(snapshot(), before, "A1/E2 data tree");
+        assert_eq!(
+            deployment.runtime.disable_local_pool, initial_disable_local_pool,
+            "A1/E2 runtime profile"
+        );
+        assert_eq!(
+            deployment.run_local_pool, initial_run_local_pool,
+            "A1/E2 deployment profile"
+        );
+        assert!(deployment.local_acp_observations.is_empty(), "A1/E2");
     }
 
     fn host(
@@ -847,18 +930,19 @@ mod tests {
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         };
 
+        let workspace =
+            awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
         let prepared = prepare_local_acp_with(
             &mut deployment,
             discovery.clone(),
             installer.clone(),
             fixed_negotiator(),
             stores.clone(),
+            workspace.clone(),
         )
         .await
         .unwrap()
         .expect("P1");
-        let workspace =
-            awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
         let first = credentials.list(&workspace).await.unwrap();
         assert_eq!(first.len(), 1, "P1/P3");
         assert_eq!(
@@ -906,6 +990,7 @@ mod tests {
             installer.clone(),
             fixed_negotiator(),
             stores,
+            workspace.clone(),
         )
         .await
         .unwrap()
@@ -1038,12 +1123,15 @@ mod tests {
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         };
 
+        let workspace =
+            awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
         let prepared = prepare_local_acp_with(
             &mut deployment,
             discovery,
             installer,
             fixed_negotiator(),
             stores,
+            workspace.clone(),
         )
         .await
         .expect("F2 startup remains diagnosable");
@@ -1060,8 +1148,6 @@ mod tests {
             Some("acp_wrapper_install_failed"),
             "F2"
         );
-        let workspace =
-            awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
         assert!(credentials.list(&workspace).await.unwrap().is_empty(), "F2");
     }
 

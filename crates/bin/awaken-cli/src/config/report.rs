@@ -77,6 +77,7 @@ impl ResolvedDeployment {
                 "bind": self.bind,
                 "internal_bind": self.internal_bind,
                 "data_dir": self.data_dir,
+                "expected_platform_workspace_id": self.expected_platform_workspace_id,
                 "config_file": self.config_path,
                 "config_file_exists": self.config_file_exists,
                 "no_browser": self.no_browser,
@@ -154,7 +155,24 @@ impl ResolvedDeployment {
     /// deployment. Provider and model validation remains Console-owned because
     /// it requires authenticated product state after startup.
     pub async fn doctor_report(&self, json: bool) -> String {
-        let data_directory = data_directory_readiness(&self.data_dir);
+        let mut data_directory = data_directory_readiness(&self.data_dir);
+        let postgres_installation = if data_directory.ready {
+            match crate::installation_binding::verify_deployment_installations(self).await {
+                Ok(prepared) if prepared.postgres_target_count() == 0 => {
+                    Readiness::ready("not applicable".to_owned())
+                }
+                Ok(prepared) => Readiness::ready(format!(
+                    "{} role-owned PostgreSQL target(s) match expected_platform_workspace_id",
+                    prepared.postgres_target_count()
+                )),
+                Err(error) => {
+                    data_directory = Readiness::blocked(error.clone());
+                    Readiness::blocked(error)
+                }
+            }
+        } else {
+            Readiness::blocked("installation admission waits for the data directory".to_owned())
+        };
         let listener = match tokio::net::TcpListener::bind(&self.bind).await {
             Ok(listener) => {
                 drop(listener);
@@ -162,7 +180,7 @@ impl ResolvedDeployment {
             }
             Err(error) => Readiness::blocked(format!("{}: {error}", self.bind)),
         };
-        let ready = data_directory.ready && listener.ready;
+        let ready = data_directory.ready && postgres_installation.ready && listener.ready;
         if json {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "ready": ready,
@@ -172,6 +190,7 @@ impl ResolvedDeployment {
                     "exists": self.config_file_exists,
                 },
                 "data_directory": data_directory.as_json(),
+                "postgres_installation": postgres_installation.as_json(),
                 "listener": listener.as_json(),
                 "next": if ready {
                     "start Awaken, then validate a model or provider in Console"
@@ -183,10 +202,12 @@ impl ResolvedDeployment {
         }
 
         format!(
-            "Awaken doctor\n\n  configuration       ready ({config})\n  data directory      {data_status} ({data_detail})\n  listener            {listener_status} ({listener_detail})\n\nResult: {result}\nNext: {next}\n",
+            "Awaken doctor\n\n  configuration       ready ({config})\n  data directory      {data_status} ({data_detail})\n  PostgreSQL identity {postgres_status} ({postgres_detail})\n  listener            {listener_status} ({listener_detail})\n\nResult: {result}\nNext: {next}\n",
             config = self.config_path.display(),
             data_status = data_directory.status,
             data_detail = data_directory.detail,
+            postgres_status = postgres_installation.status,
+            postgres_detail = postgres_installation.detail,
             listener_status = listener.status,
             listener_detail = listener.detail,
             result = if ready { "ready to start" } else { "blocked" },
@@ -279,14 +300,25 @@ fn render_store_backend(backend: &awaken_control::StoreBackend) -> String {
 mod tests {
     #[tokio::test]
     async fn doctor_covers_storage_and_listener_readiness_without_creating_state() {
-        // Cause/effect graph: resolved config + data-path metadata + bind result
-        // -> independent readiness details -> one overall result. Constraints:
-        // diagnostics must not create the absent directory and must not retain
-        // the test-bound listener.
-        // Decision table: R1 existing directory + free listener -> ready; R2
-        // absent child with existing parent + free listener -> ready_to_create;
-        // R3 non-directory data path -> blocked; R4 occupied listener -> blocked.
+        // Cause/effect graph: exact local installation + data-path metadata +
+        // bind result -> independent readiness details -> one overall result.
+        // Constraints: diagnostics never initialize an absent directory and do
+        // not retain the test-bound listener. Decision table: R1 bound storage +
+        // free listener=>ready; R2 absent/unbound child=>blocked and zero writes;
+        // R3 non-directory path=>blocked; R4 bound storage+occupied listener=>
+        // listener blocked.
         let directory = tempfile::tempdir().unwrap();
+        drop(
+            awaken_session_store::SqliteManagedSessionRepository::open(
+                &directory.path().join("sessions.db").to_string_lossy(),
+            )
+            .unwrap(),
+        );
+        std::fs::write(
+            directory.path().join("platform-workspace-id"),
+            "workspace-local",
+        )
+        .unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
         deployment.bind = "127.0.0.1:0".to_owned();
 
@@ -297,24 +329,34 @@ mod tests {
 
         let absent = directory.path().join("new").join("data");
         deployment.data_dir = absent.clone();
+        deployment.coordinator.sessions =
+            awaken_control::StoreBackend::Sqlite(absent.join("sessions.db"));
         let creatable: serde_json::Value =
             serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
-        assert_eq!(creatable["ready"], true, "R2");
-        assert_eq!(
-            creatable["data_directory"]["status"], "ready_to_create",
-            "R2"
+        assert_eq!(creatable["ready"], false, "R2");
+        assert_eq!(creatable["data_directory"]["status"], "blocked", "R2");
+        assert!(
+            creatable["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("unbound_empty_local_storage:"),
+            "R2: {creatable}"
         );
         assert!(!absent.exists(), "doctor remains read-only");
 
         let file = directory.path().join("not-a-directory");
         std::fs::write(&file, b"fixture").unwrap();
-        deployment.data_dir = file;
+        deployment.data_dir = file.clone();
+        deployment.coordinator.sessions =
+            awaken_control::StoreBackend::Sqlite(file.join("sessions.db"));
         let blocked_storage: serde_json::Value =
             serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
         assert_eq!(blocked_storage["ready"], false, "R3");
         assert_eq!(blocked_storage["data_directory"]["status"], "blocked", "R3");
 
         deployment.data_dir = directory.path().to_path_buf();
+        deployment.coordinator.sessions =
+            awaken_control::StoreBackend::Sqlite(directory.path().join("sessions.db"));
         let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         deployment.bind = occupied.local_addr().unwrap().to_string();
         let blocked_listener: serde_json::Value =
@@ -324,27 +366,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(
-        expected = "KNOWN GAP: initialized storage without sessions.db must not report ready"
-    )]
-    async fn doctor_rejects_initialized_storage_with_missing_session_authority() {
-        /* Temporary expected-failure regression; remove `should_panic` when
-         * the production fix lands.
-         *
-         * Cause/effect graph: C1 the data directory is fresh or carries the
-         * existing durable `platform-workspace-id` initialization marker; C2
-         * `sessions.db` is intact, missing, or zero-byte/truncated. Effects:
-         * E1 a genuinely fresh directory retains the existing first-install
-         * readiness; E2 initialized storage with missing/corrupt Session
-         * authority is blocked, not presented as a healthy empty deployment;
-         * E3 doctor remains read-only. Decision table: SD1 fresh+missing => E1
-         * (owned by `doctor_covers_storage_and_listener_readiness_without_creating_state`);
-         * SD2 initialized+intact => restart persistence (owned by
-         * `runtime_storage_reopens_the_session_and_its_owner_fence`); SD3
-         * initialized+missing => E2+E3; SD4 initialized+truncated => E2+E3.
-         * A different completely empty directory has no C1 evidence and is
-         * deliberately outside this table: without an externally expected
-         * store identity it is indistinguishable from a first installation. */
+    async fn doctor_is_exact_only_for_marker_first_and_expected_identity() {
+        /* Cause/effect graph: C1 expected Workspace absent/present; C2 marker
+         * absent/matching/mismatched; C3 Session absent. Effects: E1 Doctor is
+         * always read-only and blocks incomplete initialization; E2 configured
+         * identity adds an exact marker fence. Decision table: SD1 marker-first+
+         * no expected=>session_storage_missing; SD2 exact marker+Session is ready
+         * (neighboring test); SD3 expected+matching marker+missing Session=>same
+         * missing error; SD4 expected+missing marker=>platform_workspace_missing;
+         * SD5 expected+mismatch=>mismatch. */
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
             directory.path().join("platform-workspace-id"),
@@ -355,25 +385,127 @@ mod tests {
         let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
         deployment.bind = "127.0.0.1:0".to_owned();
 
+        let role_first: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(role_first["ready"], false, "SD1");
+        assert!(
+            role_first["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("session_storage_missing:"),
+            "SD1: {role_first}"
+        );
+        assert!(!sessions.exists(), "SD1 doctor remains read-only");
+
+        deployment.expected_platform_workspace_id = Some("workspace_local_regression".into());
         let report: serde_json::Value =
             serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
-        assert_eq!(
-            report["ready"], false,
-            "KNOWN GAP: initialized storage without sessions.db must not report ready"
-        );
+        assert_eq!(report["ready"], false, "SD3");
         assert_eq!(report["data_directory"]["status"], "blocked", "SD3");
+        assert!(
+            report["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("session_storage_missing:"),
+            "SD3 stable diagnostic: {report}"
+        );
         assert!(!sessions.exists(), "SD3/E3 doctor remains read-only");
+
+        let empty = tempfile::tempdir().unwrap();
+        deployment.data_dir = empty.path().to_path_buf();
+        deployment.coordinator.sessions =
+            awaken_control::StoreBackend::Sqlite(empty.path().join("sessions.db"));
+        let missing_identity: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert!(
+            missing_identity["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("platform_workspace_missing:"),
+            "SD4: {missing_identity}"
+        );
+        assert_eq!(
+            std::fs::read_dir(empty.path()).unwrap().count(),
+            0,
+            "SD4/E3"
+        );
+
+        std::fs::write(
+            empty.path().join("platform-workspace-id"),
+            "workspace-other",
+        )
+        .unwrap();
+        let mismatch: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert!(
+            mismatch["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("platform_workspace_mismatch:"),
+            "SD5: {mismatch}"
+        );
     }
 
     #[tokio::test]
-    #[should_panic(
-        expected = "KNOWN GAP: initialized storage with a truncated sessions.db must not report ready"
-    )]
+    async fn doctor_blocks_store_first_recovery_and_accepts_normal_restart_read_only() {
+        /* Decision-table rules SD2a/SD2b: canonical Session without a marker is
+         * a store-first crash window and Doctor blocks until an explicitly
+         * authorized migration completes it; the same Session with its marker
+         * is a normal restart. Both observations preserve every byte. */
+        fn snapshot(directory: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+            std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(entry.path()).unwrap(),
+                    )
+                })
+                .collect()
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("platform-workspace-id");
+        let sessions = directory.path().join("sessions.db");
+        drop(
+            awaken_session_store::SqliteManagedSessionRepository::open(&sessions.to_string_lossy())
+                .unwrap(),
+        );
+        let before = snapshot(directory.path());
+        let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
+        deployment.bind = "127.0.0.1:0".to_owned();
+
+        let report: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(report["ready"], false, "SD2a");
+        assert_eq!(report["data_directory"]["status"], "blocked", "SD2a");
+        assert!(
+            report["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("local_installation_incomplete:"),
+            "SD2a: {report}"
+        );
+        assert_eq!(snapshot(directory.path()), before, "SD2a read-only");
+        assert!(!marker.exists(), "SD2a doctor does not publish identity");
+
+        std::fs::write(&marker, "workspace_local_regression").unwrap();
+        deployment.expected_platform_workspace_id = Some("workspace_local_regression".into());
+        let before = snapshot(directory.path());
+        let report: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(report["ready"], true, "SD2b");
+        assert_eq!(report["data_directory"]["status"], "ready", "SD2b");
+        assert_eq!(snapshot(directory.path()), before, "SD2b read-only");
+    }
+
+    #[tokio::test]
     async fn doctor_rejects_initialized_storage_with_truncated_session_authority() {
-        /* Temporary expected-failure regression for decision-table rule SD4
-         * in the preceding test. The initialization marker distinguishes this
-         * restart state from a fresh install; a zero-byte canonical database
-         * is therefore loss/corruption evidence and must remove readiness. */
+        /* Decision-table rule SD4 in the preceding test has two physical
+         * corruption classes. A zero-byte authority has a stable local reason;
+         * a non-empty malformed file delegates diagnosis to the canonical
+         * Session SQLite probe. Both remain byte-for-byte unchanged. */
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
             directory.path().join("platform-workspace-id"),
@@ -387,11 +519,36 @@ mod tests {
 
         let report: serde_json::Value =
             serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(report["ready"], false, "SD4 zero-byte");
         assert_eq!(
-            report["ready"], false,
-            "KNOWN GAP: initialized storage with a truncated sessions.db must not report ready"
+            report["data_directory"]["status"], "blocked",
+            "SD4 zero-byte"
         );
-        assert_eq!(report["data_directory"]["status"], "blocked", "SD4");
-        assert_eq!(std::fs::metadata(sessions).unwrap().len(), 0, "SD4/E3");
+        assert!(
+            report["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("session_storage_empty:"),
+            "SD4 stable zero-byte diagnostic: {report}"
+        );
+        assert_eq!(std::fs::metadata(&sessions).unwrap().len(), 0, "SD4/E3");
+
+        let truncated = b"SQLite format 3\0truncated";
+        std::fs::write(&sessions, truncated).unwrap();
+        let report: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(report["ready"], false, "SD4 malformed");
+        assert_eq!(
+            report["data_directory"]["status"], "blocked",
+            "SD4 malformed"
+        );
+        assert!(
+            report["data_directory"]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("session_storage_invalid:"),
+            "SD4 stable malformed diagnostic: {report}"
+        );
+        assert_eq!(std::fs::read(sessions).unwrap(), truncated, "SD4/E3");
     }
 }

@@ -442,10 +442,16 @@ async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
-    state
-        .refresh_committed_events(&id)
-        .await
-        .map_err(error_response)?;
+    if let Err(error) = state.refresh_committed_events(&id).await
+        && !error.is_projection_recovery_required()
+    {
+        return Err(error_response(error));
+    }
+    // The refresh reads and projects the durable Session root before Runtime
+    // pending-tool detail. If only that detail is unreconstructable, keep the
+    // root-owned aggregate status readable: Events GET remains unhealthy, while
+    // a terminal root still disables and a known nonterminal root can authorize
+    // only the protocol's existing pure-Interrupt recovery path.
     let session = state.get_session(&id).map_err(error_response)?;
     versioned_session_response(&state, session).await
 }
@@ -1170,8 +1176,13 @@ pub async fn create_profiled_session(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
     Json(body): Json<awaken_protocol_awaken::ProfiledSessionCreate>,
-) -> Result<Json<awaken_protocol_awaken::ProfiledSessionCreated>, (StatusCode, Json<ErrorResponse>)>
-{
+) -> Result<
+    (
+        StatusCode,
+        Json<awaken_protocol_awaken::ProfiledSessionCreated>,
+    ),
+    (StatusCode, Json<ErrorResponse>),
+> {
     let owner_scope = workspace
         .and_then(|scope| scope.0.non_empty().map(str::to_owned))
         .ok_or_else(|| {
@@ -1196,14 +1207,17 @@ pub async fn create_profiled_session(
         payload_hash: request_fingerprint,
     };
     if let Some(existing) = state
-        .replay_session_with_receipt(&body.session_id, &owner_scope, &idempotency)
+        .replay_accepted_session_with_receipt(&body.session_id, &owner_scope, &idempotency)
         .await
         .map_err(error_response)?
     {
-        return Ok(Json(awaken_protocol_awaken::ProfiledSessionCreated {
-            id: existing.id,
-            metadata: existing.metadata,
-        }));
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(awaken_protocol_awaken::ProfiledSessionCreated {
+                id: existing.session_id,
+                metadata: existing.metadata,
+            }),
+        ));
     }
     let mutation_policy = body.mode.mutation_policy();
     let mcp_candidates = body
@@ -1255,7 +1269,7 @@ pub async fn create_profiled_session(
         .collect();
     let session = state
         .session_application()
-        .create_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
+        .accept_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
             owner_scope,
             session_id: body.session_id,
             mutation_policy,
@@ -1277,14 +1291,13 @@ pub async fn create_profiled_session(
         })
         .await
         .map_err(|error| error_response(ManagedState::map_creation_error(error)))?;
-    state
-        .ensure_session(&session.session_id)
-        .await
-        .map_err(error_response)?;
-    Ok(Json(awaken_protocol_awaken::ProfiledSessionCreated {
-        id: session.session_id,
-        metadata: session.metadata,
-    }))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(awaken_protocol_awaken::ProfiledSessionCreated {
+            id: session.session_id,
+            metadata: session.metadata,
+        }),
+    ))
 }
 
 fn profiled_release_error_response(

@@ -315,7 +315,6 @@ fn published_migrations(stream: ExpandedStream) -> Result<Vec<Migration>, Migrat
         .collect()
 }
 
-#[cfg(test)]
 pub(super) fn published_bundle(stream: ExpandedStream) -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(BUNDLE_ID, published_migrations(stream)?)
 }

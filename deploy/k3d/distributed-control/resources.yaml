@@ -99,6 +99,7 @@ type: Opaque
 stringData:
   control.toml: |
     data_dir = "/var/lib/awaken/control"
+    expected_platform_workspace_id = "workspace-adr71"
     bind = "0.0.0.0:3000"
     internal_bind = "0.0.0.0:3001"
     mode = "server"
@@ -117,6 +118,7 @@ stringData:
     environment_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
   coordinator.toml: |
     data_dir = "/var/lib/awaken/coordinator"
+    expected_platform_workspace_id = "workspace-adr71"
     bind = "0.0.0.0:3000"
     internal_bind = "0.0.0.0:3001"
     mode = "server"
@@ -158,6 +160,9 @@ apiVersion: batch/v1
 kind: Job
 metadata: { name: control-migrate }
 spec:
+  # Rollout orchestration releases this exact-only Job only after one-time
+  # installation initialization has succeeded.
+  suspend: true
   backoffLimit: 12
   template:
     metadata: { labels: { app: control-migrate } }
@@ -181,6 +186,9 @@ apiVersion: batch/v1
 kind: Job
 metadata: { name: coordinator-migrate }
 spec:
+  # Rollout orchestration releases this exact-only Job only after one-time
+  # installation initialization has succeeded.
+  suspend: true
   backoffLimit: 12
   template:
     metadata: { labels: { app: coordinator-migrate } }

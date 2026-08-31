@@ -544,9 +544,16 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
 }
 
 fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
+    tool_reply_input_for_target(tool_use_id, SessionThreadTarget::Primary)
+}
+
+fn tool_reply_input_for_target(
+    tool_use_id: &str,
+    target: SessionThreadTarget,
+) -> SessionEventInput {
     SessionEventInput::ToolReply(SessionEventToolReply {
         tool_request_event_id: format!("evt_{tool_use_id}"),
-        target: SessionThreadTarget::Primary,
+        target,
         expected_run_id: RunId("awaiting-run".into()),
         expected_correlation_id: "awaiting-correlation".into(),
         expected_thread_version: None,
@@ -557,6 +564,38 @@ fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
             is_error: false,
         },
     })
+}
+
+fn tool_reply_activity_operation_id(
+    session_id: &str,
+    batch: &awaken_session_contract::SessionEventBatch,
+) -> String {
+    let ordinal = batch
+        .events
+        .iter()
+        .position(|entry| matches!(&entry.event, SessionEventCommand::ToolReply { .. }))
+        .expect("fixture batch contains a ToolReply");
+    let reply = match &batch.events[ordinal].event {
+        SessionEventCommand::ToolReply { reply, .. } => reply,
+        _ => unreachable!("ToolReply ordinal was selected above"),
+    };
+    let accompanying_system = batch.events.get(ordinal + 1).and_then(|entry| {
+        if let SessionEventCommand::SystemMessage {
+            operation_id,
+            content,
+        } = &entry.event
+        {
+            Some(awaken_session_contract::SessionUserRunSystemInput {
+                operation_id: operation_id.clone(),
+                content: content.clone(),
+            })
+        } else {
+            None
+        }
+    });
+    reply
+        .delivery_command(session_id, accompanying_system)
+        .activity_operation_id()
 }
 
 fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSession {
@@ -1227,26 +1266,8 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
     assert!(runtime.reserved.lock().unwrap().is_empty(), "P1-P3/E3");
 }
 
-#[tokio::test]
-#[should_panic(
-    expected = "CR1/E1 cold recovery must execute Interrupt before retrying damaged ToolReply"
-)]
-async fn cold_recovery_interrupt_is_not_starved_by_an_older_failed_tool_reply() {
-    // Cause/effect graph: C1 an older ToolReply is retained and its delivery
-    // fails after the Runtime has durably staged it; C2 a later Interrupt is
-    // committed; C3 a new application instance performs a cold all-batch scan.
-    // Effects: E1 C2 is selected and processed before retrying C1; E2 C1 may
-    // still report its independent retryable failure; E3 the Interrupt effect
-    // occurs once and remains rooted even though the scan returns C1's error.
-    //
-    // | Rule | Older reply | Later interrupt | Drive | Effects |
-    // |---|---|---|---|---|
-    // | CR1 | staged then unavailable | unprocessed | cold/all batches | E1+E2+E3 |
-    //
-    // This is an expected-failure probe for the duplicate warm/cold selectors.
-    // When a damaged reply's failed delivery can yield to the already-retained
-    // Interrupt without reordering healthy receipts, the assertion stops
-    // panicking and this annotation deliberately fails until it is removed.
+async fn recover_failed_reply_with_interrupt()
+-> (Arc<dyn ManagedSessionRepository>, SessionApplication) {
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("CR1 repository"),
@@ -1266,20 +1287,31 @@ async fn cold_recovery_interrupt_is_not_starved_by_an_older_failed_tool_reply() 
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    warm.append_session_event_batch(
-        "cold-interrupt-priority",
-        vec![tool_reply_input("older-damaged-reply")],
-        None,
-        None,
-    )
-    .await
-    .expect("CR1 older reply");
+    let reply = warm
+        .append_session_event_batch(
+            "cold-interrupt-priority",
+            vec![
+                tool_reply_input("older-damaged-reply"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("superseded reply context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("CR1 older reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("cold-interrupt-priority", &reply);
     let interrupt = warm
         .append_session_event_batch(
             "cold-interrupt-priority",
             vec![SessionEventInput::Interrupt(SessionEventInterrupt {
-                requested_target: Some(SessionThreadTarget::Primary),
-                targets: vec![SessionThreadTarget::Primary],
+                requested_target: None,
+                targets: vec![
+                    SessionThreadTarget::Child(ThreadId("event-child".into())),
+                    SessionThreadTarget::Primary,
+                ],
             })],
             None,
             None,
@@ -1292,27 +1324,890 @@ async fn cold_recovery_interrupt_is_not_starved_by_an_older_failed_tool_reply() 
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let drive = cold
+    let error = cold
         .drive_session_event_batches("cold-interrupt-priority", None)
-        .await;
-    assert!(drive.is_err(), "CR1/E2 reply failure remains independent");
+        .await
+        .expect_err("CR1/E2 reply failure remains independent");
+    assert_eq!(
+        error.message, "scripted crash after durable reply stage",
+        "CR1/E2 original reply retry signal"
+    );
+    assert_eq!(
+        runtime.trace.lock().unwrap().as_slice(),
+        [
+            "reply:older-damaged-reply",
+            "interrupt:event-child",
+            "interrupt:primary",
+        ],
+        "CR1/E1 mixed targets include the exact primary reply target"
+    );
     assert_eq!(
         runtime.primary_interrupt_calls.load(Ordering::SeqCst),
         1,
         "CR1/E1 cold recovery must execute Interrupt before retrying damaged ToolReply"
     );
+    let repaired = repository.get("cold-interrupt-priority").await.unwrap();
+    let reply = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .expect("CR1 reply provenance");
+    let interrupt = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .expect("CR1 Interrupt provenance");
+    assert!(reply.events[0].processed, "CR1/E2 reply superseded");
     assert!(
+        reply.events[1].processed,
+        "CR1/E2 adjacent System superseded"
+    );
+    assert!(interrupt.events[0].processed, "CR1/E2 Interrupt anchored");
+    assert_eq!(
+        [
+            reply.events[0].projection_anchor,
+            reply.events[1].projection_anchor,
+            interrupt.events[0].projection_anchor,
+        ],
+        [interrupt.events[0].projection_anchor; 3],
+        "CR1/E2 one Interrupt anchor owns the atomic supersession"
+    );
+    let (activity_root, reply_activity_epoch) = cold
+        .recover_activity_for_operation("cold-interrupt-priority", &reply_activity_operation)
+        .await
+        .expect("CR1/E2 exact activity receipt remains recoverable")
+        .expect("CR1/E2 reply transferred one exact activity epoch");
+    assert_ne!(reply_activity_epoch, 1, "CR1/E2 transferred epoch is exact");
+    assert!(
+        !activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "CR1/E2 exact reply activity is settled before root supersession"
+    );
+    assert_eq!(
+        activity_root.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "CR1/E4 recovery cannot leave a Running aggregate without pending work"
+    );
+    cold.drive_session_event_batches("cold-interrupt-priority", None)
+        .await
+        .expect("CR1/E4 second cold scan has no damaged backlog");
+    assert_eq!(runtime.tool_reply_calls.load(Ordering::SeqCst), 1, "CR1/E4");
+
+    // The fixture retains staged reply payloads for response-loss replay; the
+    // production Interrupt owner has already terminalized that Runtime await.
+    // Remove only that fixture projection before exercising unrelated new work.
+    runtime.staged_tool_replies.lock().unwrap().clear();
+    (repository, cold)
+}
+
+#[tokio::test]
+async fn cold_recovery_interrupt_is_not_starved_by_an_older_failed_tool_reply() {
+    // Cause/effect graph: C1 an older ToolReply is retained and its delivery
+    // fails after the Runtime has durably staged it; C2 an adjacent System and
+    // later Interrupt are committed; C3 a new application instance performs a
+    // cold all-batch scan; C4 the later Interrupt succeeds. Effects:
+    // E1 C2 is selected only after C1's failed attempt; E2 the exact transferred
+    // reply activity is settled, then one root CAS anchors the Interrupt and
+    // supersedes the exact reply+System; E3 the original reply error remains
+    // observable after that repair; E4 a second cold scan has no damaged
+    // backlog, the aggregate is Idle, and a later User is durably admitted.
+    //
+    // | Rule | Older reply | Later interrupt | Drive | Effects |
+    // |---|---|---|---|---|
+    // | CR1 | staged then unavailable | succeeds | cold/all batches | E1+E2+E3+E4 |
+    //
+    // Healthy reply ordering remains covered by P1-P3 above. The boxed fixture
+    // isolates the recovery phase from the follow-up phase without changing the
+    // production Runtime stack or duplicating either state machine.
+    let (repository, cold) = recover_failed_reply_with_interrupt().await;
+    let follow_up = cold
+        .append_session_event_batch(
+            "cold-interrupt-priority",
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("work after recovery")],
+            }],
+            None,
+            None,
+        )
+        .await
+        .expect("CR1/E4 follow-up User is admitted");
+    let durable = repository.get("cold-interrupt-priority").await.unwrap();
+    let stored = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == follow_up.batch_id)
+        .expect("CR1/E4 admitted User batch is durable");
+    assert!(
+        matches!(
+            &stored.events[0].event,
+            SessionEventCommand::UserMessage { .. }
+        ),
+        "CR1/E4 stale pending reply no longer blocks user.message"
+    );
+}
+
+#[tokio::test]
+async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
+    // Cause/effect rule CR2: C1 an older ToolReply fails after transferring
+    // one exact activity epoch; C2 a later exact-target Interrupt is retained;
+    // C3 that Interrupt effect fails. Effects: E1 the Interrupt error wins over
+    // the older reply error; E2 reply, adjacent System, and Interrupt remain
+    // unprocessed; E3 the transferred activity remains active. This is split
+    // from CR1 so each async test owns one decision-table rule and the test
+    // harness does not place two complete reconciliation scenarios on one stack.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("CR2 repository"),
+    );
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    runtime
+        .fail_primary_interrupt_once
+        .store(true, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("cold-interrupt-failure", 1),
+    )
+    .await;
+    let warm = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = warm
+        .append_session_event_batch(
+            "cold-interrupt-failure",
+            vec![
+                tool_reply_input("older-reply-before-interrupt-failure"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("must remain open")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("CR2 older reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("cold-interrupt-failure", &reply);
+    let interrupt = warm
+        .append_session_event_batch(
+            "cold-interrupt-failure",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("CR2 later interrupt");
+    let cold = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let error = cold
+        .drive_session_event_batches("cold-interrupt-failure", None)
+        .await
+        .expect_err("CR2 Interrupt failure must remain observable");
+    assert_eq!(
+        error.message, "scripted interruption before primary effect",
+        "CR2/E1"
+    );
+    let durable = repository.get("cold-interrupt-failure").await.unwrap();
+    let reply = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .unwrap();
+    let interrupt = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .unwrap();
+    assert!(reply.events.iter().all(|entry| !entry.processed), "CR2/E2");
+    assert!(!interrupt.events[0].processed, "CR2/E2");
+    let (activity_root, reply_activity_epoch) = cold
+        .recover_activity_for_operation("cold-interrupt-failure", &reply_activity_operation)
+        .await
+        .expect("CR2/E3 exact activity receipt read")
+        .expect("CR2/E3 failed delivery transferred activity");
+    assert!(
+        activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "CR2/E3 failed Interrupt cannot settle the reply activity"
+    );
+}
+
+#[tokio::test]
+async fn cold_recovery_interrupt_must_include_the_failed_reply_target() {
+    // Cause/effect graph: C1 a failed ToolReply owns exact child Thread T; C2 a
+    // later Interrupt targets only primary, or a mixed frozen set including T.
+    // Effects: E1 an unrelated Interrupt is neither executed nor used to close
+    // reply/System; E2 the original reply error remains observable; E3 a mixed
+    // target set containing T is eligible after the reply fails.
+    //
+    // | Rule | Failed reply target | Later Interrupt targets | Effects |
+    // |---|---|---|---|
+    // | TF1 | child T | primary only | E1+E2 |
+    // | TF2 | primary | child T + primary | E3 (covered by CR1 above) |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("TF1 repository"),
+    );
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("interrupt-target-fence", 1),
+    )
+    .await;
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = app
+        .append_session_event_batch(
+            "interrupt-target-fence",
+            vec![
+                tool_reply_input_for_target(
+                    "unrelated-child-reply",
+                    SessionThreadTarget::Child(ThreadId("event-child".into())),
+                ),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("child reply context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("TF1 reply");
+    let interrupt = app
+        .append_session_event_batch(
+            "interrupt-target-fence",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("TF1 unrelated Interrupt");
+
+    let error = app
+        .drive_session_event_batches("interrupt-target-fence", None)
+        .await
+        .expect_err("TF1/E2 reply failure cannot yield to another Thread's Interrupt");
+    assert_eq!(
+        error.message, "scripted crash after durable reply stage",
+        "TF1/E2"
+    );
+    assert_eq!(
+        runtime.trace.lock().unwrap().as_slice(),
+        ["reply:unrelated-child-reply"],
+        "TF1/E1"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        0,
+        "TF1/E1"
+    );
+    let durable = repository.get("interrupt-target-fence").await.unwrap();
+    let reply = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .unwrap();
+    let interrupt = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .unwrap();
+    assert!(reply.events.iter().all(|entry| !entry.processed), "TF1/E1");
+    assert!(!interrupt.events[0].processed, "TF1/E1");
+}
+
+#[tokio::test]
+async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery() {
+    // Cause/effect graph: C1 an exact failed ToolReply remains pending; C2 a
+    // later matching legacy Interrupt is processed but has no projection
+    // anchor; C3 a still-later matching Interrupt is unprocessed and succeeds.
+    // Effects: E1 C2 cannot invent an anchor or own supersession; E2 C2 cannot
+    // terminate the one retained-order search; E3 C3 settles the exact reply
+    // epoch and atomically closes itself plus reply/System.
+    //
+    // | Rule | Failed reply | First match | Later match | Effects |
+    // |---|---|---|---|---|
+    // | LA1 | pending/unavailable | processed, no anchor | unprocessed | E1+E2+E3 |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("LA1 repository"),
+    );
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("legacy-interrupt-anchor", 1),
+    )
+    .await;
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = app
+        .append_session_event_batch(
+            "legacy-interrupt-anchor",
+            vec![
+                tool_reply_input("reply-before-legacy-interrupt"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("legacy interrupt context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("LA1 reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("legacy-interrupt-anchor", &reply);
+    let legacy_interrupt = app
+        .append_session_event_batch(
+            "legacy-interrupt-anchor",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("LA1 legacy Interrupt");
+    let valid_interrupt = app
+        .append_session_event_batch(
+            "legacy-interrupt-anchor",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("LA1 valid Interrupt");
+
+    let mut legacy_root = repository.get("legacy-interrupt-anchor").await.unwrap();
+    legacy_root
+        .event_batches
+        .iter_mut()
+        .find(|batch| batch.batch_id == legacy_interrupt.batch_id)
+        .unwrap()
+        .events[0]
+        .processed = true;
+    let expected_revision = legacy_root.revision;
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(legacy_root);
+    let payload_hash = payload.stable_hash();
+    assert!(matches!(
         repository
-            .get("cold-interrupt-priority")
+            .commit_mutation(
+                "workspace",
+                awaken_session_contract::SessionMutation {
+                    expected_revision,
+                    idempotency: awaken_session_contract::IdempotencyRecord {
+                        key: "legacy:processed-interrupt-without-anchor".into(),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: Vec::new(),
+                },
+            )
             .await
-            .unwrap()
+            .expect("LA1 persist legacy root"),
+        awaken_session_contract::SessionMutationResult::Applied { .. }
+    ));
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+
+    let error = app
+        .drive_session_event_batches("legacy-interrupt-anchor", None)
+        .await
+        .expect_err("LA1 preserves the failed reply signal after recovery");
+    assert_eq!(error.message, "scripted crash after durable reply stage");
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        1,
+        "LA1/E2 only the later valid Interrupt executes"
+    );
+    let repaired = repository.get("legacy-interrupt-anchor").await.unwrap();
+    let reply = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .unwrap();
+    let legacy_interrupt = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == legacy_interrupt.batch_id)
+        .unwrap();
+    let valid_interrupt = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == valid_interrupt.batch_id)
+        .unwrap();
+    assert!(reply.events.iter().all(|entry| entry.processed), "LA1/E3");
+    assert!(legacy_interrupt.events[0].processed, "LA1/E1");
+    assert!(
+        legacy_interrupt.events[0].projection_anchor.is_none(),
+        "LA1/E1 legacy provenance is not invented"
+    );
+    assert!(valid_interrupt.events[0].processed, "LA1/E3");
+    assert_eq!(
+        [
+            reply.events[0].projection_anchor,
+            reply.events[1].projection_anchor,
+        ],
+        [valid_interrupt.events[0].projection_anchor; 2],
+        "LA1/E3 later valid anchor owns exact supersession"
+    );
+    let (activity_root, reply_activity_epoch) = app
+        .recover_activity_for_operation("legacy-interrupt-anchor", &reply_activity_operation)
+        .await
+        .expect("LA1/E3 exact activity receipt read")
+        .expect("LA1/E3 exact reply activity exists");
+    assert!(
+        !activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "LA1/E3 later valid Interrupt settles exact reply activity"
+    );
+}
+
+#[tokio::test]
+async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_reply() {
+    // Cause/effect graph: C1 an exact ToolReply+System remains unprocessed; C2
+    // its later Interrupt effect and root marker committed before a crash; C3
+    // the reply then fails on a cold scan. Effects: E1 recovery reuses C2's
+    // projection anchor without repeating its Runtime effect; E2 recovery
+    // settles the exact transferred reply epoch before one root CAS closes the
+    // exact reply and adjacent System; E3 the aggregate is Idle and the next
+    // scan is settled.
+    //
+    // | Rule | Reply | Later Interrupt | Recovery | Effects |
+    // |---|---|---|---|---|
+    // | PA1 | fails/unprocessed | processed+anchored | cold | E1+E2+E3 |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("PA1 repository"),
+    );
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("processed-interrupt-recovery", 1),
+    )
+    .await;
+    let warm = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = warm
+        .append_session_event_batch(
+            "processed-interrupt-recovery",
+            vec![
+                tool_reply_input("reply-before-processed-interrupt"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("crash-window context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("PA1 reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("processed-interrupt-recovery", &reply);
+    let interrupt = warm
+        .append_session_event_batch(
+            "processed-interrupt-recovery",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("PA1 Interrupt");
+    warm.drive_session_event_batches("processed-interrupt-recovery", Some(&interrupt.batch_id))
+        .await
+        .expect("PA1 crash occurs after the request-local Interrupt anchor");
+    assert_eq!(runtime.primary_interrupt_calls.load(Ordering::SeqCst), 1);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+
+    let cold = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let error = cold
+        .drive_session_event_batches("processed-interrupt-recovery", None)
+        .await
+        .expect_err("PA1 original reply delivery still reports its failure");
+    assert_eq!(error.message, "scripted crash after durable reply stage");
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        1,
+        "PA1/E1 processed Interrupt cannot repeat its Runtime effect"
+    );
+    let repaired = repository
+        .get("processed-interrupt-recovery")
+        .await
+        .unwrap();
+    let reply = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .unwrap();
+    let interrupt = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .unwrap();
+    assert!(reply.events.iter().all(|entry| entry.processed), "PA1/E2");
+    assert_eq!(
+        [
+            reply.events[0].projection_anchor,
+            reply.events[1].projection_anchor,
+        ],
+        [interrupt.events[0].projection_anchor; 2],
+        "PA1/E2 reuses the committed Interrupt anchor"
+    );
+    let (activity_root, reply_activity_epoch) = cold
+        .recover_activity_for_operation("processed-interrupt-recovery", &reply_activity_operation)
+        .await
+        .expect("PA1/E2 exact activity receipt read")
+        .expect("PA1/E2 reply transferred one activity epoch");
+    assert!(
+        !activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "PA1/E2 processed-anchor replay settles the exact reply epoch"
+    );
+    assert_eq!(
+        activity_root.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "PA1/E3 processed-anchor replay cannot leak Running"
+    );
+    cold.drive_session_event_batches("processed-interrupt-recovery", None)
+        .await
+        .expect("PA1/E3 second cold scan is settled");
+}
+
+#[tokio::test]
+async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
+    // Cause/effect graph: C1 an exact ToolReply fails; C2 the later Interrupt
+    // effect succeeds; C3 exact activity settlement succeeds; C4 the single
+    // root CAS that would anchor Interrupt and supersede reply+System is
+    // unavailable; C5 the retained commands retry. Effects: E1 C4's error wins
+    // over C1; E2 none of the three root entries is processed; E3 the exact
+    // activity is already settled and cannot reopen; E4 C5 safely replays the
+    // idempotent Interrupt effect and the same atomic root CAS.
+    //
+    // | Rule | Reply effect | Interrupt | Settle | Root CAS | Effects |
+    // |---|---|---|---|---|---|
+    // | CF1 | unavailable | succeeds | succeeds | unavailable | E1+E2+E3 |
+    // | CF2 | exact retry unavailable | idempotent | no-op | succeeds | E3+E4 |
+    let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("CF1 durable repository"),
+    );
+    let faulting = Arc::new(FaultingSessionRepository::new(inner.clone()));
+    let repository: Arc<dyn ManagedSessionRepository> = faulting.clone();
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("interrupt-cas-failure", 1),
+    )
+    .await;
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = app
+        .append_session_event_batch(
+            "interrupt-cas-failure",
+            vec![
+                tool_reply_input("reply-before-interrupt-cas-failure"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("CAS failure context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("CF1 reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("interrupt-cas-failure", &reply);
+    let interrupt = app
+        .append_session_event_batch(
+            "interrupt-cas-failure",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("CF1 Interrupt");
+    faulting.fail_once("mark-event-processed");
+
+    let error = app
+        .drive_session_event_batches("interrupt-cas-failure", None)
+        .await
+        .expect_err("CF1 root-CAS outage must remain observable");
+    assert!(error.message.contains("injected root-CAS outage"), "CF1/E1");
+    assert_ne!(
+        error.message, "scripted crash after durable reply stage",
+        "CF1/E1"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        1,
+        "CF1/E4"
+    );
+    let durable = inner.get("interrupt-cas-failure").await.unwrap();
+    let reply = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .unwrap();
+    let interrupt = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .unwrap();
+    assert!(reply.events.iter().all(|entry| !entry.processed), "CF1/E2");
+    assert!(!interrupt.events[0].processed, "CF1/E2");
+    let (activity_root, reply_activity_epoch) = app
+        .recover_activity_for_operation("interrupt-cas-failure", &reply_activity_operation)
+        .await
+        .expect("CF1/E3 exact activity receipt read")
+        .expect("CF1/E3 exact activity was transferred");
+    assert!(
+        !activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "CF1/E3 settlement precedes the failed root marker"
+    );
+    assert_eq!(
+        activity_root.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "CF1/E3 exact retry cannot reopen a settled receipt"
+    );
+
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    let retry_error = app
+        .drive_session_event_batches("interrupt-cas-failure", None)
+        .await
+        .expect_err("CF2 keeps the exact reply retry signal after repair");
+    assert_eq!(
+        retry_error.message, "scripted crash after durable reply stage",
+        "CF2/E4"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        2,
+        "CF2/E4 retained Interrupt is safely replayed"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_effects.lock().unwrap().len(),
+        1,
+        "CF2/E4 Runtime interruption effect remains idempotent"
+    );
+    let repaired = inner.get("interrupt-cas-failure").await.unwrap();
+    assert!(
+        repaired
             .event_batches
             .iter()
-            .find(|batch| batch.batch_id == interrupt.batch_id)
-            .unwrap()
-            .events[0]
-            .processed,
-        "CR1/E3"
+            .flat_map(|batch| &batch.events)
+            .all(|entry| entry.processed),
+        "CF2/E4 retry completes the one atomic root supersession"
+    );
+    assert!(
+        !repaired
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "CF2/E3 exact retry does not reopen the settled epoch"
+    );
+}
+
+#[tokio::test]
+async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
+    // Cause/effect graph: C1 ToolReply delivery transfers old epoch A to exact
+    // receipt epoch B and then fails; C2 its later exact-target Interrupt
+    // succeeds; C3 settling B fails or succeeds; C4 retained commands replay.
+    // Effects: E1 a failed C3 wins over the reply error; E2 reply, adjacent
+    // System, and Interrupt all remain pending while B remains active; E3 an
+    // exact retry reuses B and the idempotent Interrupt effect; E4 only a
+    // successful C3 may atomically close all pending entries and leave Idle.
+    //
+    // | Rule | Reply | Interrupt | Exact B settle | Root supersession | Effects |
+    // |---|---|---|---|---|---|
+    // | SF1 | unavailable | succeeds | unavailable | forbidden | E1+E2 |
+    // | SF2 | exact retry unavailable | idempotent | succeeds | succeeds | E3+E4 |
+    let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("SF1 durable repository"),
+    );
+    let faulting = Arc::new(FaultingSessionRepository::new(inner.clone()));
+    let repository: Arc<dyn ManagedSessionRepository> = faulting.clone();
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("interrupt-settle-failure", 1),
+    )
+    .await;
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = app
+        .append_session_event_batch(
+            "interrupt-settle-failure",
+            vec![
+                tool_reply_input("reply-before-settle-failure"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("settlement failure context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("SF1 reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("interrupt-settle-failure", &reply);
+    let interrupt = app
+        .append_session_event_batch(
+            "interrupt-settle-failure",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("SF1 Interrupt");
+    faulting.fail_once("settle-activity");
+
+    let error = app
+        .drive_session_event_batches("interrupt-settle-failure", None)
+        .await
+        .expect_err("SF1 exact activity settlement outage is observable");
+    assert!(error.message.contains("injected root-CAS outage"), "SF1/E1");
+    let durable = inner.get("interrupt-settle-failure").await.unwrap();
+    let reply_after_failure = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .unwrap();
+    let interrupt_after_failure = durable
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .unwrap();
+    assert!(
+        reply_after_failure
+            .events
+            .iter()
+            .all(|entry| !entry.processed),
+        "SF1/E2"
+    );
+    assert!(!interrupt_after_failure.events[0].processed, "SF1/E2");
+    let (activity_root, reply_activity_epoch) = app
+        .recover_activity_for_operation("interrupt-settle-failure", &reply_activity_operation)
+        .await
+        .expect("SF1/E2 exact activity receipt read")
+        .expect("SF1/E2 exact reply activity exists");
+    assert_ne!(reply_activity_epoch, 1, "SF1/E2 exact transferred epoch");
+    assert!(
+        activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "SF1/E2 failed settlement retains exact activity"
+    );
+
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    let retry_error = app
+        .drive_session_event_batches("interrupt-settle-failure", None)
+        .await
+        .expect_err("SF2 original reply error remains after repair");
+    assert_eq!(
+        retry_error.message, "scripted crash after durable reply stage",
+        "SF2/E3"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        2,
+        "SF2/E3 retained Interrupt replayed"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_effects.lock().unwrap().len(),
+        1,
+        "SF2/E3 Interrupt effect is idempotent"
+    );
+    let repaired = inner.get("interrupt-settle-failure").await.unwrap();
+    assert!(
+        repaired
+            .event_batches
+            .iter()
+            .flat_map(|batch| &batch.events)
+            .all(|entry| entry.processed),
+        "SF2/E4 exact settlement permits atomic root closure"
+    );
+    assert!(
+        !repaired
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "SF2/E4 exact activity settled"
+    );
+    assert_eq!(
+        repaired.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "SF2/E4 aggregate closes only after exact settlement"
     );
 }
 

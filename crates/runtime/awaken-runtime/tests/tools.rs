@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
-use awaken_runtime::Runtime;
+use awaken_runtime::{DetachedToolError, PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -26,6 +27,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{
     RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
+    ToolTaskHandle, ToolTaskPoll,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
@@ -69,6 +71,15 @@ impl LlmExecutor for ToolThenText {
 /// Records whether it actually ran, so denial can be proven.
 struct EchoTool {
     ran: Arc<AtomicUsize>,
+}
+
+struct InvalidatesAfterEffect {
+    effects: Arc<AtomicUsize>,
+}
+
+struct InvalidatesContinuation {
+    polls: Arc<AtomicUsize>,
+    cancellations: Arc<AtomicUsize>,
 }
 
 struct MultimodalTool;
@@ -125,6 +136,53 @@ impl RawTool for EchoTool {
         Ok(ToolOutput::ok(
             call.call_id,
             format!("echoed: {}", call.arguments),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for InvalidatesAfterEffect {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::StateInvalidatedAfterDispatch(
+            "scripted post-effect projection failure".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for InvalidatesContinuation {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+        panic!("continuation fixture must not redispatch the original effect")
+    }
+
+    async fn poll_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        self.polls.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::StateInvalidatedAfterDispatch(
+            "poll projection invalidated".into(),
+        ))
+    }
+
+    async fn cancel_task(
+        &self,
+        _call: &ToolCall,
+        _task: &ToolTaskHandle,
+    ) -> Result<ToolTaskPoll, ToolError> {
+        self.cancellations.fetch_add(1, Ordering::SeqCst);
+        Err(ToolError::StateInvalidatedAfterDispatch(
+            "cancel projection invalidated".into(),
         ))
     }
 }
@@ -250,6 +308,159 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .collect();
     assert_eq!(tool_results.len(), 1);
     assert!(tool_results[0].text_content().contains("echoed"));
+}
+
+#[tokio::test]
+async fn post_dispatch_invalidation_terminates_without_model_retry() {
+    /* Cause/effect graph: C1 a tool has crossed its physical effect boundary;
+     * C2 its required executor projection remains valid or becomes unavailable.
+     * Effects: E1 valid projection follows the ordinary model-visible result
+     * path (covered by allowed_tool_call...); E2 invalid projection terminates
+     * at the existing StateConflict Run boundary; E3 no Tool result, second
+     * inference, or replayed physical effect occurs. Decision table: FI1
+     * C1+valid=>ordinary result; FI2 C1+invalid=>E2+E3 (this test). */
+    let model = Arc::new(ToolThenText::new());
+    let effects = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(model.clone())
+        .with_tool(Arc::new(InvalidatesAfterEffect {
+            effects: effects.clone(),
+        }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    let outcome = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("StateConflict is a committed terminal Run state");
+
+    assert_eq!(
+        outcome,
+        RunState::Ended(EndCause::Error(Failure::StateConflict)),
+        "FI2 terminal authority"
+    );
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1, "FI2 no reinference");
+    assert_eq!(effects.load(Ordering::SeqCst), 1, "FI2 no effect replay");
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool),
+        "FI2 fatal executor state is never model-visible"
+    );
+}
+
+#[tokio::test]
+async fn detached_post_dispatch_invalidation_is_terminal_and_not_retryable() {
+    /* Cause/effect graph: C1 detached start executes an ordinary tool; C2 the
+     * tool invalidates its executor state after one effect. Effects: E1 preserve
+     * the fatal class through PreparedToolExecutor; E2 do not lower it into a
+     * completed/model-visible ToolOutput; E3 caller cannot mistake it for a
+     * poll-retryable execution outage. Decision table: DT1 start+ordinary
+     * failure=>Execution (existing paths); DT2 start+post-effect invalidation
+     * =>StateInvalidated and exactly one effect (this test). */
+    let effects = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_tool(Arc::new(InvalidatesAfterEffect {
+                effects: effects.clone(),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+    );
+    let activation = activation();
+    let prepared =
+        PreparedToolExecutor::new(runtime, &activation.snapshot, RuntimeRunContext::new())
+            .expect("resolve canonical detached tool");
+    let call = ToolCall {
+        call_id: "detached-fatal".into(),
+        tool_id: "echo".into(),
+        arguments: serde_json::json!({"text": "once"}),
+    };
+
+    let error = prepared
+        .start_task(
+            &activation.run_id,
+            &activation.thread_id,
+            "detached-fatal-operation".into(),
+            &call,
+            &Store::new(),
+        )
+        .await
+        .expect_err("DT2 cannot become a completed or pending detached result");
+
+    assert!(matches!(error, DetachedToolError::StateInvalidated), "DT2");
+    assert_eq!(effects.load(Ordering::SeqCst), 1, "DT2 no replay");
+}
+
+#[tokio::test]
+async fn detached_continuation_invalidation_is_terminal_for_poll_and_cancel() {
+    /* Cause/effect graph: C1 a detached effect already returned a durable
+     * handle; C2 its exact executor projection fails during poll or cancel.
+     * Effects: E1 preserve StateInvalidated for either continuation action;
+     * E2 call each requested action exactly once; E3 never redispatch invoke.
+     * Decision table: DC1 poll+C2=>E1+E2+E3; DC2 cancel+C2=>E1+E2+E3. */
+    let polls = Arc::new(AtomicUsize::new(0));
+    let cancellations = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_tool(Arc::new(InvalidatesContinuation {
+                polls: polls.clone(),
+                cancellations: cancellations.clone(),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+    );
+    let activation = activation();
+    let prepared =
+        PreparedToolExecutor::new(runtime, &activation.snapshot, RuntimeRunContext::new())
+            .expect("resolve canonical continuation tool");
+    let call = ToolCall {
+        call_id: "detached-continuation".into(),
+        tool_id: "echo".into(),
+        arguments: serde_json::json!({}),
+    };
+    let handle = ToolTaskHandle {
+        owner: "fixture".into(),
+        binding: "echo".into(),
+        task_id: "already-dispatched".into(),
+        poll_interval_ms: None,
+    };
+    let state = Store::new();
+
+    let poll = prepared
+        .poll_task(
+            &activation.run_id,
+            &activation.thread_id,
+            "detached-poll".into(),
+            &call,
+            &handle,
+            &state,
+        )
+        .await
+        .expect_err("DC1 is terminal");
+    let cancel = prepared
+        .cancel_task(
+            &activation.run_id,
+            &activation.thread_id,
+            "detached-cancel".into(),
+            &call,
+            &handle,
+            &state,
+        )
+        .await
+        .expect_err("DC2 is terminal");
+
+    assert!(matches!(poll, DetachedToolError::StateInvalidated), "DC1");
+    assert!(matches!(cancel, DetachedToolError::StateInvalidated), "DC2");
+    assert_eq!(polls.load(Ordering::SeqCst), 1, "DC1 one observation");
+    assert_eq!(
+        cancellations.load(Ordering::SeqCst),
+        1,
+        "DC2 one cancellation"
+    );
 }
 
 #[tokio::test]

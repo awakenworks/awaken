@@ -19,8 +19,8 @@ reference keys this on a dispatch epoch.
 `SubmitOptions.supersede` (default false) asks the store to supersede prior live
 work on the *same thread*. A normal submit never supersedes, so concurrent runs
 on one thread remain legal; only a submission that asks for it wins over the
-others. The thread is the supersession key because it is the stable conversational
-unit (the same reason `send_message` addresses threads, ADR-0017).
+others. The Thread is the supersession key because it is the stable conversational
+unit (the same reason cross-Thread delivery addresses Threads, ADR-0017).
 
 ### D2: A monotonic per-thread epoch orders submissions
 

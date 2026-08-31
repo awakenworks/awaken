@@ -234,6 +234,7 @@ fn coordination_catalog_and_executables_are_exact_and_recoverable() {
         .iter()
         .map(|tool| tool.id().to_string())
         .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(descriptors.len(), 2, "R1 exact two-tool catalog");
     assert_eq!(
         descriptors
             .keys()

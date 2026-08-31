@@ -30,11 +30,15 @@ mod workspace_data;
 
 pub use awaken_worker::WorkerBootstrap;
 pub use cloud_iam::CloudIamConfig;
-pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourceStoreBackend};
+pub use deployment::{
+    CloudModelMode, ConfigOverrides, CoordinatorStoreConfig, OperatingMode, ResolvedDeployment,
+    ResourceStoreBackend,
+};
 use file_schema::FileConfig;
 use file_support::{
-    home_dir, override_port, read_database_url_file, resolve_dispatch_backend,
-    resolve_runtime_database_url, select_store_url, validate_suite_hub_url,
+    home_dir, override_port, read_database_url_file, resolve_data_dir, resolve_dispatch_backend,
+    resolve_expected_platform_workspace_id, resolve_runtime_database_url, select_store_url,
+    validate_suite_hub_url,
 };
 pub use role::Role;
 pub use seal_key::SealKeySource;
@@ -43,66 +47,6 @@ pub(crate) use workspace_data::{WorkspaceDataLeaseGuard, enforce_workspace_data_
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
-/// Fully resolved bootstrap truth shared by the command, server process, and
-/// runtime host. Database URLs and key material are intentionally absent from
-/// its rendered reports.
-#[derive(Debug, Clone)]
-pub struct ResolvedDeployment {
-    pub role: Role,
-    pub mode: OperatingMode,
-    pub bind: String,
-    /// Role-private service listener. Present only for split Control and
-    /// Coordinator processes; it is never used by AllInOne or Worker.
-    pub internal_bind: Option<String>,
-    pub data_dir: PathBuf,
-    pub config_path: PathBuf,
-    pub config_file_exists: bool,
-    pub no_browser: bool,
-    /// Optional deployment-owned suite hub shown by the browser console.
-    pub suite_hub_url: Option<String>,
-    pub ai_sdk_browser_cors: awaken_coordinator::AiSdkBrowserCors,
-    pub run_local_pool: bool,
-    pub worker_server: Option<String>,
-    pub worker: WorkerBootstrap,
-    /// Coordinator-owned enrollment file for authenticated Worker requests.
-    /// It contains no database or Control sealing material.
-    pub worker_trust_credentials_file: Option<PathBuf>,
-    pub identity_mode: awaken_control::ManagementIdentityMode,
-    pub cloud_models: CloudModelMode,
-    pub org_id: String,
-    pub iam_workspaces: Vec<String>,
-    pub cloud_iam: CloudIamConfig,
-    pub executable_agent_registration: ExecutableAgentRegistrationConfig,
-    pub control_service: ControlServiceConfig,
-    pub mcp_bearer_token: Option<String>,
-    pub admin_listen: Option<String>,
-    pub runtime: DeploymentConfig,
-    /// Process-global logging, tracing and metrics policy.
-    pub observability: awaken_observability::ObservabilityConfig,
-    /// Secret-free local ACP observations captured once during product startup.
-    /// Empty means discovery was not run (for example in Server mode).
-    pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
-    /// Authored local ACP selection. `None` enables zero-configuration host
-    /// discovery, `Some(non-empty)` constrains it, and `Some(empty)` explicitly
-    /// disables discovery/acquisition without changing any other Worker feature.
-    pub configured_acp_clis: Option<Vec<String>>,
-    pub control: awaken_control::ControlStoreConfig,
-    pub coordinator: CoordinatorStoreConfig,
-    pub resources: ResourceStoreBackend,
-    /// Present only when Cloud supplies an exact Workspace data contract.
-    /// Local, self-hosted, and managed-agent-compatible deployments do not
-    /// acquire this additional request authority.
-    pub(crate) workspace_data_lease_guard: Option<WorkspaceDataLeaseGuard>,
-    pub seal_key: SealKeySource,
-    pub deprecations: Vec<String>,
-    pub origins: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CoordinatorStoreConfig {
-    pub sessions: awaken_control::StoreBackend,
-    pub captured_content: awaken_control::StoreBackend,
-}
 
 impl ResolvedDeployment {
     pub fn load(overrides: ConfigOverrides) -> Result<Self, String> {
@@ -136,18 +80,23 @@ impl ResolvedDeployment {
         file: FileConfig,
     ) -> Result<Self, String> {
         let mut origins = BTreeMap::new();
-        let data_dir = if let Some(path) = overrides.data_dir {
-            origins.insert("data_dir".to_owned(), "command line".to_owned());
-            path
-        } else if let Some(path) = file.data_dir.clone() {
-            origins.insert("data_dir".to_owned(), "config.toml".to_owned());
-            path
-        } else {
-            origins.insert("data_dir".to_owned(), "default".to_owned());
-            home.as_ref()
-                .map(|home| home.join(".awaken"))
-                .ok_or_else(|| "data_dir_unavailable: configure data_dir".to_owned())?
-        };
+        let (data_dir, data_dir_origin) = resolve_data_dir(
+            overrides.data_dir.clone(),
+            file.data_dir.clone(),
+            home.as_deref(),
+        )?;
+        origins.insert("data_dir".to_owned(), data_dir_origin.to_owned());
+        let expected_platform_workspace_id =
+            resolve_expected_platform_workspace_id(file.expected_platform_workspace_id.as_deref())?;
+        origins.insert(
+            "expected_platform_workspace_id".to_owned(),
+            if expected_platform_workspace_id.is_some() {
+                "config.toml"
+            } else {
+                "not configured"
+            }
+            .to_owned(),
+        );
 
         let mut bind = file.bind.clone().unwrap_or_else(|| DEFAULT_BIND.to_owned());
         if let Some(port) = overrides.port {
@@ -602,6 +551,7 @@ impl ResolvedDeployment {
             bind,
             internal_bind,
             data_dir,
+            expected_platform_workspace_id,
             config_file_exists: config_path.exists(),
             config_path,
             no_browser: overrides.no_browser.or(file.no_browser).unwrap_or(false),
@@ -860,6 +810,48 @@ mod tests {
         assert!(config.runtime.durable);
         assert!(matches!(config.seal_key, SealKeySource::LocalFile(_)));
         assert_eq!(config.role, Role::AllInOne);
+    }
+
+    #[test]
+    fn expected_platform_workspace_is_one_optional_deployment_resume_fence() {
+        /* Cause/effect graph: C1 expected identity omitted/present; C2 authored
+         * value empty/non-empty. Effects: E1 omission preserves ordinary
+         * initialize-or-resume startup; E2 a non-empty value is normalized into
+         * the one ResolvedDeployment authority; E3 empty input fails before any
+         * filesystem probe. Decision table: WI1 !C1=>None; WI2 C1+non-empty=>
+         * exact trimmed identity; WI3 C1+empty=>configuration error. */
+        assert_eq!(
+            resolve(FileConfig::default(), ConfigOverrides::default())
+                .expected_platform_workspace_id,
+            None,
+            "WI1"
+        );
+        let configured = resolve(
+            FileConfig {
+                expected_platform_workspace_id: Some(" workspace-deployment ".into()),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            configured.expected_platform_workspace_id.as_deref(),
+            Some("workspace-deployment"),
+            "WI2"
+        );
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                expected_platform_workspace_id: Some("  ".into()),
+                ..Default::default()
+            },
+        )
+        .expect_err("WI3");
+        assert!(
+            error.contains("expected_platform_workspace_id"),
+            "WI3: {error}"
+        );
     }
 
     #[test]

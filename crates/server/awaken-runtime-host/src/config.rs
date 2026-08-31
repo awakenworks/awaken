@@ -46,13 +46,12 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
-/// The built-in baseline allow rules. Managed Agent toolsets default every
-/// registered Agent tool to `always_allow`; the closed Agent-toolset contract is
-/// the sole membership owner and the descriptor registry proves availability,
-/// so execution and advertisement cannot drift behind a second literal list.
-/// Authored toolset rules may still disable
-/// or require confirmation for an exact member, and MCP keeps its separate
-/// default-ask policy.
+/// The built-in baseline rules. The closed Agent-toolset contract is the sole
+/// membership and controlled-modification owner: perception is allowed, while
+/// Bash/write/edit remain ask without typed authoring. The
+/// descriptor registry proves availability, so execution and advertisement
+/// cannot drift behind a second literal list. MCP keeps its separate default-ask
+/// policy.
 fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     let allow = |name: &str| {
         PermissionRule::new(
@@ -62,7 +61,10 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     };
     let mut rules: Vec<PermissionRule> = hand_tool_descriptors()
         .into_iter()
-        .filter(|descriptor| awaken_session_contract::is_agent_toolset_member(&descriptor.id))
+        .filter(|descriptor| {
+            awaken_session_contract::is_agent_toolset_member(&descriptor.id)
+                && !awaken_session_contract::is_controlled_modification_member(&descriptor.id)
+        })
         .map(|descriptor| allow(&descriptor.id))
         .collect();
     // `agent_run` is allowed: the kernel executes it via the injected delegation
@@ -106,9 +108,9 @@ pub(crate) fn config_permission_ruleset(
 /// The ruleset a thread actually enforces: the built-in Agent-tool baseline
 /// plus pre-authorized dynamic ids, with an authored policy's rules
 /// layered on top and its `default_behavior`/`mode` governing unmatched calls
-/// (`deny` in any rule still wins, absolutely). With no authored policy this is the
-/// managed-Agent-compatible default (registered Agent tools allowed, unmatched
-/// tools asked).
+/// (`deny` in any rule still wins, absolutely). With no authored policy this is
+/// the fail-closed default: perception is allowed, controlled modifications and
+/// unmatched tools ask.
 pub(crate) fn effective_ruleset(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
@@ -158,8 +160,15 @@ fn toolset_permission_rules(
                 // authoring metadata. Project the complete canonical roster;
                 // retain explicit Runtime-only Agent overrides separately.
                 rules.extend(
-                    awaken_session_contract::agent_toolset_members()
-                        .map(|name| rule(name.to_string(), toolset.policy_for(name))),
+                    awaken_session_contract::agent_toolset_members().map(|name| {
+                        let mut policy = toolset.policy_for(name);
+                        if awaken_session_contract::is_controlled_modification_member(name)
+                            && !toolset.overrides.iter().any(|entry| entry.name == name)
+                        {
+                            policy.permission = ToolPermissionRequirement::AlwaysAsk;
+                        }
+                        rule(name.to_string(), policy)
+                    }),
                 );
                 rules.extend(
                     toolset
@@ -259,14 +268,15 @@ fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// The registered built-in hand tools advertised on a managed session. Agent
-/// toolset members default to `always_allow`; exact authored overrides are
-/// projected separately by the Session tool configuration.
+/// The registered built-in Hand tools advertised on a managed Session. The ask
+/// bit projects the same controlled-modification predicate as authorization;
+/// exact typed overrides are applied separately from the Session configuration.
 pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
     hand_tool_descriptors()
         .into_iter()
         .map(|descriptor| {
-            let ask = !awaken_session_contract::is_agent_toolset_member(&descriptor.id);
+            let ask = !awaken_session_contract::is_agent_toolset_member(&descriptor.id)
+                || awaken_session_contract::is_controlled_modification_member(&descriptor.id);
             (descriptor.id, ask)
         })
         .collect()
@@ -774,8 +784,8 @@ mod tests {
         // | Rule | Policy | Tool | Effect |
         // |---|---|---|---|
         // | P1 | baseline | read / AGENT_RUN | allow |
-        // | P2 | Managed Agent member | registered official hand tool | allow |
-        // | P3 | Awaken-only hand extension | move/delete | ask |
+        // | P2 | ordinary Managed Agent member | registered perception tool | allow |
+        // | P3 | controlled member or unmatched extension | mutation/unknown | ask |
         // | P4 | authored allow | Bash(ls) | allow |
         // | P5 | authored allow+deny | Bash(rm) | deny |
         let base = effective_ruleset(None, &[]);
@@ -789,13 +799,18 @@ mod tests {
         );
         for (tool_id, ask) in builtin_hand_tools() {
             let official = awaken_session_contract::is_agent_toolset_member(&tool_id);
-            let expected = if official {
+            let controlled = awaken_session_contract::is_controlled_modification_member(&tool_id);
+            let expected = if official && !controlled {
                 ToolPermissionBehavior::Allow
             } else {
                 ToolPermissionBehavior::RequireConfirmation
             };
             assert_eq!(base.decide(&tool_id, &serde_json::json!({})), expected);
-            assert_eq!(ask, !official, "P2/P3 advertised policy for {tool_id}");
+            assert_eq!(
+                ask,
+                !official || controlled,
+                "P2/P3 advertised policy for {tool_id}"
+            );
         }
 
         // Authored: allow bash but deny rm; default stays ask. Baseline read still allowed.
@@ -828,17 +843,18 @@ mod tests {
         // runtime construction -> gate decision before RawTool invocation.
         // Visibility is tested at request assembly; this table proves execution
         // behavior and therefore prevents a data-only projection from passing.
-        // Effects: disabled tools deny, explicit ask remains ask, and the enabled
-        // default remains allow. Constraint/Invariant: the frozen normalized
+        // Effects: disabled tools deny, explicit ask remains ask, an exact
+        // always-allow may opt out outside the controlled preset, and an omitted
+        // controlled member still asks. Constraint/Invariant: the frozen normalized
         // ToolsetPolicy is the only execution-gate input. Decision rule: cover
-        // Agent default-allow, disabled, explicit ask, MCP inherited ask, and
-        // an exact MCP allow override partitions.
+        // exact Agent allow, disabled, explicit ask, controlled fallback, MCP
+        // inherited ask, and an exact MCP allow override partitions.
         //
         // Decision table:
         // | tool                         | enabled | permission   | gate result |
         // | read                         | false   | allow        | deny        |
         // | write                        | true    | ask          | ask         |
-        // | bash (Agent default)         | true    | allow        | allow       |
+        // | bash (exact opt-out)         | true    | allow        | allow       |
         // | mcp__docs__search            | true    | allow        | allow       |
         // | mcp__docs__fetch (default)   | true    | ask          | ask         |
         use awaken_runtime_contract::agent_bindings::{
@@ -861,6 +877,10 @@ mod tests {
                     ToolPolicyOverride::new(
                         "write",
                         policy(true, ToolPermissionRequirement::AlwaysAsk),
+                    ),
+                    ToolPolicyOverride::new(
+                        "bash",
+                        policy(true, ToolPermissionRequirement::AlwaysAllow),
                     ),
                 ],
             },
@@ -900,13 +920,14 @@ mod tests {
 
     #[tokio::test]
     async fn typed_controlled_policy_has_one_native_and_acp_verdict() {
-        // Cause/effect graph: C1 an explicit Agent override enables an ordinary member;
-        // C2 an MCP member inherits its source default; C3 bash/write/edit carry
-        // exact controlled overrides; C4 an omitted Agent member inherits the
-        // disabled Toolset default; C5 a Runtime-only Agent override narrows the
-        // permissive baseline. E1 the Native gate outcome and E2 the ACP
-        // policy verdict are projections of the same EffectiveToolAuthorization;
-        // E3 ordinary Agent use is allowed while MCP and controlled mutations ask.
+        // Cause/effect graph: C1 an explicit Agent override enables an ordinary
+        // member; C2 an MCP member inherits its source default; C3 the controlled
+        // preset enables Bash/write/edit with exact ask; C4 an omitted Agent
+        // member inherits the disabled Toolset default; C5 a Runtime-only Agent
+        // override narrows the permissive baseline. E1 the Native gate outcome
+        // and E2 the ACP policy verdict are projections of the same
+        // EffectiveToolAuthorization; E3 ordinary perception is allowed while
+        // every Bash command and typed file mutation asks.
         // Client-executed ResumeTicket closure is downstream of this decision and
         // deliberately is not a second permission evaluator.
         //
@@ -990,25 +1011,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_no_toolset_uses_the_closed_controlled_modification_boundary() {
+        // No-toolset cause/effect graph: C1 a legacy Session has no typed Agent
+        // Toolset; C2 the registered closed member is perception or controlled
+        // modification. Effects: E1 read/glob/grep allow; E2 Bash/write/edit
+        // ask. Native and ACP consume the same compiled
+        // authorization, so absence of typed authoring cannot restore the old
+        // fail-open mutation baseline.
+        //
+        // | rule | membership | examples | Native / ACP |
+        // | L1 | ordinary closed | read/glob/grep | allow |
+        // | L2 | controlled closed | bash/write/edit | ask |
+        use awaken_runtime_contract::agent_bindings::ResolvedConfiguration;
+        use awaken_runtime_contract::permission::GateOutcomeKind;
+
+        let authorization =
+            effective_tool_authorization(&ResolvedConfiguration::default(), &[], &[]);
+        let cases = [
+            ("read", GateOutcomeKind::Allow, "L1"),
+            ("glob", GateOutcomeKind::Allow, "L1"),
+            ("grep", GateOutcomeKind::Allow, "L1"),
+            ("bash", GateOutcomeKind::RequireConfirmation, "L2"),
+            ("write", GateOutcomeKind::RequireConfirmation, "L2"),
+            ("edit", GateOutcomeKind::RequireConfirmation, "L2"),
+        ];
+        for (tool_id, expected, rule) in cases {
+            let call = awaken_runtime_contract::llm::ToolCall {
+                call_id: format!("legacy-{tool_id}"),
+                tool_id: tool_id.into(),
+                arguments: serde_json::json!({}),
+            };
+            let native = authorization
+                .gate
+                .gate(&call, &awaken_agent_contract::agent::state::Store::new())
+                .await;
+            let acp = authorization.policy.evaluate(&call).await;
+            assert_eq!(native.kind(), expected, "{rule}/E1-E3 Native {tool_id}");
+            assert_eq!(
+                acp.kind().gate_outcome_kind(),
+                expected,
+                "{rule}/E1-E3 ACP {tool_id}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn typed_policy_never_uses_bash_text_as_read_only_git_authority() {
         // Approval-granularity cause/effect graph: C1 an exact typed perception
         // tool (read/glob/grep) is selected; C2 an exact typed mutation tool
         // (write/edit) is selected; C3 Bash carries arbitrary command text that
-        // looks read-only, compounds a mutation, or changes Git behavior through
-        // configuration/aliases. Effects: E1 C1 is allowed; E2 C2 asks; E3 every
-        // C3 asks solely because the canonical tool id is `bash`, independent of
-        // its opaque argument string. Native and ACP consume the same verdict.
+        // looks read-only, commits, publishes, deletes, compounds a mutation, or
+        // changes Git behavior through configuration/aliases.
+        // Effects: E1 C1 is allowed; E2 C2 asks; E3 every C3 asks solely because
+        // the canonical tool id is `bash`, independent of its opaque argument
+        // string. Native and ACP consume the same verdict.
         //
         // | Rule | canonical tool | argument class | Native / ACP effect |
         // |---|---|---|---|
         // | G1 | read/glob/grep | typed fields | allow / allow |
         // | G2 | write/edit | typed fields | ask / ask |
         // | G3 | bash | apparent `git status` or `git diff` | ask / ask |
-        // | G4 | bash | chained mutation or Git alias/config | ask / ask |
+        // | G4 | bash | commit/push/delete/chaining/alias/config | ask / ask |
         //
-        // Constraint: Bash text is not a trusted Git AST. Automatically allowed
-        // Repository inspection requires a separately registered typed tool;
-        // command parsing, prefixes, aliases, and shell quoting cannot widen Bash.
+        // Constraint: this typed preset supplies only an exact `bash` rule and
+        // does not use the generic authored-pattern DSL as a Git classifier.
+        // Read-only Git therefore cannot be auto-allowed while commit/push/delete
+        // are distinguished; every exact Bash call asks and the user confirms
+        // the complete command.
         use awaken_runtime_contract::agent_bindings::{
             ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
             ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
@@ -1082,6 +1151,24 @@ mod tests {
                 serde_json::json!({"command": "git diff --stat"}),
                 GateOutcomeKind::RequireConfirmation,
                 "G3",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "git commit -am approved"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G4",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "git push origin HEAD"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G4",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "rm -f obsolete.txt"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G4",
             ),
             (
                 "bash",

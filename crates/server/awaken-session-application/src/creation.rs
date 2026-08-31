@@ -13,19 +13,22 @@ use awaken_session_contract::{
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionCreationCompletion {
+pub(super) enum SessionCreationCompletion {
     AwaitRealization,
     AcceptDurableRoot,
 }
 
 /// Classify the repository-owned durable result at both create-replay entry
-/// points. `ActivationFailed` is retained for recovery but can never become a
-/// successful create merely because two callers passed protocol preflight
-/// before either committed.
+/// points. Awaiting callers retain the historical terminal conflict, while an
+/// accepting caller receives the same failed asynchronous-operation root rather
+/// than starting or projecting a replacement.
 pub(super) fn validated_create_replay(
     session: PersistedSession,
+    completion: SessionCreationCompletion,
 ) -> Result<PersistedSession, SessionCreationError> {
-    if session.execution == SessionExecutionState::ActivationFailed {
+    if completion == SessionCreationCompletion::AwaitRealization
+        && session.execution == SessionExecutionState::ActivationFailed
+    {
         return Err(SessionCreationError::Tombstoned);
     }
     Ok(session)
@@ -177,7 +180,7 @@ impl SessionApplication {
         .await
     }
 
-    async fn create_session_with_completion(
+    pub(super) async fn create_session_with_completion(
         &self,
         command: CreateSessionCommand,
         completion: SessionCreationCompletion,
@@ -291,7 +294,7 @@ impl SessionApplication {
                     .replay_session_create(&owner_scope, &session_id, &idempotency)
                     .await
                 {
-                    Ok(Some(session)) => return validated_create_replay(session),
+                    Ok(Some(session)) => return validated_create_replay(session, completion),
                     Ok(None) => {
                         if !self
                             .abort_unadopted_session_repositories(&repository_configurations)
@@ -335,7 +338,9 @@ impl SessionApplication {
             // Returning here also prevents duplicate external installation,
             // activation, WorkQueue dispatch, or cleanup from a newly lowered
             // candidate that was never committed.
-            SessionCreateResult::Replayed(session) => return validated_create_replay(session),
+            SessionCreateResult::Replayed(session) => {
+                return validated_create_replay(session, completion);
+            }
         };
 
         if completion == SessionCreationCompletion::AcceptDurableRoot {

@@ -979,7 +979,7 @@ async fn append_connected(
         match prompt_skills::McpPromptSkillRegistry::discover(&server.name, Arc::clone(&transport))
             .await
         {
-            Ok(registry) if !registry.list().is_empty() => {
+            Ok(registry) if !registry.list().map_err(HostError::internal)?.is_empty() => {
                 wiring.skill_registries.push(Arc::new(registry));
             }
             Ok(_) => {}
@@ -1385,7 +1385,7 @@ mod native_mcp_wiring_tests {
             .expect("prompt-capable wiring succeeds");
         assert_eq!(wiring.skill_registries.len(), 1);
         let registry = &wiring.skill_registries[0];
-        assert_eq!(registry.list()[0].id, "mcp:docs:review");
+        assert_eq!(registry.list().unwrap()[0].id, "mcp:docs:review");
         assert!(
             seen.lock()
                 .unwrap()

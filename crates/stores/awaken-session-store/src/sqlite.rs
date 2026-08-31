@@ -1,4 +1,251 @@
 use super::*;
+use awaken_scoped_migration::{
+    LedgerSchema, MigrationBundle, MigrationError, check_ledger_version,
+};
+use std::fs::{self, File};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SnapshotFileIdentity {
+    len: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl SnapshotFileIdentity {
+    fn read(metadata: &fs::Metadata, path: &Path) -> Result<Self, String> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().map_err(|error| {
+                format!(
+                    "inspect Session SQLite snapshot member {} modification time: {error}",
+                    path.display()
+                )
+            })?,
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        })
+    }
+}
+
+struct SnapshotSource {
+    path: PathBuf,
+    destination: PathBuf,
+    file: File,
+    identity: SnapshotFileIdentity,
+}
+
+struct SqliteProbeSnapshot {
+    database: PathBuf,
+    _directory: tempfile::TempDir,
+}
+
+impl SqliteProbeSnapshot {
+    fn capture(path: &Path) -> Result<Self, String> {
+        let directory = tempfile::Builder::new()
+            .prefix("awaken-session-sqlite-probe-")
+            .tempdir()
+            .map_err(|error| format!("create Session SQLite probe snapshot: {error}"))?;
+        let database = directory.path().join("sessions.db");
+        let mut sources = vec![
+            Self::open_source(path, database.clone(), true)?
+                .expect("the required Session SQLite source is present"),
+        ];
+        let mut sidecar_presence = Vec::new();
+        for suffix in ["-wal", "-shm"] {
+            let source = append_sqlite_suffix(path, suffix);
+            let destination = append_sqlite_suffix(&database, suffix);
+            let opened = Self::open_source(&source, destination, false)?;
+            sidecar_presence.push((source, opened.is_some()));
+            if let Some(opened) = opened {
+                sources.push(opened);
+            }
+        }
+
+        for source in &mut sources {
+            let mut destination = File::create(&source.destination).map_err(|error| {
+                format!(
+                    "create Session SQLite probe snapshot member {}: {error}",
+                    source.destination.display()
+                )
+            })?;
+            io::copy(&mut source.file, &mut destination).map_err(|error| {
+                format!(
+                    "copy Session SQLite snapshot member {}: {error}",
+                    source.path.display()
+                )
+            })?;
+        }
+
+        // All source handles stay open through the complete copy. Re-check the
+        // path identities and optional-member set only after every member was
+        // copied, so a concurrent checkpoint or WAL publication fails closed
+        // rather than yielding a mixed physical snapshot.
+        for source in &sources {
+            let handle_metadata = source.file.metadata().map_err(|error| {
+                format!(
+                    "reinspect Session SQLite snapshot member {}: {error}",
+                    source.path.display()
+                )
+            })?;
+            ensure_unaliased_snapshot_member(&handle_metadata, &source.path)?;
+            let handle_identity = SnapshotFileIdentity::read(&handle_metadata, &source.path)?;
+            let path_metadata = snapshot_member_metadata(&source.path, true)?
+                .expect("a required snapshot member remains present");
+            let path_identity = SnapshotFileIdentity::read(&path_metadata, &source.path)?;
+            if handle_identity != source.identity || path_identity != source.identity {
+                return Err(format!(
+                    "Session SQLite snapshot member {} changed while it was copied",
+                    source.path.display()
+                ));
+            }
+        }
+        for (sidecar, was_present) in sidecar_presence {
+            let is_present = snapshot_member_metadata(&sidecar, false)?.is_some();
+            if is_present != was_present {
+                return Err(format!(
+                    "Session SQLite sidecar {} changed presence while it was copied",
+                    sidecar.display()
+                ));
+            }
+        }
+
+        Ok(Self {
+            database,
+            _directory: directory,
+        })
+    }
+
+    fn open_source(
+        path: &Path,
+        destination: PathBuf,
+        required: bool,
+    ) -> Result<Option<SnapshotSource>, String> {
+        let Some(path_metadata) = snapshot_member_metadata(path, required)? else {
+            return Ok(None);
+        };
+        let path_identity = SnapshotFileIdentity::read(&path_metadata, path)?;
+        let file = File::open(path).map_err(|error| {
+            format!(
+                "open Session SQLite snapshot member {} read-only: {error}",
+                path.display()
+            )
+        })?;
+        let handle_metadata = file.metadata().map_err(|error| {
+            format!(
+                "inspect open Session SQLite snapshot member {}: {error}",
+                path.display()
+            )
+        })?;
+        ensure_unaliased_snapshot_member(&handle_metadata, path)?;
+        let handle_identity = SnapshotFileIdentity::read(&handle_metadata, path)?;
+        if handle_identity != path_identity {
+            return Err(format!(
+                "Session SQLite snapshot member {} changed while it was opened",
+                path.display()
+            ));
+        }
+        Ok(Some(SnapshotSource {
+            path: path.to_path_buf(),
+            destination,
+            file,
+            identity: handle_identity,
+        }))
+    }
+}
+
+fn append_sqlite_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn snapshot_member_metadata(path: &Path, required: bool) -> Result<Option<fs::Metadata>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "inspect Session SQLite snapshot member {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Session SQLite snapshot member {} is a symbolic link",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Session SQLite snapshot member {} is not a regular file",
+            path.display()
+        ));
+    }
+    ensure_unaliased_snapshot_member(&metadata, path)?;
+    Ok(Some(metadata))
+}
+
+#[cfg(unix)]
+fn ensure_unaliased_snapshot_member(metadata: &fs::Metadata, path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    if metadata.nlink() != 1 {
+        return Err(format!(
+            "Session SQLite snapshot member {} has {} hard links; aliased storage is not accepted",
+            path.display(),
+            metadata.nlink()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_unaliased_snapshot_member(_metadata: &fs::Metadata, _path: &Path) -> Result<(), String> {
+    // Stable std does not expose a Windows hard-link count. Symlinks are still
+    // rejected and the before/open/after metadata comparison remains active.
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SqliteColumnShape {
+    id: i64,
+    name: String,
+    data_type: String,
+    not_null: bool,
+    default_value: Option<String>,
+    primary_key: i64,
+    hidden: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SqliteIndexColumnShape {
+    sequence: i64,
+    column_id: i64,
+    name: Option<String>,
+    descending: bool,
+    collation: Option<String>,
+    key: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SqliteSchemaObjectShape {
+    object_type: String,
+    table_name: String,
+    columns: Vec<SqliteColumnShape>,
+    index_columns: Vec<SqliteIndexColumnShape>,
+}
 
 pub struct SqliteManagedSessionRepository {
     pub(crate) conn: awaken_sqlite_runtime::SharedSqliteConnection,
@@ -13,6 +260,63 @@ impl SqliteManagedSessionRepository {
         Self::from_connection(conn)
     }
 
+    /// Verify that an existing SQLite file is a readable, initialized Session
+    /// authority without applying migrations or normalizing rows.
+    ///
+    /// This is the read-only startup/doctor companion to [`Self::open`]. It uses
+    /// the same migration stream selector and plan authority, accepts a valid
+    /// legacy or pending-tail prefix for `open` to migrate, and rejects a blank,
+    /// corrupt, or unrelated SQLite file before it can be mistaken for an empty
+    /// deployment.
+    pub fn verify_existing(path: &str) -> Result<(), String> {
+        // SQLite may create an empty WAL beside a clean WAL-mode database, and
+        // may update an existing SHM even on a read-only connection. Snapshot
+        // the complete physical read set first and confine those SQLite-owned
+        // effects to the temporary copy. Copying WAL/SHM also preserves committed
+        // pages not yet checkpointed into the main file.
+        let snapshot = SqliteProbeSnapshot::capture(Path::new(path))?;
+        let conn = Connection::open_with_flags(
+            &snapshot.database,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| format!("open Session SQLite read-only: {error}"))?;
+        let integrity: String = conn
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+            .map_err(|error| format!("check Session SQLite integrity: {error}"))?;
+        if integrity != "ok" {
+            return Err(format!(
+                "Session SQLite integrity check failed: {integrity}"
+            ));
+        }
+
+        let ledger = LedgerSchema::with_prefix(NS).map_err(|error| error.to_string())?;
+        Self::verify_ledger_generation(&conn, &ledger)?;
+        let receipts = Self::migration_receipts_for(&conn, &ledger, BUNDLE_ID)?;
+        if receipts.is_empty() {
+            return Err("Session SQLite migration bundle is not initialized".to_owned());
+        }
+        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
+        awaken_scoped_migration::plan(
+            &selected.complete,
+            &receipts,
+            awaken_scoped_migration::Dialect::Sqlite,
+        )
+        .map_err(|error| error.to_string())?;
+        Self::verify_schema_matches_receipts(&conn, &selected.complete, &receipts)?;
+
+        let converged = converged_session_bundle().map_err(|error| error.to_string())?;
+        let converged_receipts = Self::migration_receipts_for(&conn, &ledger, CONVERGED_BUNDLE_ID)?;
+        awaken_scoped_migration::plan(
+            &converged,
+            &converged_receipts,
+            awaken_scoped_migration::Dialect::Sqlite,
+        )
+        .map_err(|error| error.to_string())?;
+
+        Ok(())
+    }
+
     /// An in-memory database (tests).
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
@@ -24,22 +328,28 @@ impl SqliteManagedSessionRepository {
 
     fn from_connection(mut conn: Connection) -> Result<Self, String> {
         let receipts = Self::migration_receipts(&conn)?;
-        let (stream, published) =
-            selected_session_bundle(&receipts).map_err(|error| error.to_string())?;
+        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         awaken_scoped_migration::plan(
-            &published,
+            &selected.complete,
             &receipts,
             awaken_scoped_migration::Dialect::Sqlite,
         )
         .map_err(|error| error.to_string())?;
-        if stream.is_legacy() {
-            Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
-        }
         let converged = converged_session_bundle().map_err(|error| error.to_string())?;
         let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|error| error.to_string())?;
+        if let Some(pre_convergence) = &selected.pre_convergence {
+            // Every supported legacy prefix first reaches the last published
+            // branch shape. V1/V9/V12 do not yet carry every column consumed by
+            // normalization, so reading rows before this phase is invalid.
+            runner
+                .run_bundle(&conn, pre_convergence)
+                .map_err(|error| error.to_string())?;
+            Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
+        }
         runner
-            .run_bundle(&conn, &published)
+            .run_bundle(&conn, &selected.complete)
             .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|error| error.to_string())?;
         Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
@@ -63,26 +373,206 @@ impl SqliteManagedSessionRepository {
     }
 
     fn migration_receipts(conn: &Connection) -> Result<BTreeMap<i64, String>, String> {
-        let ledger_exists = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                [format!("{NS}_schema_migrations")],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if !ledger_exists {
+        let ledger = LedgerSchema::with_prefix(NS).map_err(|error| error.to_string())?;
+        if !Self::table_exists(conn, ledger.ledger_table())? {
             return Ok(BTreeMap::new());
         }
+        Self::migration_receipts_for(conn, &ledger, BUNDLE_ID)
+    }
+
+    fn migration_receipts_for(
+        conn: &Connection,
+        ledger: &LedgerSchema,
+        bundle_id: &str,
+    ) -> Result<BTreeMap<i64, String>, String> {
         let mut statement = conn
             .prepare(&format!(
-                "SELECT version,checksum FROM {NS}_schema_migrations WHERE bundle_id=?1 ORDER BY version"
+                "SELECT version,checksum FROM {} WHERE bundle_id=?1 ORDER BY version",
+                ledger.ledger_table()
             ))
             .map_err(|error| error.to_string())?;
         statement
-            .query_map([BUNDLE_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map([bundle_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|error| error.to_string())?
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map_err(|error| error.to_string())
+    }
+
+    fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("inspect Session SQLite schema: {error}"))
+    }
+
+    fn verify_ledger_generation(conn: &Connection, ledger: &LedgerSchema) -> Result<(), String> {
+        ledger
+            .verify_presence(
+                Self::table_exists(conn, ledger.ledger_table())?,
+                Self::table_exists(conn, ledger.meta_table())?,
+            )
+            .map_err(|error| error.to_string())?;
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT ledger_version FROM {}",
+                ledger.meta_table()
+            ))
+            .map_err(|error| error.to_string())?;
+        let versions = statement
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        if versions.len() != 1 {
+            return Err(MigrationError::LedgerMetadataRowCount {
+                meta_table: ledger.meta_table().to_owned(),
+                found: versions.len(),
+            }
+            .to_string());
+        }
+        check_ledger_version(ledger.ledger_table(), versions[0]).map_err(|error| error.to_string())
+    }
+
+    fn verify_schema_matches_receipts(
+        actual: &Connection,
+        bundle: &MigrationBundle,
+        receipts: &BTreeMap<i64, String>,
+    ) -> Result<(), String> {
+        // Materialize the receipt-selected prefix with the canonical runner in
+        // memory. This derives the expected SQLite shape from the one migration
+        // authority instead of maintaining an adapter-owned table/column list.
+        let applied = MigrationBundle::new(
+            bundle.bundle_id(),
+            bundle
+                .migrations()
+                .iter()
+                .filter(|migration| receipts.contains_key(&migration.version()))
+                .cloned()
+                .collect(),
+        )
+        .map_err(|error| error.to_string())?;
+        let expected = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|error| error.to_string())?;
+        let runner = awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+            .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&expected, &applied)
+            .map_err(|error| error.to_string())?;
+        let applied_shapes = Self::schema_object_shapes(&expected)?;
+
+        // Applying the remaining canonical tail to an empty in-memory shape is
+        // also the ownership oracle for objects a forged database might create
+        // before recording their receipts. Such premature objects would make
+        // the real opener's later DDL fail even if every applied object matched.
+        runner
+            .run_bundle(&expected, bundle)
+            .map_err(|error| error.to_string())?;
+        let complete_shapes = Self::schema_object_shapes(&expected)?;
+        let actual_shapes = Self::schema_object_shapes(actual)?;
+        let known_names = applied_shapes
+            .keys()
+            .chain(complete_shapes.keys())
+            .collect::<BTreeSet<_>>();
+        for name in known_names {
+            let expected_shape = applied_shapes.get(name);
+            let actual_shape = actual_shapes.get(name);
+            if actual_shape != expected_shape {
+                return Err(format!(
+                    "Session SQLite schema disagrees with migration receipts at object `{name}`: expected {expected_shape:?}, found {actual_shape:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn schema_object_shapes(
+        conn: &Connection,
+    ) -> Result<BTreeMap<String, SqliteSchemaObjectShape>, String> {
+        let objects = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT type,name,tbl_name FROM sqlite_schema \
+                     WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+                )
+                .map_err(|error| error.to_string())?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        objects
+            .into_iter()
+            .map(|(object_type, name, table_name)| {
+                let columns = if object_type == "table" {
+                    let mut statement = conn
+                        .prepare(
+                            "SELECT cid,name,type,\"notnull\",dflt_value,pk,hidden \
+                             FROM pragma_table_xinfo(?1) ORDER BY cid",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    statement
+                        .query_map([&name], |row| {
+                            Ok(SqliteColumnShape {
+                                id: row.get(0)?,
+                                name: row.get(1)?,
+                                data_type: row.get(2)?,
+                                not_null: row.get(3)?,
+                                default_value: row.get(4)?,
+                                primary_key: row.get(5)?,
+                                hidden: row.get(6)?,
+                            })
+                        })
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?
+                } else {
+                    Vec::new()
+                };
+                let index_columns = if object_type == "index" {
+                    let mut statement = conn
+                        .prepare(
+                            "SELECT seqno,cid,name,desc,coll,key \
+                             FROM pragma_index_xinfo(?1) ORDER BY seqno",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    statement
+                        .query_map([&name], |row| {
+                            Ok(SqliteIndexColumnShape {
+                                sequence: row.get(0)?,
+                                column_id: row.get(1)?,
+                                name: row.get(2)?,
+                                descending: row.get(3)?,
+                                collation: row.get(4)?,
+                                key: row.get(5)?,
+                            })
+                        })
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?
+                } else {
+                    Vec::new()
+                };
+                Ok((
+                    name,
+                    SqliteSchemaObjectShape {
+                        object_type,
+                        table_name,
+                        columns,
+                        index_columns,
+                    },
+                ))
+            })
+            .collect()
     }
 
     fn normalize_session_aggregates(conn: &mut Connection) -> Result<(), SessionRepositoryError> {

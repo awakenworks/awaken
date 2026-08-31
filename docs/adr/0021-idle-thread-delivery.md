@@ -2,25 +2,30 @@
 
 - Status: Accepted
 - Date: 2026-06-30
+- Amended: 2026-08-31
 - Depends on: ADR-0010, ADR-0013, ADR-0017
 
 ## Context
 
-The durable ingress needs to represent external input already accepted for a
-Thread before a specific Run owns it. The input must survive and reach the next
-Run as new input, not masquerade as a resume ticket. Internal Agent messaging is
-separate and follows ADR-0017's Thread-owned command path.
+Product/protocol adapters may receive input for a Thread with no Run in flight.
+The input must not be lost, and it must reach that Thread's next Run as *new
+input* rather than masquerading as a reply to a ticket that does not exist.
+Internal Agent messaging is separate: Managed coordination already derives a
+deterministic fresh Run and follows ADR-0017's Thread-owned command path rather
+than writing pending input.
 
 ## Decision
 
 ### D1: An idle-thread message is unbound pending input
 
 Pending input is normally bound to a run and a ticket correlation (ADR-0010). A
-message to an idle thread is the same durable `PendingInput` with an **empty
+input to an idle Thread is the same durable `PendingInput` with an **empty
 `run_id` and `correlation_id`** — *unbound*: pending whose run is not yet
 determined. It is addressed only by `thread_id`. It rides the same outbox →
 relay → pending path as a bound delivery (ADR-0013), so there is one delivery
-mechanism for ingress, not two. It is not an Agent-to-Agent message queue.
+mechanism for external ingress, not two. Only an authenticated ingress adapter
+that intentionally chooses next-Run semantics should append this unbound form;
+it is not an Agent-to-Agent message queue.
 
 ### D2: The next run on the thread binds and consumes it
 
@@ -39,18 +44,19 @@ are settled away with the run's other consumed input once the run commits
 leaves the unbound input in place, so the next attempt re-delivers it — at-least
 -once with an exactly-once committed effect, exactly as bound pending input.
 
-### D4: Generic auto-activation stays deferred
+### D4: Generic auto-activation stays deferred; explicit continuation is exact
 
 This binds accepted idle-thread input to the *next* run someone starts on the thread.
 Spawning a new run *immediately* from an idle-thread message needs the thread's
 last executable snapshot (its agent/config), which the after-commit
-`ThreadReader` does not expose. That continuation-activation path — and the
-config seam it needs — remains a named, deferred extension for generic Thread
-input.
+`ThreadReader` does not expose. That generic continuation-activation path — and
+the config seam it needs — remains a named, deferred extension for external
+ingress.
 
-Managed Agent coordination does not use this deferred generic path. It already
-holds a deterministic `RunDispatch` and freezes its message directly in
-`RunActivation.input` under ADR-0017.
+Managed Agent coordination does not use this deferred external-ingress path. Its
+Session owner already holds a deterministic `RunDispatch` and freezes the
+message directly in `RunActivation.input` under ADR-0017, so concurrent
+follow-ups cannot consume one another's input.
 
 ## Consequences
 
@@ -67,4 +73,4 @@ holds a deterministic `RunDispatch` and freezes its message directly in
 - [INVARIANTS.md](../INVARIANTS.md) — G5 (ingress delivery semantics).
 - ADR-0010 — correlation-keyed pending input and read-then-remove.
 - ADR-0013 — the outbox/relay path the delivery reuses.
-- ADR-0017 — the superseded generic host adapter and its required acceptance boundary.
+- ADR-0017 — Thread-owned Managed messaging and deterministic fresh-Run admission.

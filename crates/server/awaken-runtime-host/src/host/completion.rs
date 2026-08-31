@@ -1212,9 +1212,10 @@ mod completion_tests {
         use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
         // Cause/effect decision table: C1=a selected canonical Hand descriptor
-        // freezes DurableRequest; C2=a non-Hand task descriptor has the same
-        // policy. R1 !C1+C2 => no Sandbox demand, because task recovery is owned
-        // by its own executor; R2 C1+C2 => exactly one DurableRequest demand.
+        // freezes DurableRequest; C2=a non-Hand coordination descriptor has the
+        // same policy. R1 !C1+C2 => no Sandbox demand, because coordination
+        // recovery is owned by its host executor; R2 C1+C2 => exactly one
+        // DurableRequest demand.
         // This derives placement from the immutable snapshot without a second
         // Agent field or a concrete tool-id list in the placement owner.
         let mut models = host_models();
@@ -1225,20 +1226,23 @@ mod completion_tests {
             .expect("Hand catalog is non-empty")
             .descriptor()
             .clone();
-        let task = builtins
+        let coordination = builtins
             .iter()
-            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Task)
-            .expect("Task catalog is non-empty")
+            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Coordination)
+            .expect("Coordination catalog is non-empty")
             .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
-        models.tool_descriptors = vec![hand.clone(), task.clone()];
-        let task_only = remote_worker_placement(&models, None, None, true);
-        assert!(task_only.required_sandbox_tool_recovery.is_empty(), "R1");
+        models.tool_descriptors = vec![hand.clone(), coordination.clone()];
+        let coordination_only = remote_worker_placement(&models, None, None, true);
+        assert!(
+            coordination_only.required_sandbox_tool_recovery.is_empty(),
+            "R1"
+        );
 
         models.tool_descriptors = vec![
             hand.with_recovery(ToolRecoveryPolicy::durable_request()),
-            task,
+            coordination,
         ];
         let resident_hand = remote_worker_placement(&models, None, None, true);
         assert_eq!(

@@ -222,7 +222,7 @@ impl SessionEnvironment {
         match self {
             Self::Workdir(sandbox) => sandbox.scan_skill_dir(subdir),
             Self::Namespace { sandbox, .. } => sandbox.scan_skill_dir(subdir),
-            Self::Container { skills, .. } => Ok(skills.get(subdir)),
+            Self::Container { skills, .. } => skills.get(subdir),
         }
     }
 

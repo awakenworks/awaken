@@ -33,10 +33,12 @@ mod extraction;
 mod row_codec;
 mod schema;
 use row_codec::{EncodedSessionRow, decode, encode, normalize_published_row};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use schema::{BUNDLE_ID, converged_session_bundle, selected_session_bundle};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use schema::{BUNDLE_ID, CONVERGED_BUNDLE_ID, converged_session_bundle, selected_session_schema};
 #[cfg(test)]
-use schema::{original_published_session_bundle, session_bundle};
+use schema::{
+    compacted_published_session_bundle, original_published_session_bundle, session_bundle,
+};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 

@@ -30,9 +30,6 @@ interface McpToolsetPolicyInput {
   configs?: readonly unknown[] | null;
 }
 
-const ALWAYS_ALLOW: AgentToolPermissionPolicy = { type: "always_allow" };
-const ALWAYS_ASK: AgentToolPermissionPolicy = { type: "always_ask" };
-
 export function isAgentToolset(tool: AgentTool): tool is AgentManagedToolset {
   return typeof tool === "object"
     && tool !== null
@@ -184,10 +181,11 @@ function effectiveEnabled(toolset: AgentManagedToolset, member: string): boolean
 function effectivePermission(
   toolset: AgentManagedToolset | undefined,
   config: AgentToolsetConfig | undefined,
+  advertisedToolsetDefault: AgentToolPermissionPolicy,
 ): AgentToolPermissionPolicy {
   return config?.permission_policy
     ?? toolset?.default_config?.permission_policy
-    ?? ALWAYS_ALLOW;
+    ?? advertisedToolsetDefault;
 }
 
 /** Project the mixed wire union into the ids consumed by the existing picker. */
@@ -214,19 +212,20 @@ function canonicalAgentToolset(
   previous: AgentManagedToolset | undefined,
   selected: Set<string>,
   members: readonly AgentToolsetMemberCap[],
-  controlled: boolean,
+  advertisedDefaultPermission: AgentToolPermissionPolicy,
 ): AgentManagedToolset {
   const previousByName = new Map(
     (previous?.configs ?? []).map((config) => [config.name, config]),
   );
   const memberNames = new Set(members.map((member) => member.name));
-  const controlledMembers = new Set(controlledModificationMemberNames(members));
   const configs = members.flatMap((member): AgentToolsetConfig[] => {
     const name = member.name;
     const existing = previousByName.get(name);
-    const permission = controlled && controlledMembers.has(name)
-      ? ALWAYS_ASK
-      : effectivePermission(previous, existing);
+    const permission = effectivePermission(
+      previous,
+      existing,
+      advertisedDefaultPermission,
+    );
     const enabled = selected.has(name);
     const hasExecutionConfiguration = existing !== undefined
       && Object.keys(existing).some((key) => ![
@@ -248,7 +247,7 @@ function canonicalAgentToolset(
   );
   return {
     type: "agent_toolset_20260401",
-    default_config: { enabled: false, permission_policy: ALWAYS_ALLOW },
+    default_config: { enabled: false, permission_policy: advertisedDefaultPermission },
     configs: [...configs, ...runtimeOnly],
   };
 }
@@ -257,7 +256,7 @@ function projectAgentTools(
   tools: readonly AgentTool[],
   selectedIds: readonly string[],
   members: readonly AgentToolsetMemberCap[],
-  controlled: boolean,
+  advertisedDefaultPermission: AgentToolPermissionPolicy,
 ): AgentTool[] {
   const memberSet = new Set(members.map((member) => member.name));
   const selected = new Set(selectedIds.filter((id) => memberSet.has(id)));
@@ -269,10 +268,10 @@ function projectAgentTools(
     (tool): tool is Exclude<AgentTool, string | AgentManagedToolset> =>
       typeof tool !== "string" && !isAgentToolset(tool),
   );
-  const needsAgentToolset = controlled || selected.size > 0 || previous !== undefined;
+  const needsAgentToolset = selected.size > 0 || previous !== undefined;
   return [
     ...(needsAgentToolset
-      ? [canonicalAgentToolset(previous, selected, members, controlled)]
+      ? [canonicalAgentToolset(previous, selected, members, advertisedDefaultPermission)]
       : []),
     ...exact,
     ...nonAgentObjects,
@@ -284,25 +283,7 @@ export function withSelectedAgentTools(
   tools: readonly AgentTool[],
   selectedIds: readonly string[],
   members: readonly AgentToolsetMemberCap[],
+  advertisedDefaultPermission: AgentToolPermissionPolicy,
 ): AgentTool[] {
-  return projectAgentTools(tools, selectedIds, members, false);
-}
-
-/** Pure UI projection: no preset marker or parallel permission document is persisted. */
-export function controlledModificationPatch(
-  config: AgentConfig,
-  members: readonly AgentToolsetMemberCap[],
-): Partial<AgentConfig> {
-  const pluginConfig = { ...config.plugin_config };
-  delete pluginConfig.permission;
-  return {
-    tools: projectAgentTools(
-      config.tools,
-      selectedAgentToolIds(config.tools, members),
-      members,
-      true,
-    ),
-    plugins: config.plugins.filter((id) => id !== "permission"),
-    plugin_config: pluginConfig,
-  };
+  return projectAgentTools(tools, selectedIds, members, advertisedDefaultPermission);
 }
