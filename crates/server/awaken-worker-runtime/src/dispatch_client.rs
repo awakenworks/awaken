@@ -3,7 +3,7 @@
 //! so a worker drives runs without ever opening the store.
 //!
 //! Only the worker verbs cross the wire — `enqueue`, `claim_new_run`, `claim`,
-//! `renew_lease`, `renew_owned_leases`, and `settle`. Claimed commits use the separate atomic
+//! `renew_lease` and `settle`. Claimed commits use the separate atomic
 //! server operation; this transport exposes no check-then-commit fence read. The
 //! server-local operational verbs (manual quarantine, purge, supersede, cancel, requeue,
 //! awaiting-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
@@ -25,13 +25,13 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_run_ingress_contract::{
-    BindSandboxRequest, CasOutcome, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest,
-    ClaimWorkerRequest, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
-    CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchSummary, EnqueueRequest, Inbox, Outbox, PendingInput, PendingRecord,
-    RecoveryRequest, RelinquishRequest, RenewRequest, RunClaim, RunDispatch,
-    SessionRunReservationResolution, SessionRunReservationResolutionRequest, SettleOutcome,
-    SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
+    AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CasOutcome, CheckpointRequest,
+    ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed, CommitEpochGuard,
+    CredentialRealizationReceipt, CredentialRealizationRequest, DeliverAndClaimRequest,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, EnqueueRequest, Inbox, Outbox,
+    PendingInput, PendingRecord, RecoveryRequest, RelinquishRequest, RenewRequest, RunClaim,
+    RunDispatch, SessionRunReservationResolution, SessionRunReservationResolutionRequest,
+    SettleOutcome, SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
 };
 use awaken_run_ingress_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
@@ -750,23 +750,53 @@ impl DispatchQueue for HttpDispatchQueue {
         Ok(v.get("renewed").and_then(|r| r.as_bool()).unwrap_or(false))
     }
 
-    async fn renew_owned_leases(
+    async fn begin_attempt(
         &self,
-        _owner: &str,
-        lease_ms: u64,
+        claim: &RunClaim,
         now_ms: u64,
-    ) -> Result<usize, DispatchError> {
-        let v = self
-            .post(
-                "/v1/worker/dispatch/renew_owned",
-                &ClaimWorkerRequest {
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let value = self
+            .post_idempotent(
+                "/v1/worker/dispatch/attempt/begin",
+                &AttemptExecutionRequest {
+                    claim: claim.clone(),
                     identity: Some(self.worker_identity.clone()),
                 },
                 self.worker_id(),
             )
             .await?;
-        let _ = (lease_ms, now_ms);
-        Ok(v.get("renewed").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
+        let _ = now_ms;
+        serde_json::from_value(
+            value
+                .get("admission")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|error| DispatchError::Rejected(format!("decode attempt admission: {error}")))
+    }
+
+    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post_idempotent(
+                "/v1/worker/dispatch/attempt/finish",
+                &AttemptExecutionRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value
+                .get("finished")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

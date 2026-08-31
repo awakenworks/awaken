@@ -45,7 +45,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
         WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-http"),
     );
     let registered = client
-        .register("boot-http", WorkerManifest::default())
+        .register_classified("boot-http", WorkerManifest::default())
         .await
         .unwrap();
     // Registration/lifecycle cause-effect graph: C1 same Worker id; C2
@@ -64,8 +64,8 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
             .await,
         Err(WorkerRegistrationError::SlotOccupied(_))
     ));
-    assert_eq!(registered.snapshot.state, WorkerState::Starting);
-    let identity = registered.snapshot.identity;
+    assert_eq!(registered.worker.snapshot.state, WorkerState::Starting);
+    let identity = registered.worker.snapshot.identity;
 
     clock.set(110);
     let observed = WorkerCredentialRevision {
@@ -89,7 +89,8 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                 },
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .mutation,
         RegistryMutation::Applied
     );
     assert_eq!(
@@ -267,10 +268,13 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     let control = WorkerControlClient::new(upstream);
     let mut manifest = WorkerManifest::default();
     manifest.capabilities.insert("cpu".to_string());
-    let registered = control.register("boot-cpu", manifest).await.unwrap();
+    let registered = control
+        .register_classified("boot-cpu", manifest)
+        .await
+        .unwrap();
     control
         .heartbeat(
-            &registered.snapshot.identity,
+            &registered.worker.snapshot.identity,
             WorkerHeartbeat {
                 sequence: 1,
                 ready: true,
@@ -285,7 +289,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
 
     let client = HttpDispatchQueue::new(
         format!("http://{address}"),
-        registered.snapshot.identity.clone(),
+        registered.worker.snapshot.identity.clone(),
     );
     let claimed = client
         .claim("ignored-local-owner", 99, 99, &Default::default())
@@ -295,11 +299,11 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     assert_eq!(claimed.request.run_id().0, "cpu");
     assert_eq!(
         claimed.lease.owner,
-        registered.snapshot.identity.lease_owner()
+        registered.worker.snapshot.identity.lease_owner()
     );
     assert_eq!(
         claimed.assignment.unwrap().identity,
-        registered.snapshot.identity
+        registered.worker.snapshot.identity
     );
     let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
     assert!(
@@ -330,7 +334,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     );
     assert_eq!(
         control
-            .begin_drain(&registered.snapshot.identity, Some(1_000))
+            .begin_drain(&registered.worker.snapshot.identity, Some(1_000))
             .await
             .unwrap(),
         RegistryMutation::Applied
@@ -405,12 +409,12 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
             .capabilities
             .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
         let registered = control
-            .register(format!("boot-{worker_id}"), manifest)
+            .register_classified(format!("boot-{worker_id}"), manifest)
             .await
             .unwrap();
         control
             .heartbeat(
-                &registered.snapshot.identity,
+                &registered.worker.snapshot.identity,
                 WorkerHeartbeat {
                     sequence: 1,
                     ready: true,
@@ -426,7 +430,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
             )
             .await
             .unwrap();
-        registered.snapshot.identity
+        registered.worker.snapshot.identity
     }
 
     let wrong = ready_worker(
@@ -485,7 +489,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                 },
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .mutation,
         RegistryMutation::Applied
     );
     let claimed = exact_queue
@@ -554,7 +559,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                 },
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .mutation,
         RegistryMutation::Applied,
         "R3"
     );
@@ -581,7 +587,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                 },
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .mutation,
         RegistryMutation::StaleSequence,
         "R5"
     );

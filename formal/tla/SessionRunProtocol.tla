@@ -21,7 +21,7 @@ VARIABLES
     activityEpoch, activeActivityEpochs, settledActivities, nextActivityEpoch,
     workState, workOwner, workEpoch, workHeartbeat, workExpires, workNow,
     realizedOwner, realizedWorkEpoch, releasedWorkEpoch,
-    executionStarted,
+    executionStarted, executionOwner, executionEpoch,
     committedDisposition, committedOwner, committedEpoch, committedWorkEpoch,
     sessionObservationApplied
 
@@ -34,7 +34,8 @@ activityVars == <<activityEpoch, activeActivityEpochs, settledActivities,
 workVars == <<workState, workOwner, workEpoch, workHeartbeat, workExpires,
               workNow>>
 protocolVars == <<activityVars, workVars, realizedOwner, realizedWorkEpoch,
-                  releasedWorkEpoch, executionStarted, committedDisposition,
+                  releasedWorkEpoch, executionStarted, executionOwner,
+                  executionEpoch, committedDisposition,
                   committedOwner, committedEpoch, committedWorkEpoch,
                   sessionObservationApplied>>
 vars == <<dispatchVars, protocolVars>>
@@ -101,8 +102,9 @@ CurrentRealization(candidate) ==
 AuthoritativeAttempt(run) ==
     /\ run \in executionStarted
     /\ DState(run) = "Leased"
-    /\ DOwner(run) \in Workers
-    /\ CurrentRealization(DOwner(run))
+    /\ executionOwner[run] = DOwner(run)
+    /\ executionEpoch[run] = DEpoch(run)
+    /\ CurrentRealization(executionOwner[run])
 
 Init ==
     /\ RootIngress!Init
@@ -114,6 +116,8 @@ Init ==
     /\ realizedWorkEpoch = 0
     /\ releasedWorkEpoch = 0
     /\ executionStarted = {}
+    /\ executionOwner = [run \in Runs |-> NoWorker]
+    /\ executionEpoch = [run \in Runs |-> 0]
     /\ committedDisposition = [run \in Runs |-> "None"]
     /\ committedOwner = [run \in Runs |-> NoWorker]
     /\ committedEpoch = [run \in Runs |-> 0]
@@ -169,6 +173,7 @@ OpenActivity(run) ==
     /\ ActivityKernel!Open(run)
     /\ UNCHANGED <<dispatchVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -181,6 +186,7 @@ ClaimWork(candidate) ==
     /\ WorkKernel!Claim(candidate, WorkItem)
     /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -188,6 +194,7 @@ ReclaimWork(candidate) ==
     /\ WorkKernel!Reclaim(candidate, WorkItem)
     /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -195,6 +202,7 @@ HeartbeatWork(candidate, expected) ==
     /\ WorkKernel!Heartbeat(candidate, WorkItem, expected)
     /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -202,6 +210,7 @@ AdvanceStoreTime ==
     /\ WorkKernel!AdvanceTime
     /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -210,7 +219,8 @@ Realize(candidate) ==
     /\ realizedOwner' = candidate
     /\ realizedWorkEpoch' = workEpoch[WorkItem]
     /\ UNCHANGED <<dispatchVars, activityVars, workVars,
-                   releasedWorkEpoch, executionStarted,
+                   releasedWorkEpoch, executionStarted, executionOwner,
+                   executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -226,9 +236,9 @@ ClaimRun(run, candidate) ==
     /\ CurrentRealization(candidate)
     /\ DState(run) \in {"Pending", "Awaiting"}
     /\ ClaimDispatch(run, candidate)
-    /\ executionStarted' = executionStarted \cup {run}
     /\ UNCHANGED <<activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
+                   executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -236,18 +246,35 @@ ReclaimRun(run, candidate) ==
     /\ CurrentRealization(candidate)
     /\ DState(run) = "Leased"
     /\ ClaimDispatch(run, candidate)
-    /\ executionStarted' = IF committedDisposition[run] = "None"
-                              THEN executionStarted \cup {run}
-                              ELSE executionStarted \ {run}
     /\ UNCHANGED <<activityVars, workVars, realizedOwner,
+                   realizedWorkEpoch, releasedWorkEpoch,
+                   executionStarted, executionOwner, executionEpoch,
+                   committedDisposition, committedOwner, committedEpoch,
+                   committedWorkEpoch, sessionObservationApplied>>
+
+StartExecution(run, candidate, epoch) ==
+    /\ run \notin executionStarted
+    /\ DState(run) = "Leased"
+    /\ DOwner(run) = candidate
+    /\ DEpoch(run) = epoch
+    /\ CurrentRealization(candidate)
+    /\ \A peer \in Runs \ {run}:
+         RunThread(peer) = RunThread(run) => peer \notin executionStarted
+    /\ executionStarted' = executionStarted \cup {run}
+    /\ executionOwner' = [executionOwner EXCEPT ![run] = candidate]
+    /\ executionEpoch' = [executionEpoch EXCEPT ![run] = epoch]
+    /\ UNCHANGED <<dispatchVars, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
-AbandonStaleAttempt(run) ==
+FinishExecution(run, candidate, epoch) ==
     /\ run \in executionStarted
-    /\ ~AuthoritativeAttempt(run)
+    /\ executionOwner[run] = candidate
+    /\ executionEpoch[run] = epoch
     /\ executionStarted' = executionStarted \ {run}
+    /\ executionOwner' = [executionOwner EXCEPT ![run] = NoWorker]
+    /\ executionEpoch' = [executionEpoch EXCEPT ![run] = 0]
     /\ UNCHANGED <<dispatchVars, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -267,9 +294,9 @@ ObserveCommittedRun(run, disposition, candidate, epoch) ==
     /\ committedEpoch' = [committedEpoch EXCEPT ![run] = epoch]
     /\ committedWorkEpoch' =
          [committedWorkEpoch EXCEPT ![run] = workEpoch[WorkItem]]
-    /\ executionStarted' = executionStarted \ {run}
     /\ UNCHANGED <<dispatchVars, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
+                   executionStarted, executionOwner, executionEpoch,
                    sessionObservationApplied>>
 
 ApplySessionObservation(run) ==
@@ -279,6 +306,7 @@ ApplySessionObservation(run) ==
     /\ sessionObservationApplied' = sessionObservationApplied \cup {run}
     /\ UNCHANGED <<dispatchVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch>>
 
@@ -287,12 +315,13 @@ ApplySessionObservation(run) ==
 ReleaseWork(run, candidate, epoch) ==
     /\ run \in RootRuns
     /\ run \in sessionObservationApplied
-    /\ \A attempt \in Runs: ~AuthoritativeAttempt(attempt)
+    /\ \A attempt \in Runs: attempt \notin executionStarted
     /\ WorkKernel!Stop(candidate, WorkItem, epoch)
     /\ releasedWorkEpoch' = epoch
     /\ realizedOwner' = NoWorker
     /\ realizedWorkEpoch' = 0
     /\ UNCHANGED <<dispatchVars, activityVars, executionStarted,
+                   executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -303,10 +332,11 @@ SettleAwaiting(run, candidate, epoch) ==
     /\ committedDisposition[run] = "Awaiting"
     /\ run \in sessionObservationApplied
     /\ RootSettlementReady(run)
+    /\ run \notin executionStarted
     /\ SettleAwaitingDispatch(run, candidate, epoch)
-    /\ executionStarted' = executionStarted \ {run}
     /\ UNCHANGED <<activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
+                   executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -314,10 +344,11 @@ SettleDone(run, candidate, epoch) ==
     /\ committedDisposition[run] = "Ended"
     /\ run \in sessionObservationApplied
     /\ RootSettlementReady(run)
+    /\ run \notin executionStarted
     /\ SettleDoneDispatch(run, candidate, epoch)
-    /\ executionStarted' = executionStarted \ {run}
     /\ UNCHANGED <<activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
+                   executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
@@ -332,7 +363,10 @@ Next ==
     \/ \E worker \in Workers: Realize(worker)
     \/ \E run \in Runs, worker \in Workers: ClaimRun(run, worker)
     \/ \E run \in Runs, worker \in Workers: ReclaimRun(run, worker)
-    \/ \E run \in Runs: AbandonStaleAttempt(run)
+    \/ \E run \in Runs, worker \in Workers, epoch \in 0..MaxEpoch:
+         StartExecution(run, worker, epoch)
+    \/ \E run \in Runs, worker \in Workers, epoch \in 0..MaxEpoch:
+         FinishExecution(run, worker, epoch)
     \/ \E run \in Runs, disposition \in {"Awaiting", "Ended"},
           worker \in Workers, epoch \in 0..MaxEpoch:
          ObserveCommittedRun(run, disposition, worker, epoch)
@@ -355,6 +389,11 @@ TypeOK ==
     /\ realizedWorkEpoch \in 0..MaxEpoch
     /\ releasedWorkEpoch \in 0..MaxEpoch
     /\ executionStarted \subseteq Runs
+    /\ executionOwner \in [Runs -> (Workers \cup {NoWorker})]
+    /\ executionEpoch \in [Runs -> 0..MaxEpoch]
+    /\ \A run \in Runs:
+         (run \in executionStarted) =
+            (executionOwner[run] \in Workers /\ executionEpoch[run] > 0)
     /\ committedDisposition \in [Runs -> {"None", "Awaiting", "Ended"}]
     /\ committedOwner \in [Runs -> (Workers \cup {NoWorker})]
     /\ committedEpoch \in [Runs -> 0..MaxEpoch]
@@ -379,6 +418,10 @@ ReservationCannotExecute ==
 OneExecutionAuthorityPerThread ==
     \A left, right \in Runs:
         AuthoritativeAttempt(left) /\ AuthoritativeAttempt(right) /\
+        RunThread(left) = RunThread(right) => left = right
+
+OnePhysicalAttemptPerThread ==
+    \A left, right \in executionStarted:
         RunThread(left) = RunThread(right) => left = right
 
 CommittedObservationHasExactReceipts ==
@@ -412,6 +455,7 @@ Safety ==
     /\ ActivityBeforeExecutableDispatch
     /\ ReservationCannotExecute
     /\ OneExecutionAuthorityPerThread
+    /\ OnePhysicalAttemptPerThread
     /\ CommittedObservationHasExactReceipts
     /\ ObservationRequiresCommit
     /\ SettlementRequiresObservation

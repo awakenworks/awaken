@@ -276,7 +276,15 @@ struct ToolUntilResult;
 #[async_trait::async_trait]
 impl LlmExecutor for ToolUntilResult {
     async fn infer(&self, r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let has_tool_result = r.messages.iter().any(|m| matches!(m.role, Role::Tool));
+        // Only a tool result after the latest User input belongs to this Run.
+        // Looking across the whole Thread would make a prior Run's tool result
+        // incorrectly skip execution for a later sequential Run.
+        let has_tool_result = r
+            .messages
+            .iter()
+            .rev()
+            .take_while(|message| !matches!(message.role, Role::User))
+            .any(|message| matches!(message.role, Role::Tool));
         let output = if has_tool_result {
             AssistantOutput::text("all done".to_string())
         } else {
@@ -300,6 +308,8 @@ impl LlmExecutor for ToolUntilResult {
 /// lease has lapsed reclaims and re-drives the same run.
 struct BlockingEcho {
     ran: Arc<AtomicUsize>,
+    active: Arc<AtomicUsize>,
+    maximum: Arc<AtomicUsize>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Semaphore>,
     first_seen: std::sync::atomic::AtomicBool,
@@ -311,6 +321,8 @@ impl RawTool for BlockingEcho {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.ran.fetch_add(1, Ordering::SeqCst);
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum.fetch_max(active, Ordering::SeqCst);
         self.entered.notify_one();
         // Only the first-ever invocation blocks; a later re-drive runs straight
         // through, so the test observes the second (double) execution.
@@ -320,6 +332,7 @@ impl RawTool for BlockingEcho {
         {
             let _permit = self.release.acquire().await;
         }
+        self.active.fetch_sub(1, Ordering::SeqCst);
         Ok(ToolOutput::ok(call.call_id, "echoed: ping"))
     }
 }
@@ -335,6 +348,20 @@ pub fn blocking_tool_runtime(
     (runtime, ran)
 }
 
+/// The same one-authority blocking runtime with explicit physical-concurrency
+/// counters for the same-Thread executor-admission specification.
+pub fn concurrency_tracking_tool_runtime(
+    release: Arc<tokio::sync::Semaphore>,
+) -> (
+    Arc<Runtime>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let (runtime, ran, _entered, active, maximum) = blocking_tool_runtime_parts(release);
+    (runtime, ran, active, maximum)
+}
+
 /// The observable form of [`blocking_tool_runtime`]. The entry signal is a
 /// causal synchronization point for tests that must inspect state while the
 /// first tool invocation is blocked; unlike polling the counter, it is not
@@ -342,19 +369,36 @@ pub fn blocking_tool_runtime(
 pub fn blocking_tool_runtime_with_entry_signal(
     release: Arc<tokio::sync::Semaphore>,
 ) -> (Arc<Runtime>, Arc<AtomicUsize>, Arc<tokio::sync::Notify>) {
+    let (runtime, ran, entered, _active, _maximum) = blocking_tool_runtime_parts(release);
+    (runtime, ran, entered)
+}
+
+type BlockingToolRuntimeParts = (
+    Arc<Runtime>,
+    Arc<AtomicUsize>,
+    Arc<tokio::sync::Notify>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+);
+
+fn blocking_tool_runtime_parts(release: Arc<tokio::sync::Semaphore>) -> BlockingToolRuntimeParts {
     let ran = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(tokio::sync::Notify::new());
     let runtime = Arc::new(
         Runtime::new()
             .with_llm(Arc::new(ToolUntilResult))
             .with_tool(Arc::new(BlockingEcho {
                 ran: ran.clone(),
+                active: active.clone(),
+                maximum: maximum.clone(),
                 entered: entered.clone(),
                 release,
                 first_seen: std::sync::atomic::AtomicBool::new(false),
             })),
     );
-    (runtime, ran, entered)
+    (runtime, ran, entered, active, maximum)
 }
 
 /// Build a pending input for the test thread. The one place the `PendingInput`
@@ -805,13 +849,18 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         }
         result
     }
-    async fn renew_owned_leases(
+    async fn begin_attempt(
         &self,
-        owner: &str,
-        lease_ms: u64,
+        claim: &awaken_run_ingress::RunClaim,
         now_ms: u64,
-    ) -> Result<usize, awaken_run_ingress::DispatchError> {
-        self.inner.renew_owned_leases(owner, lease_ms, now_ms).await
+    ) -> Result<awaken_run_ingress::AttemptAdmission, awaken_run_ingress::DispatchError> {
+        self.inner.begin_attempt(claim, now_ms).await
+    }
+    async fn finish_attempt(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+    ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.finish_attempt(claim).await
     }
     async fn relinquish_claim(
         &self,
@@ -1900,80 +1949,6 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
     assert!(store.list_dispatches().await.unwrap()[0].sandbox_bound);
 }
 
-/// Shared compatibility spec for the signed remote-owner bulk-renewal transport
-/// adapter (ADR-0024 D3): renewing that owner's claims prevents remote recovery.
-/// Local Service/Pool execution uses the exact-claim guard instead.
-pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(
-    store: &S,
-    clock: &dyn ConformanceClock,
-) {
-    use awaken_run_ingress::RunDispatch;
-
-    // owner-a claims two runs at t=0 with a 100ms lease (expire at 100). Distinct
-    // threads: single-writer-per-thread (ADR-0022) means one owner holds at most one
-    // in-flight run per thread, so "owner-a holds two leases" needs two threads.
-    let mut original_deadlines = Vec::new();
-    for run in ["r1", "r2"] {
-        store
-            .enqueue(RunDispatch::new(activation_on(run, run)))
-            .await
-            .unwrap();
-        original_deadlines.push(
-            store
-                .claim("owner-a", 100, 0, &Default::default())
-                .await
-                .unwrap()
-                .expect("owner-a claim")
-                .lease
-                .expires_ms,
-        );
-    }
-
-    // Renewing owner-a's leases at t=60 extends both to 160.
-    let original_expiry = *original_deadlines.iter().min().expect("two deadlines");
-    let renew_at = original_expiry.saturating_sub(40);
-    clock.advance_past(renew_at.saturating_sub(1)).await;
-    assert_eq!(
-        store
-            .renew_owned_leases("owner-a", 100, renew_at)
-            .await
-            .unwrap(),
-        2
-    );
-    // At t=120 the original lease would have expired, but the renewed one has not.
-    let latest_original_expiry = *original_deadlines.iter().max().expect("two deadlines");
-    clock.advance_past(latest_original_expiry).await;
-    assert!(
-        store
-            .claim(
-                "owner-b",
-                100,
-                latest_original_expiry.saturating_add(1),
-                &Default::default(),
-            )
-            .await
-            .unwrap()
-            .is_none(),
-        "renewed leases are not yet reclaimable"
-    );
-    // Past the renewed expiry, recovery reclaims.
-    clock
-        .advance_past(latest_original_expiry.saturating_add(100))
-        .await;
-    assert!(
-        store
-            .claim(
-                "owner-b",
-                100,
-                latest_original_expiry.saturating_add(101),
-                &Default::default(),
-            )
-            .await
-            .unwrap()
-            .is_some()
-    );
-}
-
 /// Cause/effect table for pre-execution admission rollback:
 ///
 /// | claim | subordinate admission | effect |
@@ -2018,49 +1993,146 @@ pub async fn assert_relinquish_claim<S: awaken_run_ingress::Dispatch>(store: &S)
     assert_eq!(leased[0].attempt_count, 0, "R2");
 }
 
-/// Shared spec for the remote-owner bulk adapter's near-expiry policy (ADR-0024
-/// D3): it touches only leases within half a lease of expiry, so a fresh claim is
-/// left unchanged. Every backend must preserve this transport compatibility.
-pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>(
+/// Physical-attempt admission cause/effect decision table:
+///
+/// | Rule | durable claim | occupied slot | command | effect |
+/// |---|---|---|---|---|
+/// | A1 | current A | empty | begin A | applied; slot=A |
+/// | A2 | current A | A | begin A retry | already-applied |
+/// | A3 | current A | A | settle/relinquish | fenced; slot retained |
+/// | A4 | replacement B | stale A | begin B | blocked; no executor entry |
+/// | A5 | replacement B | stale A | finish A | applied; slot empty |
+/// | A6 | current B | empty | begin B | applied; A cannot clear B |
+/// | A7 | current B | empty after finish B | finish B retry | applied; remains empty |
+///
+/// Constraints: lease expiry can replace the mutation claim but is not proof
+/// that the old physical future returned. `finish_attempt` is the only ordinary
+/// transition that frees this slot, and every backend must implement the same
+/// aggregate rather than a side lock.
+pub async fn assert_physical_attempt_admission<S: awaken_run_ingress::Dispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
-    use awaken_run_ingress::RunDispatch;
+    use awaken_run_ingress::{
+        AttemptAdmission, DispatchOutcome, RunClaim, RunDispatch, SettleOutcome,
+    };
 
-    // owner-a claims r1 at t=0 with a 100ms lease (expires at 100).
+    clock.set(0);
     store
-        .enqueue(RunDispatch::new(activation("r1")))
+        .enqueue(RunDispatch::new(activation("physical-slot-run")))
         .await
-        .unwrap();
-    let claimed = store
-        .claim("owner-a", 500, 0, &Default::default())
+        .expect("enqueue physical-slot fixture");
+    let first = store
+        .claim("owner-a", 10, 0, &Default::default())
         .await
-        .unwrap()
-        .expect("owner-a claim");
-
-    // At t=10 the lease still has 90ms left — more than half the 100ms lease — so
-    // the bulk renewal skips it and reports zero renewed.
+        .expect("A claim query")
+        .expect("A claim");
+    let claim_a = RunClaim::from(&first.lease);
     assert_eq!(
-        store.renew_owned_leases("owner-a", 500, 10).await.unwrap(),
-        0,
-        "a far-from-expiry lease is not renewed"
+        store.begin_attempt(&claim_a, 0).await.expect("A1"),
+        AttemptAdmission::Applied,
+        "A1"
     );
-
-    // Because it was left untouched, the original lease still expires at 100, so at
-    // t=101 recovery reclaims it — proving the skip did not silently extend it.
-    clock.advance_past(claimed.lease.expires_ms).await;
+    assert_eq!(
+        store.begin_attempt(&claim_a, 1).await.expect("A2"),
+        AttemptAdmission::AlreadyApplied,
+        "A2 idempotent transport retry"
+    );
     assert!(
         store
-            .claim(
-                "owner-b",
-                500,
-                claimed.lease.expires_ms.saturating_add(1),
-                &Default::default(),
-            )
+            .list_dispatches()
             .await
-            .unwrap()
-            .is_some(),
-        "the skipped lease expired on its original schedule"
+            .expect("A2 operational projection")[0]
+            .physical_attempt_active,
+        "A2 operators can distinguish a stuck physical attempt from a lease"
+    );
+    assert_eq!(
+        store.relinquish_claim(&claim_a).await.expect("A3 release"),
+        SettleOutcome::Fenced,
+        "A3 an executing claim cannot return to Pending"
+    );
+    assert_eq!(
+        store
+            .settle(&claim_a.run_id, claim_a.epoch, DispatchOutcome::Done, &[],)
+            .await
+            .expect("A3 settle"),
+        SettleOutcome::Fenced,
+        "A3 outcome cannot erase the quiescence fact"
+    );
+    clock.advance_past(first.lease.expires_ms).await;
+    let after_expiry = first.lease.expires_ms.saturating_add(1);
+    assert_eq!(
+        store
+            .quarantine_retry_exhausted(0, after_expiry)
+            .await
+            .expect("A3 quarantine"),
+        0,
+        "A3 retry exhaustion cannot dead-letter a physically active attempt"
+    );
+    assert!(
+        store
+            .claim_retry_exhausted("terminalizer", 10, after_expiry, 0)
+            .await
+            .expect("A3 terminal claim query")
+            .is_none(),
+        "A3 retry terminalization cannot replace a physically active attempt"
+    );
+
+    let second = store
+        .claim("owner-b", 10, after_expiry, &Default::default())
+        .await
+        .expect("B reclaim query")
+        .expect("B reclaims after expiry");
+    let claim_b = RunClaim::from(&second.lease);
+    assert_eq!(
+        store
+            .begin_attempt(&claim_b, after_expiry)
+            .await
+            .expect("A4"),
+        AttemptAdmission::Blocked,
+        "A4 lease takeover alone cannot admit a second physical attempt"
+    );
+    assert_eq!(
+        store.finish_attempt(&claim_a).await.expect("A5"),
+        SettleOutcome::Applied,
+        "A5 stale mutation owner may acknowledge its exact physical slot"
+    );
+    assert_eq!(
+        store
+            .begin_attempt(&claim_b, after_expiry)
+            .await
+            .expect("A6"),
+        AttemptAdmission::Applied,
+        "A6 B enters only after A ACK"
+    );
+    assert_eq!(
+        store
+            .finish_attempt(&claim_a)
+            .await
+            .expect("A6 stale retry"),
+        SettleOutcome::Fenced,
+        "A6 A cannot clear B's slot"
+    );
+    assert_eq!(
+        store.finish_attempt(&claim_b).await.expect("A6 B finish"),
+        SettleOutcome::Applied,
+        "A6 B releases its exact slot"
+    );
+    assert_eq!(
+        store
+            .finish_attempt(&claim_b)
+            .await
+            .expect("A7 B finish response-loss retry"),
+        SettleOutcome::Applied,
+        "A7 the exact finish is idempotent after its response is lost"
+    );
+    assert!(
+        !store
+            .list_dispatches()
+            .await
+            .expect("A6 operational projection")[0]
+            .physical_attempt_active,
+        "A7 quiescence remains visible without exposing owner fencing material"
     );
 }
 

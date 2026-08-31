@@ -55,11 +55,11 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
         WorkerUpstream::new(format!("http://{address}")).with_worker_id("warmup-worker"),
     );
     let registration = exact
-        .register("warmup-boot", WorkerManifest::default())
+        .register_classified("warmup-boot", WorkerManifest::default())
         .await
         .expect("W1 register exact Worker");
     let warmups = exact
-        .current_environment_warmups(&registration.snapshot.identity)
+        .current_environment_warmups(&registration.worker.snapshot.identity)
         .await
         .expect("W1 decode the canonical warmup response");
     assert!(
@@ -83,7 +83,7 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
     );
     assert!(
         foreign
-            .current_environment_warmups(&registration.snapshot.identity)
+            .current_environment_warmups(&registration.worker.snapshot.identity)
             .await
             .is_err(),
         "W3 foreign Worker cannot reuse another identity"

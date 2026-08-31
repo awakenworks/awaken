@@ -30,7 +30,8 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     FlakyDispatchStore, activation, activation_on, blocking_tool_runtime,
-    blocking_tool_runtime_with_entry_signal, text_runtime, tool_runtime,
+    blocking_tool_runtime_with_entry_signal, concurrency_tracking_tool_runtime, text_runtime,
+    tool_runtime,
 };
 
 type MemWorker = DispatchWorker<MemoryDispatchStore>;
@@ -230,6 +231,36 @@ struct BlockingCancelAttemptExecutor {
 struct OwnershipCancellationAttemptExecutor {
     entered: Arc<tokio::sync::Notify>,
     cancellation_observed: Arc<tokio::sync::Notify>,
+}
+
+struct NonQuiescingAttemptExecutor {
+    entered: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for NonQuiescingAttemptExecutor {
+    async fn execute(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::execution::RunAttemptExecutor for NonQuiescingAttemptExecutor {
+    async fn resume(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _command: awaken_runtime_contract::resume::ResumeCommand,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "non-quiescing fresh-attempt fixture cannot resume".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -776,6 +807,133 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     observed_wait.await;
     assert!(driven.await.expect("drive task joins").is_err(), "RG5/E1");
     assert_eq!(commit.commit_count(), 0, "RG5/E2");
+    assert!(
+        !store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "RG5 cooperative executor return acknowledges physical quiescence"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
+    // Rule RG9 extends the renewal decision table. Causes: C1 A has entered an
+    // opaque executor; C2 B replaces A's expired mutation claim; C3 cancellation
+    // fires; C4 A's executor does not return within the bounded request timeout.
+    // Effects: E1 A cannot commit; E2 its physical slot remains visible; E3 B's
+    // exact begin is Blocked. Constraint: timeout/lease expiry is not fabricated
+    // quiescence. A trusted provider/process termination receipt is required to
+    // recover availability; absent that proof, safety intentionally wins.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
+            .with_lease_ms(30),
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    worker.install_attempt_executor(Arc::new(NonQuiescingAttemptExecutor {
+        entered: entered.clone(),
+    }));
+    let clock = Arc::new(ManualClock::new(0));
+    store
+        .enqueue(RunDispatch::new(activation("non-quiescing")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 30, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("RG9 A claim");
+    let entered_wait = entered.notified();
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        let clock = clock.clone();
+        async move { worker.drive_claimed(claimed, clock).await }
+    });
+    entered_wait.await;
+
+    clock.set(31);
+    let replacement = store
+        .claim("owner-b", 30, 31, &Default::default())
+        .await
+        .unwrap()
+        .expect("RG9 B mutation claim");
+    tokio::time::advance(Duration::from_millis(15)).await;
+    assert!(driven.await.expect("RG9 old drive joins").is_err(), "E1");
+    assert_eq!(commit.commit_count(), 0, "E1");
+    assert!(
+        store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "E2"
+    );
+    assert_eq!(
+        store
+            .begin_attempt(&awaken_run_ingress::RunClaim::from(&replacement.lease), 31)
+            .await
+            .unwrap(),
+        awaken_run_ingress::AttemptAdmission::Blocked,
+        "E3"
+    );
+}
+
+#[tokio::test]
+async fn aborting_a_drive_never_fabricates_remote_quiescence() {
+    // Rule RG10. Causes: C1 A entered an opaque external request; C2 its Tokio
+    // drive task is aborted without an executor return; C3 the Lease expires
+    // and B takes the mutation claim. Effects: E1 A's physical slot remains;
+    // E2 B's begin is Blocked; E3 no second executor enters. Constraint: Future
+    // drop stops local polling but is not a provider cancellation/terminal ACK.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit, "owner-a").with_lease_ms(30),
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    worker.install_attempt_executor(Arc::new(NonQuiescingAttemptExecutor {
+        entered: entered.clone(),
+    }));
+    let clock = Arc::new(ManualClock::new(0));
+    store
+        .enqueue(RunDispatch::new(activation("aborted-opaque-attempt")))
+        .await
+        .expect("RG10 fixture enqueued");
+    let claimed = store
+        .claim("owner-a", 30, 0, &Default::default())
+        .await
+        .expect("RG10 A claim query")
+        .expect("RG10 A claim");
+    let entered_wait = entered.notified();
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        let clock = clock.clone();
+        async move { worker.drive_claimed(claimed, clock).await }
+    });
+    entered_wait.await;
+
+    driven.abort();
+    assert!(
+        driven
+            .await
+            .expect_err("RG10/C2 abort cancels the local task")
+            .is_cancelled(),
+        "RG10/C2"
+    );
+    assert!(
+        store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "RG10/E1 Future drop is not remote quiescence"
+    );
+
+    clock.set(31);
+    let replacement = store
+        .claim("owner-b", 30, 31, &Default::default())
+        .await
+        .expect("RG10 B claim query")
+        .expect("RG10 B mutation claim");
+    assert_eq!(
+        store
+            .begin_attempt(&awaken_run_ingress::RunClaim::from(&replacement.lease), 31)
+            .await
+            .expect("RG10 B physical admission"),
+        awaken_run_ingress::AttemptAdmission::Blocked,
+        "RG10/E2+E3"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -892,6 +1050,10 @@ async fn stalled_renewal_call_cancels_before_the_lease_can_be_recovered() {
     cancellation_wait.await;
     assert!(driven.await.expect("RG7 drive joins").is_err(), "RG7/E2");
     assert_eq!(commit.commit_count(), 0, "RG7/E3");
+    assert!(
+        !store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "RG7 cooperative cancellation ACK releases the physical slot"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -1600,6 +1762,124 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
     pool.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrency_two_never_enters_two_attempts_for_one_thread() {
+    use std::sync::atomic::Ordering;
+
+    // Cause/effect graph and decision rules:
+    // C1=pool capacity 2, C2=two Runs share one Thread, C3=Run-1 is blocked
+    // inside a real tool, C4=Run-1 tool returns. E1=Run-2 tool has never
+    // entered, E2=Run-2 later enters, E3=max active tool attempts is one.
+    // P1 C1+C2+C3+!C4 -> E1+E3; P2 C1+C2+C4 -> E2+E3. The adjacent
+    // distinct-Thread case is the non-over-serialization control and proves
+    // capacity 2 still permits genuine parallelism where it is safe.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, calls, active, maximum) = concurrency_tracking_tool_runtime(release.clone());
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(runtime, store.clone(), commit);
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([("thread-shared".to_string(), worker)]),
+    });
+    let pool = DispatchPool::spawn(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        resolver,
+        2,
+    );
+
+    let mut first_activation = activation_on("same-thread-1", "thread-shared");
+    first_activation.input[0].id = awaken_agent_contract::agent::message::Id("same-input-1".into());
+    pool.submit(first_activation)
+        .await
+        .expect("P1 submit first");
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
+        "P1 Run-1 entered the real tool"
+    );
+    let mut second_activation = activation_on("same-thread-2", "thread-shared");
+    second_activation.input[0].id =
+        awaken_agent_contract::agent::message::Id("same-input-2".into());
+    pool.submit(second_activation)
+        .await
+        .expect("P1 submit second");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "P1/E1");
+    assert_eq!(active.load(Ordering::SeqCst), 1, "P1 one live attempt");
+    assert_eq!(maximum.load(Ordering::SeqCst), 1, "P1/E3");
+
+    release.add_permits(1);
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 2).await,
+        "P2/E2 Run-2 enters after Run-1 returns and settles"
+    );
+    assert!(wait_for(|| active.load(Ordering::SeqCst) == 0).await);
+    assert_eq!(maximum.load(Ordering::SeqCst), 1, "P2/E3");
+    pool.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicated_exact_claim_never_enters_the_executor_twice() {
+    use std::sync::atomic::Ordering;
+
+    // Physical-delivery decision table:
+    // D1: same exact Claim + first future live -> duplicate waits at the one
+    // Runtime Thread gate; calls=1 and max-active=1.
+    // D2: first future returns and settles -> duplicate reaches durable
+    // admission, is fenced by the removed/settled row, and never executes.
+    // Constraint: `AlreadyApplied` supports a lost begin-response retry, but is
+    // not permission for two local drive tasks to execute the same Claim.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, calls, active, maximum) = concurrency_tracking_tool_runtime(release.clone());
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(runtime, store.clone(), commit);
+    store
+        .enqueue(RunDispatch::new(activation("duplicated-exact-claim")))
+        .await
+        .expect("D1 fixture enqueued");
+    let claimed = store
+        .claim("pool", DEFAULT_LEASE_MS, 0, &Default::default())
+        .await
+        .expect("D1 claim query")
+        .expect("D1 exact claim");
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(0));
+    let first = tokio::spawn({
+        let worker = worker.clone();
+        let claimed = claimed.clone();
+        let clock = clock.clone();
+        async move { worker.drive_claimed(claimed, clock).await }
+    });
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
+        "D1 first delivery entered the tool"
+    );
+    let duplicate = tokio::spawn({
+        let worker = worker.clone();
+        let clock = clock.clone();
+        async move { worker.drive_claimed(claimed, clock).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "D1 duplicate waits");
+    assert_eq!(active.load(Ordering::SeqCst), 1, "D1 one live future");
+    assert_eq!(maximum.load(Ordering::SeqCst), 1, "D1 max one");
+
+    release.add_permits(1);
+    first
+        .await
+        .expect("D2 first drive joins")
+        .expect("D2 first drive commits");
+    assert!(
+        duplicate.await.expect("D2 duplicate drive joins").is_err(),
+        "D2 settled exact Claim is fenced before executor re-entry"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "D2 no second call");
+    assert_eq!(maximum.load(Ordering::SeqCst), 1, "D2 max remains one");
+}
+
 /// Graceful shutdown AWAITS an in-flight drive: `shutdown()` cancels the drains but
 /// must not return until a drive already running to completion finishes — it never
 /// drops a half-driven run. The drive is frozen in its tool; shutdown stays pending
@@ -2276,5 +2556,112 @@ async fn begin_drain_stops_claiming_new_work() {
         "the post-drain run stays PENDING (never claimed); got {summaries:?}"
     );
 
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn authority_suspension_is_reversible_but_drain_is_absorbing() {
+    // Cause/effect decision table for the single Pool admission state machine:
+    //
+    // | Rule | current | command | effect |
+    // |---|---|---|---|
+    // | A1 | Open | suspend | no new claim; queued Run remains pending |
+    // | A2 | Suspended | resume | claims reopen; queued Run completes |
+    // | A3 | Open/Suspended | drain | admission closes permanently |
+    // | A4 | Draining | resume | false; no claim is resurrected |
+    //
+    // In-flight execution is intentionally not cancelled by A1; the claim gate
+    // only linearizes admission. Existing cancellation/renewal tests own that
+    // orthogonal behavior.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let resolver = Arc::new(MapResolver {
+        workers: HashMap::from([("thread-authority".to_string(), worker)]),
+    });
+    let pool = DispatchPool::spawn(
+        store.clone(),
+        Arc::new(SystemClock),
+        "pool-authority",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        resolver,
+        1,
+    );
+
+    assert!(pool.is_accepting().await, "A1 precondition");
+    pool.suspend_admission().await;
+    assert!(!pool.is_accepting().await, "A1");
+    assert!(pool.can_resume().await, "A2 precondition");
+    pool.submit(activation_on("run-paused", "thread-authority"))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        commit.run_state(&RunId("run-paused".into())).is_none(),
+        "A1"
+    );
+    assert!(
+        store
+            .list_dispatches()
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.run_id.0 == "run-paused"
+                && row.state == awaken_run_ingress::DispatchState::Pending),
+        "A1"
+    );
+
+    assert!(pool.resume_admission().await, "A2");
+    assert!(
+        wait_for(|| commit.run_state(&RunId("run-paused".into())).is_some()).await,
+        "A2"
+    );
+    pool.begin_drain().await;
+    assert!(!pool.can_resume().await, "A3");
+    assert!(!pool.resume_admission().await, "A4");
+    assert!(!pool.is_accepting().await, "A4");
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn authority_suspension_does_not_cancel_an_in_flight_run() {
+    // Cause/effect rule I1: a Run has crossed the claim boundary and is blocked
+    // in execution when registry uncertainty suspends admission. The effect is
+    // that in-flight stays one, its Runtime token is not cancelled, and release
+    // still commits normally while new claims remain closed. Permanent drain
+    // cancellation is intentionally a different command/state transition.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(runtime, store.clone(), commit.clone());
+    let pool = DispatchPool::spawn(
+        store,
+        Arc::new(SystemClock),
+        "pool-in-flight-authority",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        Arc::new(MapResolver {
+            workers: HashMap::from([("thread-in-flight".to_string(), worker)]),
+        }),
+        1,
+    );
+    pool.submit(activation_on("run-in-flight", "thread-in-flight"))
+        .await
+        .unwrap();
+    assert!(
+        wait_for(|| ran.load(std::sync::atomic::Ordering::SeqCst) == 1).await,
+        "I1 execution entered"
+    );
+    assert_eq!(pool.in_flight(), 1, "I1 precondition");
+    pool.suspend_admission().await;
+    assert!(!pool.is_accepting().await, "I1 claim gate closes");
+    assert_eq!(pool.in_flight(), 1, "I1 in-flight ownership remains");
+    release.add_permits(1);
+    assert!(
+        wait_for(|| commit.run_state(&RunId("run-in-flight".into())).is_some()).await,
+        "I1 existing Run commits while admission is suspended"
+    );
     pool.shutdown().await;
 }

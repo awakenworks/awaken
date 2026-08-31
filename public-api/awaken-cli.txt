@@ -118,9 +118,10 @@ impl awaken_cli::config::ResolvedDeployment
 pub fn awaken_cli::config::ResolvedDeployment::apply_local_acp_observations(&mut self, alloc::vec::Vec<awaken_acp_application::host_discovery::AcpHostObservation>, alloc::vec::Vec<alloc::string::String>) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_cli::config::ResolvedDeployment::ensure_data_layout(&self) -> core::result::Result<(), alloc::string::String>
 impl awaken_cli::config::ResolvedDeployment
-pub fn awaken_cli::config::ResolvedDeployment::load(awaken_cli::config::ConfigOverrides) -> core::result::Result<Self, alloc::string::String>
-impl awaken_cli::config::ResolvedDeployment
+pub async fn awaken_cli::config::ResolvedDeployment::doctor_report(&self, bool) -> alloc::string::String
 pub fn awaken_cli::config::ResolvedDeployment::report(&self, bool) -> alloc::string::String
+impl awaken_cli::config::ResolvedDeployment
+pub fn awaken_cli::config::ResolvedDeployment::load(awaken_cli::config::ConfigOverrides) -> core::result::Result<Self, alloc::string::String>
 pub const awaken_cli::config::DEFAULT_BIND: &str
 pub mod awaken_cli::console
 pub enum awaken_cli::console::Command
@@ -135,6 +136,9 @@ pub awaken_cli::console::Command::ControlIamRuntimeProfile
 pub awaken_cli::console::Command::Coordinator(awaken_cli::console::ServiceArgs)
 pub awaken_cli::console::Command::DatabaseMigrate
 pub awaken_cli::console::Command::DatabaseMigrate::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::Command::Doctor
+pub awaken_cli::console::Command::Doctor::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::Command::Doctor::json: bool
 pub awaken_cli::console::Command::DoctorAcp
 pub awaken_cli::console::Command::DoctorAcp::json: bool
 pub awaken_cli::console::Command::Help

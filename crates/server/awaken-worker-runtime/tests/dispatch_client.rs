@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_run_ingress::{
-    ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, Inbox,
+    AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, Inbox,
     MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
     StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
@@ -155,7 +155,8 @@ async fn spawn_transport_server() -> (
         .route("/v1/worker/dispatch/claim", post(claim))
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
-        .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
+        .route("/v1/worker/dispatch/attempt/begin", post(begin_attempt))
+        .route("/v1/worker/dispatch/attempt/finish", post(finish_attempt))
         .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route("/v1/worker/dispatch/settle", post(settle))
         .route("/v1/worker/dispatch/stream", post(stream_event))
@@ -265,22 +266,41 @@ async fn renew(
     Json(json!({ "renewed": renewed }))
 }
 
-async fn renew_owned(
+async fn begin_attempt(
     State(state): State<Arc<TransportState>>,
-    headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Json<Value> {
     assert_server_authority_fields_absent(&req);
-    let renewed = state
+    assert!(
+        req.get("identity").is_some(),
+        "exact Worker identity crosses"
+    );
+    let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
+    let admission = state
         .store
-        .renew_owned_leases(
-            worker_id(&headers),
-            1_000,
-            state.now_ms.load(Ordering::SeqCst),
-        )
+        .begin_attempt(&claim, state.now_ms.load(Ordering::SeqCst))
         .await
-        .expect("renew_owned");
-    Json(json!({ "renewed": renewed }))
+        .expect("begin attempt");
+    Json(json!({ "admission": admission }))
+}
+
+async fn finish_attempt(
+    State(state): State<Arc<TransportState>>,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    assert_server_authority_fields_absent(&req);
+    assert!(
+        req.get("identity").is_some(),
+        "exact Worker identity crosses"
+    );
+    let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
+    let finished = state
+        .store
+        .finish_attempt(&claim)
+        .await
+        .expect("finish attempt")
+        .applied();
+    Json(json!({ "finished": finished }))
 }
 
 async fn settle(
@@ -650,15 +670,19 @@ async fn worker_stream_transport_posts_only_canonically_live_events() {
 
 /// Dispatch lifecycle cause/effect graph: C1 the request is serializable and
 /// runnable; C2 the run is already leased; C3 settle epoch is stale; C4 settle
-/// epoch is current. Effects are E1 durable enqueue and lossless wire payload,
-/// E2 no duplicate claim, E3 fenced/no mutation, and E4 terminal removal.
+/// epoch is current; C5 the exact physical slot is active or acknowledged.
+/// Effects are E1 durable enqueue and lossless wire payload, E2 no duplicate
+/// claim, E3 fenced/no mutation, E4 terminal removal, E5 exact idempotent
+/// admission, and E6 settle blocked until quiescence.
 ///
 /// | Rule | state/action | condition | effect |
 /// |---|---|---|---|
 /// | D1 | enqueue then claim | C1 | E1 |
 /// | D2 | second claim | C2 | E2 |
 /// | D3 | settle | C3 | E3 |
-/// | D4 | settle | C4 | E4 |
+/// | D4 | begin + retry | C4+C5 active | E5 |
+/// | D5 | settle | C4+C5 active | E6 |
+/// | D6 | finish then settle | C4+C5 acknowledged | E4 |
 #[tokio::test]
 async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let (base, store, clock, _) = spawn_transport_server().await;
@@ -714,6 +738,17 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
             .expect("bind sandbox over transport")
             .applied()
     );
+    let claim = RunClaim::from(&claimed.lease);
+    assert_eq!(
+        queue.begin_attempt(&claim, 0).await.expect("D4 begin"),
+        AttemptAdmission::Applied,
+        "D4/E5"
+    );
+    assert_eq!(
+        queue.begin_attempt(&claim, 0).await.expect("D4 retry"),
+        AttemptAdmission::AlreadyApplied,
+        "D4/E5 response-loss retry"
+    );
 
     // A second claim finds nothing runnable (the only run is now leased): `None`.
     clock.store(10, Ordering::SeqCst);
@@ -739,7 +774,20 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         "a fenced settle left the dispatch intact"
     );
 
-    // The current-epoch settle applies: `Done` removes the dispatch.
+    assert_eq!(
+        queue
+            .settle(&run, claimed.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .unwrap(),
+        SettleOutcome::Fenced,
+        "D5/E6 active external work cannot be erased"
+    );
+    assert_eq!(
+        queue.finish_attempt(&claim).await.expect("D6 finish"),
+        SettleOutcome::Applied,
+        "D6 quiescence ACK"
+    );
+    // Only after quiescence does the current-epoch settle remove the dispatch.
     assert_eq!(
         queue
             .settle(&run, claimed.lease.epoch, DispatchOutcome::Done, &[])

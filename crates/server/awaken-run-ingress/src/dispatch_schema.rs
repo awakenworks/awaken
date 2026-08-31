@@ -132,6 +132,10 @@ const DISPATCH_RESERVATION_CLAIM: &str =
     include_str!("migrations/V0026__dispatch_reservation_claim.sql");
 const PENDING_CONTEXT_MESSAGES: &str =
     include_str!("migrations/V0027__pending_context_messages.sql");
+const PHYSICAL_ATTEMPT_SLOT_POSTGRES: &str =
+    include_str!("migrations/V0002__physical_attempt_slot.postgres.sql");
+const PHYSICAL_ATTEMPT_SLOT_SQLITE: &str =
+    include_str!("migrations/V0002__physical_attempt_slot.sqlite.sql");
 
 #[cfg(feature = "durable")]
 const EXPANDED_V15_SQL: &str = include_str!("migrations/expanded/V0015__delegation_group.sql");
@@ -310,11 +314,19 @@ pub(crate) fn selected_dispatch_bundle(
 pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "seal the converged dispatch migration history",
-            "SELECT 1",
-        )?],
+        vec![
+            Migration::new(
+                1,
+                "seal the converged dispatch migration history",
+                "SELECT 1",
+            )?,
+            Migration::per_dialect(
+                2,
+                "retain one exact physical executor until quiescence",
+                PHYSICAL_ATTEMPT_SLOT_POSTGRES.trim(),
+                PHYSICAL_ATTEMPT_SLOT_SQLITE.trim(),
+            )?,
+        ],
     )
 }
 
@@ -337,11 +349,29 @@ mod tests {
         // Decision rule D1=C1+C2+C3=>E1; D2=!C1|!C2|!C3=>E2.
         let compact = dispatch_bundle().expect("compact bundle builds");
         let expanded = expanded_dispatch_bundle().expect("expanded bundle builds");
-        let converged = converged_dispatch_bundle().expect("converged bundle builds");
-        for bundle in [compact, expanded, converged] {
+        for bundle in [compact, expanded] {
             awaken_scoped_migration::lint(std::slice::from_ref(&bundle))
                 .expect("dispatch bundle lints");
         }
+        // The convergence ledger is deliberately a sequential continuation of
+        // either historical ledger for this same bounded context, not an
+        // independent component bundle. The generic linter cannot express an
+        // inherited table owner, so this lint-only projection declares the one
+        // existing Dispatch table and then validates the exact V2 bodies. Real
+        // SQLite/Postgres migration tests below execute V2 after both histories.
+        let converged = converged_dispatch_bundle().expect("converged bundle builds");
+        let mut lineage = vec![
+            Migration::new(
+                1,
+                "declare inherited dispatch table ownership for lint",
+                "CREATE TABLE {prefix}_dispatch (run_id TEXT)",
+            )
+            .expect("lint owner marker"),
+        ];
+        lineage.extend(converged.migrations()[1..].iter().cloned());
+        let lineage = MigrationBundle::new("awaken.run_dispatch.converged_lint", lineage)
+            .expect("lint lineage builds");
+        awaken_scoped_migration::lint(&[lineage]).expect("converged lineage lints");
     }
 
     #[test]
@@ -477,13 +507,14 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1],
+            [1, 2],
             "S1/E1"
         );
         for (table, column) in [
             ("runtime_dispatch_completion", "request_fingerprint"),
             ("runtime_dispatch_completion", "thread_id"),
             ("runtime_pending", "context_messages"),
+            ("runtime_dispatch", "active_attempt_epoch"),
         ] {
             let present = connection
                 .prepare(&format!("PRAGMA table_info({table})"))

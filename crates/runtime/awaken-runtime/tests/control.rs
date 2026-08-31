@@ -28,7 +28,7 @@ use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
-use awaken_runtime_contract::resume::ResumeCommand;
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
@@ -65,6 +65,53 @@ struct GatedLlm {
 
 struct BlockingExternalAttempt {
     entered: Arc<Notify>,
+}
+
+struct ConcurrencyTrackingExternalAttempt {
+    active: Arc<AtomicUsize>,
+    maximum: Arc<AtomicUsize>,
+    entered: tokio::sync::mpsc::UnboundedSender<RunId>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+impl ConcurrencyTrackingExternalAttempt {
+    async fn cross(&self, run_id: RunId) -> Result<RunState, Error> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum.fetch_max(active, Ordering::SeqCst);
+        self.entered
+            .send(run_id)
+            .expect("test admission receiver remains live");
+        self.release
+            .acquire()
+            .await
+            .expect("test release remains open")
+            .forget();
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for ConcurrencyTrackingExternalAttempt {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> Result<RunState, Error> {
+        self.cross(activation.run_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for ConcurrencyTrackingExternalAttempt {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> Result<RunState, Error> {
+        self.cross(activation.run_id).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -153,6 +200,13 @@ fn activation() -> RunActivation {
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
+}
+
+fn activation_on(run_id: &str, thread_id: &str) -> RunActivation {
+    let mut value = activation();
+    value.run_id = RunId(run_id.to_string());
+    value.thread_id = ThreadId(thread_id.to_string());
+    value
 }
 
 /// Test design for cancellation command handling.
@@ -279,6 +333,93 @@ async fn direct_ingress_tracks_external_attempt_for_live_cancellation() {
         Err(ControlError::NotActive),
         "D1/E4",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn direct_ingress_never_enters_two_external_attempts_for_one_thread() {
+    // Cause/effect graph and decision table:
+    // C1=same Thread, C2=different Thread, C3=first external future blocked,
+    // C4=first future returned. E1=second has not entered, E2=second enters,
+    // E3=max physical concurrency is one, E4=different Threads may overlap.
+    // D1 C1+C3+!C4 -> E1; D2 C1+C4 -> E2+E3; D3 C2+C3 -> E4.
+    // This case executes D1/D2 at the actual injected RunAttemptExecutor seam;
+    // the existing cross-Thread dispatch-pool test owns D3. The local gate is
+    // the sole Direct authority; active-attempt controls remain observation.
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let runtime = Arc::new(Runtime::new());
+    let ingress = DirectRunIngress::with_attempt_executor(
+        runtime,
+        Arc::new(ConcurrencyTrackingExternalAttempt {
+            active: active.clone(),
+            maximum: maximum.clone(),
+            entered: entered_tx,
+            release: release.clone(),
+        }),
+    );
+
+    let first = tokio::spawn({
+        let ingress = ingress.clone();
+        async move {
+            ingress
+                .start(
+                    activation_on("direct-1", "shared-thread"),
+                    RuntimeRunContext::new(),
+                )
+                .await
+        }
+    });
+    assert_eq!(
+        entered_rx.recv().await.expect("D1 first enters"),
+        RunId("direct-1".into())
+    );
+    let second = tokio::spawn({
+        let ingress = ingress.clone();
+        async move {
+            ingress
+                .resume(
+                    activation_on("direct-2", "shared-thread"),
+                    ResumeCommand {
+                        correlation_id: "direct-correlation".into(),
+                        run_id: RunId("direct-2".into()),
+                        thread_id: ThreadId("shared-thread".into()),
+                        snapshot_id: ExecutableAgentSnapshotId("snapshot-1".into()),
+                        catalog_fingerprint: CatalogFingerprint("catalog-a".into()),
+                        result: ResumeResult::allow(),
+                        operation_id: None,
+                        context_messages: Vec::new(),
+                        now_ms: 1,
+                    },
+                    RuntimeRunContext::new(),
+                )
+                .await
+        }
+    });
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), entered_rx.recv())
+            .await
+            .is_err(),
+        "D1/E1 the second executor must not enter while the first future is live"
+    );
+    release.add_permits(1);
+    first
+        .await
+        .expect("D2 first task joins")
+        .expect("D2 first ends");
+    assert_eq!(
+        entered_rx.recv().await.expect("D2 second enters after ACK"),
+        RunId("direct-2".into())
+    );
+    release.add_permits(1);
+    second
+        .await
+        .expect("D2 second task joins")
+        .expect("D2 second ends");
+    assert_eq!(maximum.load(Ordering::SeqCst), 1, "D2/E3");
+    assert_eq!(active.load(Ordering::SeqCst), 0, "all attempts returned");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

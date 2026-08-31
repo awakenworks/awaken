@@ -203,9 +203,16 @@ impl Drop for DispatchMaintenance {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionState {
+    Open,
+    Suspended,
+    Draining,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DrainAdmission {
-    open: bool,
+    state: AdmissionState,
     generation: u64,
 }
 
@@ -312,7 +319,7 @@ impl PoolAdmission {
 impl Default for DrainAdmission {
     fn default() -> Self {
         Self {
-            open: true,
+            state: AdmissionState::Open,
             generation: 0,
         }
     }
@@ -535,6 +542,48 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         Ok(true)
     }
 
+    /// Temporarily stop new claims while retaining in-flight execution and every
+    /// durable Run lease. This is the reversible fail-closed state used while the
+    /// Worker cannot refresh its registry authority inside the local proof window.
+    pub async fn suspend_admission(&self) {
+        let mut admission = self.admission.gate.write().await;
+        if admission.state == AdmissionState::Open {
+            admission.state = AdmissionState::Suspended;
+            admission.generation = admission.generation.saturating_add(1);
+        }
+    }
+
+    /// Reopen claims after registry authority is proven again. A graceful drain
+    /// is absorbing: no heartbeat can resurrect admission after shutdown begins.
+    #[must_use]
+    pub async fn resume_admission(&self) -> bool {
+        let mut admission = self.admission.gate.write().await;
+        match admission.state {
+            AdmissionState::Open => true,
+            AdmissionState::Suspended if !self.shutdown.is_cancelled() => {
+                admission.state = AdmissionState::Open;
+                admission.generation = admission.generation.saturating_add(1);
+                drop(admission);
+                let _ = self.wake.publish().await;
+                true
+            }
+            AdmissionState::Suspended | AdmissionState::Draining => false,
+        }
+    }
+
+    /// Whether the pool currently accepts new claims.
+    #[must_use]
+    pub async fn is_accepting(&self) -> bool {
+        self.admission.gate.read().await.state == AdmissionState::Open
+    }
+
+    /// Whether a fresh authority proof may reopen this pool. This remains true
+    /// while temporarily suspended and false once graceful drain is absorbing.
+    #[must_use]
+    pub async fn can_resume(&self) -> bool {
+        self.admission.gate.read().await.state != AdmissionState::Draining
+    }
+
     /// Begin a graceful drain WITHOUT consuming the pool: cancel the drain tasks so
     /// each finishes the run it is currently driving and then stops claiming, and
     /// nudge them so they notice immediately rather than at the next poll. The
@@ -548,10 +597,10 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         // The write lock linearizes drain against the short read-side claim
         // critical section. Once this returns, every claim either completed
         // before the drain generation advanced (and is now in-flight), or saw
-        // `open = false` and did not touch the store.
+        // a non-open state and did not touch the store.
         let mut admission = self.admission.gate.write().await;
-        if admission.open {
-            admission.open = false;
+        if admission.state != AdmissionState::Draining {
+            admission.state = AdmissionState::Draining;
             admission.generation = admission.generation.saturating_add(1);
         }
         self.shutdown.cancel();
@@ -698,7 +747,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let now = clock.now_ms();
     let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
-        if !gate.open {
+        if gate.state != AdmissionState::Open {
             return Ok(false);
         }
         if let Some(claimed) = store

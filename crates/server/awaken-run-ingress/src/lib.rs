@@ -68,20 +68,20 @@ pub use awaken_run_ingress_contract::{
     place_assignment, retry_exhaustion_eligible, worker_credential_realization_capabilities,
 };
 pub use awaken_run_ingress_contract::{
-    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
-    ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
-    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RelinquishRequest,
-    RenewRequest, SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
-    StreamObservationRequest, WorkerIdentityRequest,
+    AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
+    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialRealizationRequest,
+    DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest, RecoveryRequest,
+    RegisterWorkerRequest, RelinquishRequest, RenewRequest, SessionRunReservationResolutionRequest,
+    SettleRequest, StreamEventRequest, StreamObservationRequest, WorkerIdentityRequest,
 };
 pub use capability::RunIngressCapabilities;
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
-    AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
-    ContinuationAdmission, CredentialRealizationReceipt, Dispatch, DispatchCompletion,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
+    AttemptAdmission, AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed,
+    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, Dispatch,
+    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
     DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
     PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,

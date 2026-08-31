@@ -5,8 +5,8 @@
 //! provable ownership into Runtime's existing cooperative cancellation token.
 
 use std::sync::Arc;
-use std::time::Duration;
 
+use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -83,13 +83,13 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
     clock: Arc<dyn Clock>,
 ) -> ClaimLeaseRenewal {
     let claim = claim.clone();
-    let interval_ms = (lease_ms / 3).max(1);
-    let interval = Duration::from_millis(interval_ms);
-    let request_timeout = Duration::from_millis((interval_ms / 2).max(1));
-    let retry_delay = Duration::from_millis((interval_ms / 10).clamp(1, 1_000));
+    let timing = AuthorityLeaseTiming::from_ttl_ms(lease_ms);
+    let interval = timing.renew_interval();
+    let request_timeout = timing.request_timeout();
+    let retry_delay = timing.retry_delay();
     // Stop locally before another node may legitimately recover the lease. This
     // is a conservative proof window, not a second durable expiry authority.
-    let proof_window = Duration::from_millis(lease_ms.saturating_sub(interval_ms).max(1));
+    let proof_window = timing.proof_window();
     let shutdown = CancellationToken::new();
     let attempt_cancellation = CancellationToken::new();
     let task_shutdown = shutdown.clone();
@@ -99,6 +99,7 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
         let mut next_regular_renewal = started + interval;
         let mut next_attempt = next_regular_renewal;
         let mut proof_deadline = started + proof_window;
+        let mut consecutive_failures = 0_u64;
         loop {
             tokio::select! {
                 biased;
@@ -128,7 +129,15 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                     .await;
                     match renewal {
                         Ok(Ok(true)) => {
-                            proof_deadline = Instant::now() + proof_window;
+                            consecutive_failures = 0;
+                            // Renewal was applied sometime after dispatch and no
+                            // later than receipt. Anchor at dispatch so transport
+                            // latency cannot extend the durable lease locally.
+                            let received_at = Instant::now();
+                            proof_deadline = received_at
+                                + timing.remaining_proof_after(
+                                    received_at.saturating_duration_since(attempt_started),
+                                );
                             next_attempt = next_regular_renewal;
                         }
                         Ok(Ok(false)) => {
@@ -146,20 +155,30 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                             break;
                         }
                         Ok(Err(error)) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            let now = Instant::now();
                             tracing::warn!(
                                 run_id = %claim.run_id.0,
                                 owner = %claim.owner,
                                 lease_epoch = claim.epoch,
+                                consecutive_failures,
+                                proof_remaining_ms = proof_deadline.saturating_duration_since(now).as_millis(),
+                                attempt_duration_ms = now.duration_since(attempt_started).as_millis(),
                                 %error,
                                 "dispatch lease renewal failed; retrying within safety window"
                             );
                             next_attempt = (Instant::now() + retry_delay).min(proof_deadline);
                         }
                         Err(_) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            let now = Instant::now();
                             tracing::warn!(
                                 run_id = %claim.run_id.0,
                                 owner = %claim.owner,
                                 lease_epoch = claim.epoch,
+                                consecutive_failures,
+                                proof_remaining_ms = proof_deadline.saturating_duration_since(now).as_millis(),
+                                attempt_duration_ms = now.duration_since(attempt_started).as_millis(),
                                 timeout_ms = attempt_timeout.as_millis(),
                                 "dispatch lease renewal timed out; retrying within safety window"
                             );

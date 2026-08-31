@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
+use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_host::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerIdentity};
 use awaken_worker_runtime::WorkerControlClient;
@@ -251,31 +253,70 @@ pub(crate) fn new_incarnation_id() -> Result<String, getrandom::Error> {
 pub(crate) fn spawn_heartbeat(
     lifecycle: Arc<WorkerSupervisor>,
     mut sequence: u64,
+    mut last_proof: Instant,
+    mut timing: AuthorityLeaseTiming,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        // A suspended laptop or paused VM can miss many ticks. Replaying them as
-        // a burst contends with the co-located Coordinator just when it is also
-        // recovering. One fresh heartbeat is authoritative; stale catch-up ticks
-        // add load without extending the lease further.
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
+        awaken_observability::set_worker_authority_proof_remaining(
+            timing.remaining_proof_after(Instant::now().saturating_duration_since(last_proof)),
+        );
+        let mut next_attempt = last_proof + timing.renew_interval();
+        let mut next_regular = next_attempt;
+        let mut admission_suspended = false;
+        let mut consecutive_failures = 0_u64;
         loop {
-            interval.tick().await;
-            if let Some(provider) = &lifecycle.session_environment_provider
-                && let Err(error) = provider.probe_ready().await
-            {
-                eprintln!("worker sandbox evidence no longer holds: {error}; draining locally");
+            tokio::time::sleep_until(tokio::time::Instant::from_std(next_attempt)).await;
+            let attempt_started = Instant::now();
+            let scheduling_lag = attempt_started.saturating_duration_since(next_attempt);
+            let proof_deadline = last_proof + timing.proof_window();
+            if attempt_started >= proof_deadline {
+                awaken_observability::record_worker_authority_loss("proof_expired");
+                tracing::error!(
+                    sequence,
+                    consecutive_failures,
+                    "worker registry authority proof expired; draining locally"
+                );
                 revoke_worker_session_authority(&lifecycle).await;
                 break;
             }
+            if let Some(provider) = &lifecycle.session_environment_provider {
+                let probe_timeout = timing
+                    .request_timeout()
+                    .min(proof_deadline.saturating_duration_since(Instant::now()));
+                match tokio::time::timeout(probe_timeout, provider.probe_ready()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        awaken_observability::record_worker_authority_loss(
+                            "environment_evidence_lost",
+                        );
+                        tracing::error!(error = %error, "worker sandbox evidence no longer holds; draining locally");
+                        revoke_worker_session_authority(&lifecycle).await;
+                        break;
+                    }
+                    Err(_) => {
+                        awaken_observability::record_worker_authority_loss(
+                            "environment_probe_timeout",
+                        );
+                        tracing::error!(
+                            timeout_ms = probe_timeout.as_millis(),
+                            "worker sandbox evidence probe timed out; draining locally"
+                        );
+                        revoke_worker_session_authority(&lifecycle).await;
+                        break;
+                    }
+                }
+            }
+            let ready = lifecycle.host.pool_can_resume_work().await;
+            let heartbeat_timeout = timing
+                .request_timeout()
+                .min(proof_deadline.saturating_duration_since(Instant::now()));
             let mutation = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
+                heartbeat_timeout,
                 lifecycle.control.heartbeat(
                     &lifecycle.identity,
                     WorkerHeartbeat {
                         sequence,
-                        ready: lifecycle.host.pool_accepting_work(),
+                        ready,
                         in_flight: lifecycle.host.pool_in_flight(),
                         warm_environment_shapes: lifecycle.warm_environment_shapes(),
                         credential_observations: lifecycle.observations.credential_snapshot(),
@@ -286,9 +327,61 @@ pub(crate) fn spawn_heartbeat(
                 ),
             )
             .await;
-            sequence = sequence.saturating_add(1);
+            sequence = match sequence.checked_add(1) {
+                Some(next) => next,
+                None => {
+                    awaken_observability::record_worker_authority_loss("sequence_exhausted");
+                    tracing::error!("worker heartbeat sequence exhausted; draining locally");
+                    revoke_worker_session_authority(&lifecycle).await;
+                    break;
+                }
+            };
             match mutation {
-                Ok(Ok(RegistryMutation::Applied)) => {
+                Ok(Ok(receipt)) if receipt.mutation == RegistryMutation::Applied => {
+                    let recovered = admission_suspended;
+                    let receipt_ttl = receipt
+                        .lease_ttl_ms
+                        .expect("WorkerControlClient validates applied heartbeat TTL");
+                    let previous_ttl = timing.lease_ttl().as_millis() as u64;
+                    timing = AuthorityLeaseTiming::from_ttl_ms(receipt_ttl);
+                    // The Coordinator applied the renewal at an unknown instant
+                    // between request start and response receipt. Request start is
+                    // the conservative local lower bound; response latency must
+                    // never mint extra local authority.
+                    last_proof = attempt_started;
+                    consecutive_failures = 0;
+                    if admission_suspended {
+                        if lifecycle.host.resume_pool_admission().await {
+                            tracing::info!(
+                                "worker registry authority re-proven; claim admission resumed"
+                            );
+                        } else {
+                            tracing::info!(
+                                "worker registry authority re-proven while admission remains permanently draining"
+                            );
+                        }
+                        admission_suspended = false;
+                    }
+                    if receipt_ttl == previous_ttl {
+                        while next_regular <= last_proof {
+                            next_regular += timing.renew_interval();
+                        }
+                    } else {
+                        next_regular = last_proof + timing.renew_interval();
+                    }
+                    next_attempt = next_regular;
+                    awaken_observability::record_worker_authority_heartbeat(
+                        if recovered {
+                            "applied_after_retry"
+                        } else {
+                            "applied"
+                        },
+                        Instant::now().duration_since(attempt_started),
+                        scheduling_lag,
+                        timing.remaining_proof_after(
+                            Instant::now().saturating_duration_since(last_proof),
+                        ),
+                    );
                     // Cold terminal cleanup recovery remains coupled to the
                     // registry heartbeat: claiming an orphaned assignment is a
                     // Worker-authority operation and does not need a hot-path
@@ -302,7 +395,7 @@ pub(crate) fn spawn_heartbeat(
                         reassign_existing_lease: false,
                     };
                     match tokio::time::timeout(
-                        std::time::Duration::from_secs(8),
+                        timing.request_timeout(),
                         lifecycle
                             .host
                             .recover_terminal_cleanup_assignments(cleanup_target),
@@ -314,28 +407,76 @@ pub(crate) fn spawn_heartbeat(
                             "cold Session terminal cleanup recovery remained pending; Worker heartbeat continues: {error}"
                         ),
                         Err(_) => eprintln!(
-                            "cold Session terminal cleanup recovery exceeded 8s; durable assignments remain retryable and Worker heartbeat continues"
+                            "cold Session terminal cleanup recovery exceeded its bounded request window; durable assignments remain retryable and Worker heartbeat continues"
                         ),
                     }
                 }
-                Ok(Ok(other)) => {
-                    eprintln!("worker heartbeat lost authority: {other:?}; draining locally");
+                Ok(Ok(receipt)) => {
+                    awaken_observability::record_worker_authority_heartbeat(
+                        "rejected",
+                        Instant::now().duration_since(attempt_started),
+                        scheduling_lag,
+                        proof_deadline.saturating_duration_since(Instant::now()),
+                    );
+                    awaken_observability::record_worker_authority_loss("registry_rejected");
+                    tracing::error!(mutation = ?receipt.mutation, "worker heartbeat explicitly lost authority; draining locally");
                     revoke_worker_session_authority(&lifecycle).await;
                     break;
                 }
                 Ok(Err(error)) => {
-                    eprintln!(
-                        "worker heartbeat cannot prove continuing authority: {error}; draining locally"
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    if !admission_suspended {
+                        lifecycle.host.suspend_pool_admission().await;
+                        admission_suspended = true;
+                    }
+                    let now = Instant::now();
+                    let remaining = proof_deadline.saturating_duration_since(now);
+                    tracing::warn!(
+                        error = %error,
+                        consecutive_failures,
+                        proof_remaining_ms = remaining.as_millis(),
+                        attempt_duration_ms = now.duration_since(attempt_started).as_millis(),
+                        "worker heartbeat transport failed; claim admission paused and retrying"
                     );
-                    revoke_worker_session_authority(&lifecycle).await;
-                    break;
+                    awaken_observability::record_worker_authority_heartbeat(
+                        "transport_error",
+                        now.duration_since(attempt_started),
+                        scheduling_lag,
+                        remaining,
+                    );
+                    if remaining.is_zero() {
+                        awaken_observability::record_worker_authority_loss("proof_expired");
+                        revoke_worker_session_authority(&lifecycle).await;
+                        break;
+                    }
+                    next_attempt = now + timing.retry_delay().min(remaining);
                 }
                 Err(_) => {
-                    eprintln!(
-                        "worker heartbeat exceeded 8s and cannot prove continuing authority; draining locally"
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    if !admission_suspended {
+                        lifecycle.host.suspend_pool_admission().await;
+                        admission_suspended = true;
+                    }
+                    let now = Instant::now();
+                    let remaining = proof_deadline.saturating_duration_since(now);
+                    tracing::warn!(
+                        consecutive_failures,
+                        proof_remaining_ms = remaining.as_millis(),
+                        attempt_duration_ms = now.duration_since(attempt_started).as_millis(),
+                        "worker heartbeat request timed out; claim admission paused and retrying"
                     );
-                    revoke_worker_session_authority(&lifecycle).await;
-                    break;
+                    awaken_observability::record_worker_authority_heartbeat(
+                        "timeout",
+                        now.duration_since(attempt_started),
+                        scheduling_lag,
+                        remaining,
+                    );
+                    if remaining.is_zero() {
+                        awaken_observability::record_worker_authority_loss("proof_expired");
+                        revoke_worker_session_authority(&lifecycle).await;
+                        break;
+                    }
+                    next_attempt = now + timing.retry_delay().min(remaining);
                 }
             }
         }
@@ -397,6 +538,7 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
 }
 
 async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
+    awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
     lifecycle.host.begin_pool_drain().await;
     // Fail closed without racing terminal sandbox disposal against in-flight
     // native tools. Cancellation stops each process group (including descendant

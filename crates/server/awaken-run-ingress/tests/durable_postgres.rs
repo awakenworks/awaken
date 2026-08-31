@@ -709,18 +709,6 @@ async fn dead_letter_ttl_gc_on_postgres() {
 }
 
 #[tokio::test]
-async fn renew_owned_leases_on_postgres() {
-    let Some(pool) = harness::schema_pool("t_pg_renewall").await else {
-        return;
-    };
-    let store = PostgresDispatchStore::with_pool(pool.clone())
-        .await
-        .expect("dispatch");
-    harness::assert_renew_owned_leases(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
-        .await;
-}
-
-#[tokio::test]
 async fn relinquish_claim_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_relinquish").await else {
         return;
@@ -732,14 +720,14 @@ async fn relinquish_claim_on_postgres() {
 }
 
 #[tokio::test]
-async fn renew_skips_far_from_expiry_on_postgres() {
-    let Some(pool) = harness::schema_pool("t_pg_renewnear").await else {
+async fn physical_attempt_admission_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_physical_attempt").await else {
         return;
     };
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_renew_skips_far_from_expiry(
+    harness::assert_physical_attempt_admission(
         &store,
         &awaken_run_ingress_testkit::AuthoritativeWallClock,
     )

@@ -12,9 +12,8 @@ use awaken_run_ingress::{
     Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
     RunDispatch, SystemClock,
 };
-use awaken_runtime::{RunIngress, RunService, Runtime};
+use awaken_runtime::{RunIngress, RunService};
 use awaken_runtime_contract::control::Error as ControlError;
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
 use harness::{THREAD, activation, text_runtime};
@@ -213,29 +212,21 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
 }
 
 #[tokio::test]
-async fn durable_ingress_foreground_submit_and_cancel() {
-    let runtime: Arc<Runtime> = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
-
-    // Foreground submit executes inline through the runtime (additive, G6).
-    let context = RuntimeRunContext::new().with_commit(commit.clone());
-    let state = ingress
-        .start(activation("run-fg"), context)
-        .await
-        .expect("foreground submit");
-    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    // Per-step durability: input commit at the first step boundary, then the
-    // terminal commit.
-    assert_eq!(commit.commit_count(), 2);
-
-    // Cancelling a run that is not in flight is a typed NotActive, not a panic.
+async fn durable_ingress_unknown_live_cancel_is_typed() {
+    // Cause U1: cancellation names no active Runtime attempt. Effect E1: the
+    // public control surface returns typed NotActive and performs no execution.
+    // The Durable inline start/resume decision table is owned once by
+    // `durable_inline_start_and_resume_fail_closed_before_executor_entry`.
+    let ingress = DurableRunIngress::new(
+        text_runtime(),
+        Arc::new(MemoryDispatchStore::new()),
+        Arc::new(MemoryCommitCoordinator::new()),
+    );
     let err = ingress
         .cancel(&RunId("not-running".to_string()))
         .await
         .expect_err("no such active run");
-    assert_eq!(err, ControlError::NotActive);
+    assert_eq!(err, ControlError::NotActive, "U1/E1");
 
     // The worker accessor is reachable for out-of-band driving.
     let _ = ingress.worker();

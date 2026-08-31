@@ -998,7 +998,7 @@ impl WorkerNode {
         })?;
         let mut shutdown = std::pin::pin!(shutdown);
         let mut occupied_attempts = 0_u64;
-        let registration = loop {
+        let registration_receipt = loop {
             let attempt = bootstrap_control
                 .register_classified(incarnation_id.clone(), self.manifest.clone())
                 .await;
@@ -1020,6 +1020,7 @@ impl WorkerNode {
                 Err(error) => return Err(std::io::Error::other(error.to_string()).into()),
             }
         };
+        let registration = registration_receipt.worker;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         // The registry-assigned incarnation is the only execution identity. The
         // pre-registration deployment owner is configuration input, not a second
@@ -1201,6 +1202,10 @@ impl WorkerNode {
             ))
             .into());
         }
+        // A lease receipt proves no more time than remained when the request
+        // started. Anchoring locally before I/O prevents response latency from
+        // extending the Coordinator-owned expiry in the Worker process.
+        let initial_heartbeat_started = std::time::Instant::now();
         let initial = control
             .heartbeat(
                 &lifecycle.identity,
@@ -1223,13 +1228,20 @@ impl WorkerNode {
                 return Err(std::io::Error::other(error).into());
             }
         };
-        if initial != RegistryMutation::Applied {
+        if initial.mutation != RegistryMutation::Applied {
             let _ = control.deregister(&lifecycle.identity).await;
             return Err(std::io::Error::other(format!(
-                "initial worker heartbeat rejected: {initial:?}"
+                "initial worker heartbeat rejected: {:?}",
+                initial.mutation
             ))
             .into());
         }
+        let heartbeat_timing =
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                initial
+                    .lease_ttl_ms
+                    .expect("WorkerControlClient validates applied heartbeat TTL"),
+            );
         host.ensure_dispatch_pool();
         let credential_probe = credential_liveness::spawn_probe(
             lifecycle.observations.clone(),
@@ -1240,7 +1252,12 @@ impl WorkerNode {
         );
         let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
         let session_realizations = spawn_session_realization_reconciliation(lifecycle.clone());
-        let mut heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
+        let mut heartbeat = spawn_heartbeat(
+            lifecycle.clone(),
+            2,
+            initial_heartbeat_started,
+            heartbeat_timing,
+        );
         eprintln!("awaken-worker registered with {upstream_url}");
 
         // The cloud-native admin surface on a SEPARATE port from any data path: an

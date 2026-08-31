@@ -66,9 +66,8 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 
     /// Like [`new`](Self::new) but with an explicit claim `owner`. Each process in
-    /// a multi-node fleet MUST pass a unique owner: the lease is owner-scoped
-    /// (`renew_lease`/`renew_owned_leases`), so a shared owner would let peers
-    /// renew each other's leases and break the single-owner-per-run guarantee
+    /// a multi-node fleet MUST pass a unique owner: the exact claim lease includes
+    /// that owner, so a shared owner would weaken diagnosis and process isolation
     /// (ADR-0019/0024). Single-process deployments can keep the default owner.
     pub fn with_owner<C>(
         runtime: Arc<Runtime>,
@@ -433,25 +432,29 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
 
 #[async_trait]
 impl<S: Dispatch + 'static> RunService for DurableRunIngress<S> {
-    /// Foreground submit is additive over runtime control: it executes inline
-    /// through the same `RunExecutor` a direct ingress uses (G6).
+    /// Durable ingress never executes inline. Its only legal executor boundary
+    /// is `submit_background` -> persisted dispatch -> exact Thread claim ->
+    /// physical-attempt admission. Keeping the trait method fail-closed removes
+    /// the former public bypass around that authority chain.
     async fn start(
         &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
     ) -> ExecResult<RunState> {
-        let executor = self.worker.attempt_executor();
-        executor.execute(activation, context).await
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "durable ingress start requires claimed background dispatch".to_string(),
+        ))
     }
 
     async fn resume(
         &self,
-        activation: RunActivation,
-        command: ResumeCommand,
-        context: RuntimeRunContext,
+        _activation: RunActivation,
+        _command: ResumeCommand,
+        _context: RuntimeRunContext,
     ) -> ExecResult<RunState> {
-        let executor = self.worker.attempt_executor();
-        executor.resume(activation, command, context).await
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "durable ingress resume requires claimed durable input".to_string(),
+        ))
     }
 
     async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {

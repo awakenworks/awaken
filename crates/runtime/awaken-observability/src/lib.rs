@@ -26,7 +26,9 @@ mod propagation;
 pub use config::{LogFormat, ObservabilityConfig, OtelConfig, OtelConfigBuilder, OtelProtocol};
 pub use http::trace_http;
 pub use metrics::{
-    OtelMetricsRecorder, add_live_hand, init_meters, record_hand_lifecycle, render_prometheus,
+    OtelMetricsRecorder, add_live_hand, init_meters, record_hand_lifecycle,
+    record_worker_authority_heartbeat, record_worker_authority_loss, render_prometheus,
+    set_worker_authority_proof_remaining,
 };
 pub use otel::init_otlp_tracer;
 pub use propagation::{current_traceparent, dispatch_span, span_with_remote_parent};

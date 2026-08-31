@@ -62,6 +62,7 @@ impl core::convert::From<awaken_agent_contract::agent::message::Message> for awa
 pub fn awaken_runtime::RunInput::from(awaken_agent_contract::agent::message::Message) -> Self
 pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
+pub async fn awaken_runtime::Runtime::acquire_thread_execution(&self, &awaken_agent_contract::agent::thread::Id) -> impl core::ops::drop::Drop + use<>
 pub async fn awaken_runtime::Runtime::active_attempt_live_inbox(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub async fn awaken_runtime::Runtime::active_attempt_run_id(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Id>
 pub async fn awaken_runtime::Runtime::cancel_activation(&self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>

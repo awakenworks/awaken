@@ -33,8 +33,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
-    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime,
-    text_runtime, text_runtime_with_metrics, tool_runtime,
+    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, counting_text_runtime,
+    input_echo_runtime, schedule_runtime, text_runtime, text_runtime_with_metrics, tool_runtime,
 };
 
 fn send_request(target: &str, content: &str, operation_id: &str) -> MessageSendRequest {
@@ -818,34 +818,6 @@ async fn advancing_the_drive_clock_expires_ownership_before_any_effect() {
 }
 
 #[tokio::test]
-async fn unified_foreground_service_uses_the_installed_attempt_executor() {
-    let store = Arc::new(MemoryDispatchStore::new());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(text_runtime(), store, commit);
-    let selected = Arc::new(RecordingAttemptExecutor::default());
-    ingress.install_attempt_executor(selected.clone());
-
-    RunService::start(
-        &ingress,
-        activation("foreground-start"),
-        RuntimeRunContext::new(),
-    )
-    .await
-    .expect("foreground start routes through the selected executor");
-    RunService::resume(
-        &ingress,
-        activation("run-1"),
-        allow_command(),
-        RuntimeRunContext::new(),
-    )
-    .await
-    .expect("foreground resume routes through the selected executor");
-
-    assert_eq!(selected.executes.load(Ordering::SeqCst), 1);
-    assert_eq!(selected.resumes.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
 async fn a_worker_routes_inference_through_the_resolved_model_executor() {
     // Cause: the worker carries a model resolver that maps the run's binding model_ref
     // to a labeled executor. Effect: the drive routes inference through THAT executor,
@@ -1103,6 +1075,53 @@ async fn direct_ingress_fails_durable_submit_closed_while_durable_does_not() {
     let durable = DurableRunIngress::new(runtime, store, commit);
     assert_eq!(durable.capabilities(), RunIngressCapabilities::DURABLE);
     assert!(durable.submit_background(activation("run-1")).await.is_ok());
+}
+
+#[tokio::test]
+async fn durable_inline_start_and_resume_fail_closed_before_executor_entry() {
+    // Cause/effect decision table: I1 Direct start/resume -> process-local
+    // Thread gate then executor; I2 Durable background -> enqueue/claim/attempt
+    // slot then executor; I3 Durable inline start/resume -> explicit error and
+    // zero executor calls. Existing Direct and background tests own I1/I2; this
+    // case owns I3 and prevents the public RunService surface from bypassing the
+    // durable Thread claim or physical-attempt slot.
+    let (runtime, model_calls) = counting_text_runtime();
+    let durable = DurableRunIngress::new(
+        runtime,
+        Arc::new(MemoryDispatchStore::new()),
+        Arc::new(MemoryCommitCoordinator::new()),
+    );
+    let start_error = durable
+        .start(activation("inline-start"), RuntimeRunContext::new())
+        .await
+        .expect_err("I3 durable start is not an execution path");
+    assert!(
+        start_error
+            .to_string()
+            .contains("claimed background dispatch")
+    );
+
+    let resume = ResumeCommand {
+        correlation_id: TICKET.into(),
+        run_id: RunId("inline-resume".into()),
+        thread_id: ThreadId(THREAD.into()),
+        snapshot_id: awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId(SNAP.into()),
+        catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint(FP.into()),
+        result: ResumeResult::allow(),
+        operation_id: None,
+        context_messages: Vec::new(),
+        now_ms: 0,
+    };
+    let resume_error = durable
+        .resume(
+            activation("inline-resume"),
+            resume,
+            RuntimeRunContext::new(),
+        )
+        .await
+        .expect_err("I3 durable resume is not an execution path");
+    assert!(resume_error.to_string().contains("claimed durable input"));
+    assert_eq!(model_calls.load(Ordering::SeqCst), 0, "I3 no model entry");
 }
 
 #[tokio::test]
@@ -2593,22 +2612,13 @@ async fn dead_letter_ttl_gc_store_spec() {
 }
 
 #[tokio::test]
-async fn renew_owned_leases_store_spec() {
-    harness::assert_renew_owned_leases(
-        &MemoryDispatchStore::new(),
-        &awaken_run_ingress_testkit::LogicalCommandClock,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn relinquish_claim_store_spec() {
     harness::assert_relinquish_claim(&MemoryDispatchStore::new()).await;
 }
 
 #[tokio::test]
-async fn renew_skips_far_from_expiry_store_spec() {
-    harness::assert_renew_skips_far_from_expiry(
+async fn physical_attempt_admission_store_spec() {
+    harness::assert_physical_attempt_admission(
         &MemoryDispatchStore::new(),
         &awaken_run_ingress_testkit::LogicalCommandClock,
     )

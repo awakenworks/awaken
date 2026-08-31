@@ -1014,34 +1014,100 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(Some(durable_u64("runnable dispatch depth", depth)?))
     }
 
-    async fn renew_owned_leases(
+    async fn begin_attempt(
         &self,
-        owner: &str,
-        lease_ms: u64,
-        _now_ms: u64,
-    ) -> Result<usize, DispatchError> {
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        claim: &RunClaim,
+        now_ms: u64,
+    ) -> Result<AttemptAdmission, DispatchError> {
         let p = NS;
-        // Only rows within half a lease of expiring — a fresh claim's lease is a
-        // full length out, so it is skipped until it approaches expiry, bounding
-        // the heartbeat's write amplification (ADR-0024).
-        let result = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET lease_until = $1 \
-             WHERE status IN ('running', 'reservation_running') AND lease_owner = $2 \
-             AND lease_until IS NOT NULL AND lease_until < $3"
+        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_owner, lease_epoch, lease_until, \
+             active_attempt_owner, active_attempt_epoch \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
-        .bind(crate::clock::db_millis(crate::clock::deadline_millis(
-            now_ms, lease_ms,
-        )))
-        .bind(owner)
-        .bind(crate::clock::db_millis(crate::clock::deadline_millis(
-            now_ms,
-            lease_ms / 2,
-        )))
+        .bind(&claim.run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(AttemptAdmission::Fenced);
+        };
+        let status: String = current.try_get("status").map_err(reject)?;
+        let owner: Option<String> = current.try_get("lease_owner").map_err(reject)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
+        let lease_until: Option<i64> = current.try_get("lease_until").map_err(reject)?;
+        let active_owner: Option<String> =
+            current.try_get("active_attempt_owner").map_err(reject)?;
+        let active_epoch: Option<i64> = current.try_get("active_attempt_epoch").map_err(reject)?;
+        let live = status == "running"
+            && owner.as_deref() == Some(&claim.owner)
+            && persisted_epoch == epoch
+            && lease_until.is_some_and(|until| until >= crate::clock::db_millis(now_ms));
+        if !live {
+            let _ = tx.rollback().await;
+            return Ok(AttemptAdmission::Fenced);
+        }
+        let admission = match (active_owner.as_deref(), active_epoch) {
+            (Some(owner), Some(active_epoch)) if owner == claim.owner && active_epoch == epoch => {
+                AttemptAdmission::AlreadyApplied
+            }
+            (Some(_), Some(_)) => AttemptAdmission::Blocked,
+            (None, None) => {
+                sqlx::query(&format!(
+                    "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
+                     active_attempt_epoch = $3 WHERE run_id = $1"
+                ))
+                .bind(&claim.run_id.0)
+                .bind(&claim.owner)
+                .bind(epoch)
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?;
+                AttemptAdmission::Applied
+            }
+            _ => {
+                return Err(DispatchError::Rejected(
+                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                ));
+            }
+        };
+        tx.commit().await.map_err(reject)?;
+        Ok(admission)
+    }
+
+    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let p = NS;
+        let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
+             active_attempt_epoch = NULL WHERE run_id = $1 \
+             AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(epoch)
         .execute(&self.pool)
         .await
         .map_err(reject)?;
-        Ok(result.rows_affected() as usize)
+        if changed.rows_affected() == 1 {
+            return Ok(SettleOutcome::Applied);
+        }
+        let empty: Option<bool> = sqlx::query_scalar(&format!(
+            "SELECT active_attempt_owner IS NULL AND active_attempt_epoch IS NULL \
+             FROM {p}_dispatch WHERE run_id = $1"
+        ))
+        .bind(&claim.run_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?;
+        Ok(if empty.unwrap_or(false) {
+            SettleOutcome::Applied
+        } else {
+            SettleOutcome::Fenced
+        })
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1049,7 +1115,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let current = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, cancel_requested \
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -1064,6 +1130,12 @@ impl DispatchQueue for PostgresDispatchStore {
         let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
         let persisted_owner: Option<String> = current.try_get("lease_owner").map_err(reject)?;
         let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
+        let active_attempt: Option<i64> =
+            current.try_get("active_attempt_epoch").map_err(reject)?;
+        if active_attempt.is_some() {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
         let transition = crate::persisted_dispatch_transition(
             &status,
             persisted_epoch,
@@ -1116,7 +1188,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let authority = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, cancel_requested, request \
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, request, active_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&run_id.0)
@@ -1130,6 +1202,12 @@ impl DispatchQueue for PostgresDispatchStore {
         let status: String = authority.try_get("status").map_err(reject)?;
         let persisted_epoch: i64 = authority.try_get("lease_epoch").map_err(reject)?;
         let cancellation_requested: i64 = authority.try_get("cancel_requested").map_err(reject)?;
+        let active_attempt: Option<i64> =
+            authority.try_get("active_attempt_epoch").map_err(reject)?;
+        if active_attempt.is_some() {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
         let transition = crate::persisted_dispatch_transition(
             &status,
             persisted_epoch,
@@ -1259,7 +1337,8 @@ impl DispatchQueue for PostgresDispatchStore {
             "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested \
              FROM {p}_dispatch WHERE status = 'running' \
              AND lease_until IS NOT NULL AND lease_until < $1 \
-             AND attempt_count >= $2 FOR UPDATE"
+             AND attempt_count >= $2 \
+             AND active_attempt_epoch IS NULL FOR UPDATE"
         ))
         .bind(crate::clock::db_millis(now_ms))
         .bind(max_attempts_i64)
@@ -1344,7 +1423,7 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until FROM {p}_dispatch \
+            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_epoch FROM {p}_dispatch \
              ORDER BY created_at"
         ))
         .fetch_all(&self.pool)
@@ -1389,6 +1468,10 @@ impl DispatchQueue for PostgresDispatchStore {
                     )?,
                     sandbox_bound: row
                         .try_get::<Option<String>, _>("sandbox")
+                        .map_err(reject)?
+                        .is_some(),
+                    physical_attempt_active: row
+                        .try_get::<Option<i64>, _>("active_attempt_epoch")
                         .map_err(reject)?
                         .is_some(),
                 })

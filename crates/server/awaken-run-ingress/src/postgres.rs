@@ -20,10 +20,10 @@ use sqlx::types::Json;
 use sqlx::{Postgres, Transaction};
 
 use crate::dispatch::{
-    AttemptCredentialBinding, CasOutcome, ClaimEpochStorageRow, Claimed, CommitEpochGuard,
-    ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
-    Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
+    AttemptAdmission, AttemptCredentialBinding, CasOutcome, ClaimEpochStorageRow, Claimed,
+    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
+    Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
     SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
     classify_completed_session_run_reservation, classify_exact_claim_mode,

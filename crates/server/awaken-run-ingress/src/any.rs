@@ -539,13 +539,16 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, renew_lease(claim, lease_ms, now_ms))
     }
 
-    async fn renew_owned_leases(
+    async fn begin_attempt(
         &self,
-        owner: &str,
-        lease_ms: u64,
+        claim: &RunClaim,
         now_ms: u64,
-    ) -> Result<usize, DispatchError> {
-        delegate!(self, renew_owned_leases(owner, lease_ms, now_ms))
+    ) -> Result<crate::AttemptAdmission, DispatchError> {
+        delegate!(self, begin_attempt(claim, now_ms))
+    }
+
+    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, finish_attempt(claim))
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

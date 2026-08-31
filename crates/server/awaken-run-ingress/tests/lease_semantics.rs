@@ -27,8 +27,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore, PendingInput, RunDispatch,
-    SqliteDispatchStore,
+    AttemptAdmission, DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore,
+    PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
 };
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::ResumeResult;
@@ -86,6 +86,74 @@ async fn assert_live_lease_fences_a_claim<S: DispatchQueue>(store: &S) {
 #[tokio::test]
 async fn live_lease_fences_a_claim_memory() {
     assert_live_lease_fences_a_claim(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replacement_claim_waits_for_predecessor_quiescence_before_model_entry() {
+    // Cause/effect decision table:
+    // W1 expired A claim + A physical slot + replacement B -> B may own the
+    // mutation fence but model calls remain zero; W2 exact A finish ACK -> B
+    // enters once and completes; W3 no A ACK -> B remains blocked indefinitely.
+    // This test owns W1/W2 at the Worker->model boundary. The shared store spec
+    // owns W3 as a durable state transition, avoiding a hanging test while still
+    // proving lease expiry alone never clears the slot.
+    let (runtime, model_calls) = counting_text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    store
+        .enqueue(RunDispatch::new(activation("handoff-run")))
+        .await
+        .expect("fixture enqueue");
+    let first = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .expect("A query")
+        .expect("A claim");
+    let claim_a = RunClaim::from(&first.lease);
+    assert_eq!(
+        store.begin_attempt(&claim_a, 0).await.expect("W1 begin A"),
+        AttemptAdmission::Applied
+    );
+    let replacement = store
+        .claim("owner-b", LEASE, LEASE + 1, &Default::default())
+        .await
+        .expect("B query")
+        .expect("B replacement claim");
+    let worker_b = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit, "owner-b").with_lease_ms(LEASE),
+    );
+    let driving = tokio::spawn({
+        let worker_b = worker_b.clone();
+        async move {
+            worker_b
+                .drive_claimed(replacement, harness::clock(LEASE + 1))
+                .await
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        model_calls.load(Ordering::SeqCst),
+        0,
+        "W1 mutation takeover did not enter the model"
+    );
+    assert_eq!(
+        store.finish_attempt(&claim_a).await.expect("W2 A ACK"),
+        awaken_run_ingress::SettleOutcome::Applied
+    );
+    let processed = tokio::time::timeout(Duration::from_secs(5), driving)
+        .await
+        .expect("W2 replacement unblocks")
+        .expect("W2 task joins")
+        .expect("W2 drive succeeds");
+    assert_eq!(
+        processed,
+        Some((
+            RunId("handoff-run".into()),
+            RunState::Ended(EndCause::NaturalEnd)
+        ))
+    );
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1, "W2 one model entry");
 }
 
 #[tokio::test]
@@ -491,35 +559,35 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
 
 #[tokio::test]
 async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
-    // owner-a models a database-independent remote Worker whose signed owner
-    // heartbeat uses the `renew_owned_leases` transport adapter. Across three
-    // lease periods, owner-b's recovery claim is fenced every time; only once
-    // renewal stops does the lease expire and B steal it.
+    // Cause/effect decision table for the one exact-claim renewal authority:
+    //
+    // | exact owner + epoch | renewal active | time | effect |
+    // |---|---|---|---|
+    // | yes | yes | before renewed deadline | replacement cannot claim |
+    // | yes | no | after last deadline | replacement reclaims with new epoch |
+    // | stale | any | after reclaim | old claim remains fenced |
+    //
+    // This deliberately renews a complete `RunClaim`; an owner-wide heartbeat
+    // would be a second, weaker ownership authority.
     let store = MemoryDispatchStore::new();
     let lease = 100u64;
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(
-        store
-            .claim("owner-a", lease, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some(),
-        "A claims at t=0 (expires 100)"
-    );
+    let first = store
+        .claim("owner-a", lease, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("A claims at t=0 (expires 100)");
+    let claim = RunClaim::from(&first.lease);
 
     // Three heartbeats, each firing before the current lease expires (60<100,
     // 120<160, 180<220), each extending the lease a full period ahead.
     for (renew_at, poke_at) in [(60u64, 120u64), (120, 180), (180, 240)] {
-        assert_eq!(
-            store
-                .renew_owned_leases("owner-a", lease, renew_at)
-                .await
-                .unwrap(),
-            1,
-            "the heartbeat renewed A's in-flight lease"
+        assert!(
+            store.renew_lease(&claim, lease, renew_at).await.unwrap(),
+            "the exact claim renewed A's in-flight lease"
         );
         assert!(
             store
@@ -533,14 +601,16 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
 
     // Renewal stops (A finally dies). The last renewal at t=180 expires at 280,
     // so at t=281 recovery hands the run to B.
-    assert_eq!(
-        store
-            .claim("owner-b", lease, 281, &Default::default())
-            .await
-            .unwrap()
-            .map(|c| c.lease.owner),
-        Some("owner-b".to_string()),
-        "once renewal stops, the expired lease is reclaimed"
+    let replacement = store
+        .claim("owner-b", lease, 281, &Default::default())
+        .await
+        .unwrap()
+        .expect("once renewal stops, the expired lease is reclaimed");
+    assert_eq!(replacement.lease.owner, "owner-b");
+    assert!(replacement.lease.epoch > claim.epoch);
+    assert!(
+        !store.renew_lease(&claim, lease, 282).await.unwrap(),
+        "the old exact claim remains fenced after recovery"
     );
 }
 
@@ -617,19 +687,19 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
     // that commit, and the worker absorbs it as an already-done settle. That settle
     // now carries A's STALE lease epoch, so the dispatch fence rejects it too: B
     // already settled the run under a higher epoch and removed the row. A's tick
-    // therefore resolves cleanly (no panic, no stranded dispatch) but reports
-    // `None` — it durably settled nothing, because B won the lease. This is the
-    // fence doing its job: the stale owner cannot re-settle behind the reclaimer.
+    // therefore returns the explicit fenced commit error — it durably settled
+    // nothing, because B won the lease. This is the fence doing its job: the
+    // stale owner cannot re-settle behind the reclaimer.
     release.add_permits(1);
-    let a_result = tokio::time::timeout(Duration::from_secs(5), a_handle)
+    let a_error = tokio::time::timeout(Duration::from_secs(5), a_handle)
         .await
         .expect("A's background task joined")
         .expect("A's task did not panic")
-        .expect("A's drive resolved without a fatal error");
-    assert_eq!(
-        a_result, None,
-        "the stale owner's re-drive is fenced (B settled under a higher epoch): it \
-         settles nothing and abandons, rather than reporting a completion it did not own"
+        .expect_err("E3 stale owner must surface its fenced commit");
+    assert!(
+        a_error.to_string().contains("superseded")
+            && a_error.to_string().contains("no longer holds lease epoch"),
+        "E3 stale commit has the exact authority-loss cause: {a_error}"
     );
 
     // The policy guarantee: the unknown external side effect is not repeated.

@@ -372,7 +372,8 @@ pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::model_for_thread(&self, &str) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::new_with_runtime_resources_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, awaken_runtime_host::DeploymentConfig) -> Self
 pub fn awaken_runtime_host::SharedHost::new_worker_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, awaken_runtime_host::DeploymentConfig) -> Self
-pub fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
+pub async fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
+pub async fn awaken_runtime_host::SharedHost::pool_can_resume_work(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::pool_in_flight(&self) -> u32
 pub async fn awaken_runtime_host::SharedHost::prewarm_cache_volume(&self, awaken_runtime_host::CacheVolumeWarmup) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_runtime_host::SharedHost::prewarm_default_environment_capacity(&self, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::SandboxError>
@@ -383,11 +384,13 @@ pub fn awaken_runtime_host::SharedHost::ready_environment_snapshot_capacity(&sel
 pub fn awaken_runtime_host::SharedHost::register_thread_delegates(&self, &str, alloc::vec::Vec<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::registered_thread_workspace(&self, &str) -> core::option::Option<alloc::string::String>
+pub async fn awaken_runtime_host::SharedHost::resume_pool_admission(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::runs_local_dispatch_pool(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::sandbox_tier(&self) -> awaken_runtime_host::SandboxTier
 pub fn awaken_runtime_host::SharedHost::session_blob_eraser(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>>
 pub async fn awaken_runtime_host::SharedHost::shutdown_environment_capacity(&self)
 pub fn awaken_runtime_host::SharedHost::storage_dir(&self) -> core::option::Option<&std::path::Path>
+pub async fn awaken_runtime_host::SharedHost::suspend_pool_admission(&self)
 pub fn awaken_runtime_host::SharedHost::thread_agent_projection(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn awaken_runtime_host::SharedHost::thread_workspace(&self, &str) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::web_search_provider_registry(&self) -> &awaken_ext_builtin_tools::web::WebSearchProviderRegistry

@@ -18,10 +18,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission,
-    CredentialRealizationReceipt, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox,
-    PendingInput, PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
+    AttemptAdmission, AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard,
+    ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
+    Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
     SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_attempt_credentials,
     classify_completed_session_run_reservation, classify_exact_claim_mode,
@@ -42,6 +42,7 @@ use awaken_run_ingress_contract::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition, RunDispatch,
 };
 
+mod outbox;
 mod store;
 pub use store::MemoryDispatchStore;
 
@@ -74,6 +75,10 @@ struct Row {
     credential_bindings: Vec<AttemptCredentialBinding>,
     /// Idempotent effect evidence written under the same owner/epoch fence.
     credential_receipts: Vec<CredentialRealizationReceipt>,
+    /// Exact physical executor currently inside model/tool/Sandbox work. This is
+    /// part of the Dispatch claim aggregate and deliberately survives a lease
+    /// reclaim until that predecessor acknowledges quiescence.
+    active_attempt: Option<RunClaim>,
 }
 
 fn guarded_claim_row(
@@ -707,6 +712,7 @@ fn enqueue_new_local(
             assignment: None,
             credential_bindings: Vec::new(),
             credential_receipts: Vec::new(),
+            active_attempt: None,
         },
     );
     state.order.push(run_id);
@@ -1242,13 +1248,13 @@ impl DispatchQueue for MemoryDispatchStore {
         let now_ms = crate::clock::normalize_millis(now_ms);
         let Some(run_id) = state.order.iter().find_map(|run_id| {
             state.rows.get(run_id).and_then(|row| {
-                retry_exhaustion_eligible(
+                (retry_exhaustion_eligible(
                     row.state,
                     row.lease.as_ref().map(|lease| lease.expires_ms),
                     row.attempt_count,
                     max_attempts,
                     now_ms,
-                )
+                ) && row.active_attempt.is_none())
                 .then(|| run_id.clone())
             })
         }) else {
@@ -1380,33 +1386,47 @@ impl DispatchQueue for MemoryDispatchStore {
         }
     }
 
-    async fn renew_owned_leases(
+    async fn begin_attempt(
         &self,
-        owner: &str,
-        lease_ms: u64,
+        claim: &RunClaim,
         now_ms: u64,
-    ) -> Result<usize, DispatchError> {
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let mut renewed = 0;
-        // Only rows within half a lease of expiring; a fresh claim is a full length
-        // out and is skipped until it approaches expiry (ADR-0024).
-        let near_expiry = crate::clock::deadline_millis(now_ms, lease_ms / 2);
-        for row in state.rows.values_mut() {
-            if matches!(
-                row.state,
-                DispatchState::ReservationLeased | DispatchState::Leased
-            ) && row
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(AttemptAdmission::Fenced);
+        };
+        let current = row.state == DispatchState::Leased
+            && row.lease_epoch == claim.epoch
+            && row
                 .lease
                 .as_ref()
-                .is_some_and(|l| l.owner == owner && l.expires_ms < near_expiry)
-            {
-                if let Some(lease) = row.lease.as_mut() {
-                    lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
-                }
-                renewed += 1;
+                .is_some_and(|lease| lease.owner == claim.owner && lease.expires_ms >= now_ms);
+        if !current {
+            return Ok(AttemptAdmission::Fenced);
+        }
+        match row.active_attempt.as_ref() {
+            Some(active) if active == claim => Ok(AttemptAdmission::AlreadyApplied),
+            Some(_) => Ok(AttemptAdmission::Blocked),
+            None => {
+                row.active_attempt = Some(claim.clone());
+                Ok(AttemptAdmission::Applied)
             }
         }
-        Ok(renewed)
+    }
+
+    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        match row.active_attempt.as_ref() {
+            Some(active) if active == claim => row.active_attempt = None,
+            None => return Ok(SettleOutcome::Applied),
+            Some(_) => return Ok(SettleOutcome::Fenced),
+        }
+        Ok(SettleOutcome::Applied)
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1416,6 +1436,9 @@ impl DispatchQueue for MemoryDispatchStore {
             .rows
             .get(&claim.run_id)
             .map_or(GuardedTransition::Fenced, |row| {
+                if row.active_attempt.is_some() {
+                    return GuardedTransition::Fenced;
+                }
                 row.transition().relinquish(
                     claim.epoch,
                     row.lease
@@ -1458,6 +1481,9 @@ impl DispatchQueue for MemoryDispatchStore {
         // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
         // in-flight state is inviolate.
         let Some((transition, lease)) = state.rows.get(run_id).and_then(|row| {
+            if row.active_attempt.is_some() {
+                return None;
+            }
             let transition = row
                 .transition()
                 .settle(epoch, outcome == DispatchOutcome::Done);
@@ -1545,7 +1571,7 @@ impl DispatchQueue for MemoryDispatchStore {
         for row in state.rows.values_mut() {
             let expired = row.state == DispatchState::Leased
                 && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms);
-            if expired && row.attempt_count >= max_attempts {
+            if expired && row.attempt_count >= max_attempts && row.active_attempt.is_none() {
                 let lease = row
                     .lease
                     .clone()
@@ -1625,6 +1651,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     cancellation_requested: row.cancellation_requested,
                     attempt_count: row.attempt_count,
                     sandbox_bound: row.sandbox.is_some(),
+                    physical_attempt_active: row.active_attempt.is_some(),
                 })
             })
             .collect())
@@ -1798,189 +1825,5 @@ impl Inbox for MemoryDispatchStore {
         row.input.result = result;
         row.revision += 1;
         Ok(CasOutcome::Applied)
-    }
-}
-
-#[async_trait]
-impl Outbox for MemoryDispatchStore {
-    async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
-        let mut state = lock(&self.state)?;
-        let input = normalize_pending_millis(input);
-        if let Some(existing) = state
-            .outbox
-            .iter()
-            .find(|i| i.message_id == input.message_id)
-        {
-            return if existing == &input {
-                Ok(false)
-            } else {
-                Err(DispatchError::Rejected(format!(
-                    "idempotency key `{}` was reused with another outbox payload",
-                    input.message_id
-                )))
-            };
-        }
-        state.outbox.push(input);
-        Ok(true)
-    }
-
-    async fn stage_session_resume(
-        &self,
-        input: PendingInput,
-        session_thread_id: &ThreadId,
-        prior_session_activity_epoch: Option<u64>,
-        session_activity_epoch: u64,
-    ) -> Result<bool, DispatchError> {
-        let mut state = lock(&self.state)?;
-        let input = normalize_pending_millis(input);
-        let row = state.rows.get(&input.run_id).ok_or_else(|| {
-            DispatchError::Rejected(format!(
-                "Session resume Run `{}` was not found",
-                input.run_id.0
-            ))
-        })?;
-        validate_session_resume_target(
-            &row.request,
-            &input,
-            session_thread_id,
-            prior_session_activity_epoch,
-            session_activity_epoch,
-        )?;
-        let current_epoch = row.request.session_activity_epoch;
-        let accepts_new_resume = !row.cancellation_requested
-            && matches!(
-                (row.state, row.lease.is_some()),
-                (DispatchState::Pending | DispatchState::Awaiting, false)
-                    | (DispatchState::Leased, true)
-            );
-        let exact = validate_session_resume_evidence(
-            &input,
-            state
-                .outbox
-                .iter()
-                .chain(state.pending.iter().map(|pending| &pending.input)),
-        )?;
-        if !validate_session_resume_activity_transition(
-            current_epoch,
-            prior_session_activity_epoch,
-            session_activity_epoch,
-            exact,
-        )? {
-            return Ok(false);
-        }
-        if !accepts_new_resume {
-            return Err(DispatchError::Rejected(
-                "Session resume requires a Pending, Awaiting, or currently Leased dispatch"
-                    .to_string(),
-            ));
-        }
-        state
-            .rows
-            .get_mut(&input.run_id)
-            .expect("validated dispatch row remains under the transaction mutex")
-            .request
-            .session_activity_epoch = Some(session_activity_epoch);
-        state.outbox.push(input);
-        Ok(true)
-    }
-
-    async fn relay(&self) -> Result<usize, DispatchError> {
-        let mut state = lock(&self.state)?;
-        // Validate the whole in-memory transaction before moving anything: an
-        // outbox retry may match an existing pending row exactly, but the same
-        // id with another payload is corruption and must leave the outbox intact.
-        for input in &state.outbox {
-            if let Some(existing) = state
-                .pending
-                .iter()
-                .find(|pending| pending.input.message_id == input.message_id)
-                && existing.input != *input
-            {
-                return Err(DispatchError::Rejected(format!(
-                    "idempotency key `{}` was reused with another relayed payload",
-                    input.message_id
-                )));
-            }
-        }
-        let staged = std::mem::take(&mut state.outbox);
-        let relayed = staged.len();
-        for input in staged {
-            // Idempotent target append: skip a message already pending.
-            if !state
-                .pending
-                .iter()
-                .any(|p| p.input.message_id == input.message_id)
-            {
-                append_pending(&mut state, input)?;
-            }
-        }
-        Ok(relayed)
-    }
-
-    async fn relay_and_enqueue(
-        &self,
-        input: PendingInput,
-        request: RunDispatch,
-        admission: ContinuationAdmission,
-    ) -> Result<(), DispatchError> {
-        let mut state = lock(&self.state)?;
-        let message_id = input.message_id.clone();
-        // Canonical Run identity is checked first so a conflicting retry cannot
-        // consume or alter the independently durable report.
-        let replay = known_run_identity(&state, &request)?;
-        let position = state
-            .outbox
-            .iter()
-            .position(|candidate| candidate.message_id == message_id);
-        let existing = position
-            .map(|position| state.outbox[position].clone())
-            .or_else(|| {
-                state
-                    .pending
-                    .iter()
-                    .find(|pending| pending.input.message_id == message_id)
-                    .map(|pending| pending.input.clone())
-            });
-        if existing.as_ref().is_some_and(|existing| existing != &input) {
-            return Err(DispatchError::Rejected(format!(
-                "idempotency key `{message_id}` was reused with another continuation payload"
-            )));
-        }
-        validate_outbox_continuation(&input, &request, &admission)?;
-        if replay {
-            if let Some(position) = position {
-                state.outbox.remove(position);
-            }
-            return Ok(());
-        }
-
-        // The in-memory mutex is the transaction boundary. Validate pending
-        // idempotency before enqueue so every remaining step is infallible and
-        // an error cannot expose a half-applied state.
-        if let Some(existing) = state
-            .pending
-            .iter()
-            .find(|pending| pending.input.message_id == input.message_id)
-            && existing.input != input
-        {
-            return Err(DispatchError::Rejected(format!(
-                "idempotency key `{}` was reused with another pending-input payload",
-                input.message_id
-            )));
-        }
-        if let ContinuationAdmission::SessionChild(policy) = &admission {
-            let parent = session_child_parent(&request)?.clone();
-            ensure_session_child_capacity(
-                &request,
-                policy,
-                known_session_child_threads(&state, &parent),
-            )?;
-        }
-        enqueue_with_local(&mut state, request, SubmitOptions::default())?;
-        append_pending(&mut state, input)?;
-        if let Some(position) = position {
-            state.outbox.remove(position);
-        }
-        Ok(())
     }
 }

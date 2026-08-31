@@ -2,8 +2,9 @@
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
 use awaken_run_ingress_contract::{
-    ClaimedSessionControlError, RegisteredWorker, RegistryMutation, RunClaim, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerRegistration,
+    ClaimedSessionControlError, RegistryMutation, RunClaim, WorkerHeartbeat,
+    WorkerHeartbeatReceipt, WorkerIdentity, WorkerManifest, WorkerRegistration,
+    WorkerRegistrationReceipt,
 };
 use serde_json::{Value, json};
 
@@ -65,16 +66,6 @@ impl WorkerControlClient {
         }
     }
 
-    pub async fn register(
-        &self,
-        incarnation_id: impl Into<String>,
-        manifest: WorkerManifest,
-    ) -> Result<RegisteredWorker, String> {
-        self.register_classified(incarnation_id, manifest)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
     /// Register once while preserving the one retryable registry conflict as a
     /// typed result. The caller owns retry timing; all other transport and
     /// validation failures remain terminal.
@@ -82,7 +73,7 @@ impl WorkerControlClient {
         &self,
         incarnation_id: impl Into<String>,
         manifest: WorkerManifest,
-    ) -> Result<RegisteredWorker, WorkerRegistrationError> {
+    ) -> Result<WorkerRegistrationReceipt, WorkerRegistrationError> {
         let (status, body) = self
             .post_response(
                 "/v1/worker/register",
@@ -108,23 +99,37 @@ impl WorkerControlClient {
                 Err(WorkerRegistrationError::Rejected(message))
             };
         }
-        serde_json::from_value(body.get("worker").cloned().unwrap_or(Value::Null)).map_err(
-            |error| {
-                WorkerRegistrationError::Rejected(format!("worker registration decode: {error}"))
-            },
-        )
+        let receipt: WorkerRegistrationReceipt = serde_json::from_value(body).map_err(|error| {
+            WorkerRegistrationError::Rejected(format!("worker registration decode: {error}"))
+        })?;
+        if receipt.lease_ttl_ms == 0 {
+            return Err(WorkerRegistrationError::Rejected(
+                "worker registration returned a zero lease TTL".to_string(),
+            ));
+        }
+        Ok(receipt)
     }
 
     pub async fn heartbeat(
         &self,
         identity: &WorkerIdentity,
         heartbeat: WorkerHeartbeat,
-    ) -> Result<RegistryMutation, String> {
-        self.mutation(
-            "/v1/worker/heartbeat",
-            json!({ "identity": identity, "heartbeat": heartbeat }),
-        )
-        .await
+    ) -> Result<WorkerHeartbeatReceipt, String> {
+        let body = self
+            .post(
+                "/v1/worker/heartbeat",
+                json!({ "identity": identity, "heartbeat": heartbeat }),
+            )
+            .await?;
+        let receipt: WorkerHeartbeatReceipt = serde_json::from_value(body)
+            .map_err(|error| format!("worker heartbeat response decode: {error}"))?;
+        match (receipt.mutation, receipt.lease_ttl_ms) {
+            (RegistryMutation::Applied, Some(ttl)) if ttl > 0 => Ok(receipt),
+            (RegistryMutation::Applied, _) => {
+                Err("applied worker heartbeat omitted a positive lease TTL".to_string())
+            }
+            _ => Ok(receipt),
+        }
     }
 
     pub async fn current_environment_warmups(

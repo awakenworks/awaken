@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -140,6 +140,30 @@ struct ActiveAttemptSnapshot {
     ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
 }
 
+type ThreadExecutionGates = Arc<Mutex<HashMap<ThreadId, Weak<tokio::sync::Mutex<()>>>>>;
+
+struct ThreadExecutionGuard {
+    thread_id: ThreadId,
+    gates: ThreadExecutionGates,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for ThreadExecutionGuard {
+    fn drop(&mut self) {
+        // Release the owned gate before testing whether any waiter still holds
+        // its Arc. Removing only the matching dead Weak cannot split live
+        // callers onto two mutexes.
+        self.guard.take();
+        let mut gates = self.gates.lock();
+        if gates
+            .get(&self.thread_id)
+            .is_some_and(|gate| gate.upgrade().is_none())
+        {
+            gates.remove(&self.thread_id);
+        }
+    }
+}
+
 /// The runtime core resolves snapshots and executes runs through injected ports.
 /// The model provider, executable tools, and the
 /// permission gate are all ports, so the core never names a model SDK or a
@@ -171,6 +195,19 @@ pub struct Runtime {
     /// It is observation/control only: the dispatch claim and Thread commit remain
     /// the durable authorities.
     active_attempt_controls: Mutex<ActiveAttemptControls>,
+    /// The one process-local admission gate for every execution path.
+    /// Durable workers additionally use the dispatch row's physical-attempt
+    /// slot for cross-process recovery; direct callers have no durable claim.
+    /// Sharing this gate means an accidentally duplicated delivery of the same
+    /// exact claim still cannot cross an executor boundary concurrently inside
+    /// one Runtime.
+    ///
+    /// The returned guard removes a dead Weak entry after the final caller, so
+    /// completed Threads do not become a permanent registry. This gate is
+    /// deliberately separate from
+    /// `active_attempt_controls`: those entries remain observation/control and
+    /// never become an alternate execution-authority store.
+    thread_execution: ThreadExecutionGates,
     /// How retryable inference failures are retried (attempts and backoff).
     retry_policy: crate::retry::LlmRetryPolicy,
     /// How many continuation rounds a `MaxTokens`-truncated text step may use
@@ -201,6 +238,32 @@ impl Runtime {
             max_continuation_retries: 2,
             // `FailureCeiling::default()` is already 1.
             ..Self::default()
+        }
+    }
+
+    /// Acquire the sole process-local execution slot for `thread_id`.
+    ///
+    /// The returned owned guard is held across the complete injected executor
+    /// future, including model, tool, and Sandbox calls. Durable ingress also
+    /// uses its persisted claim-bound slot; neither authority replaces the
+    /// other because their failure domains differ.
+    pub async fn acquire_thread_execution(&self, thread_id: &ThreadId) -> impl Drop + use<> {
+        let gate = {
+            let mut gates = self.thread_execution.lock();
+            match gates.get(thread_id).and_then(Weak::upgrade) {
+                Some(gate) => gate,
+                None => {
+                    let gate = Arc::new(tokio::sync::Mutex::new(()));
+                    gates.insert(thread_id.clone(), Arc::downgrade(&gate));
+                    gate
+                }
+            }
+        };
+        let guard = gate.lock_owned().await;
+        ThreadExecutionGuard {
+            thread_id: thread_id.clone(),
+            gates: self.thread_execution.clone(),
+            guard: Some(guard),
         }
     }
 
@@ -760,5 +823,33 @@ impl LiveRunControl for Runtime {
         let controls = self.active_attempt_controls.lock();
         let attempt = controls.by_run.get(run_id).ok_or(ControlError::NotActive)?;
         Self::deliver_registered(attempt, command)
+    }
+}
+
+#[cfg(test)]
+mod thread_execution_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn final_guard_removes_the_thread_gate_without_splitting_waiters() {
+        // Decision rules: G1 first acquisition creates one entry; G2 a queued
+        // waiter retains that same entry after the first guard drops; G3 the
+        // final guard drops with no waiter and removes the key. Effects are
+        // respectively size 1, size 1, and size 0—no leak and no parallel gate.
+        let runtime = Arc::new(Runtime::new());
+        let thread = ThreadId("thread-gate-lifecycle".into());
+        let first = runtime.acquire_thread_execution(&thread).await;
+        assert_eq!(runtime.thread_execution.lock().len(), 1, "G1");
+        let waiter = tokio::spawn({
+            let runtime = runtime.clone();
+            let thread = thread.clone();
+            async move { runtime.acquire_thread_execution(&thread).await }
+        });
+        tokio::task::yield_now().await;
+        drop(first);
+        let second = waiter.await.expect("G2 waiter joins");
+        assert_eq!(runtime.thread_execution.lock().len(), 1, "G2");
+        drop(second);
+        assert!(runtime.thread_execution.lock().is_empty(), "G3");
     }
 }

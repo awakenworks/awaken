@@ -61,6 +61,7 @@ pub(super) async fn retry_exhausted_candidate(
         "SELECT run_id FROM {prefix}_dispatch \
          WHERE status = 'running' AND lease_until IS NOT NULL \
          AND lease_until < $1 AND attempt_count >= $2 \
+         AND active_attempt_epoch IS NULL \
          ORDER BY created_at LIMIT 1"
     ))
     .bind(crate::clock::db_millis(now_ms))

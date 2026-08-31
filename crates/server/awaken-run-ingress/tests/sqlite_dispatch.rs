@@ -462,22 +462,15 @@ async fn dead_letter_ttl_gc_on_sqlite() {
 }
 
 #[tokio::test]
-async fn renew_owned_leases_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_renew_owned_leases(&store, &awaken_run_ingress_testkit::LogicalCommandClock)
-        .await;
-}
-
-#[tokio::test]
 async fn relinquish_claim_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_relinquish_claim(&store).await;
 }
 
 #[tokio::test]
-async fn renew_skips_far_from_expiry_on_sqlite() {
+async fn physical_attempt_admission_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_renew_skips_far_from_expiry(
+    harness::assert_physical_attempt_admission(
         &store,
         &awaken_run_ingress_testkit::LogicalCommandClock,
     )

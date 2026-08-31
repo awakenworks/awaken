@@ -10,9 +10,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_run_ingress::{
-    ClaimedStreamPublisher as _, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
-    RegistryError, RegistryMutation, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
-    WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
+    AttemptAdmission, ClaimedStreamPublisher as _, DispatchQueue, MemoryDispatchStore,
+    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration,
+    WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
@@ -670,10 +671,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         build_digest: "signed-http-build".into(),
         ..WorkerManifest::default()
     };
-    let registered = WorkerControlClient::new(bootstrap.clone())
-        .register("signed-http-boot", manifest)
+    // Worker lease receipt decision rules: successful registration and Applied
+    // heartbeat both disclose the same positive Coordinator-owned TTL; a
+    // bootstrap credential still cannot use incarnation-only operations.
+    let registration_receipt = WorkerControlClient::new(bootstrap.clone())
+        .register_classified("signed-http-boot", manifest)
         .await
         .expect("bootstrap assertion registers the Worker");
+    assert_eq!(registration_receipt.lease_ttl_ms, 30_000);
+    let registered = registration_receipt.worker;
     assert!(
         WorkerControlClient::new(bootstrap.clone())
             .heartbeat(
@@ -714,7 +720,32 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("incarnation-bound assertion heartbeats");
-    assert_eq!(heartbeat, RegistryMutation::Applied);
+    assert_eq!(heartbeat.mutation, RegistryMutation::Applied);
+    assert_eq!(heartbeat.lease_ttl_ms, Some(30_000));
+    // Duplicate-path removal rule D1: an otherwise valid incarnation cannot
+    // reach the retired owner-wide renewal route. Exact `/renew` remains the
+    // only Run-lease transport, so this must be route absence rather than a
+    // compatibility response.
+    let retired_path = "/v1/worker/dispatch/renew_owned";
+    let retired_request = upstream
+        .authorize(
+            "POST",
+            retired_path,
+            upstream
+                .client()
+                .post(format!("http://{address}{retired_path}")),
+        )
+        .expect("sign retired-route probe")
+        .json(&serde_json::json!({"identity": &registered.snapshot.identity}));
+    assert_eq!(
+        retired_request
+            .send()
+            .await
+            .expect("retired-route probe returns")
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "D1"
+    );
     let warmups = WorkerControlClient::new(upstream.clone())
         .current_environment_warmups(&registered.snapshot.identity)
         .await
@@ -755,6 +786,35 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         session_work.acquisitions.load(Ordering::SeqCst),
         0,
         "claim verification has no Session scheduler side effect"
+    );
+    // Physical-slot transport rules: exact live identity begins; an exact
+    // response-loss retry is idempotent; a body identity different from the
+    // signed incarnation cannot acknowledge; the exact owner can finish. The
+    // final ACK endpoint intentionally authenticates the signed predecessor but
+    // does not require it to remain the current registry/Run owner, because that
+    // would make safe handoff impossible after reclaim.
+    assert_eq!(
+        queue.begin_attempt(&claim, 10_000).await.expect("P1 begin"),
+        AttemptAdmission::Applied,
+        "P1 exact identity"
+    );
+    assert_eq!(
+        queue.begin_attempt(&claim, 10_000).await.expect("P2 retry"),
+        AttemptAdmission::AlreadyApplied,
+        "P2 exact response-loss retry"
+    );
+    let mismatched_queue = awaken_worker_runtime::dispatch_transport_with_upstream(
+        &upstream,
+        WorkerIdentity::new("signed-http-worker", "different-boot", 2),
+    );
+    assert!(
+        mismatched_queue.finish_attempt(&claim).await.is_err(),
+        "P3 mismatched signed-body incarnation cannot clear the slot"
+    );
+    assert_eq!(
+        queue.finish_attempt(&claim).await.expect("P4 exact ACK"),
+        SettleOutcome::Applied,
+        "P4 exact owner quiescence"
     );
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity

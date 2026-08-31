@@ -237,6 +237,24 @@ pub enum SettleOutcome {
     Fenced,
 }
 
+/// Admission result for the physical executor slot carried by one Dispatch
+/// aggregate. A Run claim authorizes durable mutation, but an expired claim may
+/// still have a model/tool/Sandbox future physically unwinding. The successor
+/// may hold the new claim while it waits; it cannot cross an external execution
+/// boundary until this result is [`Applied`](Self::Applied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptAdmission {
+    /// This exact claim acquired the previously empty physical slot.
+    Applied,
+    /// This exact claim already owns the slot; an idempotent retry succeeds.
+    AlreadyApplied,
+    /// A predecessor claim has not yet acknowledged physical quiescence.
+    Blocked,
+    /// This claim is no longer the current durable owner.
+    Fenced,
+}
+
 /// One durable observation that a dispatch applied [`DispatchOutcome::Done`].
 ///
 /// This is delivery truth only: the committed run fact remains authoritative for
@@ -366,6 +384,10 @@ pub struct DispatchSummary {
     /// Whether an opaque Sandbox handle has been durably bound. The monitoring
     /// view deliberately exposes no provider-specific handle material.
     pub sandbox_bound: bool,
+    /// Whether a model/tool/Sandbox future still owns the exact physical slot.
+    /// The owner/epoch remain private fencing material; operators need only the
+    /// stuck-quiescence signal.
+    pub physical_attempt_active: bool,
 }
 
 /// Claim-fenced resolution of one expired Session Run reservation. This mutates
@@ -1843,14 +1865,6 @@ mod tests {
             _lease_ms: u64,
             _now_ms: u64,
         ) -> Result<bool, DispatchError> {
-            Self::unsupported()
-        }
-        async fn renew_owned_leases(
-            &self,
-            _owner: &str,
-            _lease_ms: u64,
-            _now_ms: u64,
-        ) -> Result<usize, DispatchError> {
             Self::unsupported()
         }
         async fn settle(

@@ -29,6 +29,54 @@ struct HandLifecycleMetrics {
 
 static HAND_LIFECYCLE_METRICS: OnceLock<HandLifecycleMetrics> = OnceLock::new();
 
+struct WorkerAuthorityMetrics {
+    heartbeat_count: Counter<u64>,
+    heartbeat_duration: Histogram<f64>,
+    scheduling_lag: Histogram<f64>,
+    proof_remaining_ms: std::sync::Arc<AtomicU64>,
+    _proof_remaining: ObservableGauge<u64>,
+    authority_loss: Counter<u64>,
+}
+
+static WORKER_AUTHORITY_METRICS: OnceLock<WorkerAuthorityMetrics> = OnceLock::new();
+
+fn worker_authority_metrics() -> &'static WorkerAuthorityMetrics {
+    WORKER_AUTHORITY_METRICS.get_or_init(|| {
+        let meter = global::meter("awaken-observability");
+        let proof_remaining_ms = std::sync::Arc::new(AtomicU64::new(0));
+        let observed = proof_remaining_ms.clone();
+        WorkerAuthorityMetrics {
+            heartbeat_count: meter
+                .u64_counter("awaken.worker.authority.heartbeat.count")
+                .with_description("Worker registry heartbeat attempts by outcome.")
+                .build(),
+            heartbeat_duration: meter
+                .f64_histogram("awaken.worker.authority.heartbeat.duration")
+                .with_unit("s")
+                .with_description("Worker registry heartbeat request duration.")
+                .build(),
+            scheduling_lag: meter
+                .f64_histogram("awaken.worker.authority.heartbeat.scheduling_lag")
+                .with_unit("s")
+                .with_description("Delay beyond the scheduled Worker heartbeat attempt.")
+                .build(),
+            proof_remaining_ms: proof_remaining_ms.clone(),
+            _proof_remaining: meter
+                .u64_observable_gauge("awaken.worker.authority.proof_remaining")
+                .with_unit("ms")
+                .with_description("Conservative local Worker authority proof time remaining.")
+                .with_callback(move |observer| {
+                    observer.observe(observed.load(Ordering::Relaxed), &[]);
+                })
+                .build(),
+            authority_loss: meter
+                .u64_counter("awaken.worker.authority.loss.count")
+                .with_description("Worker authority loss terminalizations by bounded cause.")
+                .build(),
+        }
+    })
+}
+
 fn hand_lifecycle_metrics() -> &'static HandLifecycleMetrics {
     HAND_LIFECYCLE_METRICS.get_or_init(|| {
         let meter = global::meter("awaken-observability");
@@ -64,6 +112,41 @@ pub fn record_hand_lifecycle(event: &'static str, outcome: &'static str, duratio
 /// Adjust the process-local count after a Hand launch or proven reap.
 pub fn add_live_hand(delta: i64) {
     hand_lifecycle_metrics().live.add(delta, &[]);
+}
+
+/// Record one content-free Worker registry heartbeat observation. Labels are a
+/// closed outcome class; Worker ids and Run ids are deliberately excluded.
+pub fn record_worker_authority_heartbeat(
+    outcome: &'static str,
+    duration: Duration,
+    scheduling_lag: Duration,
+    proof_remaining: Duration,
+) {
+    let labels = [KeyValue::new("outcome", outcome)];
+    let metrics = worker_authority_metrics();
+    metrics.heartbeat_count.add(1, &labels);
+    metrics
+        .heartbeat_duration
+        .record(duration.as_secs_f64(), &labels);
+    metrics
+        .scheduling_lag
+        .record(scheduling_lag.as_secs_f64(), &labels);
+    set_worker_authority_proof_remaining(proof_remaining);
+}
+
+/// Update the local authority proof gauge without manufacturing a heartbeat.
+pub fn set_worker_authority_proof_remaining(proof_remaining: Duration) {
+    worker_authority_metrics().proof_remaining_ms.store(
+        proof_remaining.as_millis().min(u128::from(u64::MAX)) as u64,
+        Ordering::Relaxed,
+    );
+}
+
+/// Record a terminal authority cause without high-cardinality identity labels.
+pub fn record_worker_authority_loss(cause: &'static str) {
+    worker_authority_metrics()
+        .authority_loss
+        .add(1, &[KeyValue::new("cause", cause)]);
 }
 
 /// Records the runtime's structure-only metrics onto OpenTelemetry instruments
@@ -416,6 +499,16 @@ mod meter_tests {
         // process gauge through the same global meter.
         record_hand_lifecycle("reacquire", "ok", Duration::from_millis(4));
         add_live_hand(1);
+        // Worker-authority telemetry decision rule W1: one bounded outcome emits
+        // count/duration/lag/proof instruments; terminal cause emits one separate
+        // counter. Identity and content must never become labels.
+        record_worker_authority_heartbeat(
+            "applied_after_retry",
+            Duration::from_millis(5),
+            Duration::from_millis(2),
+            Duration::from_millis(20_000),
+        );
+        record_worker_authority_loss("registry_rejected");
 
         let scrape = render_prometheus();
 
@@ -441,6 +534,11 @@ mod meter_tests {
             "awaken_hand_lifecycle_count",
             "awaken_hand_lifecycle_duration",
             "awaken_hand_live",
+            "awaken_worker_authority_heartbeat_count",
+            "awaken_worker_authority_heartbeat_duration",
+            "awaken_worker_authority_heartbeat_scheduling_lag",
+            "awaken_worker_authority_proof_remaining",
+            "awaken_worker_authority_loss_count",
         ] {
             assert!(
                 scrape.contains(stem),
