@@ -381,13 +381,13 @@ async fn thread_messages(
         .unwrap_or(thread_id);
     let history = match rt.history(&thread_id).await {
         Ok(history) => history,
-        Err(error) => return query_error(error),
+        Err(error) => return no_store(query_error(error)),
     };
     let pending = match rt.pending(&thread_id).await {
         Ok(pending) => pending,
-        Err(error) => return query_error(error),
+        Err(error) => return no_store(query_error(error)),
     };
-    match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
+    let response = match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
         // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
         // where `cursor` is the continuation (`null` on the last page).
         Ok(page) => Json(CursorPage::new(
@@ -398,7 +398,15 @@ async fn thread_messages(
         // A stale or fabricated cursor is a caller fault: a plain 400, not the UI
         // stream error frame (this GET is not a chat stream).
         Err(err) => (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
-    }
+    };
+    no_store(response)
+}
+
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// The AI SDK UI Message Stream response headers (SSE + the transport marker).
