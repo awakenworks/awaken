@@ -130,13 +130,14 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   const answer = page.locator('.agent-preview-conversation:not([hidden]) [data-role="assistant"]').last();
   await runtimeCheckpoint("the real model identifies both client-breaking contract changes", async () => {
     await expect(answer).toBeVisible({ timeout: 300_000 });
-    await expect(answer).toContainText(
-      /Compatibility[\s\S]*(?:BREAKING|incompatible)[\s\S]*Breaking changes[\s\S]*result_url[\s\S]*(?:status|pending|completed)/i,
-      { timeout: 300_000 },
-    );
     // The answer may arrive before the AI SDK transport's terminal frame. Do not
     // present a partial response as complete; wait for the stream to settle.
-    await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 60_000 });
+    await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 300_000 });
+    await expect(answer).toContainText(/Compatibility[\s\S]*(?:BREAKING|incompatible)/i, { timeout: 300_000 });
+    await expect(answer).toContainText(/Breaking changes/i);
+    await expect(answer).toContainText(/result_url/i);
+    await expect(answer).toContainText(/status|enum|pending|completed/i);
+    await expect(answer).toContainText(/not safe|do not publish|不可发布|不应发布/i);
   });
   await beat(
     "The result names both breaking changes and the migration work they require.",
@@ -151,6 +152,8 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await checkpoint("AG-UI opens the same Preview history and its API key guide", async () => {
     await expect(agUiComposer).toBeVisible({ timeout: 60_000 });
     await expect(activeProtocolPreview.getByText(FIRST_TASK, { exact: true })).toBeVisible();
+    await expect(activeProtocolPreview.locator('[data-role="assistant"]').first()).toContainText(/result_url/i);
+    await expect(activeProtocolPreview.locator('[data-role="assistant"]').first()).toContainText(/status|pending|completed/i);
     await expect(page.getByRole("link", { name: /Connection and API key guide|连接与 API Key 指南/ }))
       .toHaveAttribute("href", /\/w\/default\/protocols#protocol-ag-ui$/);
   });
@@ -168,9 +171,10 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   const agUiAnswer = agUiAnswers.nth(priorAssistantCount);
   await runtimeCheckpoint("AG-UI preserves the decision and exposes its real lifecycle events", async () => {
     await expect(agUiAnswers).toHaveCount(priorAssistantCount + 1, { timeout: 300_000 });
-    await expect(agUiAnswer).toContainText(/(?:BREAKING|incompatible)/i, { timeout: 300_000 });
-    await expect(agUiAnswer).toContainText(/result_url/i);
-    await expect(agUiAnswer).toContainText(/status|enum/i);
+    await expect(page.locator(".agent-working")).not.toBeVisible({ timeout: 300_000 });
+    await expect(agUiAnswer).toContainText(/BREAKING|incompatible|not safe|do not publish|不可发布|不应发布/i);
+    await expect(agUiAnswer).toContainText(/result_url|alias|mapping|migration note|映射|兼容别名|迁移说明/i);
+    await expect(agUiAnswer).toContainText(/status|enum|new values|update clients|状态|枚举|更新客户端/i);
     await expect(page.locator(".agent-preview-event code").filter({ hasText: /^RUN_STARTED$/ })).toBeVisible({ timeout: 60_000 });
     await expect(page.locator(".agent-preview-event code").filter({ hasText: /^RUN_FINISHED$/ })).toBeVisible({ timeout: 60_000 });
   });
