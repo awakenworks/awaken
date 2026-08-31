@@ -119,13 +119,10 @@ pub(super) async fn prepare_runtime_routers(
         );
     let resource_application = coordinator_stores.resources.clone();
     let resource_authorities = resource_application.authorities();
-    // Resolve the installation's Workspace exactly once, then inject the same
-    // coordinate into every adapter prepared below. Durable roots persist it;
-    // ephemeral roots receive a process-local generated coordinate.
-    let platform_workspace = stores.workspace_root.as_deref().map_or_else(
-        SharedHost::provision_local_workspace,
-        SharedHost::provision_local_workspace_at,
-    );
+    // Store startup resolves the installation Workspace exactly once after its
+    // canonical Session authority succeeds. Every adapter receives that value;
+    // this router never publishes or regenerates installation identity.
+    let platform_workspace = stores.platform_workspace.clone();
     let brokered_client = brokered_inference_client(
         cloud_models_enabled && role == config::Role::AllInOne,
         remote_iam.as_ref(),
@@ -328,6 +325,7 @@ pub(super) async fn prepare_runtime_routers(
     };
     let ProcessStores {
         workspace_root: _,
+        platform_workspace: _,
         control: control_stores,
         coordinator,
     } = stores;

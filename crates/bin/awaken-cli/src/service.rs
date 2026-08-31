@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use crate::config::{ConfigOverrides, ResolvedDeployment, Role};
-use crate::console::{ServiceArgs, ServiceBinaryCommand};
+use crate::console::{DatabaseMigrateArgs, ServiceArgs, ServiceBinaryCommand};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceRole {
@@ -55,9 +55,7 @@ pub async fn run_service_binary(role: ServiceRole) -> ExitCode {
     };
     let result = match command {
         ServiceBinaryCommand::Serve(args) => run_service(args, role).await,
-        ServiceBinaryCommand::DatabaseMigrate { config_path } => {
-            migrate_service_for_role(config_path, role).await
-        }
+        ServiceBinaryCommand::DatabaseMigrate(args) => migrate_service_for_role(args, role).await,
         ServiceBinaryCommand::Help => unreachable!("help returned before service dispatch"),
     };
     match result {
@@ -120,6 +118,9 @@ async fn run_service_with_adapters(
             role.binary()
         ));
     }
+    let installations =
+        crate::installation_binding::verify_deployment_installations(&deployment).await?;
+    installations.platform_workspace_before_write()?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     if deployment.mode == crate::config::OperatingMode::Local
@@ -154,10 +155,12 @@ async fn run_service_with_adapters(
         role.startup_role(),
         awaken_service_lifecycle::StartupComponent::LocalWorker,
     ) {
+        let workspace = installations.platform_workspace_before_write()?;
         Some(
-            crate::prepare_local_worker(
+            crate::acp_local_credentials::prepare_local_worker_with_workspace(
                 &mut deployment,
                 seal_key.as_ref().expect("AllInOne owns Control seal key"),
+                workspace,
             )
             .await?,
         )
@@ -177,6 +180,7 @@ async fn run_service_with_adapters(
         role,
         local_worker,
         all_in_one_services,
+        installations,
     )
     .await;
     awaken_observability::shutdown();
@@ -193,6 +197,8 @@ pub async fn serve_prepared_control(
     process: crate::PreparedProcess,
 ) -> Result<(), String> {
     validate_prebuilt_control_deployment(&deployment)?;
+    let _installations =
+        crate::installation_binding::verify_deployment_installations(&deployment).await?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     awaken_observability::init(&deployment.observability);
@@ -213,6 +219,8 @@ pub async fn serve_prepared_coordinator(
     if deployment.mode != crate::config::OperatingMode::Server {
         return Err("prebuilt Coordinator process requires mode = \"server\"".into());
     }
+    let _installations =
+        crate::installation_binding::verify_deployment_installations(&deployment).await?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     awaken_observability::init(&deployment.observability);
@@ -233,26 +241,60 @@ fn validate_prebuilt_control_deployment(deployment: &ResolvedDeployment) -> Resu
 
 /// Apply only the migrations owned by the role declared in the deployment.
 pub async fn migrate_service(config_path: Option<std::path::PathBuf>) -> Result<(), String> {
-    let deployment = load_migration_deployment(config_path)?;
+    migrate_service_with_request(DatabaseMigrateArgs {
+        config_path,
+        initialization_reference: None,
+        adoption_reference: None,
+    })
+    .await
+}
+
+/// Apply the one validated migration request parsed by either product binary.
+pub async fn migrate_service_with_request(args: DatabaseMigrateArgs) -> Result<(), String> {
+    let authorization = crate::installation_binding::InstallationAuthorization::new(
+        args.initialization_reference,
+        args.adoption_reference,
+    )?;
+    let deployment = load_migration_deployment(args.config_path)?;
+    let prepared =
+        crate::installation_binding::prepare_deployment_installations(&deployment, &authorization)
+            .await?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = role_seal_key(&deployment)?;
-    crate::migrate_deployment_schema(&deployment, seal_key.as_ref()).await
+    crate::deployment_process::migrate_deployment_schema_prepared(
+        &deployment,
+        seal_key.as_ref(),
+        prepared,
+    )
+    .await
 }
 
 async fn migrate_service_for_role(
-    config_path: Option<std::path::PathBuf>,
+    args: DatabaseMigrateArgs,
     role: ServiceRole,
 ) -> Result<(), String> {
+    let authorization = crate::installation_binding::InstallationAuthorization::new(
+        args.initialization_reference,
+        args.adoption_reference,
+    )?;
     let deployment = ResolvedDeployment::load(ConfigOverrides {
-        config_path,
+        config_path: args.config_path,
         role: Some(role.deployment_role()),
         ..Default::default()
     })?;
+    let prepared =
+        crate::installation_binding::prepare_deployment_installations(&deployment, &authorization)
+            .await?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = role_seal_key(&deployment)?;
-    crate::migrate_deployment_schema(&deployment, seal_key.as_ref()).await
+    crate::deployment_process::migrate_deployment_schema_prepared(
+        &deployment,
+        seal_key.as_ref(),
+        prepared,
+    )
+    .await
 }
 
 fn load_migration_deployment(
@@ -283,34 +325,55 @@ async fn serve_resolved(
         crate::ManagedServiceAdapters,
         crate::CoordinatorServiceAdapters,
     )>,
+    installations: crate::installation_binding::PreparedDeploymentInstallations,
 ) -> Result<(), String> {
     let process = match role {
         ServiceRole::AllInOne => match all_in_one_services {
             Some((managed, coordinator)) => {
-                crate::prepare_all_in_one_process_with_services(
+                crate::deployment_process::prepare_runtime_process_with_coordinator_services_and_installations(
                     &deployment,
-                    seal_key.as_ref().expect("AllInOne owns Control seal key"),
+                    Some(seal_key.as_ref().expect("AllInOne owns Control seal key")),
+                    Role::AllInOne,
+                    crate::PublicationModelSupply::PublishedProviders,
                     managed,
                     coordinator,
+                    installations,
                 )
                 .await?
             }
             None => {
-                crate::prepare_all_in_one_process(
+                crate::deployment_process::prepare_runtime_process_with_coordinator_services_and_installations(
                     &deployment,
-                    seal_key.as_ref().expect("AllInOne owns Control seal key"),
+                    Some(seal_key.as_ref().expect("AllInOne owns Control seal key")),
+                    Role::AllInOne,
+                    crate::PublicationModelSupply::PublishedProviders,
+                    crate::ManagedServiceAdapters::default(),
+                    crate::CoordinatorServiceAdapters::default(),
+                    installations,
                 )
                 .await?
             }
         },
         ServiceRole::Control => {
-            crate::prepare_control_process(
+            crate::control::prepare_control_process_with_installations(
                 &deployment,
                 seal_key.as_ref().expect("Control owns Control seal key"),
+                installations,
             )
             .await?
         }
-        ServiceRole::Coordinator => crate::prepare_coordinator_process(&deployment).await?,
+        ServiceRole::Coordinator => {
+            crate::deployment_process::prepare_runtime_process_with_coordinator_services_and_installations(
+                &deployment,
+                None,
+                Role::Coordinator,
+                crate::PublicationModelSupply::PublishedProviders,
+                crate::ManagedServiceAdapters::default(),
+                crate::CoordinatorServiceAdapters::default(),
+                installations,
+            )
+            .await?
+        }
     };
     serve_prepared_process(deployment, role, process, prepared_worker).await
 }
@@ -821,6 +884,119 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    type DirectorySnapshot = (
+        bool,
+        std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
+    );
+
+    fn snapshot_tree(root: &std::path::Path) -> DirectorySnapshot {
+        fn visit(
+            root: &std::path::Path,
+            directory: &std::path::Path,
+            snapshot: &mut std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
+        ) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                if entry.file_type().unwrap().is_dir() {
+                    snapshot.insert(relative, None);
+                    visit(root, &path, snapshot);
+                } else {
+                    snapshot.insert(relative, Some(std::fs::read(path).unwrap()));
+                }
+            }
+        }
+
+        let exists = root.exists();
+        let mut snapshot = std::collections::BTreeMap::new();
+        if exists {
+            visit(root, root, &mut snapshot);
+        }
+        (exists, snapshot)
+    }
+
+    fn write_continuity_config(
+        root: &std::path::Path,
+        name: &str,
+        data_dir: &std::path::Path,
+    ) -> std::path::PathBuf {
+        let config = root.join(format!("{name}.toml"));
+        std::fs::write(
+            &config,
+            format!(
+                "data_dir = {data_dir:?}\nidentity_mode = \"no-login\"\nexpected_platform_workspace_id = \"workspace_expected\"\n"
+            ),
+        )
+        .unwrap();
+        config
+    }
+
+    async fn assert_real_entries_reject_without_effects(
+        config: &std::path::Path,
+        data_dir: &std::path::Path,
+        expected_error: &str,
+        rule: &str,
+    ) {
+        let before = snapshot_tree(data_dir);
+        let runtime_error = run_service(
+            ServiceArgs {
+                config_path: Some(config.to_path_buf()),
+                ..Default::default()
+            },
+            ServiceRole::AllInOne,
+        )
+        .await
+        .expect_err("invalid continuity must stop the real service entry");
+        assert!(
+            runtime_error.starts_with(expected_error),
+            "{rule}/serve stable error: {runtime_error}"
+        );
+        assert_eq!(snapshot_tree(data_dir), before, "{rule}/serve no effects");
+
+        let migration_error = migrate_service(Some(config.to_path_buf()))
+            .await
+            .expect_err("invalid continuity must stop the product migration entry");
+        assert!(
+            migration_error.starts_with(expected_error),
+            "{rule}/migrate stable error: {migration_error}"
+        );
+        assert_eq!(snapshot_tree(data_dir), before, "{rule}/migrate no effects");
+
+        let role_migration_error = migrate_service_for_role(
+            DatabaseMigrateArgs {
+                config_path: Some(config.to_path_buf()),
+                initialization_reference: None,
+                adoption_reference: None,
+            },
+            ServiceRole::AllInOne,
+        )
+        .await
+        .expect_err("invalid continuity must stop the role-binary migration entry");
+        assert!(
+            role_migration_error.starts_with(expected_error),
+            "{rule}/role migrate stable error: {role_migration_error}"
+        );
+        assert_eq!(
+            snapshot_tree(data_dir),
+            before,
+            "{rule}/role migrate no effects"
+        );
+    }
+
+    fn empty_prepared_process() -> crate::PreparedProcess {
+        crate::PreparedProcess {
+            public_router: axum::Router::new(),
+            private_router: axum::Router::new(),
+            local_setup: None,
+            registration_supervisor: None,
+            service_lifecycle: awaken_service_lifecycle::ServiceLifecycle::new(),
+            event_batch_cutover_validation: None,
+            coordinator_authorities: None,
+            admin_tools: Vec::new(),
+        }
+    }
+
     async fn tcp_get_json(
         address: std::net::SocketAddr,
         path: &'static str,
@@ -854,6 +1030,285 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn continuity_fence_precedes_every_real_service_entry_side_effect() {
+        /* Cause/effect graph: C1 entry is serve/product-migrate/role-migrate;
+         * C2 expected installation marker is absent/mismatched/matching; C3 a
+         * matching installation's Session authority is absent/corrupt. Effects:
+         * E1 the canonical continuity diagnostic terminates the entry; E2 the
+         * complete data tree, including root nonexistence, is byte-identical;
+         * therefore E3 no layout, seal key, Worker/ACP path, store, migration,
+         * or Workspace marker is created before rejection. Decision table:
+         * S1 missing marker=>platform_workspace_missing+E2; S2 mismatch=>
+         * platform_workspace_mismatch+E2; S3 matching+missing Session=>
+         * session_storage_missing+E2; S4 matching+corrupt Session=>
+         * session_storage_invalid+E2, for every C1 entry. Explicit fresh and
+         * role-first authorization is owned by the neighboring real-migration
+         * decision table; every entry here calls the exact production adapter. */
+        let root = tempfile::tempdir().unwrap();
+
+        let missing_marker = root.path().join("missing-marker");
+        let missing_marker_config =
+            write_continuity_config(root.path(), "missing-marker", &missing_marker);
+        assert_real_entries_reject_without_effects(
+            &missing_marker_config,
+            &missing_marker,
+            "platform_workspace_missing:",
+            "S1",
+        )
+        .await;
+
+        let mismatch = root.path().join("mismatch");
+        std::fs::create_dir(&mismatch).unwrap();
+        std::fs::write(mismatch.join("platform-workspace-id"), "workspace_other").unwrap();
+        let mismatch_config = write_continuity_config(root.path(), "mismatch", &mismatch);
+        assert_real_entries_reject_without_effects(
+            &mismatch_config,
+            &mismatch,
+            "platform_workspace_mismatch:",
+            "S2",
+        )
+        .await;
+
+        let missing_session = root.path().join("missing-session");
+        std::fs::create_dir(&missing_session).unwrap();
+        std::fs::write(
+            missing_session.join("platform-workspace-id"),
+            "workspace_expected",
+        )
+        .unwrap();
+        let missing_session_config =
+            write_continuity_config(root.path(), "missing-session", &missing_session);
+        assert_real_entries_reject_without_effects(
+            &missing_session_config,
+            &missing_session,
+            "session_storage_missing:",
+            "S3",
+        )
+        .await;
+
+        let corrupt_session = root.path().join("corrupt-session");
+        std::fs::create_dir(&corrupt_session).unwrap();
+        std::fs::write(
+            corrupt_session.join("platform-workspace-id"),
+            "workspace_expected",
+        )
+        .unwrap();
+        std::fs::write(
+            corrupt_session.join("sessions.db"),
+            b"SQLite format 3\0truncated",
+        )
+        .unwrap();
+        let corrupt_session_config =
+            write_continuity_config(root.path(), "corrupt-session", &corrupt_session);
+        assert_real_entries_reject_without_effects(
+            &corrupt_session_config,
+            &corrupt_session,
+            "session_storage_invalid:",
+            "S4",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn local_migration_requires_explicit_initialization_and_publishes_identity_last() {
+        /* Cause/effect graph: C1 local state is fresh/bound; C2 migration carries
+         * no authorization/a complete initialization reference; C3 every owned
+         * store opens or a late captured-content store fails after Session open.
+         * Effects: E1 ordinary fresh migration rejects with a byte-identical
+         * absent data root; E2 explicit fresh migration creates canonical stores
+         * and publishes the sole platform-workspace-id only after all succeed;
+         * E3 ordinary bound replay succeeds without changing identity; E4 a late
+         * store failure may leave recoverable store-first files but never the
+         * installation marker; E5 deleting Session blocks ordinary migration and
+         * only another explicit initialization may intentionally recover it.
+         * E6 explicit initialization with a configured expected identity publishes
+         * that exact value. Decision table: LM1 fresh+ordinary=>E1; LM2 fresh+initialize+all-open=>
+         * E2; LM3 bound+ordinary=>E3; LM4 fresh+initialize+late-failure=>E4;
+         * LM5 marker+deleted Session+ordinary/initialize=>E5/E2; LM6 expected+
+         * no marker+initialize=>E6. */
+        fn write_local_config(
+            root: &std::path::Path,
+            name: &str,
+            data_dir: &std::path::Path,
+            expected_workspace: Option<&str>,
+        ) -> std::path::PathBuf {
+            let config = root.join(format!("{name}.toml"));
+            let expected_workspace = expected_workspace.map_or_else(String::new, |workspace| {
+                format!("expected_platform_workspace_id = {workspace:?}\n")
+            });
+            std::fs::write(
+                &config,
+                format!(
+                    "data_dir = {data_dir:?}\nidentity_mode = \"no-login\"\n{expected_workspace}"
+                ),
+            )
+            .unwrap();
+            config
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("fresh");
+        let config = write_local_config(root.path(), "fresh", &data_dir, None);
+        let ordinary = DatabaseMigrateArgs {
+            config_path: Some(config.clone()),
+            ..Default::default()
+        };
+        let error = migrate_service_with_request(ordinary.clone())
+            .await
+            .expect_err("LM1 ordinary migration cannot initialize local storage");
+        assert!(
+            error.starts_with("unbound_empty_local_storage:"),
+            "LM1: {error}"
+        );
+        assert!(!data_dir.exists(), "LM1/E1 no data root");
+
+        migrate_service_with_request(DatabaseMigrateArgs {
+            initialization_reference: Some("install-local-2048".into()),
+            ..ordinary.clone()
+        })
+        .await
+        .expect("LM2 explicit initialization");
+        let marker = data_dir.join("platform-workspace-id");
+        let workspace = std::fs::read_to_string(&marker).expect("LM2 identity published");
+        assert!(!workspace.trim().is_empty(), "LM2/E2 exact identity");
+        awaken_session_store::SqliteManagedSessionRepository::verify_existing(
+            &data_dir.join("sessions.db").to_string_lossy(),
+        )
+        .expect("LM2/E2 canonical Session store");
+
+        migrate_service_with_request(ordinary)
+            .await
+            .expect("LM3 ordinary exact replay");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            workspace,
+            "LM3/E3"
+        );
+
+        std::fs::remove_file(data_dir.join("sessions.db")).unwrap();
+        let deleted = DatabaseMigrateArgs {
+            config_path: Some(config),
+            ..Default::default()
+        };
+        let error = migrate_service_with_request(deleted.clone())
+            .await
+            .expect_err("LM5 ordinary migration cannot recreate a deleted Session authority");
+        assert!(
+            error.starts_with("session_storage_missing:"),
+            "LM5: {error}"
+        );
+        assert!(!data_dir.join("sessions.db").exists(), "LM5 zero writes");
+        migrate_service_with_request(DatabaseMigrateArgs {
+            initialization_reference: Some("recover-local-2048".into()),
+            ..deleted
+        })
+        .await
+        .expect("LM5 explicit intentional recovery");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            workspace,
+            "LM5 identity stable"
+        );
+
+        let expected_dir = root.path().join("expected");
+        let expected_config = write_local_config(
+            root.path(),
+            "expected",
+            &expected_dir,
+            Some("workspace-expected"),
+        );
+        migrate_service_with_request(DatabaseMigrateArgs {
+            config_path: Some(expected_config),
+            initialization_reference: Some("install-local-expected-2048".into()),
+            adoption_reference: None,
+        })
+        .await
+        .expect("LM6 explicit exact-identity initialization");
+        assert_eq!(
+            std::fs::read_to_string(expected_dir.join("platform-workspace-id")).unwrap(),
+            "workspace-expected",
+            "LM6/E6"
+        );
+
+        let failed_dir = root.path().join("late-failure");
+        std::fs::create_dir_all(failed_dir.join("captured_content.db")).unwrap();
+        let failed_config = write_local_config(root.path(), "late-failure", &failed_dir, None);
+        let error = migrate_service_with_request(DatabaseMigrateArgs {
+            config_path: Some(failed_config),
+            initialization_reference: Some("install-local-failure-2048".into()),
+            adoption_reference: None,
+        })
+        .await
+        .expect_err("LM4 late owned-store failure");
+        assert!(error.contains("captured-content SQLite"), "LM4: {error}");
+        assert!(
+            failed_dir.join("sessions.db").exists(),
+            "LM4 store-first evidence"
+        );
+        assert!(
+            !failed_dir.join("platform-workspace-id").exists(),
+            "LM4/E4 marker is published last"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuity_fence_precedes_prepared_role_service_effects() {
+        /* Cause/effect decision table: P1 Control+server with a mismatched
+         * expected marker terminates at the shared platform/session continuity
+         * adapter; P2 Coordinator+server with a matching marker but corrupt
+         * Session authority terminates at the same adapter. Both effects are a
+         * stable diagnostic and a byte-identical data tree before observation,
+         * layout, listeners, or any supplied PreparedProcess can run. Valid
+         * role/mode rows remain covered by the neighboring authority test. */
+        let control_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            control_dir.path().join("platform-workspace-id"),
+            "workspace_other",
+        )
+        .unwrap();
+        let mut control = crate::config::local_test_deployment(control_dir.path().to_path_buf());
+        control.role = Role::Control;
+        control.mode = crate::config::OperatingMode::Server;
+        control.expected_platform_workspace_id = Some("workspace_expected".into());
+        let before = snapshot_tree(control_dir.path());
+        let error = serve_prepared_control(control, empty_prepared_process())
+            .await
+            .expect_err("P1 mismatched Control continuity must fail");
+        assert!(
+            error.starts_with("platform_workspace_mismatch:"),
+            "P1: {error}"
+        );
+        assert_eq!(snapshot_tree(control_dir.path()), before, "P1 no effects");
+
+        let coordinator_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            coordinator_dir.path().join("platform-workspace-id"),
+            "workspace_expected",
+        )
+        .unwrap();
+        std::fs::write(
+            coordinator_dir.path().join("sessions.db"),
+            b"SQLite format 3\0truncated",
+        )
+        .unwrap();
+        let mut coordinator =
+            crate::config::local_test_deployment(coordinator_dir.path().to_path_buf());
+        coordinator.role = Role::Coordinator;
+        coordinator.mode = crate::config::OperatingMode::Server;
+        coordinator.expected_platform_workspace_id = Some("workspace_expected".into());
+        let before = snapshot_tree(coordinator_dir.path());
+        let error = serve_prepared_coordinator(coordinator, empty_prepared_process())
+            .await
+            .expect_err("P2 corrupt Coordinator continuity must fail");
+        assert!(error.starts_with("session_storage_invalid:"), "P2: {error}");
+        assert_eq!(
+            snapshot_tree(coordinator_dir.path()),
+            before,
+            "P2 no effects"
+        );
     }
 
     #[tokio::test]
