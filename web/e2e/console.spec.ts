@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { MANAGED_HEADERS } from "./betas";
 import { SyntheticModelDirectory } from "./synthetic-model";
 import { isApiRequest, logicalApiPath, workspaceApiPath, workspaceId } from "./workspace";
+import { protocolHelpPath, quickstartSessionPath } from "../src/lib/navigation/paths";
 
 const syntheticModels = new SyntheticModelDirectory();
 
@@ -185,12 +186,15 @@ test("Tools tab renders the Permissions editor (data-driven from capabilities.po
   await expect(page.getByPlaceholder('bash(command ~ "*rm -rf*")')).toBeVisible();
 });
 
-test("Quickstart publishes the reviewed draft and starts a durable Session in the chosen Environment", async ({ page, request }) => {
+test("Quickstart publishes, starts a durable Session, and hands its exact SDK coordinates forward", async ({ page, request }) => {
   // Quickstart placement cause/effect table: C1=the Agent has a recursive/self
   // delegate, C2=the selected Environment is self-hosted, C3=a Worker is live.
   // R1 C1+!C2 rejects before pretending a deferred cloud Sandbox can delegate;
   // R2 C1+C2+C3 publishes, realizes the Sandbox, accepts the first message, and
-  // navigates to the exact durable Session. This browser scenario owns R2; the
+  // navigates to the exact durable Session; R3 blank draft id + selected Starter
+  // fills the Starter id but an authored replacement remains authoritative; R4
+  // post-Quickstart provenance exposes exact Agent/Environment SDK coordinates
+  // and dismissal removes guidance only. This browser scenario owns R2-R4; the
   // runtime-host FMECA tests own the fail-closed R1 edge.
   const stamp = Date.now();
   const id = `quickstart-${stamp}`;
@@ -218,7 +222,10 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
     return response.headers.get("anthropic-workspace-id");
   });
   expect(browserWorkspace).toBe(configuredWorkspace);
+  await expect(page.locator(".template-card[data-selected=true]")).toHaveCount(0);
   await page.getByRole("button", { name: /Repository change/ }).click();
+  await expect(page.getByPlaceholder("coding-agent")).toHaveValue("repository-change");
+  await expect(page.locator(".template-card[data-selected=true]")).toContainText("Repository change");
   await page.getByPlaceholder("coding-agent").fill(id);
   await page.getByLabel("Model", { exact: true })
     .selectOption({ label: model });
@@ -243,13 +250,27 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
     { type: "user.message", content: [{ type: "text", text: task }] },
   ]);
   const session = await createdSessionResponse.json();
-  await expect(page).toHaveURL(new RegExp(`/sessions/${session.id}$`));
+  const quickstartPath = quickstartSessionPath("default", session.id);
+  await expect(page).toHaveURL(new URL(quickstartPath, page.url()).toString());
+  await expect(page.getByText("The Agent is published and its first task was submitted", { exact: false })).toBeVisible();
+  const sdkPath = protocolHelpPath("default", "managed", {
+    agentId: id,
+    environmentId: environment.id,
+  });
+  const sdkLink = page.getByRole("link", { name: /Open Managed Agents SDK setup/ });
+  await expect(sdkLink).toHaveAttribute("href", sdkPath);
+  await page.getByRole("button", { name: "Dismiss Quickstart guidance" }).click();
+  await expect(page).toHaveURL(new URL(quickstartPath.replace("?from=quickstart", ""), page.url()).toString());
   const stored = await (await request.get(await workspaceApiPath(request, `/v1/sessions/${session.id}`), {
     headers: MANAGED_HEADERS,
   })).json();
   expect(stored.environment_id).toBe(environment.id);
   expect(stored.agent.id).toBe(id);
   expect(stored.agent.version).toBe(createSessionBody.agent.version);
+  await page.goto(sdkPath);
+  const managedExample = page.locator("#protocol-managed .code-block");
+  await expect(managedExample).toContainText(`agent: "${id}"`);
+  await expect(managedExample).toContainText(`environment_id: "${environment.id}"`);
 });
 
 test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {

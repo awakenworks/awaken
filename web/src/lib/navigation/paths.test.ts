@@ -100,8 +100,10 @@ describe("console information architecture", () => {
   it("deep-links every protocol CTA through one encoded route owner", () => {
     // Cause/effect table: R1 explicit Workspace + protocol -> the matching
     // help fragment; R2 empty Workspace -> default scope; R3 reserved
-    // characters -> encoded path/hash coordinates. All callers reuse this
-    // helper instead of copying protocol URL construction.
+    // characters -> encoded path/hash coordinates; R4 optional Agent and
+    // Environment -> presentational query before the fragment; R5 blank
+    // context -> omitted. All callers reuse this helper instead of copying URL
+    // construction, and the query never owns execution state.
     expect(protocolHelpPath("workspace-a", "managed")).toBe(
       "/w/workspace-a/protocols#protocol-managed",
     );
@@ -114,6 +116,16 @@ describe("console information architecture", () => {
     expect(protocolHelpPath("team space", "custom/protocol")).toBe(
       "/w/team%20space/protocols#protocol-custom%2Fprotocol",
     );
+    expect(protocolHelpPath("team space", "managed", {
+      agentId: "agent/one",
+      environmentId: "env local",
+    })).toBe(
+      "/w/team%20space/protocols?agent=agent%2Fone&environment=env+local#protocol-managed",
+    );
+    expect(protocolHelpPath("workspace-a", "managed", {
+      agentId: " ",
+      environmentId: null,
+    })).toBe("/w/workspace-a/protocols#protocol-managed");
   });
 
   /**

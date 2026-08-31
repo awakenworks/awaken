@@ -2,8 +2,7 @@
 // production binary. Keep the paths here aligned with router conformance tests.
 
 import { useApp } from "../lib/app-state";
-import { Link } from "react-router";
-import { useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { Card, CopyButton, Pill } from "../components/ui";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
@@ -90,7 +89,23 @@ const chat = useChat({
   }),
 });`;
 
-export const MANAGED_SDK = `// npm install @anthropic-ai/sdk
+export interface ManagedSdkContext {
+  agentId?: string | null;
+  environmentId?: string | null;
+  workspaceId?: string | null;
+}
+
+function sdkCoordinate(value: string | null | undefined, environmentVariable: string): string {
+  return value?.trim() ? JSON.stringify(value) : `process.env.${environmentVariable}`;
+}
+
+/** Derive a contextual example from one SDK template. Query coordinates only
+ * replace two copy-time values and never become configuration authority. */
+export function managedSdkExample(context: ManagedSdkContext = {}): string {
+  const agent = sdkCoordinate(context.agentId, "AWAKEN_AGENT_ID");
+  const environment = sdkCoordinate(context.environmentId, "AWAKEN_ENVIRONMENT_ID");
+  const workspace = encodeURIComponent(context.workspaceId?.trim() || "default");
+  return `// npm install @anthropic-ai/sdk
 import Anthropic from "@anthropic-ai/sdk";
 
 const betas = ["managed-agents-2026-04-01"];
@@ -101,8 +116,8 @@ const awaken = new Anthropic({
 });
 
 const session = await awaken.beta.sessions.create({
-  agent: process.env.AWAKEN_AGENT_ID,
-  environment_id: process.env.AWAKEN_ENVIRONMENT_ID,
+  agent: ${agent},
+  environment_id: ${environment},
   betas,
 });
 
@@ -114,7 +129,10 @@ await awaken.beta.sessions.events.send(session.id, {
   betas,
 });
 
-console.log(\`Open in Console: /w/default/sessions/\${session.id}\`);`;
+console.log(\`Open in Console: /w/${workspace}/sessions/\${session.id}\`);`;
+}
+
+export const MANAGED_SDK = managedSdkExample();
 
 export const PROTOCOL_HELP: Record<ProtocolId, ProtocolHelp> = {
   managed: {
@@ -184,9 +202,21 @@ export default function ProtocolsSurface() {
   const capabilities = useCapabilities();
   const configCapabilities = useConfigCapabilities();
   const { ws = "default" } = useParams();
+  const [searchParams] = useSearchParams();
   const runtimes = capabilities.data?.runtimes ?? [];
   const accessManagement = configCapabilities.data?.surfaces.access_management === true;
   const identityMode = configCapabilities.data?.identity.mode;
+  const protocolHelp = {
+    ...PROTOCOL_HELP,
+    managed: {
+      ...PROTOCOL_HELP.managed,
+      example: managedSdkExample({
+        agentId: searchParams.get("agent"),
+        environmentId: searchParams.get("environment"),
+        workspaceId: ws,
+      }),
+    },
+  };
   return (
     <div className="stack">
       <Card>
@@ -209,7 +239,7 @@ export default function ProtocolsSurface() {
             <p className="mut">{app.t(protocol.useWhen[0], protocol.useWhen[1])}</p>
             <p className="hint">{app.t("Credential", "凭据")} · {protocol.id === "managed"
               ? managedCredentialLabel(accessManagement, identityMode, app.locale)
-              : PROTOCOL_HELP[protocol.id].credential}</p>
+              : protocolHelp[protocol.id].credential}</p>
             <details id={`protocol-${protocol.id}`} className="protocol-help" open={protocol.id === "managed" ? true : undefined}>
               <summary>{app.t(`How to connect ${protocol.name}`, `${protocol.name} 如何连接`)}</summary>
               <ol>
@@ -217,21 +247,21 @@ export default function ProtocolsSurface() {
                   <li key={step}>{step}</li>
                 ))}
               </ol>
-              {PROTOCOL_HELP[protocol.id].example && (
+              {protocolHelp[protocol.id].example && (
                 <div className="protocol-example">
                   <div className="row" style={{ justifyContent: "flex-end" }}>
                     <CopyButton
-                      value={PROTOCOL_HELP[protocol.id].example!}
+                      value={protocolHelp[protocol.id].example!}
                       label={app.t("Copy example", "复制示例")}
                       copiedLabel={app.t("Copied", "已复制")}
                     />
                   </div>
-                  <pre className="code-block"><code>{PROTOCOL_HELP[protocol.id].example}</code></pre>
+                  <pre className="code-block"><code>{protocolHelp[protocol.id].example}</code></pre>
                 </div>
               )}
-              {PROTOCOL_HELP[protocol.id].href && (protocol.id !== "managed" || accessManagement) && (
-                <Link className="protocol-help-link" to={`/w/${ws}/${PROTOCOL_HELP[protocol.id].href}`}>
-                  {internalHelpLabel(PROTOCOL_HELP[protocol.id], protocol.name, app.t)}
+              {protocolHelp[protocol.id].href && (protocol.id !== "managed" || accessManagement) && (
+                <Link className="protocol-help-link" to={`/w/${ws}/${protocolHelp[protocol.id].href}`}>
+                  {internalHelpLabel(protocolHelp[protocol.id], protocol.name, app.t)}
                 </Link>
               )}
               {protocol.id === "managed" && (

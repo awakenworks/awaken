@@ -312,7 +312,13 @@ export default function SessionDetailSurface() {
               "The Agent is published and its first task was submitted to this durable Session. Review the live result below, then connect the same Agent from your trusted backend with the Managed Agents SDK.",
               "Agent 已发布，首次任务也已提交到这个持久 Session。先在下方检查实时结果，再通过可信后端使用 Managed Agents SDK 接入同一个 Agent。",
             )}{" "}
-            <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
+            <Link
+              className="protocol-help-link"
+              to={protocolHelpPath(wsId, "managed", {
+                agentId: session.data?.agent.id,
+                environmentId: session.data?.environment_id,
+              })}
+            >
               {app.t("Open Managed Agents SDK setup →", "打开 Managed Agents SDK 配置 →")}
             </Link>
           </span>

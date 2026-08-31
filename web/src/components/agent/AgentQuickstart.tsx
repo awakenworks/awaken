@@ -78,6 +78,12 @@ const STARTERS: StarterTemplate[] = [
   },
 ];
 
+/** A Starter may remove the machine-id chore from a blank draft, but it must
+ * never overwrite an id the operator already chose. */
+export function starterAgentId(currentId: string, starterId: string): string {
+  return currentId.trim() ? currentId : starterId;
+}
+
 export default function AgentQuickstart({
   config,
   readyModels,
@@ -108,7 +114,7 @@ export default function AgentQuickstart({
   onReviewRun: (environmentId: string, task: string) => void;
 }) {
   const app = useApp();
-  const [selectedTemplate, setSelectedTemplate] = useState("task-assistant");
+  const [selectedTemplate, setSelectedTemplate] = useState("");
   const [environmentId, setEnvironmentId] = useState(BUILTIN_LOCAL_ENVIRONMENT_ID);
   const [task, setTask] = useState(app.t(
     "Introduce yourself in one sentence and explain how you would approach your configured role.",
@@ -124,6 +130,7 @@ export default function AgentQuickstart({
     const tools = template.suggestedTools.filter((id) => availableTools.includes(id));
     const plugins = (template.suggestedPlugins ?? []).filter((id) => availablePlugins.includes(id));
     onPatch({
+      id: starterAgentId(config.id, template.id),
       name: template.name,
       description: app.t(template.description, template.descriptionZh),
       system: template.system,

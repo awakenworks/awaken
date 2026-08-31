@@ -109,9 +109,24 @@ export function quickstartSessionPath(workspaceId: string, sessionId: string): s
   return `/w/${encodeURIComponent(workspaceId || "default")}/sessions/${encodeURIComponent(sessionId)}?from=quickstart`;
 }
 
-/** One canonical deep link into the protocol directory's connection help. */
-export function protocolHelpPath(workspaceId: string, protocolId: string): string {
-  return `/w/${encodeURIComponent(workspaceId || "default")}/protocols#protocol-${encodeURIComponent(protocolId)}`;
+export interface ProtocolHelpContext {
+  agentId?: string | null;
+  environmentId?: string | null;
+}
+
+/** One canonical deep link into the protocol directory's connection help.
+ * Optional execution coordinates personalize examples only; they do not own
+ * Agent, Environment, or Session state. */
+export function protocolHelpPath(
+  workspaceId: string,
+  protocolId: string,
+  context: ProtocolHelpContext = {},
+): string {
+  const params = new URLSearchParams();
+  if (context.agentId?.trim()) params.set("agent", context.agentId);
+  if (context.environmentId?.trim()) params.set("environment", context.environmentId);
+  const query = params.size ? `?${params}` : "";
+  return `/w/${encodeURIComponent(workspaceId || "default")}/protocols${query}#protocol-${encodeURIComponent(protocolId)}`;
 }
 
 export function titleForPath(pathname: string): { scope: string; title: string } {
