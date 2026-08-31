@@ -858,6 +858,106 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
 }
 
 #[tokio::test]
+async fn claimed_durable_adoption_evicts_the_runtime_cached_before_revocation() {
+    use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
+
+    // C1 a durable Environment and its Runtime are resident; C2 realization
+    // revocation closes the process binding but retains the physical owner; C3
+    // the next claimed attempt carries an adopted wrapper. E1 C3 must evict the
+    // cached Runtime and complete adoption instead of dispatching through C1's
+    // permanently closed executor.
+    let thread = "cached-durable-claim-revocation";
+    let root = tempfile::tempdir().unwrap();
+    let provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            root.path(),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
+    let environment = environment(&provider, thread).await;
+    let mut host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(root.path());
+    host.session_provider = provider;
+    let snapshot = test_activation(thread, "cached-durable-publication").snapshot;
+    host.register_thread_workspace(thread, "workspace");
+    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    host.session_slots.update(thread, |slot| {
+        slot.published_snapshot = Some(snapshot.clone());
+        slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+            identity: identity(thread),
+            binding: binding.clone(),
+            environment: environment.clone(),
+        });
+    });
+    let agent_id = snapshot.root_agent_id.0.clone();
+    let cached = host
+        .ctx_for_snapshot_with_sandbox(
+            thread,
+            Some(agent_id.as_str()),
+            Some(snapshot.clone()),
+            None,
+        )
+        .await
+        .expect("C1 cached Runtime");
+
+    let lifecycle = host
+        .session_slots
+        .read(thread, |slot| slot.lifecycle.clone())
+        .unwrap();
+    {
+        let _lifecycle = lifecycle.lock().await;
+        assert!(
+            host.retire_session_environment_for_revocation(thread)
+                .await
+                .unwrap(),
+            "C2 exact revocation"
+        );
+    }
+    let (adopted, rebuild) = host
+        .adopt_bound_session_environment(
+            thread,
+            Some(&binding),
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+            false,
+        )
+        .await
+        .expect("C3 re-adopts the physical Sandbox with a fresh wrapper");
+    assert!(!rebuild);
+    assert!(adopted.is_none(), "C3 adoption is published in the host");
+    let effective_model_ref = snapshot.resolved_spec.model_binding.model_ref.clone();
+    let publications = Arc::new(
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
+            .unwrap(),
+    );
+    let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
+        identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
+            &snapshot,
+            &[],
+            &effective_model_ref,
+        ),
+        publications,
+        effective_model_ref,
+    };
+    let claimed = host
+        .ctx_for_claimed_snapshot_with_sandbox(
+            thread,
+            Some(agent_id.as_str()),
+            snapshot,
+            None,
+            attempt,
+        )
+        .await
+        .expect("C3 claimed durable adoption");
+    assert!(!Arc::ptr_eq(&cached, &claimed), "E1 cached Runtime evicted");
+    assert!(matches!(
+        host.session_slots
+            .read(thread, |slot| slot.environment_owner.clone()),
+        Some(SessionEnvironmentOwner::Resident(_))
+    ));
+}
+
+#[tokio::test]
 async fn recovery_status_gates_frozen_provider_validation_after_owner_retirement() {
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
 
