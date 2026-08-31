@@ -126,6 +126,12 @@ test("Primary create flows disclose their required configuration before commit",
   await expect(page.getByRole("heading", { name: /Provider connections/ })).toBeVisible();
 
   await page.goto("/w/default/protocols");
+  const consoleOrigin = new URL(page.url()).origin;
+  const connectionAddresses = page.locator(".connection-address");
+  await expect(connectionAddresses.nth(0)).toContainText(consoleOrigin);
+  await expect(connectionAddresses.nth(1)).toContainText(`${consoleOrigin}/v1/capabilities`);
+  await expect(page.locator(".protocol-endpoint").first()).toContainText(`${consoleOrigin}/v1/sessions`);
+  await expect(connectionAddresses.nth(0).getByRole("button", { name: "Copy Base URL" })).toBeVisible();
   for (const protocol of ["Managed Agents", "Vercel AI SDK", "AG-UI", "A2A", "MCP Server"]) {
     await expect(page.getByText(`How to connect ${protocol}`, { exact: true })).toBeVisible();
   }
@@ -145,4 +151,15 @@ test("Primary create flows disclose their required configuration before commit",
   await expect(page.getByRole("heading", { name: "Not available in this deployment" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Return to overview" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review available configuration" })).toBeVisible();
+});
+
+test("Protocol connection addresses stay readable on a narrow viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/w/default/protocols");
+
+  await expect(page.locator(".connection-address").nth(0).getByRole("button", { name: "Copy Base URL" })).toBeVisible();
+  await expect(page.locator(".connection-address").nth(1).getByRole("button", { name: "Copy check URL" })).toBeVisible();
+  await expect(page.locator(".protocol-endpoint").first().getByRole("button", { name: "Copy endpoint" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+    .toBe(true);
 });

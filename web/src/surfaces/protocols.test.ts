@@ -9,6 +9,8 @@ import {
   PROTOCOLS,
   protocolDocsUrl,
   managedCredentialLabel,
+  connectionEndpoint,
+  normalizeConnectionBaseUrl,
 } from "./protocols";
 
 describe("built-in protocol guide", () => {
@@ -33,6 +35,15 @@ describe("built-in protocol guide", () => {
       expect(extension.useWhen[0].length).toBeGreaterThan(20);
       expect(extension.guidance[0].length).toBeGreaterThan(20);
     }
+  });
+
+  it("builds client-visible connection addresses without hard-coded hosts", () => {
+    expect(normalizeConnectionBaseUrl("https://agents.example.com///"))
+      .toBe("https://agents.example.com");
+    expect(connectionEndpoint("https://agents.example.com/", "/v1/sessions"))
+      .toBe("https://agents.example.com/v1/sessions");
+    expect(connectionEndpoint("https://agents.example.com", "Agent model runtime"))
+      .toBe("Agent model runtime");
   });
 
   it("does not send no-login users to unavailable service-key management", () => {

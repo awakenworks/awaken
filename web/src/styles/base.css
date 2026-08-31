@@ -50,6 +50,39 @@ code,
   margin-top: 4px;
   font-weight: 650;
 }
+.connection-address-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.connection-address {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--soft);
+}
+.connection-address-value {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+.connection-address-value code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.connection-address-value .copy-btn { flex: 0 0 auto; white-space: nowrap; }
+.card .hint.connection-address-note { margin: 12px 0 0; }
+.protocol-endpoint { align-items: flex-start; }
+@media (max-width: 620px) {
+  .connection-address-grid { grid-template-columns: minmax(0, 1fr); }
+  .connection-address-value { align-items: flex-start; }
+}
 .capability-unavailable { display: flex; align-items: flex-start; gap: 12px; max-width: 760px; border-left: 2px solid var(--warn); }
 .capability-unavailable h2 { margin: 0 0 4px; font-size: 16px; }
 .capability-unavailable p { margin: 0 0 14px; }

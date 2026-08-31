@@ -53,6 +53,16 @@ export function protocolDocsUrl(locale: "en" | "zh", slug: string) {
   const prefix = locale === "zh" ? "/zh" : "";
   return `https://awakenworks.com${prefix}/docs/agents/protocols/${slug}/`;
 }
+
+export function normalizeConnectionBaseUrl(origin: string) {
+  return origin.replace(/\/+$/, "");
+}
+
+export function connectionEndpoint(baseUrl: string, endpoint: string) {
+  const normalized = normalizeConnectionBaseUrl(baseUrl);
+  if (!normalized || !endpoint.startsWith("/")) return endpoint;
+  return `${normalized}${endpoint}`;
+}
 interface ProtocolHelp {
   credential: string;
   steps: readonly [string, string, string];
@@ -217,6 +227,8 @@ export default function ProtocolsSurface() {
       }),
     },
   };
+  const baseUrl = normalizeConnectionBaseUrl(typeof window === "undefined" ? "" : window.location.origin);
+  const capabilityUrl = connectionEndpoint(baseUrl, "/v1/capabilities");
   return (
     <div className="stack">
       <Card>
@@ -227,6 +239,40 @@ export default function ProtocolsSurface() {
             "这里是协议目录。所有协议共用已发布的 Agent 和持久 Session 记录；连接步骤、凭据边界和验证方法都放在所属协议的帮助中。",
           )}
         </p>
+        <div className="connection-address-grid">
+          <section className="connection-address">
+            <span className="hint">{app.t("Client-visible Base URL", "客户端可访问的 Base URL")}</span>
+            <div className="connection-address-value">
+              <code>{baseUrl}</code>
+              <CopyButton
+                value={baseUrl}
+                label={app.t("Copy Base URL", "复制 Base URL")}
+                visibleLabel="⧉"
+                copiedLabel={app.t("Copied", "已复制")}
+                visibleCopiedLabel="✓"
+              />
+            </div>
+          </section>
+          <section className="connection-address">
+            <span className="hint">{app.t("Connection check", "连接检查")}</span>
+            <div className="connection-address-value">
+              <code>{capabilityUrl}</code>
+              <CopyButton
+                value={capabilityUrl}
+                label={app.t("Copy check URL", "复制检查地址")}
+                visibleLabel="⧉"
+                copiedLabel={app.t("Copied", "已复制")}
+                visibleCopiedLabel="✓"
+              />
+            </div>
+          </section>
+        </div>
+        <p className="hint connection-address-note">
+          {app.t(
+            "These addresses use the public origin that opened this Console. If your client reaches Awaken through another gateway or private hostname, replace the Base URL with that client-visible address. A successful capability check returns this deployment's runtimes, tools, and plugins.",
+            "这里使用打开当前 Console 的公开地址。如果客户端通过其他网关或内网主机名访问 Awaken，请将 Base URL 替换为客户端实际可访问的地址。连接检查成功时会返回当前部署的运行时、工具与插件能力。",
+          )}
+        </p>
       </Card>
       <div className="grid-2">
         {PROTOCOLS.map((protocol) => (
@@ -235,7 +281,16 @@ export default function ProtocolsSurface() {
               <h3>{protocol.name}</h3>
               <Pill tone="neutral">{protocol.mode}</Pill>
             </div>
-            <code>{protocol.endpoint}</code>
+            <div className="connection-address-value protocol-endpoint">
+              <code>{connectionEndpoint(baseUrl, protocol.endpoint)}</code>
+              <CopyButton
+                value={connectionEndpoint(baseUrl, protocol.endpoint)}
+                label={app.t("Copy endpoint", "复制端点")}
+                visibleLabel="⧉"
+                copiedLabel={app.t("Copied", "已复制")}
+                visibleCopiedLabel="✓"
+              />
+            </div>
             <p className="mut">{app.t(protocol.useWhen[0], protocol.useWhen[1])}</p>
             <p className="hint">{app.t("Credential", "凭据")} · {protocol.id === "managed"
               ? managedCredentialLabel(accessManagement, identityMode, app.locale)
