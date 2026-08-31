@@ -30,8 +30,19 @@ and reads no private SystemClock. The edge that starts a drive owns one
 
 `renew_claim_while_active(store, claim, lease_ms, clock)` creates one renewal
 guard for one fenced claim. Every interval (`lease_ms / 3`) it invokes
-`renew_lease(run_id, owner, lease_ms, clock.now_ms())`. Losing ownership stops
-the task; dropping the guard cancels it.
+`renew_lease(claim, lease_ms, clock.now_ms())`. The complete `RunClaim`
+(`run_id`, owner, monotonic `lease_epoch`) is the same fencing identity used by
+commit and settlement; an owner name is never sufficient because a process
+identity may eventually be reused. Losing ownership stops the task; dropping
+the guard cancels it.
+
+Each renewal request is bounded to half the regular interval. A transient
+transport/store error retries on the same guard with a short bounded delay,
+without moving the next regular renewal away from its absolute cadence. If no
+successful renewal proves ownership by two thirds of one lease, the guard
+cancels the attempt before a peer may legitimately recover the durable lease.
+This local proof deadline is conservative signalling only; the dispatch store
+remains the sole lease-expiry authority.
 
 The guard, not a daemon-wide in-flight registry, is the renewal authority. A
 direct service or foreground drive creates it at the canonical Worker drive. A
@@ -64,6 +75,15 @@ The Coordinator validates the authenticated owner and reads its own authoritativ
 Clock. Local Service/Pool code must not call this bulk verb or run a parallel
 owner-wide heartbeat.
 
+### D4: Epoch-bearing renewal is a coordinated wire cutover
+
+The authenticated remote request carries `run_id + lease_epoch`; the Control
+side derives owner, lease duration, and time from trusted Worker authority.
+Missing epoch fails closed rather than falling back to owner-only renewal. A
+release containing this amendment therefore drains old Workers and deploys
+Control plus Worker binaries as one coordinated maintenance cutover; no legacy
+renewal endpoint or epoch-default compatibility path is retained.
+
 ## Dynamic behavior
 
 ```text
@@ -71,6 +91,9 @@ local edge claims with Clock C
   -> one exact guard starts with C
   -> optional Pool resolution retains that guard
   -> Pool transfers the guard and C to DispatchWorker
+  -> exact epoch renewal succeeds on an absolute cadence
+     or transient failure retries inside the safety window
+     or lost/unprovable ownership cancels the attempt
   -> Worker verifies ownership with C before an external effect
   -> Worker settles with C
   -> guard drops and renewal stops
@@ -89,6 +112,8 @@ prevents stale settlement.
 
 - Long local Runs, foreground child Runs, cancellation, and slow resolution all
   retain their exact leases without an in-flight registry.
+- A blocked renewal request cannot consume the whole lease, and transient
+  failures do not wait one full regular interval before retrying.
 - Pool-to-Worker handoff has one renewal task, not two concurrent writers.
 - Deterministic claims are never compared with an unrelated wall clock.
 - Remote topology retains its signed bulk transport for compatibility, while

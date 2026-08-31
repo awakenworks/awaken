@@ -262,15 +262,15 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Extend the lease on a run this `owner` is executing, so a long run is not
+    /// Extend the lease on one exact fenced claim, so a long run is not
     /// reclaimed by another node's recovery while it is still making progress.
     /// Returns `true` if the lease was renewed (the run is still owned by
-    /// `owner`); `false` if it was lost (stolen, settled, or unknown) — the holder
-    /// should then stop. This is the multi-node liveness knob (ADR-0019).
+    /// that owner *and epoch*); `false` if it was lost (stolen, settled, or
+    /// unknown) — the holder should then stop. This is the multi-node liveness
+    /// knob (ADR-0019/0024).
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        owner: &str,
+        claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError>;

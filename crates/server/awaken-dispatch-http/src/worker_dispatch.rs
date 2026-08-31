@@ -1654,8 +1654,11 @@ async fn renew(
         let renewed = service
             .dispatch
             .renew_lease(
-                &RunId(request.run_id),
-                &authority.owner,
+                &RunClaim {
+                    run_id: RunId(request.run_id),
+                    owner: authority.owner,
+                    epoch: request.lease_epoch,
+                },
                 authority.lease_ms,
                 authority.now_ms,
             )
