@@ -10,19 +10,20 @@ Release archives contain the `awaken` executable, this README, the Docker
 Compose quickstart, and the Apache 2.0 license. The executable already contains
 the web console; Node.js is not required at runtime.
 
-Linux x86-64:
+Linux x86-64 and macOS (Apple Silicon or Intel) can use the same installer. It
+selects the release target, verifies the archive SHA-256, validates the binary's
+exact version, and installs to `${XDG_BIN_HOME:-$HOME/.local/bin}` without sudo:
 
 ```console
-curl -LO https://github.com/awakenworks/awaken/releases/download/v1.0.0/awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/awakenworks/awaken/releases/download/v1.0.0/awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken /usr/local/bin/awaken
+curl -fsSL https://github.com/awakenworks/awaken/releases/download/v1.0.0/install.sh | sh -s -- v1.0.0
 awaken --version
 ```
 
-The release also publishes macOS archives for Apple Silicon and Intel, and a
-Windows x86-64 ZIP. Select the asset whose target name matches your system:
+Set `AWAKEN_INSTALL_DIR` to choose another destination. For provenance-sensitive
+environments, download `install.sh` and `install.sh.sha256`, verify the script,
+then run it; every release asset also has a GitHub build-provenance attestation.
+
+Windows x86-64 uses the ZIP asset. The full platform mapping remains:
 
 | System | Release target |
 | --- | --- |

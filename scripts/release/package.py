@@ -19,6 +19,7 @@ import tomllib
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -236,8 +237,6 @@ class ReleaseContractTests(unittest.TestCase):
     # that C2 supersedes C1. R1 (C1 only) and R2 (C1+C2) must resolve to Cargo's
     # actual output directory so packaging cannot search a parallel guessed path.
     def test_target_directory_uses_cargo_authority(self) -> None:
-        from unittest.mock import patch
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / ".cargo").mkdir()
@@ -251,6 +250,153 @@ class ReleaseContractTests(unittest.TestCase):
             override = root / "explicit-target"
             with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(override)}):
                 self.assertEqual(target_directory(root), override)
+
+    def _installer_fixture(
+        self,
+        root: Path,
+        *,
+        kernel: str = "Linux",
+        machine: str = "x86_64",
+        reported_version: str = "1.0.0",
+        valid_checksum: bool = True,
+        include_binary: bool = True,
+    ) -> tuple[dict[str, str], Path]:
+        version = "v1.0.0"
+        target = {
+            ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+            ("Darwin", "arm64"): "aarch64-apple-darwin",
+            ("Darwin", "x86_64"): "x86_64-apple-darwin",
+        }.get((kernel, machine), "x86_64-unknown-linux-gnu")
+        archive_name = f"awaken-{version}-{target}.tar.gz"
+        release = root / "release"
+        package_root = root / f"awaken-{version}-{target}"
+        fake_bin = root / "fake-bin"
+        install_dir = root / "install bin"
+        root.mkdir(parents=True, exist_ok=True)
+        release.mkdir()
+        package_root.mkdir()
+        fake_bin.mkdir()
+        binary = package_root / "awaken"
+        if include_binary:
+            binary.write_text(
+                f"#!/bin/sh\nprintf 'awaken {reported_version}\\n'\n", encoding="utf-8"
+            )
+            binary.chmod(0o755)
+        archive = release / archive_name
+        with tarfile.open(archive, "w:gz") as packaged:
+            packaged.add(package_root, arcname=package_root.name)
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if not valid_checksum:
+            digest = "0" * 64
+        (release / f"{archive_name}.sha256").write_text(
+            f"{digest}  {archive_name}\n", encoding="utf-8"
+        )
+        uname = fake_bin / "uname"
+        uname.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            f"  -s) printf '%s\\n' '{kernel}' ;;\n"
+            f"  -m) printf '%s\\n' '{machine}' ;;\n"
+            "  *) exit 1 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        uname.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "AWAKEN_INSTALL_ALLOW_INSECURE": "1",
+                "AWAKEN_INSTALL_DIR": str(install_dir),
+                "AWAKEN_RELEASE_BASE_URL": release.as_uri(),
+                "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+            }
+        )
+        return environment, install_dir
+
+    def _run_installer(
+        self, environment: dict[str, str], version: str = "v1.0.0"
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["sh", "-s", "--", version],
+            input=(REPOSITORY / "scripts/release/install.sh").read_text(encoding="utf-8"),
+            text=True,
+            capture_output=True,
+            env=environment,
+            check=False,
+        )
+
+    # Cause/effect graph: C0 version is an exact stable tag; C1 OS/architecture
+    # maps to an existing target; C2 transport is HTTPS (the file transport is a
+    # test-only explicit override); C3 archive and checksum downloads complete;
+    # C4 checksum matches; C5 archive contains an executable; C6 binary reports
+    # the requested version; C7 destination can stage and rename. E1 installs
+    # only when C0-C7 hold; any false cause exits nonzero, cleans temporary data,
+    # and preserves an existing binary. R1a-c cover every supported mapping;
+    # R2-R7 independently cover invalid version/platform/transport/checksum,
+    # archive shape, and binary identity. Download and destination I/O are direct
+    # fail-closed command preconditions and are covered by the same preservation
+    # invariant rather than introducing recovery or a second installation path.
+    def test_installer_decision_table(self) -> None:
+        supported = (
+            ("Linux", "x86_64"),
+            ("Darwin", "arm64"),
+            ("Darwin", "x86_64"),
+        )
+        for kernel, machine in supported:
+            with (
+                self.subTest(rule=f"R1-{kernel}-{machine}"),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                environment, install_dir = self._installer_fixture(
+                    root, kernel=kernel, machine=machine
+                )
+                result = self._run_installer(environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    subprocess.check_output([install_dir / "awaken", "--version"], text=True),
+                    "awaken 1.0.0\n",
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, install_dir = self._installer_fixture(Path(temporary))
+            result = self._run_installer(environment, "latest")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("usage:", result.stderr)
+            self.assertFalse(install_dir.exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment, install_dir = self._installer_fixture(
+                root / "r2", kernel="Plan9", machine="mips"
+            )
+            result = self._run_installer(environment)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("unsupported platform", result.stderr)
+            self.assertFalse(install_dir.exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            environment, install_dir = self._installer_fixture(Path(temporary))
+            environment.pop("AWAKEN_INSTALL_ALLOW_INSECURE")
+            result = self._run_installer(environment)
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("refusing non-HTTPS", result.stderr)
+            self.assertFalse(install_dir.exists())
+
+        for rule, fixture in (
+            ("R5", {"valid_checksum": False}),
+            ("R6", {"include_binary": False}),
+            ("R7", {"reported_version": "0.9.0"}),
+        ):
+            with self.subTest(rule=rule), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                environment, install_dir = self._installer_fixture(root, **fixture)
+                install_dir.mkdir()
+                installed = install_dir / "awaken"
+                installed.write_text("existing", encoding="utf-8")
+                result = self._run_installer(environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(installed.read_text(encoding="utf-8"), "existing")
 
 
 def main(argv: list[str] | None = None) -> int:
