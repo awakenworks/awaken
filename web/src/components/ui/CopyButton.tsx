@@ -4,7 +4,9 @@ import { cx } from "./cx";
 export type CopyButtonProps = {
   readonly value: string;
   readonly label?: string;
+  readonly visibleLabel?: string;
   readonly copiedLabel?: string;
+  readonly visibleCopiedLabel?: string;
   readonly className?: string;
 };
 
@@ -12,15 +14,17 @@ export type CopyButtonProps = {
 export function CopyButton({
   value,
   label = "copy",
+  visibleLabel,
   copiedLabel = "copied",
+  visibleCopiedLabel,
   className,
 }: CopyButtonProps) {
   return (
     <SharedCopyButton
       className={cx("btn", "ghost", "copy-btn", className)}
-      copiedIcon={<span aria-hidden="true">{copiedLabel}</span>}
+      copiedIcon={<span aria-hidden="true">{visibleCopiedLabel ?? copiedLabel}</span>}
       copiedLabel={copiedLabel}
-      icon={<span aria-hidden="true">{label}</span>}
+      icon={<span aria-hidden="true">{visibleLabel ?? label}</span>}
       label={label}
       value={value}
     />
