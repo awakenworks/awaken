@@ -32,10 +32,14 @@ archive="awaken-$version-$target.tar.gz"
 install_dir=${AWAKEN_INSTALL_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/awaken-install.XXXXXX")
 staged=
+staged_companion=
 cleanup() {
   rm -rf -- "$temporary"
   if [ -n "$staged" ]; then
     rm -f -- "$staged"
+  fi
+  if [ -n "$staged_companion" ]; then
+    rm -f -- "$staged_companion"
   fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -75,25 +79,41 @@ download "$base_url/$archive.sha256" "$temporary/$archive.sha256"
 
 package_root=${archive%.tar.gz}
 candidate="$temporary/awaken"
+candidate_companion="$temporary/awaken-sandbox"
 if ! tar -xOzf "$temporary/$archive" "$package_root/awaken" > "$candidate"; then
   echo "release archive does not contain the expected awaken binary" >&2
   exit 6
 fi
+if ! tar -xOzf "$temporary/$archive" "$package_root/awaken-sandbox" > "$candidate_companion"; then
+  echo "release archive does not contain the expected awaken-sandbox companion" >&2
+  exit 6
+fi
 chmod 0755 "$candidate"
+chmod 0755 "$candidate_companion"
 expected="awaken ${version#v}"
 reported=$("$candidate" --version)
 if [ "$reported" != "$expected" ]; then
   echo "release binary reports '$reported', expected '$expected'" >&2
   exit 7
 fi
+if ! "$candidate_companion" hand --check; then
+  echo "release companion failed its hand capability check" >&2
+  exit 8
+fi
 
 mkdir -p -- "$install_dir"
 staged="$install_dir/.awaken.$$.tmp"
+staged_companion="$install_dir/.awaken-sandbox.$$.tmp"
 cp -- "$candidate" "$staged"
+cp -- "$candidate_companion" "$staged_companion"
+# The companion is installed first; the user-facing `awaken` entrypoint is the
+# activation fence and moves only after every payload has been verified/staged.
+mv -f -- "$staged_companion" "$install_dir/awaken-sandbox"
+staged_companion=
 mv -f -- "$staged" "$install_dir/awaken"
 staged=
 
-echo "installed $expected at $install_dir/awaken"
+echo "installed $expected and its sandbox companion at $install_dir"
 case ":${PATH:-}:" in
   *:"$install_dir":*) ;;
   *) echo "add $install_dir to PATH to run awaken from any directory" ;;

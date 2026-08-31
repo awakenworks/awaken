@@ -51,7 +51,8 @@ static OS_SANDBOX_PROBE: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::co
 /// Run the actual throwaway isolation probe: bwrap (Linux) / `sandbox-exec` (macOS)
 /// must run a trivial confined `true` here.
 async fn run_os_native_probe() -> bool {
-    let argv = if cfg!(target_os = "macos") {
+    #[cfg(target_os = "macos")]
+    let argv = {
         sandbox_exec_argv(&RenderInput {
             host_workspace: std::path::Path::new("/private/var/empty"),
             host_outputs: std::path::Path::new("/private/var/empty"),
@@ -62,7 +63,9 @@ async fn run_os_native_probe() -> bool {
             cwd: "",
             argv: &["/usr/bin/true".to_string()],
         })
-    } else {
+    };
+    #[cfg(target_os = "linux")]
+    let argv: Vec<String> = {
         [
             "bwrap",
             "--unshare-user",
@@ -76,15 +79,22 @@ async fn run_os_native_probe() -> bool {
         .map(str::to_string)
         .collect()
     };
-    TokioCommand::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(ProcStdio::null())
-        .stdout(ProcStdio::null())
-        .stderr(ProcStdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        TokioCommand::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(ProcStdio::null())
+            .stdout(ProcStdio::null())
+            .stderr(ProcStdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
 }
 
 /// One realized bind for the launcher: a host path exposed at a sandbox path.
@@ -435,7 +445,7 @@ impl NamespaceProvider {
             // Seatbelt is a policy boundary, not a mount namespace: it cannot make
             // host paths appear at Linux-style /workspace or /mnt paths. The launcher
             // translates cwd/known argv paths and exports real host paths instead.
-            path_fidelity: !cfg!(target_os = "macos"),
+            path_fidelity: cfg!(target_os = "linux"),
             enforced_readonly: true,
             network_isolation: true,
             enforced_network_allowlist: false,
@@ -584,7 +594,11 @@ impl pc::SandboxProvider for NamespaceProvider {
             Ok(())
         } else {
             Err(err(
-                "OS-native sandbox (bwrap userns / macOS Seatbelt) unavailable on this host",
+                if cfg!(any(target_os = "linux", target_os = "macos")) {
+                    "OS-native sandbox (bwrap userns / macOS Seatbelt) unavailable on this host"
+                } else {
+                    "OS-native Namespace sandbox is unsupported on this platform; use sandbox_tier=local or a container-backed Worker"
+                },
             ))
         }
     }
@@ -970,12 +984,21 @@ impl NamespaceSandbox {
         // OS-native launcher: bubblewrap on Linux, Seatbelt (`sandbox-exec`) on macOS.
         // `cfg!` keeps both branches type-checked on every target; only the matching
         // one is live. Both renderers take the same `RenderInput`.
-        let argv = if cfg!(target_os = "macos") {
-            sandbox_exec_argv(&input)
-        } else {
-            bubblewrap_argv(&input)
-        };
-        Ok(argv)
+        #[cfg(target_os = "macos")]
+        let argv = sandbox_exec_argv(&input);
+        #[cfg(target_os = "linux")]
+        let argv = bubblewrap_argv(&input);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            Ok(argv)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = input;
+            Err(err(
+                "OS-native Namespace sandbox is unsupported on this platform",
+            ))
+        }
     }
 
     /// The tool-transparent agent launch (ADR-0041 amendment), namespace-tier twin

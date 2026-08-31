@@ -15,12 +15,25 @@ pub(super) struct RuntimeSettings {
     pub(super) content_capture: ContentCaptureSettings,
 }
 
+fn default_sandbox_tier(target_os: &str) -> SandboxTier {
+    // Windows has no NamespaceProvider adapter. Selecting Local here is an
+    // explicit platform capability decision at the one configuration authority,
+    // not a runtime fallback from an isolation request. Linux and macOS retain
+    // the fail-closed OS-native isolation default.
+    if target_os == "windows" {
+        SandboxTier::Local
+    } else {
+        SandboxTier::Namespace
+    }
+}
+
 pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSettings, String> {
     let sandbox_tier = file
         .sandbox_tier
         .as_deref()
-        .unwrap_or("namespace")
-        .parse::<SandboxTier>()?;
+        .map(str::parse::<SandboxTier>)
+        .transpose()?
+        .unwrap_or_else(|| default_sandbox_tier(std::env::consts::OS));
     let acp_ids = file.acp_clis.clone().unwrap_or_default();
     let acp = (!acp_ids.is_empty())
         .then(|| AcpWorkerProfile::new(acp_ids))
@@ -177,6 +190,39 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_default_follows_the_supported_platform_adapter() {
+        /*
+         * Cause/effect graph: C1 OS has the existing native Namespace adapter
+         * (Linux/macOS); C2 OS lacks it (Windows); C3 operator explicitly authors
+         * a tier. Effects: E1 default Namespace and fail closed if its primitive
+         * is unavailable; E2 default to the existing host-backed Local provider;
+         * E3 preserve the explicit tier on every OS. Rules D1 Linux/macOS=>E1,
+         * D2 Windows=>E2, D3 explicit Local/Namespace=>E3. This keeps platform
+         * selection in one config authority and never creates an implicit
+         * runtime downgrade path.
+         */
+        assert_eq!(default_sandbox_tier("linux"), SandboxTier::Namespace, "D1");
+        assert_eq!(default_sandbox_tier("macos"), SandboxTier::Namespace, "D1");
+        assert_eq!(default_sandbox_tier("windows"), SandboxTier::Local, "D2");
+
+        let data = Path::new("/tmp/awaken-config-test");
+        for (value, expected) in [
+            ("local", SandboxTier::Local),
+            ("namespace", SandboxTier::Namespace),
+        ] {
+            let resolved = resolve(
+                &FileConfig {
+                    sandbox_tier: Some(value.into()),
+                    ..Default::default()
+                },
+                data,
+            )
+            .unwrap();
+            assert_eq!(resolved.sandbox_tier, expected, "D3 {value}");
+        }
+    }
 
     #[test]
     fn resident_hand_configuration_fails_closed_outside_kubernetes() {
