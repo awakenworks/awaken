@@ -25,11 +25,13 @@ the run currently awaiting on that thread.
 ### D2: A host adapter bridges the tool port to the outbox
 
 `OutboxMessageSender` implements the extension's `MessageSender`. On `send`, it
-asks the dispatch store for the thread's aawaiting run (`awaiting_run(thread_id)`),
-reads that run's committed resume ticket for its correlation, and stages a
-`PendingInput` (the message as `ResumeResult::Input`) into the outbox. The daemon
-then relays it to the run's pending input, which resumes the run with the message.
-Delivery to a thread with no awaiting run fails closed.
+asks `CommittedThreadView` for the latest Run and its active ticket in one
+internally consistent Thread snapshot (`open_wait_for_thread(thread_id)`), then
+stages a `PendingInput` (the message as `ResumeResult::Input`) into the outbox.
+The daemon relays it to the run's pending input. Dispatch state is delivery
+state only: it neither decides that a Thread is awaiting nor identifies which
+Run may resume. A missing or incompatible ticket becomes unbound idle-Thread
+input under D3.
 
 ### D3: Idle-thread delivery is the same outbox path
 
@@ -59,7 +61,8 @@ never invents a process-local counter.
   waiting on that thread, resuming it — the multi-agent handoff works end to end.
 - The extension owns the model-visible tool; the host owns the adapter and the
   outbox; the boundary (ADR-0007) holds.
-- `awaiting_run` is a new dispatch read port, proven across the three backends.
+- Awaiting ownership is read atomically from committed Thread truth; Dispatch
+  exposes no parallel `awaiting_run` query.
 - Addressing is correct (thread, not run), including durable idle-thread input.
 - Callers may omit `idempotency_key`; retries remain stable across process
   replacement through runtime-owned Run/operation identity.

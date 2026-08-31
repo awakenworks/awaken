@@ -191,7 +191,7 @@ impl ManagedState {
                             processed_at: Some(PROCESSED_AT.to_string()),
                         });
                     }
-                    record.projected_terminal_cursors.insert(event.cursor);
+                    record.checkpoint.terminal_cursors.insert(event.cursor);
                     if run_terminates_thread && !is_advisor {
                         // A committed Failed Run is the absorbing admission
                         // fence for an ordinary coordinated Thread. Project the

@@ -7341,9 +7341,12 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     );
 
     assert_eq!(
-        host.renew_due_session_realizations(0, 0)
-            .await
-            .expect("P4 ordered terminal reconciliation"),
+        host.renew_due_session_realizations(
+            0,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(1),
+        )
+        .await
+        .expect("P4 ordered terminal reconciliation"),
         0,
         "P4 terminal work never becomes an ordinary lease renewal"
     );
@@ -14167,19 +14170,48 @@ struct RemoteTerminalCleanupControl {
     publication_receipts: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
     events: Mutex<Vec<String>>,
     poll_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    poll_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    poll_sessions: Mutex<Vec<String>>,
+    polls_entered: std::sync::atomic::AtomicUsize,
+    polls_active: std::sync::atomic::AtomicUsize,
+    max_polls_active: std::sync::atomic::AtomicUsize,
     claim_targets: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
+    begin_sessions: Mutex<Vec<String>>,
+    begin_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    renewal_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
+}
+
+struct ActivePollGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for ActivePollGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanupControl {
     async fn begin_session_realization(
         &self,
-        _command: awaken_session_contract::BeginSessionRealization,
+        command: awaken_session_contract::BeginSessionRealization,
     ) -> Result<
         awaken_session_contract::SessionRealizationDirective,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+        self.begin_sessions.lock().unwrap().push(command.session_id);
+        let gate = self.begin_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire_owned()
+                .await
+                .expect("begin gate remains open")
+                .forget();
+        }
+        Err(self
+            .renewal_failure
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(awaken_session_contract::SessionRealizationControlFailure::NotReady))
     }
 
     async fn activate_session_realization(
@@ -14222,22 +14254,37 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
 
     async fn terminal_cleanup_commands(
         &self,
-        _session_id: &str,
+        session_id: &str,
         _lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
         Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
+        use std::sync::atomic::Ordering;
+
+        let active = self.polls_active.fetch_add(1, Ordering::SeqCst) + 1;
+        let _active = ActivePollGuard(&self.polls_active);
+        self.max_polls_active.fetch_max(active, Ordering::SeqCst);
+        self.polls_entered.fetch_add(1, Ordering::SeqCst);
+        self.poll_sessions.lock().unwrap().push(session_id.into());
         self.events.lock().unwrap().push("cleanup:poll".into());
         let barrier = self.poll_barrier.lock().unwrap().clone();
         if let Some((started, proceed)) = barrier {
             started.notify_one();
             proceed.notified().await;
         }
-        if let Some(commands) = self.cleanup_sequence.lock().unwrap().pop_front() {
-            return Ok(commands);
+        let gate = self.poll_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire_owned()
+                .await
+                .expect("poll gate remains open")
+                .forget();
         }
-        Ok(self.commands.lock().unwrap().clone())
+        let result = match self.cleanup_sequence.lock().unwrap().pop_front() {
+            Some(commands) => commands,
+            None => self.commands.lock().unwrap().clone(),
+        };
+        Ok(result)
     }
 
     async fn terminal_repository_publication_command(
@@ -14330,6 +14377,373 @@ impl awaken_dispatch_contract::ClaimedSessionControl for RemoteTerminalCleanupCo
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
+    use std::sync::atomic::Ordering;
+
+    /* Large reconciliation cause/effect graph: C1 sixty-four independent
+     * resident Sessions are simultaneously eligible for the same Control poll;
+     * C2 every poll blocks at one deterministic gate; C3 the Worker-wide bound
+     * is eight; C4 lease deadlines differ; C5 the gate is released. Effects:
+     * E1 exactly eight polls enter before release; E2 no ninth poll enters; E3
+     * the first wave contains the eight earliest deadlines; E4 all sixty-four
+     * eventually finish; E5 each Session is polled exactly once. Constraint:
+     * the per-Session realization lock and aggregate Fence remain the only
+     * effect authority; this scheduler owns capacity and ordering only.
+     *
+     * | Rule | Sessions | blocked | cap | Effect |
+     * |---|---:|---|---:|---|
+     * | L1 | 64 | yes | 8 | E1 + E2 + E3 |
+     * | L2 | 64 | released | 8 | E4 + E5 |
+     */
+    const SESSION_COUNT: usize = 64;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.poll_gate.lock().unwrap() = Some(gate.clone());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    for index in 0..SESSION_COUNT {
+        host.install_session_realization_lease(
+            &format!("mass-session-{index:03}"),
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: 50_000 + index as u64,
+            },
+        );
+    }
+
+    let running_host = host.clone();
+    let reconciliation = tokio::spawn(async move {
+        running_host
+            .renew_due_session_realizations(
+                0,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if control.polls_entered.load(Ordering::SeqCst)
+                == crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("L1 first bounded wave enters");
+    assert_eq!(
+        control.polls_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
+        "L1/E1"
+    );
+    assert_eq!(
+        control.max_polls_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
+        "L1/E2"
+    );
+    let first_wave = control.poll_sessions.lock().unwrap().clone();
+    assert_eq!(
+        first_wave,
+        (0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS)
+            .map(|index| format!("mass-session-{index:03}"))
+            .collect::<Vec<_>>(),
+        "L1/E3"
+    );
+
+    gate.add_permits(SESSION_COUNT);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), reconciliation)
+            .await
+            .expect("L2 bounded waves finish")
+            .expect("L2 reconciliation task")
+            .expect("L2 reconciliation result"),
+        0,
+        "L2 no lease was due"
+    );
+    assert_eq!(
+        control.polls_entered.load(Ordering::SeqCst),
+        SESSION_COUNT,
+        "L2/E4"
+    );
+    assert_eq!(control.polls_active.load(Ordering::SeqCst), 0, "L2/E4");
+    let mut observed = control.poll_sessions.lock().unwrap().clone();
+    observed.sort();
+    observed.dedup();
+    assert_eq!(observed.len(), SESSION_COUNT, "L2/E5");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete() {
+    use std::sync::atomic::Ordering;
+
+    /* Scale rule S1: C1 five hundred twelve independent, non-due Sessions and
+     * C2 an immediately responsive Control port under the same production cap
+     * imply E1 every Session is visited exactly once, E2 the deterministic
+     * test finishes within its watchdog, and E3 observed concurrency never
+     * exceeds the configured bound. This is a scheduler-completeness test, not
+     * a production latency claim; live HTTP/PostgreSQL latency remains a
+     * deployment measurement.
+     */
+    const SESSION_COUNT: usize = 512;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    for index in 0..SESSION_COUNT {
+        host.install_session_realization_lease(
+            &format!("scale-session-{index:04}"),
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: 100_000 + index as u64,
+            },
+        );
+    }
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            host.renew_due_session_realizations(
+                0,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    15_000,
+                ),
+            ),
+        )
+        .await
+        .expect("S1/E2 scale scan remains bounded")
+        .expect("S1 scale reconciliation succeeds"),
+        0,
+        "S1 non-due leases need no renewal"
+    );
+    assert_eq!(
+        control.polls_entered.load(Ordering::SeqCst),
+        SESSION_COUNT,
+        "S1/E1"
+    );
+    assert!(
+        control.max_polls_active.load(Ordering::SeqCst)
+            <= crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
+        "S1/E3"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
+    /* Renewal failure cause/effect table: C1 Control does not answer before its
+     * authority-derived request deadline; C2 the prior durable lease is either
+     * still live or already expired. Effects: E1 a live projection remains installed for the next
+     * sweep and execution is not spuriously cancelled; E2 an expired
+     * projection is interrupted and revoked. Constraint: no local grace period
+     * extends the durable expiry.
+     *
+     * | Rule | Control | prior lease | Effect |
+     * |---|---|---|---|
+     * | F1 | timeout/Unavailable | live | E1 + diagnostic error |
+     * | F2 | timeout/Unavailable | expired | E2 |
+     */
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    *control.begin_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    for (session_id, expires_at_unix_ms) in [
+        ("renewal-live", now.saturating_add(150)),
+        ("renewal-expired", now.saturating_sub(1)),
+    ] {
+        host.install_session_realization_lease(
+            session_id,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms,
+            },
+        );
+    }
+
+    host.renew_due_session_realizations(
+        now,
+        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(300),
+    )
+    .await
+    .expect_err("F1 keeps the retry diagnostic visible");
+    assert!(host.session_slots.contains("renewal-live"), "F1/E1");
+    assert!(!host.session_slots.contains("renewal-expired"), "F2/E2");
+}
+
+#[tokio::test]
+async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
+    /* Explicit-loss rule F3: a live timestamp is necessary but not sufficient
+     * after Control reports StaleOwnership. The newer durable owner wins, so
+     * the old Worker must interrupt and remove its local projection in the same
+     * reconciliation; it may not consume the remaining timestamp as grace.
+     */
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    *control.renewal_failure.lock().unwrap() =
+        Some(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control);
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    host.install_session_realization_lease(
+        "renewal-stale",
+        awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:old".into(),
+            epoch: 1,
+            expires_at_unix_ms: now.saturating_add(5_000),
+        },
+    );
+
+    assert_eq!(
+        host.renew_due_session_realizations(
+            now,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(10_000),
+        )
+        .await
+        .expect("F3 explicit loss is a handled terminal outcome"),
+        0,
+        "F3"
+    );
+    assert!(!host.session_slots.contains("renewal-stale"), "F3");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_request_deadlines_release_every_reconciliation_capacity_slot() {
+    use std::sync::atomic::Ordering;
+
+    /* Deadline/capacity cause-effect table: C1 sixteen non-due cleanup polls
+     * never answer; C2 the shared reconciliation cap is eight; C3 the
+     * authority timing yields a 10ms per-request deadline; C4 all old leases
+     * remain live. Effects: E1 the first eight enter, time out, and release
+     * their slots; E2 the second eight then enter; E3 no cancelled future leaks
+     * an active slot; E4 all local projections remain for retry.
+     *
+     * | Rule | polls | response | deadline/cap | Effect |
+     * |---|---:|---|---|---|
+     * | D1 | 16 | never | 10ms / 8 | E1 + E2 + E3 + E4 |
+     */
+    const SESSION_COUNT: usize = 16;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    *control.poll_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    for index in 0..SESSION_COUNT {
+        host.install_session_realization_lease(
+            &format!("deadline-session-{index:02}"),
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: now.saturating_add(1_000),
+            },
+        );
+    }
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        host.renew_due_session_realizations(
+            now,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(60),
+        ),
+    )
+    .await
+    .expect("D1 the batch cannot inherit the transport's 30s timeout")
+    .expect_err("D1 each live Session retains a retry diagnostic");
+    assert_eq!(
+        control.polls_entered.load(Ordering::SeqCst),
+        SESSION_COUNT,
+        "D1/E1-E2"
+    );
+    assert_eq!(control.polls_active.load(Ordering::SeqCst), 0, "D1/E3");
+    assert_eq!(
+        control.max_polls_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
+        "D1/E1"
+    );
+    for index in 0..SESSION_COUNT {
+        assert!(
+            host.session_slots
+                .contains(&format!("deadline-session-{index:02}")),
+            "D1/E4"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_renewals_are_scheduled_before_non_due_cleanup_polls() {
+    use std::sync::atomic::Ordering;
+
+    /* Priority rule P1: with eight due renewals and eight non-due cleanup
+     * polls sharing an eight-slot scheduler, every due Begin attempt occurs
+     * before a blocked cleanup poll can occupy the pool. This prevents routine
+     * terminal polling from consuming another Session's proof window.
+     */
+    const WAVE: usize = crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.poll_gate.lock().unwrap() = Some(gate.clone());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    for index in 0..WAVE {
+        for (prefix, expiry) in [
+            ("due", now.saturating_add(30)),
+            ("cleanup", now.saturating_add(1_000)),
+        ] {
+            host.install_session_realization_lease(
+                &format!("{prefix}-{index:02}"),
+                awaken_session_contract::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "worker-a:incarnation".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: expiry,
+                },
+            );
+        }
+    }
+    let running = host.clone();
+    let sweep = tokio::spawn(async move {
+        running
+            .renew_due_session_realizations(
+                now,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(60),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while control.polls_entered.load(Ordering::SeqCst) < WAVE {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("P1 cleanup wave eventually enters");
+    assert_eq!(control.begin_sessions.lock().unwrap().len(), WAVE, "P1");
+    assert!(
+        control
+            .begin_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|session| session.starts_with("due-")),
+        "P1"
+    );
+    assert!(
+        control
+            .poll_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|session| session.starts_with("cleanup-")),
+        "P1"
+    );
+    gate.add_permits(WAVE);
+    sweep
+        .await
+        .expect("P1 sweep task")
+        .expect_err("P1 due NotReady diagnostics");
+}
+
 #[tokio::test]
 async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
@@ -14389,9 +14803,12 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     *control.commands.lock().unwrap() = Some(vec![command.clone()]);
 
     assert_eq!(
-        host.renew_due_session_realizations(10_000, 60_000)
-            .await
-            .expect("R1 terminal reconciliation"),
+        host.renew_due_session_realizations(
+            0,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+        )
+        .await
+        .expect("R1 terminal reconciliation"),
         0,
         "R1/C3"
     );

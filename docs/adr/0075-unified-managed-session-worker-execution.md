@@ -460,6 +460,26 @@ a second scheduler or event store. Deploy the new revision only after that
 reconciliation is clean, create new Sessions for the complete-history guarantee,
 then reopen admission.
 
+## Amendment (2026-09-01): Managed refresh uses one disposable prefix reducer
+
+Every Managed refresh privately clones the paired last-valid result and source
+checkpoint, applies the current `PersistedSession` plus one fenced committed
+Thread/Run/lifecycle/Outcome prefix, validates the complete candidate, and then
+swaps it into the process cache once. A failed or mixed-prefix fold stutters.
+Cold rehydration starts the same reducer from an empty result/checkpoint; there
+is no separate warm projector.
+
+`SessionRecord` explicitly separates rendered result, source checkpoint, and
+process-local transient `session.updated` overlay. Those are the only three
+cache roles. Child lifecycle, usage, Event visibility, and message-consumption
+coordinates are outputs of the same reducer, not independently synchronized
+state machines. While an accepted Session command is still missing its immutable
+Runtime anchor, the last valid issued result is retained and the root-owned
+receipt is appended as a withheld suffix; legacy pre-anchor history therefore
+remains subject to the maintenance reconciliation above. No event store, child
+registry, usage authority, dispatch-derived lifecycle, or parallel compatibility
+projector is introduced.
+
 Event-batch cutover validation is a read-only projection of that same
 supervisor, not a general Session-health claim or Cloud-side scan. After
 Resource, continuation, realization, Event-batch, and Outcome repair, the

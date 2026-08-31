@@ -1829,6 +1829,16 @@ mod tests {
             None
         }
 
+        fn open_wait_for_thread(
+            &self,
+            _thread_id: &awaken_agent_contract::agent::thread::Id,
+        ) -> Option<(
+            awaken_agent_contract::agent::run::Id,
+            awaken_agent_contract::agent::awaiting::ResumeTicket,
+        )> {
+            None
+        }
+
         fn run(
             &self,
             _run_id: &awaken_agent_contract::agent::run::Id,

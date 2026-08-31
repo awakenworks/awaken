@@ -797,6 +797,17 @@ impl CommittedThreadView for PostgresCommitCoordinator {
         self.resume_ticket_for(run_id)
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.projection.lock().ok().and_then(|projection| {
+            let latest = projection.latest_by_thread.get(thread_id)?;
+            awaken_agent_contract::thread::read::committed_thread_view::select_open_wait(
+                thread_id,
+                Some(latest),
+                projection.resume_tickets.get(&latest.id),
+            )
+        })
+    }
+
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
         self.projection
             .lock()
