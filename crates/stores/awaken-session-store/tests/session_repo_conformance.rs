@@ -454,6 +454,87 @@ where
     );
 }
 
+async fn concurrent_root_cas_has_one_authoritative_winner<R>(repo: std::sync::Arc<R>)
+where
+    R: ManagedSessionRepository + 'static,
+{
+    /* Multi-instance cause/effect graph: C1 two independent callers read the
+     * same Session revision; C2 they submit different replacement commands at
+     * one barrier; C3 the shared repository owns the compare-and-swap. Effects:
+     * E1 exactly one command commits; E2 the loser observes RevisionMismatch;
+     * E3 the durable aggregate equals the complete winning candidate; E4 the
+     * losing candidate is never partially merged. This is the cross-process
+     * authority boundary; a Worker-local Mutex is deliberately absent here.
+     *
+     * | Rule | snapshots | payloads | repository | Effect |
+     * |---|---|---|---|---|
+     * | M1 | same revision | different | shared CAS | E1 + E2 + E3 + E4 |
+     */
+    let current = create_session(
+        repo.as_ref(),
+        "ws_a",
+        session("sesn_multi_instance_cas", "before"),
+        Vec::new(),
+    )
+    .await;
+    let mutation = |title: &str, key: &str| {
+        let mut replacement = current.clone();
+        replacement.title = Some(title.into());
+        let payload = SessionMutationPayload::Replace(replacement);
+        SessionMutation {
+            expected_revision: current.revision,
+            idempotency: record(key, &payload),
+            payload,
+            lifecycle_facts: Vec::new(),
+        }
+    };
+    let left_mutation = mutation("left", "test:multi-instance-cas:left");
+    let right_mutation = mutation("right", "test:multi-instance-cas:right");
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let submit = |mutation: SessionMutation| {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        async move {
+            barrier.wait().await;
+            let title = match &mutation.payload {
+                SessionMutationPayload::Replace(session) => session.title.clone().unwrap(),
+                SessionMutationPayload::Delete(_) => unreachable!("M1 replacement only"),
+            };
+            (title, repo.commit_mutation("ws_a", mutation).await)
+        }
+    };
+    let (left, right) = tokio::join!(submit(left_mutation), submit(right_mutation));
+    let outcomes = [left, right];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|(_, result)| matches!(result, Ok(SessionMutationResult::Applied { .. })))
+            .count(),
+        1,
+        "M1/E1"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|(_, result)| matches!(result, Ok(SessionMutationResult::Conflict { .. })))
+            .count(),
+        1,
+        "M1/E2"
+    );
+    let winner = outcomes
+        .iter()
+        .find_map(|(title, result)| {
+            matches!(result, Ok(SessionMutationResult::Applied { .. })).then_some(title)
+        })
+        .expect("M1 one winning candidate");
+    let durable = repo
+        .get("sesn_multi_instance_cas")
+        .await
+        .expect("M1 durable winner");
+    assert_eq!(durable.title.as_ref(), Some(winner), "M1/E3+E4");
+    assert_eq!(durable.revision, SessionRevision(2), "M1/E3");
+}
+
 async fn vault_reference_index_returns_only_live_scoped_sessions<R: ManagedSessionRepository>(
     r: &R,
 ) {
@@ -1440,7 +1521,7 @@ async fn create_receipt_race_decision_table<R: ManagedSessionRepository>(repo: s
     );
 }
 
-async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
+async fn run_suite<R: ManagedSessionRepository + 'static>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
@@ -1455,6 +1536,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     let cas_repo = fresh();
     root_cas_decision_table(&cas_repo).await;
     create_receipt_decision_table(&fresh()).await;
+    concurrent_root_cas_has_one_authoritative_winner(std::sync::Arc::new(fresh())).await;
 }
 
 fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentView {
@@ -1800,6 +1882,7 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     root_cas_decision_table(repo.as_ref()).await;
     create_receipt_decision_table(repo.as_ref()).await;
     create_receipt_race_decision_table(repo.clone()).await;
+    concurrent_root_cas_has_one_authoritative_winner(repo.clone()).await;
     concurrent_phase_transition_has_one_count_snapshot(repo.clone()).await;
     credential_source_dependency_decision_table(repo.as_ref()).await;
     deployment_cas_decision_table(repo.as_ref()).await;

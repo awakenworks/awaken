@@ -51,7 +51,7 @@ pub trait LocalCommit:
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
 
-    async fn open_wait_for_thread(
+    async fn authoritative_open_wait_for_thread(
         &self,
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String>;
@@ -80,7 +80,7 @@ pub trait LocalCommitQueries<S>: Send + Sync {
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
 
-    async fn open_wait_for_thread(
+    async fn authoritative_open_wait_for_thread(
         &self,
         store: &S,
         thread: &ThreadId,
@@ -149,18 +149,12 @@ where
         Ok(store.committed_messages(thread_id))
     }
 
-    async fn open_wait_for_thread(
+    async fn authoritative_open_wait_for_thread(
         &self,
         store: &S,
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String> {
-        let Some(run) = store.latest_run(thread) else {
-            return Ok(None);
-        };
-        let Some(ticket) = store.resume_ticket(&run.id) else {
-            return Ok(None);
-        };
-        Ok((&ticket.thread_id == thread).then_some((run.id, ticket)))
+        Ok(CommittedThreadView::open_wait_for_thread(store, thread))
     }
 
     async fn events_after(
@@ -203,12 +197,12 @@ where
             .await
     }
 
-    async fn open_wait_for_thread(
+    async fn authoritative_open_wait_for_thread(
         &self,
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String> {
         self.queries
-            .open_wait_for_thread(self.store.as_ref(), thread)
+            .authoritative_open_wait_for_thread(self.store.as_ref(), thread)
             .await
     }
 }

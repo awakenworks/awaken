@@ -15,6 +15,24 @@ use crate::thread::read::transcript::{
     TranscriptSnapshotRef, TranscriptView,
 };
 
+/// Select one resumable Thread head from values read under the caller's single
+/// snapshot/lock. This is the shared coherence kernel for every backend: an old
+/// ticket, a terminal head, or a cross-Thread ticket all fail closed.
+#[must_use]
+pub fn select_open_wait(
+    thread_id: &ThreadId,
+    latest: Option<&RunRecord>,
+    ticket: Option<&ResumeTicket>,
+) -> Option<(RunId, ResumeTicket)> {
+    let latest = latest?;
+    let ticket = ticket?;
+    (matches!(latest.state, RunState::Awaiting)
+        && ticket.run_id == latest.id
+        && ticket.thread_id == *thread_id
+        && latest.thread_id == *thread_id)
+        .then(|| (latest.id.clone(), ticket.clone()))
+}
+
 /// The committed prefix supplied to one Runtime execution.
 ///
 /// `run` addresses any Run retained by the Thread fact prefix; `latest_run`
@@ -33,6 +51,12 @@ pub trait CommittedThreadView: Send + Sync {
 
     /// The active awaiting ticket for a run, if it is currently awaiting.
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket>;
+
+    /// The latest Run's active awaiting ticket, read from one committed Thread
+    /// snapshot. Implementations must not compose [`Self::latest_run`] and
+    /// [`Self::resume_ticket`] across separate locks or storage reads: a newer
+    /// Run may commit between those calls and make an older ticket stale.
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)>;
 
     /// Latest committed lifecycle state for this Run.
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {

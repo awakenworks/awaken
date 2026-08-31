@@ -58,6 +58,12 @@ async fn conformance_resume_ticket_awaits_then_clears() {
 }
 
 #[tokio::test]
+async fn conformance_open_wait_selects_only_the_latest_run() {
+    let store = SqliteCommitCoordinator::open_in_memory().expect("open");
+    awaken_store_conformance::open_wait_selects_only_the_latest_run(&store).await;
+}
+
+#[tokio::test]
 async fn conformance_concurrent_appends_are_dense_and_distinct() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     awaken_store_conformance::concurrent_appends_are_dense_and_distinct(&store).await;

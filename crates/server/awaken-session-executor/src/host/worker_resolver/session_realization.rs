@@ -1286,7 +1286,12 @@ mod tests {
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                host.renew_due_session_realizations(initial_expiry, renewed_expiry),
+                host.renew_due_session_realizations(
+                    0,
+                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                        renewed_expiry,
+                    ),
+                ),
             )
             .await
             .expect("R1/E1 renewal does not wait for Stage")
@@ -1333,9 +1338,14 @@ mod tests {
             .acknowledge_conflicts_remaining
             .store(1, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(
-            host.renew_due_session_realizations(renewed_expiry, conflict_expiry)
-                .await
-                .expect("R4 concurrent aggregate change refreshes"),
+            host.renew_due_session_realizations(
+                renewed_expiry,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    conflict_expiry - renewed_expiry,
+                ),
+            )
+            .await
+            .expect("R4 concurrent aggregate change refreshes"),
             1,
             "R4/E4"
         );
@@ -1364,9 +1374,14 @@ mod tests {
             .acknowledge_conflicts_remaining
             .store(2, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(
-            host.renew_due_session_realizations(conflict_expiry, exhausted_expiry)
-                .await
-                .expect("R5 renewal scan isolates the failed projection"),
+            host.renew_due_session_realizations(
+                conflict_expiry,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    exhausted_expiry - conflict_expiry,
+                ),
+            )
+            .await
+            .expect("R5 renewal scan isolates the failed projection"),
             0,
             "R5/E5"
         );

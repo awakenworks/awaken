@@ -433,7 +433,7 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
             .map_err(|error| error.to_string())
     }
 
-    async fn open_wait_for_thread(
+    async fn authoritative_open_wait_for_thread(
         &self,
         store: &PostgresCommitCoordinator,
         thread: &ThreadId,

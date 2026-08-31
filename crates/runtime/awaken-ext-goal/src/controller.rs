@@ -766,6 +766,10 @@ mod tests {
             None
         }
 
+        fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+            None
+        }
+
         fn run(&self, run_id: &RunId) -> Option<RunRecord> {
             self.commits
                 .lock()

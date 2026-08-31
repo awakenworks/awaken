@@ -1599,20 +1599,6 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(Some(ThreadId(thread)))
     }
 
-    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        let p = NS;
-        let run: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT run_id FROM {p}_dispatch WHERE thread_id = $1 AND status = 'awaiting' \
-             AND cancel_requested = 0 \
-             ORDER BY created_at LIMIT 1"
-        ))
-        .bind(&thread_id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(reject)?;
-        Ok(run.map(RunId))
-    }
-
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;

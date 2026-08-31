@@ -105,7 +105,8 @@ impl ManagedState {
             });
         if let Some(predecessor) = predecessor {
             record
-                .transient_event_anchors
+                .overlay
+                .anchors
                 .insert(event.id.clone(), predecessor.clone());
             if record
                 .events
@@ -114,7 +115,7 @@ impl ManagedState {
             {
                 record.events.push(event);
             } else {
-                record.pending_transient_events.push((event, predecessor));
+                record.overlay.pending_events.push((event, predecessor));
             }
         } else {
             record.events.push(event);

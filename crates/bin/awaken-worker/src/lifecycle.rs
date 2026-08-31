@@ -11,6 +11,8 @@ use awaken_coordinator_client::WorkerControlClient;
 
 use crate::credential_liveness::WorkerObservationCache;
 
+const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
+
 #[derive(Clone)]
 enum WarmCapacityDemand {
     Environment(Box<awaken_session_contract::EnvironmentSnapshot>),
@@ -390,7 +392,8 @@ pub(crate) fn spawn_heartbeat(
                     let cleanup_target = awaken_session_contract::SessionRealizationTarget {
                         owner: lifecycle.identity.worker_id.clone(),
                         runtime_incarnation: lifecycle.identity.lease_owner(),
-                        lease_expires_at_unix_ms: now.saturating_add(20_000),
+                        lease_expires_at_unix_ms: now
+                            .saturating_add(SESSION_REALIZATION_LEASE_TTL_MS),
                         renew_existing_lease: false,
                         reassign_existing_lease: false,
                     };
@@ -494,26 +497,33 @@ pub(crate) fn spawn_session_realization_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let timing = AuthorityLeaseTiming::from_ttl_ms(SESSION_REALIZATION_LEASE_TTL_MS);
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             let now = wall_clock_ms();
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                lifecycle.host.renew_due_session_realizations(
-                    now.saturating_add(15_000),
-                    now.saturating_add(20_000),
-                ),
-            )
-            .await
+            // Cause/effect decision table: C1 this sweep owns only Session
+            // realization work; C2 the Host bounds independent Session calls;
+            // C3 the Worker heartbeat is a separate task and authority lane;
+            // C4 one Control call is slow. Effects: E1 await the bounded sweep
+            // without starting an overlapping sweep; E2 never cancel every
+            // other Session at one arbitrary batch deadline; E3 heartbeat proof
+            // remains independently schedulable. The transport and durable
+            // Session fences own individual-call failure and recovery.
+            //
+            // | Rule | bounded Host | slow call | Effect |
+            // |---|---|---|---|
+            // | R1 | yes | no | E1 + E3 |
+            // | R2 | yes | yes | E1 + E2 + E3 |
+            match lifecycle
+                .host
+                .renew_due_session_realizations(now, timing)
+                .await
             {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!(
+                Ok(_) => {}
+                Err(error) => eprintln!(
                     "Session realization reconciliation failed closed; projections retain their existing deadlines: {error}"
-                ),
-                Err(_) => eprintln!(
-                    "Session realization reconciliation exceeded 3s; projections retain their existing deadlines"
                 ),
             }
         }

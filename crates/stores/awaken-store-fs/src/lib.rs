@@ -230,6 +230,10 @@ impl CommittedThreadView for FsCommitCoordinator {
         self.inner.resume_ticket(run_id)
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.inner.open_wait_for_thread(thread_id)
+    }
+
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
         self.inner.run(run_id)
     }
