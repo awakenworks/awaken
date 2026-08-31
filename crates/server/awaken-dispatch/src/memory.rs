@@ -1357,18 +1357,19 @@ impl DispatchQueue for MemoryDispatchStore {
 
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        owner: &str,
+        claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
-        match state.rows.get_mut(run_id) {
+        match state.rows.get_mut(&claim.run_id) {
             Some(row)
                 if matches!(
                     row.state,
                     DispatchState::ReservationLeased | DispatchState::Leased
-                ) && row.lease.as_ref().is_some_and(|l| l.owner == owner) =>
+                ) && row.lease.as_ref().is_some_and(|lease| {
+                    lease.owner == claim.owner && lease.epoch == claim.epoch
+                }) =>
             {
                 if let Some(lease) = row.lease.as_mut() {
                     lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);

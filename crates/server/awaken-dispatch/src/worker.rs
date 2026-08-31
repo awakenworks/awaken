@@ -8,7 +8,6 @@
 //! DispatchQueue aggregate free of run-outcome truth.
 
 use std::sync::Arc;
-use std::time::Duration;
 use std::time::Instant;
 
 use awaken_agent_contract::ThreadCommit;
@@ -44,6 +43,12 @@ use crate::dispatch::{
     SessionRunReservationResolution, SettleOutcome,
 };
 use crate::worker_context::WorkerContext;
+
+mod claim_renewal;
+
+pub(crate) use claim_renewal::{
+    ClaimLeaseRenewal, combine_attempt_cancellation, renew_claim_while_active,
+};
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
 pub const DEFAULT_LEASE_MS: u64 = 30_000;
@@ -131,67 +136,6 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     }
 }
 
-/// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
-/// owns the claim, rather than to each caller (pool, daemon, or foreground child),
-/// so every execution path has the same lease behavior.
-pub(crate) struct ClaimLeaseRenewal {
-    shutdown: CancellationToken,
-    attempt_cancellation: CancellationToken,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for ClaimLeaseRenewal {
-    fn drop(&mut self) {
-        self.attempt_cancellation.cancel();
-        self.shutdown.cancel();
-        self.task.abort();
-    }
-}
-
-impl ClaimLeaseRenewal {
-    fn attempt_cancellation(&self) -> CancellationToken {
-        self.attempt_cancellation.clone()
-    }
-}
-
-/// Owns the one signal-only bridge needed when a claimed drive also has a host
-/// cancellation token. Runtime still consumes one canonical cooperative token;
-/// this relay merely makes either existing authority observable through it.
-struct AttemptCancellationRelay {
-    task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl Drop for AttemptCancellationRelay {
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-    }
-}
-
-fn combine_attempt_cancellation(
-    claim_cancellation: CancellationToken,
-    host_cancellation: Option<&CancellationToken>,
-) -> (CancellationToken, AttemptCancellationRelay) {
-    let Some(host_cancellation) = host_cancellation.cloned() else {
-        return (claim_cancellation, AttemptCancellationRelay { task: None });
-    };
-    let combined = CancellationToken::new();
-    if claim_cancellation.is_cancelled() || host_cancellation.is_cancelled() {
-        combined.cancel();
-        return (combined, AttemptCancellationRelay { task: None });
-    }
-    let relay_target = combined.clone();
-    let task = tokio::spawn(async move {
-        tokio::select! {
-            _ = claim_cancellation.cancelled() => {}
-            _ = host_cancellation.cancelled() => {}
-        }
-        relay_target.cancel();
-    });
-    (combined, AttemptCancellationRelay { task: Some(task) })
-}
-
 enum CommittedTerminalSettlement {
     Applied(RunId, RunState),
     Fenced,
@@ -203,59 +147,6 @@ impl CommittedTerminalSettlement {
             Self::Applied(run_id, state) => Some((run_id, state)),
             Self::Fenced => None,
         }
-    }
-}
-
-/// Keep an exact claim live across any owned work, including the potentially
-/// slow Worker/Session resolution that precedes [`DispatchWorker::drive_claimed`].
-pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
-    store: Arc<S>,
-    claim: &RunClaim,
-    lease_ms: u64,
-    clock: Arc<dyn Clock>,
-) -> ClaimLeaseRenewal {
-    let run_id = claim.run_id.clone();
-    let owner = claim.owner.clone();
-    let interval = Duration::from_millis((lease_ms / 3).max(1));
-    let shutdown = CancellationToken::new();
-    let attempt_cancellation = CancellationToken::new();
-    let task_shutdown = shutdown.clone();
-    let task_attempt_cancellation = attempt_cancellation.clone();
-    let task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = task_shutdown.cancelled() => break,
-                _ = tokio::time::sleep(interval) => {
-                    match store.renew_lease(&run_id, &owner, lease_ms, clock.now_ms()).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            tracing::warn!(
-                                run_id = %run_id.0,
-                                %owner,
-                                "dispatch lease renewal lost exact claim ownership"
-                            );
-                            // Exact ownership is already authoritatively lost.
-                            // Wake Runtime's existing cooperative cancellation
-                            // seam now; waiting for the provider call to return
-                            // only creates stale checkpoints and wasted usage.
-                            task_attempt_cancellation.cancel();
-                            break;
-                        }
-                        Err(error) => tracing::warn!(
-                            run_id = %run_id.0,
-                            %owner,
-                            %error,
-                            "dispatch lease renewal failed"
-                        ),
-                    }
-                }
-            }
-        }
-    });
-    ClaimLeaseRenewal {
-        shutdown,
-        attempt_cancellation,
-        task,
     }
 }
 

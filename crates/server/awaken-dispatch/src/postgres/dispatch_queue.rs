@@ -875,23 +875,24 @@ impl DispatchQueue for PostgresDispatchStore {
 
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        owner: &str,
+        claim: &RunClaim,
         lease_ms: u64,
         _now_ms: u64,
     ) -> Result<bool, DispatchError> {
         let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET lease_until = $1 \
              WHERE run_id = $2 AND status IN ('running', 'reservation_running') \
-             AND lease_owner = $3"
+             AND lease_owner = $3 AND lease_epoch = $4"
         ))
         .bind(crate::clock::db_millis(crate::clock::deadline_millis(
             now_ms, lease_ms,
         )))
-        .bind(&run_id.0)
-        .bind(owner)
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(claim_epoch)
         .execute(&self.pool)
         .await
         .map_err(reject)?;

@@ -364,9 +364,20 @@ async fn db_less_worker_drives_runs_over_real_http() {
     );
 
     clock.set(1_000);
+    let wrong_epoch = RunClaim {
+        epoch: original_claim.epoch.saturating_add(1),
+        ..original_claim.clone()
+    };
+    assert!(
+        !queue
+            .renew_lease(&wrong_epoch, 30_000, 1_000)
+            .await
+            .expect("wrong epoch is a normal fenced renewal outcome"),
+        "the authenticated owner cannot renew an epoch it does not hold"
+    );
     assert!(
         queue
-            .renew_lease(&RunId("run-A".into()), "worker-1", 30_000, 1_000)
+            .renew_lease(&original_claim, 30_000, 1_000)
             .await
             .expect("renew over http"),
         "the owner renews its live lease"
