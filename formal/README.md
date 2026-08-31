@@ -331,8 +331,11 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   permission projection, exact-claim materialization/publication, and exclusive
   Session realization phase driving. The mutex model ranges over multiple
   Sessions and proves both one driver per Session and a bounded number of
-  cross-Session drivers. Its explicit finite completion bound is only for TLC;
-  the two concurrency invariants are independent of the chosen bound.
+  cross-Session drivers. It also models the authority-derived Control deadline:
+  under weak process fairness every acquired capacity slot either receives a
+  response or times out and is eventually released. Its explicit finite
+  completion bound is only for TLC; the concurrency invariants are independent
+  of the chosen bound.
 - `CredentialRotationWorkflow.tla`, `DeploymentExecutionWorkflow.tla`,
   `ResourceLifecycleWorkflow.tla`, and `SessionRunProtocol.tla` compose the
   corresponding already-modeled kernels at product boundaries. The Session

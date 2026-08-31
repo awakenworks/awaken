@@ -11,6 +11,8 @@ use awaken_worker_runtime::WorkerControlClient;
 
 use crate::credential_liveness::WorkerObservationCache;
 
+const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
+
 #[derive(Clone)]
 enum WarmCapacityDemand {
     Environment(Box<awaken_session_contract::EnvironmentSnapshot>),
@@ -390,7 +392,8 @@ pub(crate) fn spawn_heartbeat(
                     let cleanup_target = awaken_session_contract::SessionRealizationTarget {
                         owner: lifecycle.identity.worker_id.clone(),
                         runtime_incarnation: lifecycle.identity.lease_owner(),
-                        lease_expires_at_unix_ms: now.saturating_add(20_000),
+                        lease_expires_at_unix_ms: now
+                            .saturating_add(SESSION_REALIZATION_LEASE_TTL_MS),
                         renew_existing_lease: false,
                         reassign_existing_lease: false,
                     };
@@ -494,6 +497,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let timing = AuthorityLeaseTiming::from_ttl_ms(SESSION_REALIZATION_LEASE_TTL_MS);
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -514,10 +518,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
             // | R2 | yes | yes | E1 + E2 + E3 |
             match lifecycle
                 .host
-                .renew_due_session_realizations(
-                    now.saturating_add(15_000),
-                    now.saturating_add(20_000),
-                )
+                .renew_due_session_realizations(now, timing)
                 .await
             {
                 Ok(_) => {}

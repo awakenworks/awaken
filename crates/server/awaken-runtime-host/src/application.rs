@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::RunClaim;
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use futures_util::stream::{self, StreamExt};
 
@@ -19,23 +20,164 @@ pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenewalFailureDisposition {
-    /// Control proves the Session projection is no longer renewable.
-    Retire,
-    /// Authority cannot be proved; surface diagnostics and revoke locally.
-    DiagnoseAndRevoke,
+    /// Control proves that this exact local owner may no longer execute.
+    RevokeImmediately,
+    /// The old lease remains the proof; retry until its durable expiry.
+    RetryWhileLeaseLive,
 }
 
 fn realization_renewal_failure_disposition(
     error: &awaken_session_contract::SessionRealizationControlFailure,
 ) -> RenewalFailureDisposition {
-    match error.disposition() {
-        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
-            RenewalFailureDisposition::Retire
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::NotReady
-        | awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
-            RenewalFailureDisposition::DiagnoseAndRevoke
-        }
+    if error.proves_current_realization_cannot_continue() {
+        RenewalFailureDisposition::RevokeImmediately
+    } else {
+        RenewalFailureDisposition::RetryWhileLeaseLive
+    }
+}
+
+#[derive(Clone)]
+struct DeadlineSessionRealizationControl {
+    inner: Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
+    request_timeout: std::time::Duration,
+}
+
+impl DeadlineSessionRealizationControl {
+    async fn call<T>(
+        &self,
+        operation: &'static str,
+        future: impl std::future::Future<
+            Output = Result<T, awaken_session_contract::SessionRealizationControlFailure>,
+        >,
+    ) -> Result<T, awaken_session_contract::SessionRealizationControlFailure> {
+        tokio::time::timeout(self.request_timeout, future)
+            .await
+            .map_err(|_| {
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                    "Session realization Control `{operation}` exceeded its authority-derived request deadline"
+                ))
+            })?
+    }
+}
+
+/// Deadline decoration only bounds transport waiting. The wrapped Control
+/// remains the sole owner of leases, phases, cleanup commands, and receipts.
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRealizationControl for DeadlineSessionRealizationControl {
+    async fn begin_session_realization(
+        &self,
+        command: awaken_session_contract::BeginSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call("begin", self.inner.begin_session_realization(command))
+            .await
+    }
+
+    async fn activate_session_realization(
+        &self,
+        command: awaken_session_contract::ActivateSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call("activate", self.inner.activate_session_realization(command))
+            .await
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        command: awaken_session_contract::AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call(
+            "acknowledge",
+            self.inner.acknowledge_session_realization(command),
+        )
+        .await
+    }
+
+    async fn fail_session_realization(
+        &self,
+        command: awaken_session_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.call("fail", self.inner.fail_session_realization(command))
+            .await
+    }
+
+    async fn claim_next_terminal_cleanup(
+        &self,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call(
+            "claim_terminal_cleanup",
+            self.inner.claim_next_terminal_cleanup(target),
+        )
+        .await
+    }
+
+    async fn terminal_cleanup_commands(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call(
+            "poll_terminal_cleanup",
+            self.inner.terminal_cleanup_commands(session_id, lease),
+        )
+        .await
+    }
+
+    async fn terminal_repository_publication_command(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call(
+            "poll_terminal_repository_publication",
+            self.inner
+                .terminal_repository_publication_command(session_id, lease),
+        )
+        .await
+    }
+
+    async fn record_terminal_repository_publication_receipt(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.call(
+            "record_terminal_repository_publication",
+            self.inner
+                .record_terminal_repository_publication_receipt(session_id, lease, receipt),
+        )
+        .await
+    }
+
+    async fn record_terminal_cleanup_completion(
+        &self,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        completion: awaken_session_contract::SessionCleanupCompletion,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.call(
+            "record_terminal_cleanup",
+            self.inner
+                .record_terminal_cleanup_completion(lease, completion),
+        )
+        .await
     }
 }
 
@@ -56,18 +198,17 @@ fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_close
         _ => SessionRealizationControlFailure::Unavailable(String::new()),
     };
     // Keep the proof oracle independent from both the contract disposition and
-    // this consumer. Terminal Control truth is exactly NotFound, Retired,
-    // Terminal, or Invalid; every other failure must retain the
-    // diagnostic/retry path.
-    let expected_retirement = matches!(selector, 0 | 2 | 3 | 6);
+    // this consumer. Terminal Control truth plus explicit StaleOwnership prove
+    // loss; NotReady, Conflict, and Unavailable retain the retry path.
+    let expected_retirement = matches!(selector, 0 | 2 | 3 | 4 | 6);
     let disposition = realization_renewal_failure_disposition(&error);
 
     assert_eq!(
-        disposition == RenewalFailureDisposition::Retire,
+        disposition == RenewalFailureDisposition::RevokeImmediately,
         expected_retirement
     );
     if !expected_retirement {
-        assert_eq!(disposition, RenewalFailureDisposition::DiagnoseAndRevoke);
+        assert_eq!(disposition, RenewalFailureDisposition::RetryWhileLeaseLive);
     }
 }
 
@@ -80,9 +221,8 @@ mod realization_renewal_tests {
     fn terminal_session_replies_retire_only_the_stale_local_projection() {
         // Renewal decision table: N1 NotFound, N2 Terminal, and N3 Invalid prove the local
         // projection no longer has a renewable frozen Control owner -> retire it
-        // quietly; N4 NotReady/stale/conflict and N5 unavailable do not prove a
-        // terminal Control state -> surface diagnostics, but the shared safety
-        // effect still interrupts and revokes only this local Session.
+        // quietly; stale ownership is an equally conclusive ownership loss;
+        // NotReady/conflict/unavailable retain the still-live lease for retry.
         for error in [
             SessionRealizationControlFailure::NotFound,
             SessionRealizationControlFailure::Retired,
@@ -91,20 +231,25 @@ mod realization_renewal_tests {
         ] {
             assert_eq!(
                 realization_renewal_failure_disposition(&error),
-                RenewalFailureDisposition::Retire
+                RenewalFailureDisposition::RevokeImmediately
             );
         }
         for error in [
             SessionRealizationControlFailure::NotReady,
-            SessionRealizationControlFailure::StaleOwnership,
             SessionRealizationControlFailure::Conflict,
             SessionRealizationControlFailure::Unavailable("network unavailable".into()),
         ] {
             assert_eq!(
                 realization_renewal_failure_disposition(&error),
-                RenewalFailureDisposition::DiagnoseAndRevoke
+                RenewalFailureDisposition::RetryWhileLeaseLive
             );
         }
+        assert_eq!(
+            realization_renewal_failure_disposition(
+                &SessionRealizationControlFailure::StaleOwnership
+            ),
+            RenewalFailureDisposition::RevokeImmediately
+        );
     }
 }
 
@@ -764,16 +909,14 @@ impl crate::SharedHost {
                             if let Err(error) = control
                                 .record_terminal_cleanup_completion(lease, completion)
                                 .await
-                                && !matches!(
-                                    error,
-                                    awaken_session_contract::SessionRealizationControlFailure::NotFound
-                                )
                             {
-                                terminal_error.get_or_insert_with(|| {
-                                    crate::HostError::internal(format!(
-                                        "Session `{session_id}` terminal cleanup receipt remained pending: {error}"
-                                    ))
-                                });
+                                return self
+                                    .handle_session_realization_control_failure(
+                                        session_id,
+                                        error,
+                                        "terminal cleanup receipt",
+                                    )
+                                    .await;
                             }
                         }
                         Err(error) => {
@@ -817,27 +960,30 @@ impl crate::SharedHost {
                                     "Session `{session_id}` terminal Repository publication remained pending: {error}"
                                 ))
                             })?;
-                        control
+                        if let Err(error) = control
                             .record_terminal_repository_publication_receipt(
-                                session_id,
-                                lease,
-                                receipt,
+                                session_id, lease, receipt,
                             )
                             .await
-                            .map_err(|error| {
-                                crate::HostError::internal(format!(
-                                    "Session `{session_id}` terminal Repository publication receipt remained pending: {error}"
-                                ))
-                            })?;
+                        {
+                            return self
+                                .handle_session_realization_control_failure(
+                                    session_id,
+                                    error,
+                                    "terminal Repository publication receipt",
+                                )
+                                .await;
+                        }
                     }
                     Ok(None) => {}
-                    Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
-                        return Ok(true);
-                    }
                     Err(error) => {
-                        return Err(crate::HostError::internal(format!(
-                            "Session `{session_id}` terminal Repository publication control remained pending: {error}"
-                        )));
+                        return self
+                            .handle_session_realization_control_failure(
+                                session_id,
+                                error,
+                                "terminal Repository publication",
+                            )
+                            .await;
                     }
                 }
 
@@ -847,14 +993,15 @@ impl crate::SharedHost {
                 let root_commands = match control.terminal_cleanup_commands(session_id, lease).await
                 {
                     Ok(Some(commands)) => commands,
-                    Ok(None)
-                    | Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
-                        return Ok(true);
-                    }
+                    Ok(None) => return Ok(true),
                     Err(error) => {
-                        return Err(crate::HostError::internal(format!(
-                            "Session `{session_id}` terminal root cleanup control remained pending: {error}"
-                        )));
+                        return self
+                            .handle_session_realization_control_failure(
+                                session_id,
+                                error,
+                                "terminal root cleanup",
+                            )
+                            .await;
                     }
                 };
                 for command in root_commands {
@@ -866,27 +1013,49 @@ impl crate::SharedHost {
                                 "Session `{session_id}` terminal root cleanup remained pending: {error}"
                             ))
                         })?;
-                    control
+                    if let Err(error) = control
                         .record_terminal_cleanup_completion(lease, completion)
                         .await
-                        .map_err(|error| {
-                            crate::HostError::internal(format!(
-                                "Session `{session_id}` terminal root cleanup receipt remained pending: {error}"
-                            ))
-                        })?;
+                    {
+                        return self
+                            .handle_session_realization_control_failure(
+                                session_id,
+                                error,
+                                "terminal root cleanup receipt",
+                            )
+                            .await;
+                    }
                 }
                 Ok(true)
             }
             Ok(None) => Ok(false),
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
-                let _ = self.interrupt(session_id).await;
-                self.revoke_session_realization(session_id).await?;
-                Ok(true)
+            Err(error) => {
+                self.handle_session_realization_control_failure(
+                    session_id,
+                    error,
+                    "terminal cleanup",
+                )
+                .await
             }
-            Err(error) => Err(crate::HostError::internal(format!(
-                "Session `{session_id}` terminal cleanup control remained pending: {error}"
-            ))),
         }
+    }
+
+    async fn handle_session_realization_control_failure(
+        &self,
+        session_id: &str,
+        error: awaken_session_contract::SessionRealizationControlFailure,
+        operation: &str,
+    ) -> Result<bool, crate::HostError> {
+        if realization_renewal_failure_disposition(&error)
+            == RenewalFailureDisposition::RevokeImmediately
+        {
+            let _ = self.interrupt(session_id).await;
+            self.revoke_session_realization(session_id).await?;
+            return Ok(true);
+        }
+        Err(crate::HostError::internal(format!(
+            "Session `{session_id}` {operation} remained pending: {error}"
+        )))
     }
 
     /// Claim and install every currently discoverable cold terminal assignment,
@@ -973,39 +1142,50 @@ impl crate::SharedHost {
         renew_before_unix_ms: u64,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
-        // Cause/effect decision table: C1 the aggregate has no terminal
-        // fence, C2 it is Fenced, C3 child cleanup is pending, C4 exact
-        // Repository publication is pending, C5 root cleanup is ready, and
-        // C6 Control/effect is temporarily unavailable. Effects: E1 ordinary
-        // renewal; E2 retain the slot; E3 record children before publication;
-        // E4 record publication before root disposal; E5 finalize and retire;
-        // E6 retain recoverable local state. No Worker-local queue or receipt
-        // registry participates.
+        // Cause/effect decision table: C1 lease is due, C2 cleanup is terminal,
+        // C3 Control explicitly rejects this owner, C4 Control/effect is
+        // temporarily unavailable, and C5 the old lease remains live. Effects:
+        // E1 renew before cleanup polling; E2 execute/finalize cleanup; E3
+        // interrupt and revoke immediately; E4 retain and retry; E5 interrupt
+        // and revoke at expiry. No Worker-local queue or receipt registry
+        // participates.
         //
-        // | Rule | Control projection | Effect |
-        // | R1 | None | E1 when due |
-        // | R2 | Some([]) | E2 |
-        // | R3 | Some(child commands) | E3, then re-poll |
-        // | R4 | publication command | E4, then re-poll |
-        // | R5 | Some(root command) / NotFound | E5 |
-        // | R6 | Unavailable | E6 |
-        match self
-            .reconcile_terminal_cleanup_for_lease(control, &session_id, &lease)
-            .await
-        {
-            Ok(true) => {
-                // Even an empty batch is a durable terminal fence. Never
-                // reinterpret retired Work as ordinary projection revocation
-                // while cleanup is waiting or retrying.
-                return Ok(false);
+        // | Rule | due | Control/effect | old lease | Effect |
+        // | R1 | yes | renewal succeeds | any | E1 |
+        // | R2 | no | terminal cleanup | any | E2 |
+        // | R3 | any | explicit loss | any | E3 |
+        // | R4 | any | temporary failure | live | E4 |
+        // | R5 | any | temporary failure | expired | E5 |
+        let due = lease.expires_at_unix_ms <= renew_before_unix_ms;
+        if !due {
+            match self
+                .reconcile_terminal_cleanup_for_lease(control, &session_id, &lease)
+                .await
+            {
+                Ok(true) => return Ok(false),
+                Ok(false) => return Ok(false),
+                Err(error)
+                    if awaken_session_contract::realization_lease_is_live_at(
+                        lease.expires_at_unix_ms,
+                        crate::terminal_repository_publication::runtime_unix_now_ms(),
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(_) => {
+                    let _ = self.interrupt(&session_id).await;
+                    self.revoke_session_realization(&session_id).await?;
+                    return Ok(false);
+                }
             }
-            Ok(false) => {}
-            Err(error) => return Err(error),
         }
-        if lease.expires_at_unix_ms > renew_before_unix_ms {
-            return Ok(false);
-        }
-        let renewal = async {
+
+        let renewal: Result<bool, (crate::HostError, bool)> = async {
+            let control_failure = |error| {
+                let revoke = realization_renewal_failure_disposition(&error)
+                    == RenewalFailureDisposition::RevokeImmediately;
+                (crate::HostError::internal(error.to_string()), revoke)
+            };
             let renewal_command = || awaken_session_contract::BeginSessionRealization {
                 session_id: session_id.clone(),
                 target: awaken_session_contract::SessionRealizationTarget {
@@ -1018,13 +1198,7 @@ impl crate::SharedHost {
             };
             let mut directive = match control.begin_session_realization(renewal_command()).await {
                 Ok(directive) => directive,
-                Err(error)
-                    if realization_renewal_failure_disposition(&error)
-                        == RenewalFailureDisposition::Retire =>
-                {
-                    return Ok(false);
-                }
-                Err(error) => return Err(crate::HostError::internal(error.to_string())),
+                Err(error) => return Err(control_failure(error)),
             };
             let realization = self.session_slots.realization_lock(&session_id);
             let Ok(_realization) = realization.try_lock() else {
@@ -1034,7 +1208,7 @@ impl crate::SharedHost {
                 // fences at Activate/Acknowledge and catches up before it can
                 // report completion.
                 self.install_session_realization_lease(&session_id, directive.lease.clone());
-                return Ok::<bool, crate::HostError>(true);
+                return Ok::<bool, (crate::HostError, bool)>(true);
             };
             // A Session command can advance the aggregate after Begin but
             // before Activate/Acknowledge. Keep the one realization lock,
@@ -1054,55 +1228,67 @@ impl crate::SharedHost {
                 )
                 .await
                 {
-                    Ok(()) => return Ok::<bool, crate::HostError>(true),
+                    Ok(()) => return Ok::<bool, (crate::HostError, bool)>(true),
                     Err(awaken_session_contract::SessionRealizationDriveError::Control(
                         awaken_session_contract::SessionRealizationControlFailure::Conflict,
                     )) if attempt + 1 < MAX_CONTROL_CONFLICT_ATTEMPTS => {
                         directive = control
                             .begin_session_realization(renewal_command())
                             .await
-                            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                            .map_err(control_failure)?;
+                    }
+                    Err(awaken_session_contract::SessionRealizationDriveError::Control(error)) => {
+                        return Err(control_failure(error));
                     }
                     Err(error) => {
-                        return Err(crate::HostError::internal(error.to_string()));
+                        return Err((crate::HostError::internal(error.to_string()), false));
                     }
                 }
             }
             unreachable!("bounded realization conflict loop returns on every branch")
         }
         .await;
-        if matches!(renewal, Ok(true)) {
-            return Ok(true);
+        match renewal {
+            Ok(true) => Ok(true),
+            Ok(false) => unreachable!("renewal returns only success or a classified failure"),
+            Err((error, revoke_immediately))
+                if !revoke_immediately
+                    && awaken_session_contract::realization_lease_is_live_at(
+                        lease.expires_at_unix_ms,
+                        crate::terminal_repository_publication::runtime_unix_now_ms(),
+                    ) =>
+            {
+                Err(error)
+            }
+            Err((error, _)) => {
+                eprintln!(
+                    "Session realization authority ended for `{session_id}`; revoking only that Session: {error}"
+                );
+                let _ = self.interrupt(&session_id).await;
+                self.revoke_session_realization(&session_id).await?;
+                Ok(false)
+            }
         }
-        if let Err(error) = &renewal {
-            eprintln!(
-                "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
-            );
-        }
-        // Every failed renewal has one cleanup path. Expected terminal
-        // retirement differs only in observability, never in side effects.
-        let _ = self.interrupt(&session_id).await;
-        self.revoke_session_realization(&session_id).await?;
-        Ok(false)
     }
 
-    /// Reconcile terminal cleanup first, then renew every active Session
-    /// realization approaching expiry through the same Control phase protocol
-    /// used for initial creation and hot replacement.
+    /// Renew every due Session before polling terminal cleanup for non-due
+    /// projections. Both use the same Control phase protocol as initial
+    /// creation and hot replacement.
     /// Environment-only Sessions participate because image/package realization
     /// can outlive the initial lease even when no MCP attachment exists.
-    /// A failed renewal revokes that Session's process-local projection before
-    /// the batch continues. Session authority is narrower than Worker registry
-    /// authority: an expired or terminal Session realization must not fence unrelated
-    /// in-flight Sessions from the same Worker incarnation.
+    /// A conclusive ownership loss or expired proof revokes only that Session;
+    /// a transient failure retains a still-live lease for the next sweep.
     ///
     /// Each Session keeps its one realization lock and phase driver. Independent
-    /// Sessions are reconciled with a fixed upper bound so one large resident set
-    /// cannot serialize Control traffic past the Worker authority proof window.
+    /// Sessions are reconciled with a fixed upper bound to protect Control;
+    /// authority-derived per-request deadlines release every occupied slot and
+    /// earliest-due ordering keeps cleanup traffic behind renewal traffic. If
+    /// Control still cannot answer before an individual durable expiry, that
+    /// Session fails closed instead of inventing local grace.
     pub async fn renew_due_session_realizations(
         &self,
-        renew_before_unix_ms: u64,
-        requested_expiry_unix_ms: u64,
+        now_unix_ms: u64,
+        timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
         let mut realizations = self.session_slots.realization_leases();
         if realizations.is_empty() {
@@ -1113,18 +1299,29 @@ impl crate::SharedHost {
                 "active Worker Session projection has no Control renewal client",
             )
         })?;
-        // Earliest deadline first prevents HashMap iteration order from starving
-        // one Session during a sustained recovery wave. Session id is the stable
-        // tie-breaker and carries no scheduling authority of its own.
+        let renew_before_unix_ms = now_unix_ms
+            .saturating_add(u64::try_from(timing.proof_window().as_millis()).unwrap_or(u64::MAX));
+        let requested_expiry_unix_ms = now_unix_ms
+            .saturating_add(u64::try_from(timing.lease_ttl().as_millis()).unwrap_or(u64::MAX));
+        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> =
+            Arc::new(DeadlineSessionRealizationControl {
+                inner: Arc::clone(control),
+                request_timeout: timing.request_timeout(),
+            });
+        // Due renewals precede non-due cleanup polls. Earliest deadline first
+        // then prevents HashMap order from starving one Session during a
+        // sustained recovery wave. Session id is only a stable tie-breaker.
         realizations.sort_by(|left, right| {
-            left.1
-                .expires_at_unix_ms
-                .cmp(&right.1.expires_at_unix_ms)
+            let left_due = left.1.expires_at_unix_ms <= renew_before_unix_ms;
+            let right_due = right.1.expires_at_unix_ms <= renew_before_unix_ms;
+            right_due
+                .cmp(&left_due)
+                .then_with(|| left.1.expires_at_unix_ms.cmp(&right.1.expires_at_unix_ms))
                 .then_with(|| left.0.cmp(&right.0))
         });
         let outcomes = stream::iter(realizations)
             .map(|(session_id, lease)| {
-                let control = Arc::clone(control);
+                let control = Arc::clone(&control);
                 async move {
                     self.reconcile_one_session_realization(
                         control.as_ref(),

@@ -1,9 +1,11 @@
 use awaken_run_ingress_contract::{WorkerHeartbeat, WorkerIdentity, WorkerManifest};
 use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
+use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 async fn register_zero_ttl() -> Json<Value> {
     Json(json!({
@@ -78,4 +80,112 @@ async fn authoritative_lease_receipts_fail_closed_when_ttl_is_not_positive() {
         .await
         .expect_err("T2 missing applied TTL fails closed");
     assert!(heartbeat.contains("positive lease TTL"), "T2");
+}
+
+#[derive(Default)]
+struct ConcurrentControlState {
+    cleanup_started: tokio::sync::Notify,
+    cleanup_release: tokio::sync::Notify,
+    heartbeats: std::sync::atomic::AtomicUsize,
+}
+
+async fn blocked_cleanup_poll(State(state): State<Arc<ConcurrentControlState>>) -> Json<Value> {
+    state.cleanup_started.notify_one();
+    state.cleanup_release.notified().await;
+    Json(json!({"commands": null}))
+}
+
+async fn concurrent_heartbeat(State(state): State<Arc<ConcurrentControlState>>) -> Json<Value> {
+    state
+        .heartbeats
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Json(json!({"mutation": "applied", "lease_ttl_ms": 30_000}))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocked_session_control_request_does_not_serialize_worker_heartbeat() {
+    /* Shared-transport cause/effect table: C1 one Session cleanup request is
+     * accepted by the server but never responds; C2 a heartbeat uses a clone of
+     * the exact same identity-bound WorkerUpstream client. Effect E1 heartbeat
+     * completes while C1 remains blocked; E2 releasing C1 completes the
+     * original request. This proves the transport has no process-local serial
+     * request mutex; durable Worker and Session authorities remain distinct.
+     *
+     * | Rule | cleanup | heartbeat | Effect |
+     * |---|---|---|---|
+     * | H1 | blocked | concurrent | E1, then E2 |
+     */
+    let state = Arc::new(ConcurrentControlState::default());
+    let app = Router::new()
+        .route(
+            "/v1/worker/session/cleanup/poll",
+            post(blocked_cleanup_poll),
+        )
+        .route("/v1/worker/heartbeat", post(concurrent_heartbeat))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("H1 bind fixture");
+    let address = listener.local_addr().expect("H1 fixture address");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("H1 serve fixture") });
+
+    let identity = WorkerIdentity::new("worker-a", "inc-a", 1);
+    let upstream = WorkerUpstream::new(format!("http://{address}"))
+        .with_worker_id("worker-a")
+        .with_worker_identity(identity.clone());
+    let control = WorkerControlClient::new(upstream);
+    let cleanup_control = control.clone();
+    let cleanup_identity = identity.clone();
+    let cleanup = tokio::spawn(async move {
+        cleanup_control
+            .terminal_cleanup_commands(
+                &cleanup_identity,
+                "session-a",
+                &awaken_session_contract::SessionRealizationLease {
+                    owner: "worker-a".into(),
+                    runtime_incarnation: "inc-a".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: 30_000,
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        state.cleanup_started.notified(),
+    )
+    .await
+    .expect("H1 cleanup entered server");
+
+    let receipt = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        control.heartbeat(
+            &identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+            },
+        ),
+    )
+    .await
+    .expect("H1/E1 heartbeat is independently scheduled")
+    .expect("H1/E1 applied heartbeat");
+    assert_eq!(receipt.lease_ttl_ms, Some(30_000), "H1/E1");
+    assert_eq!(
+        state.heartbeats.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "H1/E1"
+    );
+    assert!(!cleanup.is_finished(), "H1 cleanup remains blocked");
+
+    state.cleanup_release.notify_one();
+    assert_eq!(
+        cleanup.await.expect("H1 cleanup task").expect("H1/E2"),
+        None,
+        "H1/E2"
+    );
 }

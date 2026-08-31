@@ -649,6 +649,23 @@ impl SessionRealizationControlFailure {
             }
         }
     }
+
+    /// Whether this reply conclusively denies the caller's exact current
+    /// realization owner/fence. A retryable Run may be relinquished and
+    /// executed by a newer owner, while the stale physical projection itself
+    /// must stop immediately. NotReady, Conflict, and Unavailable do not prove
+    /// that fact; their prior unexpired lease remains authoritative.
+    #[must_use]
+    pub const fn proves_current_realization_cannot_continue(&self) -> bool {
+        matches!(
+            self,
+            Self::NotFound
+                | Self::Retired
+                | Self::Terminal
+                | Self::StaleOwnership
+                | Self::Invalid(_)
+        )
+    }
 }
 
 #[cfg(kani)]
@@ -675,6 +692,26 @@ fn session_realization_control_failure_disposition_is_total_exact_and_fail_close
     };
 
     assert_eq!(failure.disposition(), expected);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn realization_ownership_loss_proof_is_total_and_exact() {
+    let selector = kani::any::<u8>() % 8;
+    let failure = match selector {
+        0 => SessionRealizationControlFailure::NotFound,
+        1 => SessionRealizationControlFailure::NotReady,
+        2 => SessionRealizationControlFailure::Retired,
+        3 => SessionRealizationControlFailure::Terminal,
+        4 => SessionRealizationControlFailure::StaleOwnership,
+        5 => SessionRealizationControlFailure::Conflict,
+        6 => SessionRealizationControlFailure::Invalid(String::new()),
+        _ => SessionRealizationControlFailure::Unavailable(String::new()),
+    };
+    assert_eq!(
+        failure.proves_current_realization_cannot_continue(),
+        matches!(selector, 0 | 2 | 3 | 4 | 6)
+    );
 }
 
 /// Driving port for the Control-owned realization state machine. It performs no
@@ -1257,50 +1294,59 @@ mod tests {
         // existing retry path, and E3 absorb the Run instead of hot-looping.
         // Every cause also round-trips over the existing typed transport.
         //
-        // | Rule | cause | disposition |
-        // | T1 | not ready | NotReady |
-        // | T2 | stale/conflict/unavailable | Retryable |
-        // | T3 | not found/retired/terminal/invalid | Terminal |
-        for (rule, failure, disposition) in [
+        // | Rule | cause | disposition | current owner disproved |
+        // | T1 | not ready | NotReady | no |
+        // | T2a | stale | Retryable | yes |
+        // | T2b | conflict/unavailable | Retryable | no |
+        // | T3 | not found/retired/terminal/invalid | Terminal | yes |
+        for (rule, failure, disposition, owner_disproved) in [
             (
                 "T3 not found",
                 SessionRealizationControlFailure::NotFound,
                 SessionRealizationControlDisposition::Terminal,
+                true,
             ),
             (
                 "T1 not ready",
                 SessionRealizationControlFailure::NotReady,
                 SessionRealizationControlDisposition::NotReady,
+                false,
             ),
             (
                 "T3 retired",
                 SessionRealizationControlFailure::Retired,
                 SessionRealizationControlDisposition::Terminal,
+                true,
             ),
             (
                 "T3 terminal",
                 SessionRealizationControlFailure::Terminal,
                 SessionRealizationControlDisposition::Terminal,
+                true,
             ),
             (
-                "T2 stale",
+                "T2a stale",
                 SessionRealizationControlFailure::StaleOwnership,
                 SessionRealizationControlDisposition::Retryable,
+                true,
             ),
             (
-                "T2 conflict",
+                "T2b conflict",
                 SessionRealizationControlFailure::Conflict,
                 SessionRealizationControlDisposition::Retryable,
+                false,
             ),
             (
                 "T3 invalid",
                 SessionRealizationControlFailure::Invalid("bad target".into()),
                 SessionRealizationControlDisposition::Terminal,
+                true,
             ),
             (
-                "T2 unavailable",
+                "T2b unavailable",
                 SessionRealizationControlFailure::Unavailable("control offline".into()),
                 SessionRealizationControlDisposition::Retryable,
+                false,
             ),
         ] {
             let wire = serde_json::to_value(&failure).expect(rule);
@@ -1308,6 +1354,11 @@ mod tests {
                 serde_json::from_value(wire).expect(rule);
             assert_eq!(decoded, failure, "{rule}");
             assert_eq!(decoded.disposition(), disposition, "{rule}");
+            assert_eq!(
+                decoded.proves_current_realization_cannot_continue(),
+                owner_disproved,
+                "{rule}"
+            );
         }
     }
 }

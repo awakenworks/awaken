@@ -24,9 +24,25 @@ Acquire(session, d) ==
   /\ session \in Sessions
   /\ d \in Drivers
   /\ owner[session] = NoDriver
+  /\ completed[session] < MaxCompleted
   /\ Cardinality(ActiveSessions) < MaxConcurrent
   /\ owner' = [owner EXCEPT ![session] = d]
+  /\ phase' = [phase EXCEPT ![session] = "WaitingForControl"]
+  /\ UNCHANGED completed
+
+ControlRespond(session, d) ==
+  /\ session \in Sessions
+  /\ owner[session] = d
+  /\ phase[session] = "WaitingForControl"
   /\ phase' = [phase EXCEPT ![session] = "Driving"]
+  /\ UNCHANGED <<owner, completed>>
+
+ControlTimeout(session, d) ==
+  /\ session \in Sessions
+  /\ owner[session] = d
+  /\ phase[session] = "WaitingForControl"
+  /\ owner' = [owner EXCEPT ![session] = NoDriver]
+  /\ phase' = [phase EXCEPT ![session] = "Idle"]
   /\ UNCHANGED completed
 
 Advance(session, d) ==
@@ -45,12 +61,25 @@ Release(session, d) ==
   /\ phase' = [phase EXCEPT ![session] = "Idle"]
   /\ completed' = [completed EXCEPT ![session] = @ + 1]
 
+ControlSettles(session, d) ==
+  ControlRespond(session, d) \/ ControlTimeout(session, d)
+
 Next == \E session \in Sessions, d \in Drivers :
-          Acquire(session, d) \/ Advance(session, d) \/ Release(session, d)
-Spec == Init /\ [][Next]_vars
+          Acquire(session, d)
+          \/ ControlRespond(session, d)
+          \/ ControlTimeout(session, d)
+          \/ Advance(session, d)
+          \/ Release(session, d)
+
+Fairness ==
+  /\ \A session \in Sessions, d \in Drivers : WF_vars(ControlSettles(session, d))
+  /\ \A session \in Sessions, d \in Drivers : WF_vars(Advance(session, d))
+  /\ \A session \in Sessions, d \in Drivers : WF_vars(Release(session, d))
+
+Spec == Init /\ [][Next]_vars /\ Fairness
 
 TypeOK == /\ owner \in [Sessions -> Drivers \cup {NoDriver}]
-          /\ phase \in [Sessions -> {"Idle", "Driving", "Committing"}]
+          /\ phase \in [Sessions -> {"Idle", "WaitingForControl", "Driving", "Committing"}]
           /\ completed \in [Sessions -> 0..MaxCompleted]
 OneDriverPerSession ==
   \A session \in Sessions :
@@ -58,4 +87,10 @@ OneDriverPerSession ==
 BoundedCrossSessionConcurrency ==
   Cardinality(ActiveSessions) <= MaxConcurrent
 Safety == TypeOK /\ OneDriverPerSession /\ BoundedCrossSessionConcurrency
+
+(* A bounded Control request cannot retain scheduler capacity forever. Under
+   weak process fairness, each acquired slot either times out or completes its
+   phase driver and returns to Idle. *)
+EveryAcquiredSlotEventuallyReleases ==
+  \A session \in Sessions : [](owner[session] # NoDriver => <>(owner[session] = NoDriver))
 =============================================================================

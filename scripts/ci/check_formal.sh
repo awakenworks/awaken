@@ -90,6 +90,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-session-contract \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
+    --harness realization_ownership_loss_proof_is_total_and_exact \
     --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
