@@ -792,6 +792,63 @@ async fn only_a_new_claim_rebuilds_a_revoked_legacy_direct_environment() {
 }
 
 #[tokio::test]
+async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
+    use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
+
+    // C1 a Runtime is cached around a legacy/direct Environment; C2 realization
+    // revocation retains the quiesced owner; C3 an authorized resume requests a
+    // context. E1 C3 evicts the cached Runtime, disposes the closed owner, and
+    // builds a distinct Runtime/Environment pair.
+    let thread = "cached-resume-revocation";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(root.path());
+    let snapshot = test_activation(thread, "cached-resume-publication").snapshot;
+    host.register_thread_workspace(thread, "workspace");
+    host.session_slots.update(thread, |slot| {
+        slot.published_snapshot = Some(snapshot.clone());
+    });
+    host.install_test_resident_session_environment(thread, environment.clone());
+    let agent_id = snapshot.root_agent_id.0.clone();
+    let cached = host
+        .ctx_for_snapshot_with_sandbox(thread, Some(agent_id.as_str()), Some(snapshot), None)
+        .await
+        .expect("C1 cached Runtime");
+    assert!(Arc::ptr_eq(cached.env.as_ref().unwrap(), &environment));
+
+    let lifecycle = host
+        .session_slots
+        .read(thread, |slot| slot.lifecycle.clone())
+        .unwrap();
+    {
+        let _lifecycle = lifecycle.lock().await;
+        assert!(
+            host.retire_session_environment_for_revocation(thread)
+                .await
+                .unwrap(),
+            "C2 exact revocation"
+        );
+    }
+
+    let resumed = host
+        .ctx_for_resume(thread)
+        .await
+        .expect("C3 resume recovery");
+    let rebuilt = resumed.env.as_ref().expect("E1 rebuilt Environment");
+    assert!(!Arc::ptr_eq(&cached, &resumed), "E1 cached Runtime evicted");
+    assert!(
+        !Arc::ptr_eq(rebuilt, &environment),
+        "E1 closed owner replaced"
+    );
+    assert_eq!(
+        environment.status().await.unwrap(),
+        awaken_provisioning_contract::SandboxStatus::Terminated,
+        "E1 old sandbox disposed"
+    );
+}
+
+#[tokio::test]
 async fn recovery_status_gates_frozen_provider_validation_after_owner_retirement() {
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
 
