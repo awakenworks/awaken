@@ -73,6 +73,49 @@ WorkUnit/Interactive modes never project into Managed request or response DTOs;
 their post-create authority is owned by
 [ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority).
 
+## Environment and local-platform compatibility
+
+Anthropic Managed Agents compatibility ends at the public Agent, Session,
+Environment, Resource, event, error, pagination, beta-header, and streaming
+contracts. The selected execution provider is private realization detail. A
+client therefore uses the same `anthropic-beta: managed-agents-2026-04-01`
+request shapes whether the Session runs through Linux bubblewrap, macOS
+Seatbelt, the Windows Local provider, or a configured container/Kubernetes
+Worker. No provider name, host path, executable path, or fallback flag is added
+to the Managed wire.
+
+Static ownership remains one-directional:
+
+| Concern | Authoritative owner | Platform realization |
+|---|---|---|
+| Agent/Session/Environment DTO and lifecycle | `awaken-protocol-managed` | Identical on Linux, macOS, and Windows |
+| Frozen Environment/resource selection | Session projection and resource manifest | Provider-neutral IDs and logical mount paths |
+| Execution adapter | Runtime Host `DeploymentConfig` and `SessionEnvironmentProvider` | Linux Namespace, macOS Namespace, Windows Local by default |
+| Host programs | Existing Local/Namespace process launcher | Discovered from host execution metadata; never authored by the Managed request |
+| Files, Repository, MemoryStore, Skill, output | Existing Resources applications and provider realization | Projected into the Session workspace; never exposed as an arbitrary host path |
+
+The dynamic path is likewise unchanged:
+
+```text
+Managed Agent publication
+  -> create Session with frozen environment_id and resource bindings
+  -> Runtime Host resolves the configured platform adapter once
+  -> provider projects resources into the Session workspace
+  -> Native or ACP execution launches through that provider
+  -> committed runtime facts project back to Managed events/SSE
+  -> terminal cleanup harvests outputs and releases the same Environment
+```
+
+Windows intentionally defaults to the existing host-backed Local provider
+because no Windows Namespace adapter exists. This is an explicit configuration
+default, not an implicit downgrade after an isolation request. Explicit
+`sandbox_tier = "namespace"` remains fail-closed on unsupported platforms;
+shared and multi-tenant deployments must select a container/Kubernetes Worker.
+On a trusted workstation, explicitly selecting `sandbox_tier = "local"` on any
+OS permits installed ACP CLIs and shell programs to run as host child processes,
+while rooted tools and managed resources remain confined to the Session
+workspace authority.
+
 ## Managed model and coordinator compatibility
 
 The public model object is translated through the existing provider-neutral

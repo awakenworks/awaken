@@ -95,6 +95,21 @@ jobs:
       - name: Build the canonical archive
         shell: bash
         run: python3 scripts/release/package.py --target "${{ matrix.target }}"
+      - name: Parse the Windows installer with the release shell
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/release/install.ps1),
+            [ref] $tokens,
+            [ref] $errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
       - name: Upload the archive and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -485,14 +500,16 @@ jobs:
           path: dist
           pattern: awaken-*
           merge-multiple: true
-      - name: Stage the verified POSIX installer
+      - name: Stage the verified platform installers
         shell: bash
         run: |
           set -euo pipefail
           cp scripts/release/install.sh dist/install.sh
+          cp scripts/release/install.ps1 dist/install.ps1
           chmod 0755 dist/install.sh
           cd dist
           sha256sum install.sh > install.sh.sha256
+          sha256sum install.ps1 > install.ps1.sha256
       - name: Attest the release archives
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:

@@ -6,8 +6,9 @@ Apache-2.0; code packages may use their own file or package license metadata.
 
 ## Install
 
-Release archives contain the `awaken` executable, this README, the Docker
-Compose quickstart, and the Apache 2.0 license. The executable already contains
+Release archives contain the `awaken` executable, its matching
+`awaken-sandbox` execution companion, this README, the Docker Compose
+quickstart, and the Apache 2.0 license. The `awaken` executable already contains
 the web console; Node.js is not required at runtime.
 
 Linux x86-64 and macOS (Apple Silicon or Intel) can use the same installer. It
@@ -23,7 +24,17 @@ Set `AWAKEN_INSTALL_DIR` to choose another destination. For provenance-sensitive
 environments, download `install.sh` and `install.sh.sha256`, verify the script,
 then run it; every release asset also has a GitHub build-provenance attestation.
 
-Windows x86-64 uses the ZIP asset. The full platform mapping remains:
+Windows x86-64 can use the checksum-verifying PowerShell installer:
+
+```powershell
+$installer = Join-Path $env:TEMP 'install-awaken.ps1'
+Invoke-WebRequest https://github.com/awakenworks/awaken/releases/download/v1.0.0/install.ps1 -OutFile $installer
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer v1.0.0
+awaken --version
+```
+
+For provenance-sensitive Windows installations, verify `install.ps1` against
+`install.ps1.sha256` before running it. The full platform mapping is:
 
 | System | Release target |
 | --- | --- |
@@ -58,6 +69,29 @@ API, embedded web console, and local worker, persists all local state under
 `~/.awaken`, and opens `http://127.0.0.1:8080`. Use `--port`, `--data-dir`, or
 `--no-browser` for common local overrides. The resulting binary contains the
 complete console and needs no external web directory or Node.js at runtime.
+
+The default execution adapter follows the host's implemented capability:
+Linux uses bubblewrap Namespace isolation, macOS uses Seatbelt Namespace
+isolation, and Windows uses the host-backed Local adapter because Awaken has no
+Windows Namespace adapter. Linux therefore requires a usable `bwrap`; run
+`awaken doctor` for an actionable readiness result. Windows Local execution and
+an explicitly configured Local tier have no OS isolation and are appropriate
+only for trusted, single-user workstations.
+
+To deliberately use programs already installed on the host on any platform,
+set the one deployment authority in `~/.awaken/config.toml` (on Windows,
+`%USERPROFILE%\.awaken\config.toml`):
+
+```toml
+sandbox_tier = "local"
+```
+
+The Local adapter launches ACP CLIs and shell commands as host child processes
+with the Session workspace as their working directory. Files, repositories,
+MemoryStores, Skills, and outputs still enter through Agent resource bindings;
+Local mode does not expose arbitrary host paths or create a second resource
+authority. Use an MCP server when an existing local service should be called
+without filesystem access.
 
 The Console guides one canonical path:
 
