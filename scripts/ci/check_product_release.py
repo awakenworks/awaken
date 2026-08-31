@@ -16,6 +16,7 @@ MANAGEMENT_DOCKERIGNORE = REPOSITORY / "deploy/images/management/Dockerfile.dock
 MANAGEMENT_CONFIG = REPOSITORY / "deploy/images/management/container.toml"
 MANAGEMENT_ENTRYPOINT = REPOSITORY / "deploy/images/management/entrypoint.sh"
 COMPOSE = REPOSITORY / "deploy/compose.yaml"
+INSTALLER = REPOSITORY / "scripts/release/install.sh"
 
 TARGETS = (
     "x86_64-unknown-linux-gnu",
@@ -32,6 +33,7 @@ def validate(
     container_config: str,
     entrypoint: str,
     compose: str,
+    installer: str,
     release_workflows: tuple[str, ...],
 ) -> list[str]:
     failures: list[str] = []
@@ -42,7 +44,7 @@ def validate(
     # or container launcher drift blocks publication.
     # Decision table: R1 complete single graph -> accept; R2 missing artifact/job
     # edge -> reject; R3 competing release workflow -> reject; R4 Management
-    # image/Compose not using the canonical binary/config/repository -> reject.
+    # image/Compose drift -> reject; R5 installer verification drift -> reject.
     required_workflow = (
         "name: release-awaken",
         '- "v*.*.*"',
@@ -59,6 +61,8 @@ def validate(
         "MANAGEMENT_IMAGE_REPOSITORY: ghcr.io/awakenworks/awaken",
         "IMAGE_REPOSITORY: ghcr.io/awakenworks/awaken-sandbox",
         "actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26",
+        "cp scripts/release/install.sh dist/install.sh",
+        "sha256sum install.sh > install.sh.sha256",
         'gh release create "$GITHUB_REF_NAME"',
     )
     for marker in required_workflow + TARGETS:
@@ -74,6 +78,22 @@ def validate(
         failures.append(
             "expected one canonical release workflow, got " + ", ".join(release_workflows)
         )
+
+    required_installer = (
+        "usage: install.sh vMAJOR.MINOR.PATCH",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "--proto '=https' --tlsv1.2",
+        'sha256sum -c "$archive.sha256"',
+        'shasum -a 256 -c "$archive.sha256"',
+        'tar -xOzf "$temporary/$archive" "$package_root/awaken"',
+        'reported=$("$candidate" --version)',
+        'mv -f -- "$staged" "$install_dir/awaken"',
+    )
+    for marker in required_installer:
+        if marker not in installer:
+            failures.append(f"POSIX installer missing {marker!r}")
 
     required_dockerfile = (
         "FROM ubuntu:24.04@sha256:",
@@ -130,7 +150,7 @@ def validate(
     return failures
 
 
-def current_inputs() -> tuple[str, str, str, str, tuple[str, ...]]:
+def current_inputs() -> tuple[str, str, str, str, str, str, str, tuple[str, ...]]:
     release_workflows = tuple(
         str(path.relative_to(REPOSITORY))
         for path in sorted((REPOSITORY / ".github/workflows").glob("*release*.yml"))
@@ -142,6 +162,7 @@ def current_inputs() -> tuple[str, str, str, str, tuple[str, ...]]:
         MANAGEMENT_CONFIG.read_text(encoding="utf-8"),
         MANAGEMENT_ENTRYPOINT.read_text(encoding="utf-8"),
         COMPOSE.read_text(encoding="utf-8"),
+        INSTALLER.read_text(encoding="utf-8"),
         release_workflows,
     )
 
@@ -149,14 +170,15 @@ def current_inputs() -> tuple[str, str, str, str, tuple[str, ...]]:
 class ProductReleaseCheckerTests(unittest.TestCase):
     def test_decision_table_rejects_each_release_authority_drift(self) -> None:
         # The validation comment above owns the cause/effect graph. These
-        # mutations execute R1-R4: baseline, broken job edge, competing workflow,
-        # and container launcher drift respectively.
+        # mutations execute R1-R5: baseline, broken job edge, competing workflow,
+        # container launcher drift, and installer verification drift.
         inputs = current_inputs()
         self.assertEqual(validate(*inputs), [], "R1")
         mutations = (
             (inputs[0].replace("github_release:", "release_assets:"), *inputs[1:]),
-            (*inputs[:6], (".github/workflows/release.yml", ".github/workflows/release-copy.yml")),
+            (*inputs[:7], (".github/workflows/release.yml", ".github/workflows/release-copy.yml")),
             (inputs[0], inputs[1].replace("USER awaken", "USER root"), *inputs[2:]),
+            (*inputs[:6], inputs[6].replace("sha256sum -c", "true #"), inputs[7]),
         )
         for rule, mutation in enumerate(mutations, 2):
             with self.subTest(rule=f"R{rule}"):
