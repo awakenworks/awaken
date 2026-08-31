@@ -381,14 +381,16 @@ test("interactive transcripts follow committed SSE frames without a manual refre
 
 test("streaming marketing results wait for the complete decision, not the first delta", () => {
   const agent = readFileSync(resolve(flowsDir, "02-build-agent.mjs"), "utf8");
-  assert.match(agent, /Compatibility\[\\s\\S\]\*\(\?:BREAKING\|incompatible\)\[\\s\\S\]\*Breaking changes/);
+  assert.match(agent, /Compatibility\[\\s\\S\]\*\(\?:BREAKING\|incompatible\)/);
+  assert.match(agent, /toContainText\(\/Breaking changes\/i\)/);
+  assert.match(agent, /toContainText\(\/result_url\/i\)/);
+  assert.match(agent, /toContainText\(\/status\|enum\|pending\|completed\/i\)/);
+  assert.match(agent, /toContainText\(\/not safe\|do not publish/);
   assert.match(agent, /agent-preview-conversation:not\(\[hidden\]\) \[data-role="assistant"\]/);
   assert.doesNotMatch(agent, /\.transcript \[data-role="assistant"\]/);
   assert.match(agent, /activeProtocolPreview\.getByText\(FIRST_TASK/);
   assert.doesNotMatch(agent, /page\.getByText\(FIRST_TASK/);
-  assert.match(agent, /\{ timeout: 60_000 \}/);
-  assert.match(agent, /agent-working.*not\.toBeVisible\(\{ timeout: 60_000 \}\)/);
-  assert.doesNotMatch(agent, /toContainText\(\/Breaking changes\/i\);/);
+  assert.match(agent, /agent-working.*not\.toBeVisible\(\{ timeout: 300_000 \}\)/);
 });
 
 test("overview captions point to visible UI evidence without long static waits", () => {
