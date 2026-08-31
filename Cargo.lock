@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "awaken-sandbox-fs"
-version = "1.0.0-dev"
+version = "1.0.0"
 dependencies = [
  "rustix 1.1.4",
 ]
