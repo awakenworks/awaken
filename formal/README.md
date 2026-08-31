@@ -329,9 +329,10 @@ downstream idempotency; they are not claimed exactly once by these proofs.
 - `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and
   `SessionRealizationMutex.tla` cover handshake-before-prompt and conservative
   permission projection, exact-claim materialization/publication, and exclusive
-  Session realization phase driving. The mutex model has an explicit finite
-  completion bound for TLC; the one-driver invariant itself is independent of
-  the chosen bound.
+  Session realization phase driving. The mutex model ranges over multiple
+  Sessions and proves both one driver per Session and a bounded number of
+  cross-Session drivers. Its explicit finite completion bound is only for TLC;
+  the two concurrency invariants are independent of the chosen bound.
 - `CredentialRotationWorkflow.tla`, `DeploymentExecutionWorkflow.tla`,
   `ResourceLifecycleWorkflow.tla`, and `SessionRunProtocol.tla` compose the
   corresponding already-modeled kernels at product boundaries. The Session

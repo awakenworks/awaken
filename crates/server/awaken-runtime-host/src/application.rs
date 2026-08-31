@@ -13,6 +13,9 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_run_ingress::RunClaim;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
+use futures_util::stream::{self, StreamExt};
+
+pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenewalFailureDisposition {
@@ -962,6 +965,127 @@ impl crate::SharedHost {
         }
     }
 
+    async fn reconcile_one_session_realization(
+        &self,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        session_id: String,
+        lease: awaken_session_contract::SessionRealizationLease,
+        renew_before_unix_ms: u64,
+        requested_expiry_unix_ms: u64,
+    ) -> Result<bool, crate::HostError> {
+        // Cause/effect decision table: C1 the aggregate has no terminal
+        // fence, C2 it is Fenced, C3 child cleanup is pending, C4 exact
+        // Repository publication is pending, C5 root cleanup is ready, and
+        // C6 Control/effect is temporarily unavailable. Effects: E1 ordinary
+        // renewal; E2 retain the slot; E3 record children before publication;
+        // E4 record publication before root disposal; E5 finalize and retire;
+        // E6 retain recoverable local state. No Worker-local queue or receipt
+        // registry participates.
+        //
+        // | Rule | Control projection | Effect |
+        // | R1 | None | E1 when due |
+        // | R2 | Some([]) | E2 |
+        // | R3 | Some(child commands) | E3, then re-poll |
+        // | R4 | publication command | E4, then re-poll |
+        // | R5 | Some(root command) / NotFound | E5 |
+        // | R6 | Unavailable | E6 |
+        match self
+            .reconcile_terminal_cleanup_for_lease(control, &session_id, &lease)
+            .await
+        {
+            Ok(true) => {
+                // Even an empty batch is a durable terminal fence. Never
+                // reinterpret retired Work as ordinary projection revocation
+                // while cleanup is waiting or retrying.
+                return Ok(false);
+            }
+            Ok(false) => {}
+            Err(error) => return Err(error),
+        }
+        if lease.expires_at_unix_ms > renew_before_unix_ms {
+            return Ok(false);
+        }
+        let renewal = async {
+            let renewal_command = || awaken_session_contract::BeginSessionRealization {
+                session_id: session_id.clone(),
+                target: awaken_session_contract::SessionRealizationTarget {
+                    owner: lease.owner.clone(),
+                    runtime_incarnation: lease.runtime_incarnation.clone(),
+                    lease_expires_at_unix_ms: requested_expiry_unix_ms,
+                    renew_existing_lease: true,
+                    reassign_existing_lease: false,
+                },
+            };
+            let mut directive = match control.begin_session_realization(renewal_command()).await {
+                Ok(directive) => directive,
+                Err(error)
+                    if realization_renewal_failure_disposition(&error)
+                        == RenewalFailureDisposition::Retire =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(crate::HostError::internal(error.to_string())),
+            };
+            let realization = self.session_slots.realization_lock(&session_id);
+            let Ok(_realization) = realization.try_lock() else {
+                // Control has extended only the same owner/incarnation/epoch.
+                // Preserve that authority locally, but never start a second
+                // effect driver. The active driver compares exact generation
+                // fences at Activate/Acknowledge and catches up before it can
+                // report completion.
+                self.install_session_realization_lease(&session_id, directive.lease.clone());
+                return Ok::<bool, crate::HostError>(true);
+            };
+            // A Session command can advance the aggregate after Begin but
+            // before Activate/Acknowledge. Keep the one realization lock,
+            // re-read Control, and replay the same idempotent driver. This
+            // closes the renewal-versus-successor-Run race without a second
+            // projection owner or a provider-specific retry path.
+            const MAX_CONTROL_CONFLICT_ATTEMPTS: usize = 2;
+            for attempt in 0..MAX_CONTROL_CONFLICT_ATTEMPTS {
+                match crate::host::HostWorkerResolver::drive_session_realization_raw(
+                    self,
+                    control,
+                    &session_id,
+                    directive,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                {
+                    Ok(()) => return Ok::<bool, crate::HostError>(true),
+                    Err(awaken_session_contract::SessionRealizationDriveError::Control(
+                        awaken_session_contract::SessionRealizationControlFailure::Conflict,
+                    )) if attempt + 1 < MAX_CONTROL_CONFLICT_ATTEMPTS => {
+                        directive = control
+                            .begin_session_realization(renewal_command())
+                            .await
+                            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                    }
+                    Err(error) => {
+                        return Err(crate::HostError::internal(error.to_string()));
+                    }
+                }
+            }
+            unreachable!("bounded realization conflict loop returns on every branch")
+        }
+        .await;
+        if matches!(renewal, Ok(true)) {
+            return Ok(true);
+        }
+        if let Err(error) = &renewal {
+            eprintln!(
+                "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
+            );
+        }
+        // Every failed renewal has one cleanup path. Expected terminal
+        // retirement differs only in observability, never in side effects.
+        let _ = self.interrupt(&session_id).await;
+        self.revoke_session_realization(&session_id).await?;
+        Ok(false)
+    }
+
     /// Reconcile terminal cleanup first, then renew every active Session
     /// realization approaching expiry through the same Control phase protocol
     /// used for initial creation and hot replacement.
@@ -971,12 +1095,16 @@ impl crate::SharedHost {
     /// the batch continues. Session authority is narrower than Worker registry
     /// authority: an expired or terminal Session realization must not fence unrelated
     /// in-flight Sessions from the same Worker incarnation.
+    ///
+    /// Each Session keeps its one realization lock and phase driver. Independent
+    /// Sessions are reconciled with a fixed upper bound so one large resident set
+    /// cannot serialize Control traffic past the Worker authority proof window.
     pub async fn renew_due_session_realizations(
         &self,
         renew_before_unix_ms: u64,
         requested_expiry_unix_ms: u64,
     ) -> Result<usize, crate::HostError> {
-        let realizations = self.session_slots.realization_leases();
+        let mut realizations = self.session_slots.realization_leases();
         if realizations.is_empty() {
             return Ok(0);
         }
@@ -985,128 +1113,44 @@ impl crate::SharedHost {
                 "active Worker Session projection has no Control renewal client",
             )
         })?;
-        let mut renewed = 0;
-        let mut terminal_error = None;
-        for (session_id, lease) in &realizations {
-            // Cause/effect decision table: C1 the aggregate has no terminal
-            // fence, C2 it is Fenced, C3 child cleanup is pending, C4 exact
-            // Repository publication is pending, C5 root cleanup is ready, and
-            // C6 Control/effect is temporarily unavailable. Effects: E1 ordinary
-            // renewal; E2 retain the slot; E3 record children before publication;
-            // E4 record publication before root disposal; E5 finalize and retire;
-            // E6 retain recoverable local state. No Worker-local queue or receipt
-            // registry participates.
-            //
-            // | Rule | Control projection | Effect |
-            // | R1 | None | E1 when due |
-            // | R2 | Some([]) | E2 |
-            // | R3 | Some(child commands) | E3, then re-poll |
-            // | R4 | publication command | E4, then re-poll |
-            // | R5 | Some(root command) / NotFound | E5 |
-            // | R6 | Unavailable | E6 |
-            match self
-                .reconcile_terminal_cleanup_for_lease(control.as_ref(), session_id, lease)
-                .await
-            {
-                Ok(true) => {
-                    // Even an empty batch is a durable terminal fence. Never
-                    // reinterpret retired Work as ordinary projection revocation
-                    // while cleanup is waiting or retrying.
-                    continue;
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    terminal_error.get_or_insert(error);
-                    continue;
-                }
-            }
-            if lease.expires_at_unix_ms > renew_before_unix_ms {
-                continue;
-            }
-            let renewal = async {
-                let renewal_command = || awaken_session_contract::BeginSessionRealization {
-                    session_id: session_id.clone(),
-                    target: awaken_session_contract::SessionRealizationTarget {
-                        owner: lease.owner.clone(),
-                        runtime_incarnation: lease.runtime_incarnation.clone(),
-                        lease_expires_at_unix_ms: requested_expiry_unix_ms,
-                        renew_existing_lease: true,
-                        reassign_existing_lease: false,
-                    },
-                };
-                let mut directive = match control.begin_session_realization(renewal_command()).await
-                {
-                    Ok(directive) => directive,
-                    Err(error)
-                        if realization_renewal_failure_disposition(&error)
-                            == RenewalFailureDisposition::Retire =>
-                    {
-                        return Ok(false);
-                    }
-                    Err(error) => return Err(crate::HostError::internal(error.to_string())),
-                };
-                let realization = self.session_slots.realization_lock(session_id);
-                let Ok(_realization) = realization.try_lock() else {
-                    // Control has extended only the same owner/incarnation/epoch.
-                    // Preserve that authority locally, but never start a second
-                    // effect driver. The active driver compares exact generation
-                    // fences at Activate/Acknowledge and catches up before it can
-                    // report completion.
-                    self.install_session_realization_lease(session_id, directive.lease.clone());
-                    return Ok::<bool, crate::HostError>(true);
-                };
-                // A Session command can advance the aggregate after Begin but
-                // before Activate/Acknowledge. Keep the one realization lock,
-                // re-read Control, and replay the same idempotent driver. This
-                // closes the renewal-versus-successor-Run race without a second
-                // projection owner or a provider-specific retry path.
-                const MAX_CONTROL_CONFLICT_ATTEMPTS: usize = 2;
-                for attempt in 0..MAX_CONTROL_CONFLICT_ATTEMPTS {
-                    match crate::host::HostWorkerResolver::drive_session_realization_raw(
-                        self,
+        // Earliest deadline first prevents HashMap iteration order from starving
+        // one Session during a sustained recovery wave. Session id is the stable
+        // tie-breaker and carries no scheduling authority of its own.
+        realizations.sort_by(|left, right| {
+            left.1
+                .expires_at_unix_ms
+                .cmp(&right.1.expires_at_unix_ms)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let outcomes = stream::iter(realizations)
+            .map(|(session_id, lease)| {
+                let control = Arc::clone(control);
+                async move {
+                    self.reconcile_one_session_realization(
                         control.as_ref(),
                         session_id,
-                        directive,
-                        None,
-                        None,
-                        false,
+                        lease,
+                        renew_before_unix_ms,
+                        requested_expiry_unix_ms,
                     )
                     .await
-                    {
-                        Ok(()) => return Ok::<bool, crate::HostError>(true),
-                        Err(awaken_session_contract::SessionRealizationDriveError::Control(
-                            awaken_session_contract::SessionRealizationControlFailure::Conflict,
-                        )) if attempt + 1 < MAX_CONTROL_CONFLICT_ATTEMPTS => {
-                            directive = control
-                                .begin_session_realization(renewal_command())
-                                .await
-                                .map_err(|error| crate::HostError::internal(error.to_string()))?;
-                        }
-                        Err(error) => {
-                            return Err(crate::HostError::internal(error.to_string()));
-                        }
-                    }
                 }
-                unreachable!("bounded realization conflict loop returns on every branch")
-            }
+            })
+            .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS)
+            .collect::<Vec<_>>()
             .await;
-            if matches!(renewal, Ok(true)) {
-                renewed += 1;
-                continue;
-            }
-            if let Err(error) = &renewal {
-                eprintln!(
-                    "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
-                );
-            }
-            // Every failed renewal has one cleanup path. Expected terminal
-            // retirement differs only in observability, never in side effects.
-            let _ = self.interrupt(session_id).await;
-            if let Err(error) = self.revoke_session_realization(session_id).await {
-                terminal_error.get_or_insert(error);
+        let mut renewed = 0;
+        let mut first_error = None;
+        for outcome in outcomes {
+            match outcome {
+                Ok(true) => renewed += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        match terminal_error {
+        match first_error {
             Some(error) => Err(error),
             None => Ok(renewed),
         }
