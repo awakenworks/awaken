@@ -485,6 +485,14 @@ jobs:
           path: dist
           pattern: awaken-*
           merge-multiple: true
+      - name: Stage the verified POSIX installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/release/install.sh dist/install.sh
+          chmod 0755 dist/install.sh
+          cd dist
+          sha256sum install.sh > install.sh.sha256
       - name: Attest the release archives
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
