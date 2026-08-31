@@ -1507,13 +1507,16 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
 async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
     // Cause/effect graph: C1=the latest Run is durably Awaiting; C2=its active
     // ResumeTicket is isolated-missing; C3=RunStateChanged retains the exact
-    // AwaitTarget; C4=batch is pure user.interrupt, an ordinary message/reply,
-    // or a mixed interrupt batch.
-    // Effects: E1=list projection rebuilds the pending payload from C3; E2=pure
-    // interrupt freezes the canonical target without reading reply authority;
-    // E3=ordinary input remains fail-closed and cannot start a competing Run.
+    // AwaitTarget or that historical target is also unavailable; C4=batch is
+    // pure user.interrupt, an ordinary message/reply, or a mixed interrupt
+    // batch. Effects: E0=no target means no synthetic visible tool card; E1=list
+    // projection rebuilds the pending payload only from an exact C3 target;
+    // E2=pure interrupt freezes the canonical target from committed Run
+    // lifecycle/topology without reading reply authority; E3=ordinary input
+    // remains fail-closed and cannot start a competing Run.
     //
     // | Rule | Awaiting | Ticket | Audit target | Input | Effect |
+    // | DI0 | yes | missing | missing | list / pure interrupt | E0 + E2 |
     // | DI1 | yes | missing | exact | list | E1 |
     // | DI2 | yes | missing | exact | pure interrupt | E2 |
     // | DI3 | yes | missing | exact | user message/reply | E3 |
@@ -1544,6 +1547,36 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         RunLifecycleEventKind::Awaiting,
         RunState::Awaiting,
     ));
+
+    let no_target = runtime
+        .session_thread_recovery_snapshot(&session.id, &session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        ManagedState::pending_from_recovery_snapshot(&no_target)
+            .unwrap()
+            .is_none(),
+        "DI0/E0 no authority means no invented tool card"
+    );
+    let no_target_interrupt = state
+        .validate_event_batch(
+            &session.id,
+            &[InboundEvent::UserInterrupt {
+                session_thread_id: None,
+            }],
+        )
+        .await
+        .expect("DI0 pure interrupt remains admissible without a visible tool card");
+    assert!(
+        matches!(
+            no_target_interrupt.inputs.as_slice(),
+            [SessionEventInput::Interrupt(SessionEventInterrupt { targets, .. })]
+                if targets == &[SessionThreadTarget::Primary]
+        ),
+        "DI0/E2"
+    );
+
     runtime
         .audit_events
         .lock()

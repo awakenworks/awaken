@@ -1,6 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import { projectManagedSessionRuntime } from "@awaken/managed-session-projection";
 import type { Environment, Session } from "../lib/api/types";
-import { managedMoneyLabel, outcomeTone, sessionConfigDestinations, sessionEnvironmentName, sessionMcpPolicies, sessionRuntime, sessionViewFromSearch, withoutQuickstartProvenance } from "./session-detail";
+
+const useQueryStub = vi.hoisted(() => vi.fn());
+const useSessionLogStub = vi.hoisted(() => vi.fn());
+
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tanstack/react-query")>(),
+  useMutation: () => ({ error: null, isPending: false, mutate: vi.fn() }),
+  useQuery: useQueryStub,
+  useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
+}));
+vi.mock("react-router", async () => {
+  const React = await import("react");
+  return {
+    Link: ({ children, to }: { children?: import("react").ReactNode; to: unknown }) =>
+      React.createElement("a", { href: String(to) }, children),
+    useParams: () => ({ sid: "session", ws: "default" }),
+    useSearchParams: () => [new URLSearchParams(), vi.fn()],
+  };
+});
+vi.mock("../lib/api/client", () => ({
+  api: { get: vi.fn(), post: vi.fn() },
+  ws: (path: string) => path,
+}));
+vi.mock("../lib/app-state", () => ({
+  useApp: () => ({ locale: "en", t: (english: string) => english }),
+}));
+vi.mock("../lib/useSessionLog", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/useSessionLog")>(),
+  useSessionLog: useSessionLogStub,
+}));
+vi.mock("../components/ui", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../components/ui")>(),
+  useConfirm: () => async () => false,
+  useToast: () => ({ err: vi.fn(), ok: vi.fn() }),
+}));
+vi.mock("../components/session/TraceView", () => ({ default: () => null }));
+vi.mock("../components/session/SessionFiles", () => ({ default: () => null }));
+vi.mock("../components/session/SessionIntegrations", () => ({ default: () => null }));
+vi.mock("../components/session/SessionThreads", () => ({ default: () => null }));
+
+import SessionDetailSurface, { managedMoneyLabel, outcomeTone, sessionConfigDestinations, sessionEnvironmentName, sessionMcpPolicies, sessionRuntime, sessionViewFromSearch, withoutQuickstartProvenance } from "./session-detail";
 
 function session(model: string): Session {
   return {
@@ -43,6 +86,63 @@ describe("sessionViewFromSearch", () => {
     expect(sessionViewFromSearch("artifacts", "evt-1")).toBe("trace");
     expect(sessionViewFromSearch("unknown", null)).toBe("chat");
     expect(sessionViewFromSearch(null, null)).toBe("chat");
+  });
+});
+
+describe("Session detail transport presentation", () => {
+  it("currently presents idle while the shared Transcript is sending", () => {
+    /**
+     * Cause/effect graph: C1 the durable aggregate and committed Event truth are
+     * idle; C2 the one SessionLog Events POST is pending; C3 Session Detail and
+     * Transcript render from that exact shared log. Effects: E1 Transcript shows
+     * active work; E2 the detail status must not simultaneously present idle.
+     *
+     * | Rule | committed phase | shared send | Transcript | detail status |
+     * |---|---|---|---|---|
+     * | SP1 | idle | pending | working | non-idle/submitting |
+     * | SP2 | idle | settled | idle | idle |
+     *
+     * Known-gap characterization: Session Detail currently recomputes
+     * presentation from committed truth only. This renders the real component
+     * with one mocked transport owner and asserts the one observed
+     * contradiction. When production is fixed, this assertion must fail and be
+     * flipped to `false`; render or mock failures are never treated as success.
+     * No hypothetical helper signature or second projection is used.
+     */
+    const value = session("model");
+    useQueryStub.mockImplementation(({ queryKey }: { queryKey: readonly unknown[] }) =>
+      queryKey[0] === "session"
+        ? { data: value, error: null, refetch: vi.fn() }
+        : { data: { data: [] }, error: null, refetch: vi.fn() });
+    const runtime = projectManagedSessionRuntime([{
+      id: "idle",
+      type: "session.status_idle",
+      processed_at: "t0",
+      stop_reason: { type: "end_turn" },
+    }]);
+    useSessionLogStub.mockReturnValue({
+      admission: { canInterrupt: false, canResolveTools: false, canSendMessage: false },
+      applyPending: vi.fn(),
+      freshCount: 0,
+      loadError: null,
+      log: [],
+      pendingIds: new Set<string>(),
+      projectionError: null,
+      refetch: vi.fn(),
+      results: new Map(),
+      running: false,
+      runtime,
+      send: vi.fn(),
+      sendError: null,
+      sendPending: true,
+    });
+
+    const markup = renderToStaticMarkup(createElement(SessionDetailSurface));
+    const text = markup
+      .replaceAll(/<!--.*?-->/g, "")
+      .replaceAll(/<[^>]+>/g, " ")
+      .replaceAll(/\s+/g, " ");
+    expect(text.includes("Status idle") && text.includes("Agent is working")).toBe(true);
   });
 });
 

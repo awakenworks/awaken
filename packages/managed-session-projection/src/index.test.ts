@@ -345,7 +345,8 @@ describe("Managed Session Runtime and admission decision table", () => {
    * is admitted only at the exact idle gate. E3 interrupt is admitted only for
    * nonterminal active/recovery work. Decision rules A1 idle+unknown/idle/error+
    * empty+healthy=>message; A2 any non-idle aggregate=>deny message; A3 any gate
-   * or unhealthy=>deny message; A4 idle+pending=>tool reply/interrupt.
+   * =>deny message; A4 idle+pending=>tool reply/interrupt. Projection-unhealthy
+   * recovery is isolated below so its expected failure cannot mask this table.
    */
   it("conservatively joins aggregate and Event truth for every input consumer", () => {
     const unknown = projectManagedSessionRuntime([]);
@@ -380,10 +381,43 @@ describe("Managed Session Runtime and admission decision table", () => {
       event({ id: "reply", type: "user.tool_confirmation", tool_use_id: "tool", result: "allow" }),
     ]);
     expect(managedSessionAdmission(resolving, "idle").canSendMessage).toBe(false);
-    expect(managedSessionAdmission(staleIdle, "idle", false)).toEqual({
-      canSendMessage: false,
-      canResolveTools: false,
-      canInterrupt: false,
+  });
+
+  /**
+   * Cause/effect graph: C1 the aggregate is nonterminal idle; C2 committed
+   * Event projection is unhealthy, so a damaged Awaiting ticket may have no
+   * visible tool card; C3 ordinary message/reply controls remain unsafe.
+   * Effects: E1 deny message and reply; E2 retain one force-recovery Interrupt
+   * path that uses server-side committed Run topology rather than browser
+   * pending reconstruction.
+   *
+   * | Rule | Aggregate | Projection | Visible pending | Effects |
+   * |---|---|---|---|---|
+   * | D1 | idle/nonterminal | unhealthy | none/unknown | E1 + E2 |
+   * | D2 | terminated | any | any | deny every control (terminal table above) |
+   *
+   * Known-gap characterization: current admission makes projection health a
+   * prerequisite for Interrupt. The single current-behavior assertion fails
+   * when recovery admission is separated from message/reply admission and must
+   * then be flipped to the target `canInterrupt: true`; setup errors stay red.
+   */
+  it("currently disables force recovery when pending projection is damaged", () => {
+    const noVisiblePending = projectManagedSessionRuntime([event({
+      id: "idle-before-damage",
+      type: "session.status_idle",
+      processed_at: "t0",
+      stop_reason: { type: "end_turn" },
+    })]);
+    expect({
+      admission: managedSessionAdmission(noVisiblePending, "idle", false),
+      pendingToolCount: noVisiblePending.pendingToolIds.size,
+    }).toEqual({
+      admission: {
+        canSendMessage: false,
+        canResolveTools: false,
+        canInterrupt: false,
+      },
+      pendingToolCount: 0,
     });
   });
 

@@ -871,6 +871,70 @@ mod tests {
     }
 
     #[tokio::test]
+    #[should_panic(
+        expected = "KNOWN GAP: a repository Skill scan failure must not become an empty catalog"
+    )]
+    async fn repository_skill_snapshot_propagates_scan_failure() {
+        /* Temporary expected-failure regression; remove `should_panic` when
+         * the production fix lands.
+         *
+         * Cause/effect graph: C1 a fixed Managed repository root is admitted;
+         * C2 the root is absent, readable, or returns a structural/UTF-8 scan
+         * error. Effects: E1 absence is a legitimate empty snapshot; E2 valid
+         * files use the existing path-qualified snapshot path; E3 scan errors
+         * abort construction before any registry or prompt is published.
+         * Decision table: SS1 C1+absent => E1; SS2 C1+readable => E2 (owned by
+         * `repository_skill_snapshot_is_startup_scoped_and_path_qualified`);
+         * SS3 C1+scan-error => E3. This test owns SS1/SS3 and reuses the
+         * authoritative sandbox scanner and registry builder instead of
+         * introducing a second discovery fake. */
+        let base = tempfile::tempdir().expect("SS1/SS3 temporary repository root");
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(base.path())
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        ));
+        let root = "workspace/repository/.claude/skills".to_owned();
+
+        let missing = build_skill_registry(
+            &[],
+            Vec::new(),
+            None,
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            Some(std::slice::from_ref(&root)),
+            true,
+        )
+        .await
+        .expect("SS1 an absent repository Skill root is an empty snapshot");
+        assert!(missing.is_none(), "SS1 no ambient Skill surface");
+
+        let broken = base.path().join("t").join(&root).join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("SKILL.md"), [0xff, 0xfe]).unwrap();
+        let error = match build_skill_registry(
+            &[],
+            Vec::new(),
+            None,
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            Some(std::slice::from_ref(&root)),
+            true,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!(
+                "KNOWN GAP: a repository Skill scan failure must not become an empty catalog"
+            ),
+        };
+        assert!(error.contains("UTF-8"), "SS3: {error}");
+
+        env.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn attached_integrity_failure_cannot_fall_back_to_a_repository_skill() {
         // Managed repository Skill cause/effect rule R8. C1 an attached binding
         // supplies tampered version bytes; C2 an admitted repository contains a

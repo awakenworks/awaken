@@ -139,6 +139,7 @@ struct AcceptingFake {
     staged: std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
     applied:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
+    stall_projection_install: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     published: std::sync::Arc<
@@ -1692,6 +1693,12 @@ impl SessionRuntime for AcceptingFake {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        if self
+            .stall_projection_install
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            std::future::pending::<()>().await;
+        }
         if let Some(init) = awaken_protocol_managed::test_support::complete_session_projection_init(
             thread,
             &projection,
@@ -4838,6 +4845,67 @@ async fn persist_profiled_publication_source(
         durable.resources.revision, before.resources.revision,
         "Environment receipt does not invent a Resource generation"
     );
+}
+
+#[tokio::test]
+#[should_panic(expected = "Q1/E1 profiled create waited on the stalled physical realization")]
+async fn profiled_create_accepts_the_durable_root_without_waiting_for_realization() {
+    // Profiled-create cause/effect graph: C1 the typed request and complete
+    // preflight are valid; C2 the atomic Session root/receipt is absent or an
+    // exact replay; C3 physical Runtime projection cannot complete. Effects:
+    // E1 a new request returns the stable Session id after the complete root is
+    // durable; E2 the root remains Preparing and the Runtime effect is still
+    // unentered. Exact receipt replay is already owned by the adjacent profiled
+    // creation/idempotency tests; this probe owns only the missing asynchronous
+    // product-route boundary. The sole lifecycle supervisor owns later retry.
+    //
+    // | Rule | request | receipt | realization | Effect |
+    // |---|---|---|---|---|
+    // | Q1 | valid | absent | stalled | E1+E2 |
+    // | Q3 | invalid preflight | absent | n/a | reject and no root (adjacent admission tests) |
+    //
+    // Constraint: the Session id/root is the asynchronous operation authority;
+    // the HTTP adapter must not add a Job table or keep physical realization in
+    // its request future. This deterministic stall detects synchronous waiting
+    // without relying on a slow filesystem, network, or provider.
+    let runtime = AcceptingFake::default();
+    runtime
+        .stall_projection_install
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state, "default");
+    let request = json!({
+        "session_id": "profiled-durable-accept",
+        "mode": "work_unit",
+        "agent_id": "coder"
+    });
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request)),
+    )
+    .await;
+
+    let durable = sessions.get("profiled-durable-accept").await.unwrap();
+    assert_eq!(
+        durable.execution,
+        awaken_session_contract::SessionExecutionState::Preparing,
+        "Q1/E2"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "Q1/E2");
+
+    let (status, body) = response.unwrap_or_else(|_| {
+        panic!("Q1/E1 profiled create waited on the stalled physical realization")
+    });
+    assert!(status.is_success(), "Q1/E1: {status} {body}");
+    assert_eq!(body["id"], "profiled-durable-accept", "Q1/E1");
 }
 
 #[tokio::test]

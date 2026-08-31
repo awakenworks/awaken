@@ -990,6 +990,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_policy_never_uses_bash_text_as_read_only_git_authority() {
+        // Approval-granularity cause/effect graph: C1 an exact typed perception
+        // tool (read/glob/grep) is selected; C2 an exact typed mutation tool
+        // (write/edit) is selected; C3 Bash carries arbitrary command text that
+        // looks read-only, compounds a mutation, or changes Git behavior through
+        // configuration/aliases. Effects: E1 C1 is allowed; E2 C2 asks; E3 every
+        // C3 asks solely because the canonical tool id is `bash`, independent of
+        // its opaque argument string. Native and ACP consume the same verdict.
+        //
+        // | Rule | canonical tool | argument class | Native / ACP effect |
+        // |---|---|---|---|
+        // | G1 | read/glob/grep | typed fields | allow / allow |
+        // | G2 | write/edit | typed fields | ask / ask |
+        // | G3 | bash | apparent `git status` or `git diff` | ask / ask |
+        // | G4 | bash | chained mutation or Git alias/config | ask / ask |
+        //
+        // Constraint: Bash text is not a trusted Git AST. Automatically allowed
+        // Repository inspection requires a separately registered typed tool;
+        // command parsing, prefixes, aliases, and shell quoting cannot widen Bash.
+        use awaken_runtime_contract::agent_bindings::{
+            ResolvedConfiguration, ToolExecutionPolicy, ToolPermissionRequirement,
+            ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::GateOutcomeKind;
+
+        let allow = ToolExecutionPolicy::default();
+        let ask = ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAsk,
+        };
+        let toolsets = [ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: false,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: [
+                ("read", allow),
+                ("glob", allow),
+                ("grep", allow),
+                ("write", ask),
+                ("edit", ask),
+                ("bash", ask),
+            ]
+            .into_iter()
+            .map(|(name, policy)| ToolPolicyOverride::new(name, policy))
+            .collect(),
+        }];
+        let authorization =
+            effective_tool_authorization(&ResolvedConfiguration::default(), &[], &toolsets);
+        let cases = [
+            (
+                "read",
+                serde_json::json!({"path": "/workspace/repository/.git/HEAD"}),
+                GateOutcomeKind::Allow,
+                "G1",
+            ),
+            (
+                "glob",
+                serde_json::json!({"pattern": "**/*.rs"}),
+                GateOutcomeKind::Allow,
+                "G1",
+            ),
+            (
+                "grep",
+                serde_json::json!({"pattern": "TODO"}),
+                GateOutcomeKind::Allow,
+                "G1",
+            ),
+            (
+                "write",
+                serde_json::json!({"path": "/workspace/repository/new.rs"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G2",
+            ),
+            (
+                "edit",
+                serde_json::json!({"path": "/workspace/repository/src/lib.rs"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G2",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "git status --short"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G3",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "git diff --stat"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G3",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "git status && git commit -am unexpected"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G4",
+            ),
+            (
+                "bash",
+                serde_json::json!({"command": "git -c alias.status='!touch /workspace/pwned' status"}),
+                GateOutcomeKind::RequireConfirmation,
+                "G4",
+            ),
+        ];
+        for (index, (tool_id, arguments, expected, rule)) in cases.into_iter().enumerate() {
+            let call = awaken_runtime_contract::llm::ToolCall {
+                call_id: format!("git-authority-{index}"),
+                tool_id: tool_id.into(),
+                arguments,
+            };
+            let native = authorization
+                .gate
+                .gate(&call, &awaken_agent_contract::agent::state::Store::new())
+                .await;
+            let acp = authorization.policy.evaluate(&call).await;
+            assert_eq!(native.kind(), expected, "{rule}/E1-E3 Native {tool_id}");
+            assert_eq!(
+                acp.kind().gate_outcome_kind(),
+                expected,
+                "{rule}/E1-E3 ACP {tool_id}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn build_runtime_registers_the_plugin_and_validates_config() {
         // A1: the configured runtime has the plugin (a valid section resolves).
         // A3: a malformed section fails closed at publish-time validation.

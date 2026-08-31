@@ -1228,6 +1228,95 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
 }
 
 #[tokio::test]
+#[should_panic(
+    expected = "CR1/E1 cold recovery must execute Interrupt before retrying damaged ToolReply"
+)]
+async fn cold_recovery_interrupt_is_not_starved_by_an_older_failed_tool_reply() {
+    // Cause/effect graph: C1 an older ToolReply is retained and its delivery
+    // fails after the Runtime has durably staged it; C2 a later Interrupt is
+    // committed; C3 a new application instance performs a cold all-batch scan.
+    // Effects: E1 C2 is selected and processed before retrying C1; E2 C1 may
+    // still report its independent retryable failure; E3 the Interrupt effect
+    // occurs once and remains rooted even though the scan returns C1's error.
+    //
+    // | Rule | Older reply | Later interrupt | Drive | Effects |
+    // |---|---|---|---|---|
+    // | CR1 | staged then unavailable | unprocessed | cold/all batches | E1+E2+E3 |
+    //
+    // This is an expected-failure probe for the duplicate warm/cold selectors.
+    // When a damaged reply's failed delivery can yield to the already-retained
+    // Interrupt without reordering healthy receipts, the assertion stops
+    // panicking and this annotation deliberately fails until it is removed.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("CR1 repository"),
+    );
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("cold-interrupt-priority", 1),
+    )
+    .await;
+    let warm = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    warm.append_session_event_batch(
+        "cold-interrupt-priority",
+        vec![tool_reply_input("older-damaged-reply")],
+        None,
+        None,
+    )
+    .await
+    .expect("CR1 older reply");
+    let interrupt = warm
+        .append_session_event_batch(
+            "cold-interrupt-priority",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: Some(SessionThreadTarget::Primary),
+                targets: vec![SessionThreadTarget::Primary],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("CR1 later interrupt");
+
+    let cold = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let drive = cold
+        .drive_session_event_batches("cold-interrupt-priority", None)
+        .await;
+    assert!(drive.is_err(), "CR1/E2 reply failure remains independent");
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        1,
+        "CR1/E1 cold recovery must execute Interrupt before retrying damaged ToolReply"
+    );
+    assert!(
+        repository
+            .get("cold-interrupt-priority")
+            .await
+            .unwrap()
+            .event_batches
+            .iter()
+            .find(|batch| batch.batch_id == interrupt.batch_id)
+            .unwrap()
+            .events[0]
+            .processed,
+        "CR1/E3"
+    );
+}
+
+#[tokio::test]
 async fn preferred_interrupt_does_not_reenter_an_older_active_outcome() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
     // documented here remain the only decision source; no parallel ledger is admitted.

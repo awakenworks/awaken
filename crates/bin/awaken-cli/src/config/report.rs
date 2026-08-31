@@ -322,4 +322,76 @@ mod tests {
         assert_eq!(blocked_listener["ready"], false, "R4");
         assert_eq!(blocked_listener["listener"]["status"], "blocked", "R4");
     }
+
+    #[tokio::test]
+    #[should_panic(
+        expected = "KNOWN GAP: initialized storage without sessions.db must not report ready"
+    )]
+    async fn doctor_rejects_initialized_storage_with_missing_session_authority() {
+        /* Temporary expected-failure regression; remove `should_panic` when
+         * the production fix lands.
+         *
+         * Cause/effect graph: C1 the data directory is fresh or carries the
+         * existing durable `platform-workspace-id` initialization marker; C2
+         * `sessions.db` is intact, missing, or zero-byte/truncated. Effects:
+         * E1 a genuinely fresh directory retains the existing first-install
+         * readiness; E2 initialized storage with missing/corrupt Session
+         * authority is blocked, not presented as a healthy empty deployment;
+         * E3 doctor remains read-only. Decision table: SD1 fresh+missing => E1
+         * (owned by `doctor_covers_storage_and_listener_readiness_without_creating_state`);
+         * SD2 initialized+intact => restart persistence (owned by
+         * `runtime_storage_reopens_the_session_and_its_owner_fence`); SD3
+         * initialized+missing => E2+E3; SD4 initialized+truncated => E2+E3.
+         * A different completely empty directory has no C1 evidence and is
+         * deliberately outside this table: without an externally expected
+         * store identity it is indistinguishable from a first installation. */
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("platform-workspace-id"),
+            "workspace_local_regression",
+        )
+        .unwrap();
+        let sessions = directory.path().join("sessions.db");
+        let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
+        deployment.bind = "127.0.0.1:0".to_owned();
+
+        let report: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(
+            report["ready"], false,
+            "KNOWN GAP: initialized storage without sessions.db must not report ready"
+        );
+        assert_eq!(report["data_directory"]["status"], "blocked", "SD3");
+        assert!(!sessions.exists(), "SD3/E3 doctor remains read-only");
+    }
+
+    #[tokio::test]
+    #[should_panic(
+        expected = "KNOWN GAP: initialized storage with a truncated sessions.db must not report ready"
+    )]
+    async fn doctor_rejects_initialized_storage_with_truncated_session_authority() {
+        /* Temporary expected-failure regression for decision-table rule SD4
+         * in the preceding test. The initialization marker distinguishes this
+         * restart state from a fresh install; a zero-byte canonical database
+         * is therefore loss/corruption evidence and must remove readiness. */
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("platform-workspace-id"),
+            "workspace_local_regression",
+        )
+        .unwrap();
+        let sessions = directory.path().join("sessions.db");
+        std::fs::write(&sessions, []).unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
+        deployment.bind = "127.0.0.1:0".to_owned();
+
+        let report: serde_json::Value =
+            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        assert_eq!(
+            report["ready"], false,
+            "KNOWN GAP: initialized storage with a truncated sessions.db must not report ready"
+        );
+        assert_eq!(report["data_directory"]["status"], "blocked", "SD4");
+        assert_eq!(std::fs::metadata(sessions).unwrap().len(), 0, "SD4/E3");
+    }
 }

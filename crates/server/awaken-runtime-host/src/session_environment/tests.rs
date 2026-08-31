@@ -300,6 +300,14 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
         &self,
         _root: &str,
     ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+        if self
+            .shared
+            .lock()
+            .unwrap()
+            .contains_key("__fail_skill_read")
+        {
+            return Err(pc::SandboxError::new("scripted Skill read outage"));
+        }
         Ok(self
             .shared
             .lock()
@@ -502,8 +510,22 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
 
 #[tokio::test]
 async fn namespace_native_process_and_agent_channel_share_one_live_environment() {
-    // Decision rule N1 mirrors W1 at the Namespace tier: opaque ACP paths and
-    // cooperative Native Hand calls must converge on one transparent workspace.
+    // Namespace Workspace-path cause/effect graph: C1 the admitted provider
+    // offers tool transparency and path fidelity; C2 a sandbox process writes
+    // through the canonical absolute `/workspace`; C3 the typed file surface
+    // reads/writes that Session-owned tree; C4 an ACP process reads the same
+    // canonical absolute paths. Effects: E1 the typed read sees C2's bytes and
+    // E2 the ACP process sees both C2 and C3 without an alias or path rewrite.
+    //
+    // | Rule | provider admitted | process write | typed file I/O | ACP read | Effect |
+    // |---|---|---|---|---|---|
+    // | N1 | yes | yes | read process bytes | no | E1 |
+    // | N2 | yes | yes | write typed bytes | yes | E1+E2 |
+    // | N0 | no path fidelity | any | any | any | fail before environment creation (provisioning decision table) |
+    //
+    // Constraint: WorkspaceLayout plus Sandbox capability admission remain the
+    // sole path authority. This test must not add a host-path alias, symlink, or
+    // shell-command classifier to make split paths appear consistent.
     let base = tempfile::tempdir().unwrap();
     let mut namespace_spec = spec();
     namespace_spec.scope = "session-namespace".into();
@@ -521,6 +543,16 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         assert!(rejection.contains(&probe_error.to_string()));
         return;
     }
+    let capabilities = provider.capabilities();
+    if !capabilities.path_fidelity {
+        let requirements = pc::SandboxRequirements::from_spec(&namespace_spec, true);
+        assert!(requirements.path_fidelity, "N0 path requirement");
+        assert!(
+            !capabilities.satisfies_requirements(&requirements),
+            "N0 a split-path Namespace must fail closed before environment creation"
+        );
+        return;
+    }
     let namespace = provider.create_sandbox(&namespace_spec).await.unwrap();
     let environment = SessionEnvironment::namespace(
         namespace,
@@ -533,10 +565,26 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     #[cfg(not(target_os = "macos"))]
     assert_eq!(environment.handle().provider_kind(), "bwrap");
 
-    let mut native_command = pc::Command::new(["/bin/sh", "-c", "printf namespace-state > marker"]);
-    native_command.cwd = "/workspace".into();
+    let mut native_command = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "printf namespace-state > /workspace/process-marker",
+    ]);
+    native_command.cwd = pc::WorkspaceLayout::ROOT.into();
     let native = environment.sandbox().spawn(native_command).await.unwrap();
     assert_eq!(native.wait().await.unwrap().code, Some(0));
+
+    let typed_files = environment.list_workspace_files("").await.unwrap();
+    assert!(
+        typed_files.iter().any(|(path, bytes)| {
+            path.ends_with("process-marker") && bytes.as_slice() == b"namespace-state"
+        }),
+        "N1/E1 typed file reads the process-authored /workspace bytes: {typed_files:?}"
+    );
+    environment
+        .write_workspace_file("typed-marker", b"typed-state")
+        .await
+        .unwrap();
 
     let hand_output = environment
         .tool_executor()
@@ -549,13 +597,17 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         .unwrap();
     assert_eq!(hand_output.text(), "bound-hand-ok", "N1 Hand binding");
 
-    let mut agent_command = pc::Command::new(["/bin/sh", "-c", "cat marker"]);
-    agent_command.cwd = "/workspace".into();
+    let mut agent_command = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "cat /workspace/process-marker; printf '|'; cat /workspace/typed-marker",
+    ]);
+    agent_command.cwd = pc::WorkspaceLayout::ROOT.into();
     let (agent, mut channel) = environment.spawn_agent(agent_command).await.unwrap();
     let mut output = String::new();
     channel.read_to_string(&mut output).await.unwrap();
     assert_eq!(agent.wait().await.unwrap().code, Some(0));
-    assert_eq!(output, "namespace-state");
+    assert_eq!(output, "namespace-state|typed-state", "N2/E2");
 
     environment.dispose().await.unwrap();
 }
@@ -646,6 +698,117 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
     assert_eq!(skills[0].dir, "skills/authored");
     environment.refresh_skills().await.unwrap();
     environment.stop_bound_processes().await.unwrap();
+    environment.dispose().await.unwrap();
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "KNOWN GAP: a container Skill read failure must not become an empty registry"
+)]
+async fn managed_skill_refresh_propagates_container_read_failure() {
+    /* Temporary expected-failure regression; remove `should_panic` when the
+     * production fix lands.
+     *
+     * Cause/effect graph: C1 a Managed repository Skill root is admitted;
+     * C2 the container read backing the registered-root refresh succeeds or
+     * fails. Effects: E1 success may build the one repository registry (the
+     * neighboring container test owns that row); E2 failure aborts registry
+     * construction with the original diagnostic; E3 no empty catalog/prompt
+     * is published as if the root legitimately contained no Skills.
+     * Decision table: SR1 C1+read-ok => E1; SR2 C1+read-error => E2+E3.
+     * This case owns SR2 through the existing `SessionEnvironment` refresh and
+     * `build_skill_registry(Result)` boundaries; it adds no fake registry or
+     * alternate discovery path. */
+    let provider = Arc::new(FakeContainerProvider::default());
+    provider
+        .shared
+        .lock()
+        .unwrap()
+        .insert("__fail_skill_read".into(), Vec::new());
+    let environment = Arc::new(
+        SessionEnvironmentProvider::container(
+            provider,
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap(),
+    );
+    let roots = vec!["workspace/repository/.claude/skills".to_owned()];
+
+    let error = match crate::skills::build_skill_registry(
+        &[],
+        Vec::new(),
+        None,
+        Some(environment.clone()),
+        crate::skills::MANAGED_SKILLS_SUBDIR,
+        Some(&roots),
+        true,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => {
+            panic!("KNOWN GAP: a container Skill read failure must not become an empty registry")
+        }
+    };
+    assert!(error.contains("scripted Skill read outage"), "SR2: {error}");
+    environment.dispose().await.unwrap();
+}
+
+#[tokio::test]
+#[should_panic(
+    expected = "KNOWN GAP: invalid UTF-8 from container Skill refresh must not become an empty registry"
+)]
+async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
+    /* Temporary expected-failure regression; remove `should_panic` when the
+     * production fix lands.
+     *
+     * Cause/effect graph: C1 the container refresh returns an exact
+     * `<id>/SKILL.md`; C2 its bytes are valid or invalid UTF-8. Effects: E1
+     * valid bytes enter the one repository snapshot; E2 invalid bytes surface
+     * a construction error; E3 invalid bytes never disappear into a healthy
+     * empty registry. Decision table: SU1 C1+UTF8 => E1 (owned by
+     * `container_native_tools_and_acp_share_one_environment_and_bound_hand`);
+     * SU2 C1+!UTF8 => E2+E3. */
+    let provider = Arc::new(FakeContainerProvider::default());
+    provider
+        .shared
+        .lock()
+        .unwrap()
+        .insert("broken/SKILL.md".into(), vec![0xff, 0xfe]);
+    let environment = Arc::new(
+        SessionEnvironmentProvider::container(
+            provider,
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap(),
+    );
+    let roots = vec!["workspace/repository/.claude/skills".to_owned()];
+
+    let error = match crate::skills::build_skill_registry(
+        &[],
+        Vec::new(),
+        None,
+        Some(environment.clone()),
+        crate::skills::MANAGED_SKILLS_SUBDIR,
+        Some(&roots),
+        true,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!(
+            "KNOWN GAP: invalid UTF-8 from container Skill refresh must not become an empty registry"
+        ),
+    };
+    assert!(error.contains("UTF-8"), "SU2: {error}");
     environment.dispose().await.unwrap();
 }
 
