@@ -181,6 +181,40 @@ pub(super) struct FixedAgentPublication {
 }
 
 impl FixedAgentPublication {
+    fn new(
+        snapshots: impl IntoIterator<Item = ExecutableAgentSnapshot>,
+        resources: Vec<awaken_resource_contract::InputBinding>,
+    ) -> Self {
+        let snapshots = snapshots.into_iter().map(|mut snapshot| {
+            // Direct builders deliberately produce a legacy revision-0 snapshot.
+            // A durable Managed Session cannot pin that sentinel as exact
+            // publication history, so scenario publications promote it once at
+            // this sole fixture boundary. Explicit revisioned snapshots pass
+            // through unchanged.
+            if snapshot.metadata.is_legacy_default() {
+                snapshot.metadata = awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
+                    source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
+                        agent_id: snapshot.root_agent_id.clone(),
+                        revision: 1,
+                    },
+                    publication_version: awaken_runtime_contract::snapshot::AgentPublicationVersion(
+                        snapshot.fingerprint.0.clone(),
+                    ),
+                    resolution: Default::default(),
+                    fingerprint: awaken_runtime_contract::snapshot::AgentSnapshotFingerprint(
+                        snapshot.fingerprint.0.clone(),
+                    ),
+                };
+            }
+            snapshot
+        });
+        Self {
+            snapshots: StaticPublishedAgentSnapshots::try_new(snapshots)
+                .expect("valid fixed scenario Agent publications"),
+            resources,
+        }
+    }
+
     fn host_backend(
         id: &str,
         backend_ref: &str,
@@ -219,11 +253,7 @@ impl FixedAgentPublication {
             })
             .plugin_config(plugin_config)
             .build();
-        Self {
-            snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
-                .expect("valid fixed scenario Agent publication"),
-            resources: Vec::new(),
-        }
+        Self::new([snapshot], Vec::new())
     }
 
     fn host_backend_with_mcp(
@@ -255,11 +285,7 @@ impl FixedAgentPublication {
                 ..Default::default()
             })
             .build();
-        Self {
-            snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
-                .expect("valid fixed scenario Agent publication"),
-            resources: Vec::new(),
-        }
+        Self::new([snapshot], Vec::new())
     }
 }
 
@@ -300,10 +326,9 @@ pub(super) fn mount_with_memory_publication_on_lifecycle(
             ..Default::default()
         })
         .build();
-    let publication = Arc::new(FixedAgentPublication {
-        snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
-            .expect("valid fixed Memory scenario Agent publication"),
-        resources: vec![awaken_resource_contract::InputBinding {
+    let publication = Arc::new(FixedAgentPublication::new(
+        [snapshot],
+        vec![awaken_resource_contract::InputBinding {
             binding_id: awaken_resource_contract::BindingId::from("memory"),
             target: awaken_resource_contract::InputResourceId::MemoryStore(
                 awaken_resource_contract::MemoryStoreId::from("scenario-memory-placeholder"),
@@ -312,7 +337,7 @@ pub(super) fn mount_with_memory_publication_on_lifecycle(
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
             instructions: None,
         }],
-    });
+    ));
     let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source_on_lifecycle(platform, publication, lifecycle)
 }
@@ -360,11 +385,7 @@ pub(super) fn fixed_host_backend_publication(
 pub(super) fn fixed_agent_publication(
     snapshots: impl IntoIterator<Item = ExecutableAgentSnapshot>,
 ) -> Arc<FixedAgentPublication> {
-    Arc::new(FixedAgentPublication {
-        snapshots: StaticPublishedAgentSnapshots::try_new(snapshots)
-            .expect("valid fixed scenario Agent publications"),
-        resources: Vec::new(),
-    })
+    Arc::new(FixedAgentPublication::new(snapshots, Vec::new()))
 }
 
 pub(super) fn fixed_host_model_publication(
@@ -380,11 +401,7 @@ pub(super) fn fixed_host_model_publication(
                 .map(|candidate| candidate.binding().clone()),
         )
         .build();
-    Arc::new(FixedAgentPublication {
-        snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
-            .expect("valid fixed scenario model publication"),
-        resources: Vec::new(),
-    })
+    Arc::new(FixedAgentPublication::new([snapshot], Vec::new()))
 }
 
 /// Install one immutable Agent as the sole backend authority for deterministic
@@ -609,6 +626,34 @@ mod tests {
             view.toolsets[0].default.permission,
             awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
         );
+    }
+
+    #[test]
+    fn fixed_legacy_publication_has_exact_restart_revision() {
+        // Cause/effect decision table: C1 a direct builder supplies legacy
+        // revision 0; C2 the snapshot enters the durable scenario publication.
+        // E1 the Session profile exposes a positive revision and E2 exact
+        // recovery resolves the same snapshot. Rule L1=C1+C2=>E1+E2. Rule L2,
+        // an explicitly revisioned snapshot remains unchanged, is covered by
+        // `fixed_multiagent_publication_shares_exact_roster_and_snapshot_truth`.
+        let publication = fixed_host_backend_publication("native-agent", "native", Vec::new());
+        let profile =
+            awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(
+                publication.as_ref(),
+                "workspace",
+                "native-agent",
+            )
+            .expect("fixed publication profile");
+        assert_eq!(profile.source_revision, 1, "L1/E1");
+        let recovered = awaken_executable_agent_contract::ExecutableAgentProfileSource::
+            executable_snapshot_at_revision_in(
+                publication.as_ref(),
+                "workspace",
+                "native-agent",
+                profile.source_revision,
+            )
+            .expect("L1/E2 exact publication");
+        assert_eq!(recovered.root_agent_id.0, "native-agent", "L1/E2");
     }
 
     #[test]

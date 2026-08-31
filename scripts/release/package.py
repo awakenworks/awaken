@@ -71,6 +71,10 @@ def target_directory(repository: Path = REPOSITORY) -> Path:
     return Path(json.loads(metadata)["target_directory"])
 
 
+def is_windows_target(target: str) -> bool:
+    return target.endswith(("windows-msvc", "windows-gnu"))
+
+
 def add_tar_bytes(archive: tarfile.TarFile, name: str, data: bytes, mode: int, epoch: int) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(data)
@@ -94,15 +98,20 @@ def zip_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
 def create_archive(
     repository: Path,
     binary: Path,
+    companion: Path,
     target: str,
     version: str,
     output_directory: Path,
     epoch: int,
 ) -> Path:
     base = f"awaken-v{version}-{target}"
-    windows = target.endswith("windows-msvc") or target.endswith("windows-gnu")
+    windows = is_windows_target(target)
     binary_name = "awaken.exe" if windows else "awaken"
-    entries = [(binary_name, binary.read_bytes(), 0o755)]
+    companion_name = "awaken-sandbox.exe" if windows else "awaken-sandbox"
+    entries = [
+        (binary_name, binary.read_bytes(), 0o755),
+        (companion_name, companion.read_bytes(), 0o755),
+    ]
     entries.extend(
         (name, (repository / name).read_bytes(), 0o644) for name in PACKAGE_FILES
     )
@@ -135,7 +144,7 @@ def write_checksum(archive: Path) -> Path:
     return checksum
 
 
-def build_release(target: str, repository: Path = REPOSITORY) -> Path:
+def build_release(target: str, repository: Path = REPOSITORY) -> tuple[Path, Path]:
     subprocess.run(
         [
             "cargo",
@@ -146,14 +155,21 @@ def build_release(target: str, repository: Path = REPOSITORY) -> Path:
             "awaken-cli",
             "--bin",
             "awaken",
+            "--package",
+            "awaken-sandbox",
+            "--bin",
+            "awaken-sandbox",
+            "--features",
+            "awaken-sandbox/hand",
             "--target",
             target,
         ],
         cwd=repository,
         check=True,
     )
-    suffix = ".exe" if target.endswith(("windows-msvc", "windows-gnu")) else ""
-    return target_directory(repository) / target / "release" / f"awaken{suffix}"
+    suffix = ".exe" if is_windows_target(target) else ""
+    release = target_directory(repository) / target / "release"
+    return release / f"awaken{suffix}", release / f"awaken-sandbox{suffix}"
 
 
 class ReleaseContractTests(unittest.TestCase):
@@ -173,10 +189,11 @@ class ReleaseContractTests(unittest.TestCase):
             with self.subTest(rule=rule), self.assertRaises(ValueError):
                 validate_identity(*rule)
 
-    # Cause/effect graph: C1 target is Windows vs Unix, C2 payload is executable.
-    # E1 selects ZIP+awaken.exe for Windows; E2 selects tar.gz+awaken for Unix;
-    # E3 always includes README/LICENSE/Compose under one versioned root. R1/R2 cover the
-    # two mutually exclusive platform rules and assert every package effect.
+    # Cause/effect graph: C1 target is Windows vs Unix, C2 both the product and
+    # Namespace companion payloads exist. E1 selects ZIP+.exe names for Windows;
+    # E2 selects tar.gz+POSIX names for Unix; E3 always includes both executables
+    # plus README/LICENSE/Compose under one versioned root. R1/R2 cover the two
+    # mutually exclusive platform rules and assert every package effect.
     def test_archive_platform_decision_table(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -186,9 +203,13 @@ class ReleaseContractTests(unittest.TestCase):
             (root / "deploy" / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
             binary = root / "binary"
             binary.write_bytes(b"executable")
+            companion = root / "companion"
+            companion.write_bytes(b"companion")
             output = root / "dist"
 
-            unix = create_archive(root, binary, "x86_64-unknown-linux-gnu", "1.0.0", output, 0)
+            unix = create_archive(
+                root, binary, companion, "x86_64-unknown-linux-gnu", "1.0.0", output, 0
+            )
             self.assertTrue(unix.name.endswith(".tar.gz"))
             with tarfile.open(unix, "r:gz") as archive:
                 names = archive.getnames()
@@ -196,17 +217,24 @@ class ReleaseContractTests(unittest.TestCase):
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken"
                 )
                 self.assertEqual(executable.mode, 0o755)
+                companion_executable = archive.getmember(
+                    "awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken-sandbox"
+                )
+                self.assertEqual(companion_executable.mode, 0o755)
             self.assertEqual(
                 names,
                 [
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/LICENSE",
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/README.md",
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken",
+                    "awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken-sandbox",
                     "awaken-v1.0.0-x86_64-unknown-linux-gnu/deploy/compose.yaml",
                 ],
             )
 
-            windows = create_archive(root, binary, "x86_64-pc-windows-msvc", "1.0.0", output, 0)
+            windows = create_archive(
+                root, binary, companion, "x86_64-pc-windows-msvc", "1.0.0", output, 0
+            )
             self.assertEqual(windows.suffix, ".zip")
             with zipfile.ZipFile(windows) as archive:
                 self.assertEqual(
@@ -214,10 +242,16 @@ class ReleaseContractTests(unittest.TestCase):
                     [
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/LICENSE",
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/README.md",
+                        "awaken-v1.0.0-x86_64-pc-windows-msvc/awaken-sandbox.exe",
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/awaken.exe",
                         "awaken-v1.0.0-x86_64-pc-windows-msvc/deploy/compose.yaml",
                     ],
                 )
+                for name in (
+                    "awaken-v1.0.0-x86_64-pc-windows-msvc/awaken.exe",
+                    "awaken-v1.0.0-x86_64-pc-windows-msvc/awaken-sandbox.exe",
+                ):
+                    self.assertEqual((archive.getinfo(name).external_attr >> 16) & 0o777, 0o755)
 
     # Coverage rationale: one known payload is sufficient because SHA-256 is a
     # direct function. The observable effects are the digest, two-space portable
@@ -260,6 +294,8 @@ class ReleaseContractTests(unittest.TestCase):
         reported_version: str = "1.0.0",
         valid_checksum: bool = True,
         include_binary: bool = True,
+        include_companion: bool = True,
+        healthy_companion: bool = True,
     ) -> tuple[dict[str, str], Path]:
         version = "v1.0.0"
         target = {
@@ -282,6 +318,14 @@ class ReleaseContractTests(unittest.TestCase):
                 f"#!/bin/sh\nprintf 'awaken {reported_version}\\n'\n", encoding="utf-8"
             )
             binary.chmod(0o755)
+        companion = package_root / "awaken-sandbox"
+        if include_companion:
+            companion.write_text(
+                "#!/bin/sh\n"
+                + ("exit 0\n" if healthy_companion else "exit 1\n"),
+                encoding="utf-8",
+            )
+            companion.chmod(0o755)
         archive = release / archive_name
         with tarfile.open(archive, "w:gz") as packaged:
             packaged.add(package_root, arcname=package_root.name)
@@ -328,12 +372,13 @@ class ReleaseContractTests(unittest.TestCase):
     # Cause/effect graph: C0 version is an exact stable tag; C1 OS/architecture
     # maps to an existing target; C2 transport is HTTPS (the file transport is a
     # test-only explicit override); C3 archive and checksum downloads complete;
-    # C4 checksum matches; C5 archive contains an executable; C6 binary reports
-    # the requested version; C7 destination can stage and rename. E1 installs
-    # only when C0-C7 hold; any false cause exits nonzero, cleans temporary data,
+    # C4 checksum matches; C5 archive contains both executables; C6 binary reports
+    # the requested version; C7 companion passes `hand --check`; C8 destination
+    # can stage and rename. E1 installs only when C0-C8 hold; any false cause
+    # exits nonzero, cleans temporary data,
     # and preserves an existing binary. R1a-c cover every supported mapping;
-    # R2-R7 independently cover invalid version/platform/transport/checksum,
-    # archive shape, and binary identity. Download and destination I/O are direct
+    # R2-R9 independently cover invalid version/platform/transport/checksum,
+    # archive shape, binary identity, and companion health. Download and destination I/O are direct
     # fail-closed command preconditions and are covered by the same preservation
     # invariant rather than introducing recovery or a second installation path.
     def test_installer_decision_table(self) -> None:
@@ -356,6 +401,12 @@ class ReleaseContractTests(unittest.TestCase):
                 self.assertEqual(
                     subprocess.check_output([install_dir / "awaken", "--version"], text=True),
                     "awaken 1.0.0\n",
+                )
+                self.assertEqual(
+                    subprocess.run(
+                        [install_dir / "awaken-sandbox", "hand", "--check"], check=False
+                    ).returncode,
+                    0,
                 )
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -386,7 +437,9 @@ class ReleaseContractTests(unittest.TestCase):
         for rule, fixture in (
             ("R5", {"valid_checksum": False}),
             ("R6", {"include_binary": False}),
-            ("R7", {"reported_version": "0.9.0"}),
+            ("R7", {"include_companion": False}),
+            ("R8", {"reported_version": "0.9.0"}),
+            ("R9", {"healthy_companion": False}),
         ):
             with self.subTest(rule=rule), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -394,9 +447,15 @@ class ReleaseContractTests(unittest.TestCase):
                 install_dir.mkdir()
                 installed = install_dir / "awaken"
                 installed.write_text("existing", encoding="utf-8")
+                installed_companion = install_dir / "awaken-sandbox"
+                installed_companion.write_text("existing-companion", encoding="utf-8")
                 result = self._run_installer(environment)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(installed.read_text(encoding="utf-8"), "existing")
+                self.assertEqual(
+                    installed_companion.read_text(encoding="utf-8"),
+                    "existing-companion",
+                )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -412,13 +471,18 @@ def main(argv: list[str] | None = None) -> int:
 
     version = workspace_version()
     target = args.target or host_target()
-    binary = build_release(target)
+    binary, companion = build_release(target)
     if not binary.is_file():
         raise FileNotFoundError(f"Cargo did not produce {binary}")
+    if not companion.is_file():
+        raise FileNotFoundError(f"Cargo did not produce {companion}")
     reported_version = subprocess.check_output([str(binary), "--version"], text=True)
     tag = os.environ.get("GITHUB_REF_NAME") if os.environ.get("GITHUB_REF_TYPE") == "tag" else None
     validate_identity(version, tag, reported_version)
-    archive = create_archive(REPOSITORY, binary, target, version, args.output_dir, source_epoch())
+    subprocess.run([str(companion), "hand", "--check"], check=True)
+    archive = create_archive(
+        REPOSITORY, binary, companion, target, version, args.output_dir, source_epoch()
+    )
     checksum = write_checksum(archive)
     print(archive)
     print(checksum)

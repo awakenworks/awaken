@@ -17,6 +17,7 @@ MANAGEMENT_CONFIG = REPOSITORY / "deploy/images/management/container.toml"
 MANAGEMENT_ENTRYPOINT = REPOSITORY / "deploy/images/management/entrypoint.sh"
 COMPOSE = REPOSITORY / "deploy/compose.yaml"
 INSTALLER = REPOSITORY / "scripts/release/install.sh"
+WINDOWS_INSTALLER = REPOSITORY / "scripts/release/install.ps1"
 
 TARGETS = (
     "x86_64-unknown-linux-gnu",
@@ -34,6 +35,7 @@ def validate(
     entrypoint: str,
     compose: str,
     installer: str,
+    windows_installer: str,
     release_workflows: tuple[str, ...],
 ) -> list[str]:
     failures: list[str] = []
@@ -44,7 +46,8 @@ def validate(
     # or container launcher drift blocks publication.
     # Decision table: R1 complete single graph -> accept; R2 missing artifact/job
     # edge -> reject; R3 competing release workflow -> reject; R4 Management
-    # image/Compose drift -> reject; R5 installer verification drift -> reject.
+    # image/Compose drift -> reject; R5 POSIX installer verification drift ->
+    # reject; R6 Windows installer verification drift -> reject.
     required_workflow = (
         "name: release-awaken",
         '- "v*.*.*"',
@@ -63,6 +66,8 @@ def validate(
         "actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26",
         "cp scripts/release/install.sh dist/install.sh",
         "sha256sum install.sh > install.sh.sha256",
+        "cp scripts/release/install.ps1 dist/install.ps1",
+        "sha256sum install.ps1 > install.ps1.sha256",
         'gh release create "$GITHUB_REF_NAME"',
     )
     for marker in required_workflow + TARGETS:
@@ -88,12 +93,30 @@ def validate(
         'sha256sum -c "$archive.sha256"',
         'shasum -a 256 -c "$archive.sha256"',
         'tar -xOzf "$temporary/$archive" "$package_root/awaken"',
+        'tar -xOzf "$temporary/$archive" "$package_root/awaken-sandbox"',
         'reported=$("$candidate" --version)',
+        '"$candidate_companion" hand --check',
+        'mv -f -- "$staged_companion" "$install_dir/awaken-sandbox"',
         'mv -f -- "$staged" "$install_dir/awaken"',
     )
     for marker in required_installer:
         if marker not in installer:
             failures.append(f"POSIX installer missing {marker!r}")
+
+    required_windows_installer = (
+        "x86_64-pc-windows-msvc",
+        "Invoke-WebRequest -UseBasicParsing",
+        "Get-FileHash -Algorithm SHA256",
+        "awaken.exe",
+        "awaken-sandbox.exe",
+        "& $candidate --version",
+        "& $candidateCompanion hand --check",
+        "Move-Item -Force -LiteralPath $stagedCompanion",
+        "Move-Item -Force -LiteralPath $stagedAwaken",
+    )
+    for marker in required_windows_installer:
+        if marker not in windows_installer:
+            failures.append(f"Windows installer missing {marker!r}")
 
     required_dockerfile = (
         "FROM ubuntu:24.04@sha256:",
@@ -150,7 +173,7 @@ def validate(
     return failures
 
 
-def current_inputs() -> tuple[str, str, str, str, str, str, str, tuple[str, ...]]:
+def current_inputs() -> tuple[str, str, str, str, str, str, str, str, tuple[str, ...]]:
     release_workflows = tuple(
         str(path.relative_to(REPOSITORY))
         for path in sorted((REPOSITORY / ".github/workflows").glob("*release*.yml"))
@@ -163,6 +186,7 @@ def current_inputs() -> tuple[str, str, str, str, str, str, str, tuple[str, ...]
         MANAGEMENT_ENTRYPOINT.read_text(encoding="utf-8"),
         COMPOSE.read_text(encoding="utf-8"),
         INSTALLER.read_text(encoding="utf-8"),
+        WINDOWS_INSTALLER.read_text(encoding="utf-8"),
         release_workflows,
     )
 
@@ -170,15 +194,22 @@ def current_inputs() -> tuple[str, str, str, str, str, str, str, tuple[str, ...]
 class ProductReleaseCheckerTests(unittest.TestCase):
     def test_decision_table_rejects_each_release_authority_drift(self) -> None:
         # The validation comment above owns the cause/effect graph. These
-        # mutations execute R1-R5: baseline, broken job edge, competing workflow,
-        # container launcher drift, and installer verification drift.
+        # mutations execute R1-R6: baseline, broken job edge, competing workflow,
+        # container launcher drift, and each platform installer's verification drift.
         inputs = current_inputs()
         self.assertEqual(validate(*inputs), [], "R1")
         mutations = (
             (inputs[0].replace("github_release:", "release_assets:"), *inputs[1:]),
-            (*inputs[:7], (".github/workflows/release.yml", ".github/workflows/release-copy.yml")),
+            (*inputs[:8], (".github/workflows/release.yml", ".github/workflows/release-copy.yml")),
             (inputs[0], inputs[1].replace("USER awaken", "USER root"), *inputs[2:]),
-            (*inputs[:6], inputs[6].replace("sha256sum -c", "true #"), inputs[7]),
+            (*inputs[:6], inputs[6].replace("sha256sum -c", "true #"), *inputs[7:]),
+            (
+                *inputs[:7],
+                inputs[7].replace(
+                    "Get-FileHash -Algorithm SHA256", "Write-Host skipped"
+                ),
+                inputs[8],
+            ),
         )
         for rule, mutation in enumerate(mutations, 2):
             with self.subTest(rule=f"R{rule}"):
