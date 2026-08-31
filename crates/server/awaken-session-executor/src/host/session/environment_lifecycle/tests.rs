@@ -660,7 +660,7 @@ async fn only_recovery_and_revocation_retirements_can_reactivate() {
 }
 
 #[tokio::test]
-async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
+async fn only_a_new_claim_rebuilds_a_revoked_legacy_direct_environment() {
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
 
     // Cross-protocol cause/effect table: C1 a first claimed Run creates one
@@ -668,8 +668,8 @@ async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
     // Unmaterialized; C2 realization revocation retains that exact Ready owner
     // as Retiring; C3 an unclaimed context lookup arrives; C4 a new claimed
     // attempt arrives with the immutable publication. Effects: E1 C3 fails
-    // closed and retains the exact Retiring owner; E2 C4 reactivates the same
-    // Arc without adoption or replacement and constructs the next Runtime.
+    // closed and retains the exact Retiring owner; E2 C4 disposes the
+    // quiesced owner and constructs a fresh Environment with an open Hand.
     // Rules CP1=C1+C2+C3=>E1, CP2=C1+C2+C4=>E2.
     let thread = "claimed-legacy-revocation";
     let root = tempfile::tempdir().unwrap();
@@ -763,26 +763,97 @@ async fn only_a_new_claim_reactivates_a_revoked_legacy_direct_environment() {
         effective_model_ref,
     };
     let agent_id = snapshot.root_agent_id.0.clone();
+    let adopted = match environment.as_ref() {
+        crate::session_environment::SessionEnvironment::Workdir(sandbox) => {
+            crate::session_environment::SessionEnvironment::Workdir(sandbox.clone())
+        }
+        _ => unreachable!("the test provider creates a Workdir Environment"),
+    };
     let context = host
         .ctx_for_claimed_snapshot_with_sandbox(
             thread,
             Some(agent_id.as_str()),
             snapshot,
-            None,
+            // Managed realization may resolve the adoption candidate before
+            // the host acquires this lifecycle fence. It must not re-install
+            // the exact Environment whose Hand was closed by revocation.
+            Some(adopted),
             attempt,
         )
         .await
         .expect("CP2 claimed recovery");
     let recovered = context.env.as_ref().expect("CP2 Environment");
-    assert!(Arc::ptr_eq(recovered, &environment), "CP2/E2 exact Arc");
+    assert!(!Arc::ptr_eq(recovered, &environment), "CP2/E2 fresh Arc");
+    assert_eq!(
+        environment.status().await.unwrap(),
+        awaken_provisioning_contract::SandboxStatus::Terminated,
+        "CP2/E2 quiesced owner disposed"
+    );
     assert!(
         matches!(
             host.session_slots
                 .read(thread, |slot| slot.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Resident(owned))
-                if Arc::ptr_eq(&owned.environment, &environment)
+                if Arc::ptr_eq(&owned.environment, recovered)
         ),
         "CP2/E2 Resident"
+    );
+}
+
+#[tokio::test]
+async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
+    use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
+
+    // C1 a Runtime is cached around a legacy/direct Environment; C2 realization
+    // revocation retains the quiesced owner; C3 an authorized resume requests a
+    // context. E1 C3 evicts the cached Runtime, disposes the closed owner, and
+    // builds a distinct Runtime/Environment pair.
+    let thread = "cached-resume-revocation";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(root.path());
+    let snapshot = test_activation(thread, "cached-resume-publication").snapshot;
+    host.register_thread_workspace(thread, "workspace");
+    host.session_slots.update(thread, |slot| {
+        slot.published_snapshot = Some(snapshot.clone());
+    });
+    host.install_test_resident_session_environment(thread, environment.clone());
+    let agent_id = snapshot.root_agent_id.0.clone();
+    let cached = host
+        .ctx_for_snapshot_with_sandbox(thread, Some(agent_id.as_str()), Some(snapshot), None)
+        .await
+        .expect("C1 cached Runtime");
+    assert!(Arc::ptr_eq(cached.env.as_ref().unwrap(), &environment));
+
+    let lifecycle = host
+        .session_slots
+        .read(thread, |slot| slot.lifecycle.clone())
+        .unwrap();
+    {
+        let _lifecycle = lifecycle.lock().await;
+        assert!(
+            host.retire_session_environment_for_revocation(thread)
+                .await
+                .unwrap(),
+            "C2 exact revocation"
+        );
+    }
+
+    let resumed = host
+        .ctx_for_resume(thread)
+        .await
+        .expect("C3 resume recovery");
+    let rebuilt = resumed.env.as_ref().expect("E1 rebuilt Environment");
+    assert!(!Arc::ptr_eq(&cached, &resumed), "E1 cached Runtime evicted");
+    assert!(
+        !Arc::ptr_eq(rebuilt, &environment),
+        "E1 closed owner replaced"
+    );
+    assert_eq!(
+        environment.status().await.unwrap(),
+        awaken_provisioning_contract::SandboxStatus::Terminated,
+        "E1 old sandbox disposed"
     );
 }
 

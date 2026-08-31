@@ -1092,7 +1092,7 @@ impl SharedHost {
         tool_use_id: &str,
         resume: HostResume,
     ) -> Result<CommittedStepReceipt, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
+        let ctx = self.ctx_for_resume(thread).await?;
         let _execution = ctx.execution.lock().await;
         let (run_id, ticket) = ctx
             .commit
