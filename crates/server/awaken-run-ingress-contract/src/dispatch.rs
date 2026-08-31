@@ -1839,8 +1839,7 @@ mod tests {
         }
         async fn renew_lease(
             &self,
-            _run_id: &RunId,
-            _owner: &str,
+            _claim: &RunClaim,
             _lease_ms: u64,
             _now_ms: u64,
         ) -> Result<bool, DispatchError> {

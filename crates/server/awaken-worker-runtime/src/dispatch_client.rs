@@ -731,8 +731,7 @@ impl DispatchQueue for HttpDispatchQueue {
 
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        _owner: &str,
+        claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError> {
@@ -740,7 +739,8 @@ impl DispatchQueue for HttpDispatchQueue {
             .post(
                 "/v1/worker/dispatch/renew",
                 &RenewRequest {
-                    run_id: run_id.0.clone(),
+                    run_id: claim.run_id.0.clone(),
+                    lease_epoch: claim.epoch,
                     identity: Some(self.worker_identity.clone()),
                 },
                 self.worker_id(),

@@ -124,6 +124,7 @@ pub struct ClaimRunRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenewRequest {
     pub run_id: String,
+    pub lease_epoch: u64,
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,
 }
@@ -205,6 +206,35 @@ mod tests {
         }))
         .unwrap();
         assert!(request.deadline_ms.is_none());
+    }
+
+    /// Renewal-wire cause/effect table. R1 current Worker sends run+epoch and
+    /// optional identity -> exact request round-trips. R2 legacy run-only request
+    /// -> decode fails closed. Owner, time, and duration remain server-derived.
+    /// Constraint: accepting a missing epoch would reintroduce owner-only renewal;
+    /// this contract therefore requires a coordinated Control/Worker cutover.
+    #[test]
+    fn renewal_wire_requires_the_canonical_fencing_epoch() {
+        let request = RenewRequest {
+            run_id: "run-renew".into(),
+            lease_epoch: 7,
+            identity: Some(WorkerIdentity::new("worker", "incarnation", 1)),
+        };
+        let value = serde_json::to_value(&request).expect("R1 encode");
+        assert_eq!(value["lease_epoch"], 7, "R1 exact epoch on wire");
+        assert_eq!(
+            serde_json::from_value::<RenewRequest>(value)
+                .expect("R1 decode")
+                .lease_epoch,
+            7,
+        );
+        assert!(
+            serde_json::from_value::<RenewRequest>(serde_json::json!({
+                "run_id": "run-renew"
+            }))
+            .is_err(),
+            "R2 missing epoch fails closed"
+        );
     }
 
     /// Stream-request compatibility cause/effect table: C1 an older Worker

@@ -610,6 +610,9 @@ pub struct FlakyDispatchStore {
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
     renewal_attempts: AtomicUsize,
+    fail_renewals: AtomicUsize,
+    renewal_gate: Option<Arc<tokio::sync::Semaphore>>,
+    renewal_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     fail_retry_exhaustion_claims: AtomicUsize,
     retry_exhaustion_claim_attempts: AtomicUsize,
 }
@@ -623,6 +626,9 @@ impl FlakyDispatchStore {
             fail_claims: AtomicUsize::new(fail_claims),
             claim_attempts: AtomicUsize::new(0),
             renewal_attempts: AtomicUsize::new(0),
+            fail_renewals: AtomicUsize::new(0),
+            renewal_gate: None,
+            renewal_response_gate: None,
             fail_retry_exhaustion_claims: AtomicUsize::new(0),
             retry_exhaustion_claim_attempts: AtomicUsize::new(0),
         }
@@ -631,6 +637,21 @@ impl FlakyDispatchStore {
     pub fn with_retry_exhaustion_failures(self, failures: usize) -> Self {
         self.fail_retry_exhaustion_claims
             .store(failures, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_renewal_failures(self, failures: usize) -> Self {
+        self.fail_renewals.store(failures, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_renewal_gate(mut self, gate: Arc<tokio::sync::Semaphore>) -> Self {
+        self.renewal_gate = Some(gate);
+        self
+    }
+
+    pub fn with_renewal_response_gate(mut self, gate: Arc<tokio::sync::Semaphore>) -> Self {
+        self.renewal_response_gate = Some(gate);
         self
     }
 
@@ -753,15 +774,36 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
     }
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        owner: &str,
+        claim: &awaken_run_ingress::RunClaim,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, awaken_run_ingress::DispatchError> {
         self.renewal_attempts.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .renew_lease(run_id, owner, lease_ms, now_ms)
-            .await
+        if let Some(gate) = &self.renewal_gate {
+            gate.acquire()
+                .await
+                .map_err(|error| awaken_run_ingress::DispatchError::Rejected(error.to_string()))?
+                .forget();
+        }
+        if self
+            .fail_renewals
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(awaken_run_ingress::DispatchError::Rejected(
+                "injected transient renewal failure".to_string(),
+            ));
+        }
+        let result = self.inner.renew_lease(claim, lease_ms, now_ms).await;
+        if let Some(gate) = &self.renewal_response_gate {
+            gate.acquire()
+                .await
+                .map_err(|error| awaken_run_ingress::DispatchError::Rejected(error.to_string()))?
+                .forget();
+        }
+        result
     }
     async fn renew_owned_leases(
         &self,
@@ -1284,7 +1326,11 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(
     );
     assert!(
         store
-            .renew_lease(&lease_run, "lease-owner", u64::MAX, max_signed - 1)
+            .renew_lease(
+                &awaken_run_ingress::RunClaim::from(&lease.lease),
+                u64::MAX,
+                max_signed - 1,
+            )
             .await
             .unwrap(),
         "TM12: huge renewal succeeds without overflow"
@@ -2195,9 +2241,19 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S
     );
 }
 
-/// Shared spec for lease renewal (the multi-node liveness knob). A run's owner
-/// extends its lease so another node's recovery cannot steal it; a non-owner
-/// cannot renew; an un-renewed lease still expires. Every backend matches.
+/// Shared exact-renewal cause/effect table. C1=run/owner match, C2=epoch match,
+/// C3=lease is later reclaimed, including by the same owner string. E1=extend
+/// only the exact claim; E2=return false without mutating the current lease.
+///
+/// | Rule | Run/owner | Epoch | Current claim | Effect |
+/// | LR1 | match | match | original | E1 |
+/// | LR2 | owner differs | any | original | E2 |
+/// | LR3 | match | stale | same-owner replacement | E2 |
+/// | LR4 | match | current | same-owner replacement | E1 |
+///
+/// Constraint: `lease_epoch` is the same fencing authority used by commit and
+/// settlement; renewal cannot infer exact ownership from a reusable owner name.
+/// Every backend executes the same rules.
 pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
@@ -2220,7 +2276,11 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
     clock.advance_past(renew_at.saturating_sub(1)).await;
     assert!(
         store
-            .renew_lease(&run, "owner-a", 100, renew_at)
+            .renew_lease(
+                &awaken_run_ingress::RunClaim::from(&first.lease),
+                100,
+                renew_at,
+            )
             .await
             .unwrap()
     );
@@ -2242,8 +2302,11 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
     assert!(
         !store
             .renew_lease(
-                &run,
-                "owner-b",
+                &awaken_run_ingress::RunClaim {
+                    run_id: run.clone(),
+                    owner: "owner-b".into(),
+                    epoch: first.lease.epoch,
+                },
                 100,
                 first.lease.expires_ms.saturating_add(2),
             )
@@ -2255,19 +2318,76 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
     clock
         .advance_past(first.lease.expires_ms.saturating_add(100))
         .await;
+    let recovered = store
+        .claim(
+            "owner-b",
+            100,
+            first.lease.expires_ms.saturating_add(101),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("LR2 a different owner recovers the expired lease");
+    assert_eq!(recovered.lease.owner, "owner-b");
     assert_eq!(
         store
-            .claim(
-                "owner-b",
-                100,
-                first.lease.expires_ms.saturating_add(101),
-                &Default::default(),
+            .settle(
+                &run,
+                recovered.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
             )
             .await
-            .unwrap()
-            .map(|c| c.lease.owner),
-        Some("owner-b".to_string())
+            .unwrap(),
+        awaken_run_ingress::SettleOutcome::Applied,
     );
+
+    let same_owner_run = RunId("run-same-owner-epoch".to_string());
+    store
+        .enqueue(RunDispatch::new(activation("run-same-owner-epoch")))
+        .await
+        .unwrap();
+    let same_owner_start = recovered.lease.expires_ms.saturating_add(1);
+    clock.advance_past(same_owner_start).await;
+    let old = store
+        .claim("reused-owner", 100, same_owner_start, &Default::default())
+        .await
+        .unwrap()
+        .expect("LR3 original same-owner claim");
+    let replacement_at = old.lease.expires_ms.saturating_add(1);
+    clock.advance_past(replacement_at).await;
+    let replacement = store
+        .claim("reused-owner", 100, replacement_at, &Default::default())
+        .await
+        .unwrap()
+        .expect("LR3 same owner string recovers under a new epoch");
+    assert!(
+        replacement.lease.epoch > old.lease.epoch,
+        "LR3 precondition"
+    );
+    assert!(
+        !store
+            .renew_lease(
+                &awaken_run_ingress::RunClaim::from(&old.lease),
+                100,
+                replacement_at,
+            )
+            .await
+            .unwrap(),
+        "LR3/E2 stale epoch cannot renew a same-owner replacement"
+    );
+    assert!(
+        store
+            .renew_lease(
+                &awaken_run_ingress::RunClaim::from(&replacement.lease),
+                100,
+                replacement_at,
+            )
+            .await
+            .unwrap(),
+        "LR4/E1 current epoch renews"
+    );
+    assert_eq!(replacement.request.run_id(), &same_owner_run);
 }
 
 /// Shared spec (every backend must match): the fencing token. A claim bumps the

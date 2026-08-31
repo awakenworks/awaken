@@ -25,10 +25,11 @@ needed for multi-node claim; the durable store is the shared queue.
 ### D2: Lease renewal is the missing liveness knob
 
 A node executing a long run must not have its lease reclaimed by another node's
-recovery. `renew_lease(run_id, owner, lease_ms, now)` extends the lease iff the
-caller still owns it, and returns `false` if the lease was lost (stolen, settled,
-unknown) so the holder stops. Recovery and the crash-retry budget (ADR-0015) are
-unchanged; renewal only keeps a *live* run owned.
+recovery. `renew_lease(claim, lease_ms, now)` extends the lease iff the complete
+owner-and-epoch fencing claim is still current, and returns `false` if the lease
+was lost (stolen, settled, unknown) so the holder stops. Recovery and the
+crash-retry budget (ADR-0015) are unchanged; renewal only keeps a *live* run
+owned. ADR-0024 owns the scheduling, request deadline, and bounded retry policy.
 
 ### D3: A wake signal is a hint, behind a port; NATS is one adapter
 

@@ -1005,25 +1005,25 @@ impl DispatchQueue for SqliteDispatchStore {
 
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        owner: &str,
+        claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError> {
-        let run_id = run_id.0.clone();
-        let owner = owner.to_string();
+        let claim = claim.clone();
         self.with_conn(move |conn, p| {
+            let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let n = conn
                 .execute(
                     &format!(
                         "UPDATE {p}_dispatch SET lease_until = ?1 \
                          WHERE run_id = ?2 AND status IN ('running', 'reservation_running') \
-                         AND lease_owner = ?3"
+                         AND lease_owner = ?3 AND lease_epoch = ?4"
                     ),
                     params![
                         crate::clock::db_millis(crate::clock::deadline_millis(now_ms, lease_ms)),
-                        run_id,
-                        owner
+                        claim.run_id.0,
+                        claim.owner,
+                        claim_epoch
                     ],
                 )
                 .map_err(reject)?;

@@ -252,14 +252,14 @@ async fn renew(
     Json(req): Json<Value>,
 ) -> Json<Value> {
     assert_server_authority_fields_absent(&req);
+    let claim = RunClaim {
+        run_id: run_id(&req),
+        owner: worker_id(&headers).to_string(),
+        epoch: req["lease_epoch"].as_u64().expect("lease_epoch"),
+    };
     let renewed = state
         .store
-        .renew_lease(
-            &run_id(&req),
-            worker_id(&headers),
-            1_000,
-            state.now_ms.load(Ordering::SeqCst),
-        )
+        .renew_lease(&claim, 1_000, state.now_ms.load(Ordering::SeqCst))
         .await
         .expect("renew");
     Json(json!({ "renewed": renewed }))
@@ -786,7 +786,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     clock.store(100, Ordering::SeqCst);
     assert!(
         queue_a
-            .renew_lease(&run, "worker-A", 1_000, 100)
+            .renew_lease(&RunClaim::from(&a.lease), 1_000, 100)
             .await
             .unwrap(),
         "the current owner renews its own live lease"
@@ -811,7 +811,7 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     clock.store(2_100, Ordering::SeqCst);
     assert!(
         !queue_a
-            .renew_lease(&run, "worker-A", 1_000, 2_100)
+            .renew_lease(&RunClaim::from(&a.lease), 1_000, 2_100)
             .await
             .unwrap(),
         "a stale owner's renew fails so it abandons the run"

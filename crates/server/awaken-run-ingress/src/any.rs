@@ -532,12 +532,11 @@ impl DispatchQueue for AnyDispatchStore {
 
     async fn renew_lease(
         &self,
-        run_id: &RunId,
-        owner: &str,
+        claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, DispatchError> {
-        delegate!(self, renew_lease(run_id, owner, lease_ms, now_ms))
+        delegate!(self, renew_lease(claim, lease_ms, now_ms))
     }
 
     async fn renew_owned_leases(

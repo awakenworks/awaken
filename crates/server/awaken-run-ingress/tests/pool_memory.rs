@@ -444,13 +444,16 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
 /// | RG3 | fails | none | current | E1+E4, then E3 |
 /// | RG4 | blocked | none | expired/replaced | one failed E1, E3+E5 |
 /// | RG5 | succeeds | C7 execute | expired/replaced | one failed E1, E5+E6 |
+/// | RG6 | succeeds | C7 execute | transient renewal errors | bounded retries, retain claim |
+/// | RG7 | succeeds | C7 execute | renewal call stalls | deadline, then E5+E6 |
+/// | RG8 | succeeds | C7 execute | renewal applies, response lost | exact retry converges |
 ///
 /// The count is the observable task cardinality: the pre-fix Pool and Worker
 /// tasks both woke on the same interval, producing two renewal writes for RG1
 /// and RG2. One transferred guard produces exactly one.
 /// Constraint/Invariant: exactly one renewal guard follows the exact claim from
 /// Pool through Worker and stops at every terminal/failure exit. Decision rule:
-/// this test owns RG1; the adjacent tests own RG2-RG5.
+/// this test owns RG1; the adjacent tests own RG2-RG8.
 #[tokio::test(start_paused = true)]
 async fn pool_transfers_one_renewal_guard_into_a_normal_drive() {
     use std::sync::atomic::Ordering;
@@ -773,6 +776,183 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
     observed_wait.await;
     assert!(driven.await.expect("drive task joins").is_err(), "RG5/E1");
     assert_eq!(commit.commit_count(), 0, "RG5/E2");
+}
+
+#[tokio::test(start_paused = true)]
+async fn transient_renewal_errors_retry_inside_the_same_guard() {
+    // Test design — Rule RG6. Causes: C1 an exact claim is actively executing;
+    // C2 two renewal attempts fail transiently; C3 the third succeeds before the
+    // local proof deadline. Effects: E1 retries use the same guard faster than
+    // the regular interval; E2 Runtime is not cancelled; E3 the original claim
+    // completes normally. No retry attempt authors lease state outside Dispatch.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store = Arc::new(FlakyDispatchStore::new(0).with_renewal_failures(2));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(90),
+    );
+    store
+        .enqueue(RunDispatch::new(activation("transient-renewal-retry")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 90, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("RG6 exact claim");
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        async move {
+            worker
+                .drive_claimed(claimed, Arc::new(ManualClock::new(0)))
+                .await
+        }
+    });
+    assert!(
+        yield_until(|| ran.load(std::sync::atomic::Ordering::SeqCst) == 1).await,
+        "RG6 execution entered"
+    );
+
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(yield_until(|| store.renewal_attempts() >= 1).await);
+    tokio::time::advance(Duration::from_millis(3)).await;
+    assert!(yield_until(|| store.renewal_attempts() >= 2).await);
+    tokio::time::advance(Duration::from_millis(3)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 3).await,
+        "RG6/E1"
+    );
+    assert!(!driven.is_finished(), "RG6/E2");
+
+    release.add_permits(1);
+    assert!(driven.await.expect("RG6 drive joins").is_ok(), "RG6/E3");
+    assert!(
+        commit.commit_count() > 0,
+        "RG6/E3 authoritative commit path"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_renewal_call_cancels_before_the_lease_can_be_recovered() {
+    // Test design — Rule RG7. Causes: C1 an exact claim is actively executing;
+    // C2 every renewal call blocks; C3 each request exceeds its short deadline;
+    // C4 no attempt proves ownership by the two-thirds-lease safety deadline.
+    // Effects: E1 calls are bounded and retried by the same guard; E2 Runtime is
+    // cancelled before the durable lease expires; E3 no Thread commit occurs.
+    let renewal_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let store = Arc::new(FlakyDispatchStore::new(0).with_renewal_gate(renewal_gate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let cancellation_observed = Arc::new(tokio::sync::Notify::new());
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
+            .with_lease_ms(90),
+    );
+    worker.install_attempt_executor(Arc::new(OwnershipCancellationAttemptExecutor {
+        entered: entered.clone(),
+        cancellation_observed: cancellation_observed.clone(),
+    }));
+    store
+        .enqueue(RunDispatch::new(activation("stalled-renewal-call")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 90, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("RG7 exact claim");
+    let entered_wait = entered.notified();
+    let cancellation_wait = cancellation_observed.notified();
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        async move {
+            worker
+                .drive_claimed(claimed, Arc::new(ManualClock::new(0)))
+                .await
+        }
+    });
+    entered_wait.await;
+
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(yield_until(|| store.renewal_attempts() >= 1).await);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(15)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(3)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 2).await,
+        "RG7/E1 timed-out call is retried"
+    );
+    tokio::time::advance(Duration::from_millis(12)).await;
+    cancellation_wait.await;
+    assert!(driven.await.expect("RG7 drive joins").is_err(), "RG7/E2");
+    assert_eq!(commit.commit_count(), 0, "RG7/E3");
+}
+
+#[tokio::test(start_paused = true)]
+async fn ambiguous_renewal_response_retries_the_same_exact_claim() {
+    // Test design — Rule RG8. Causes: C1 the first exact renewal commits in the
+    // store; C2 its response remains unavailable until the request deadline;
+    // C3 a retry of the same RunClaim receives an acknowledgement inside the
+    // proof window. Effects: E1 retry converges idempotently; E2 Runtime remains
+    // active; E3 there is one Run/epoch and ordinary terminal commit. The guard
+    // does not invent an "unknown renewal" state or a second receipt authority.
+    let response_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store =
+        Arc::new(FlakyDispatchStore::new(0).with_renewal_response_gate(response_gate.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-a").with_lease_ms(90),
+    );
+    store
+        .enqueue(RunDispatch::new(activation("ambiguous-renewal-response")))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 90, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("RG8 exact claim");
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        async move {
+            worker
+                .drive_claimed(claimed, Arc::new(ManualClock::new(0)))
+                .await
+        }
+    });
+    assert!(
+        yield_until(|| ran.load(std::sync::atomic::Ordering::SeqCst) == 1).await,
+        "RG8 execution entered"
+    );
+
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(yield_until(|| store.renewal_attempts() >= 1).await);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(15)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    response_gate.add_permits(1);
+    tokio::time::advance(Duration::from_millis(3)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 2).await,
+        "RG8/E1 exact retry"
+    );
+    assert!(!driven.is_finished(), "RG8/E2");
+
+    release.add_permits(1);
+    assert!(driven.await.expect("RG8 drive joins").is_ok(), "RG8/E3");
+    assert!(commit.commit_count() > 0, "RG8/E3 authoritative commit");
 }
 
 /// Durable cancellation uses the same exact-claim WorkerResolver as ordinary
