@@ -512,12 +512,15 @@ impl SharedHost {
         let _lifecycle = lifecycle.lock().await;
         self.retry_unpublished_session_environment_cleanup(thread)
             .await?;
-        if let Some(retired_handle) = if recover_revoked_legacy {
+        let recover_revoked_environment = recover_revoked_legacy
+            && self.has_environment_retired_for_realization_revocation(thread);
+        let retired_legacy_handle = if recover_revoked_legacy {
             self.rebuild_claimed_legacy_environment_after_revocation(thread)
                 .await?
         } else {
             None
-        } {
+        };
+        if recover_revoked_environment {
             self.session_slots
                 .update(thread, |slot| slot.runtime = None);
             // A Managed claim may have resolved its adoption candidate before
@@ -525,7 +528,9 @@ impl SharedHost {
             // legacy owner just disposed above, it is now a terminated wrapper
             // around the permanently closed Hand. Never install it into the
             // rebuilt Runtime; a still-ready distinct adoption remains valid.
-            if adopted.as_ref().map(|candidate| candidate.handle()) == Some(retired_handle) {
+            if retired_legacy_handle.is_some()
+                && adopted.as_ref().map(|candidate| candidate.handle()) == retired_legacy_handle
+            {
                 adopted = None;
             }
         }

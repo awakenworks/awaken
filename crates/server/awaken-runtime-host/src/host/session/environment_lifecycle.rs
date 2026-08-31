@@ -363,12 +363,24 @@ impl SharedHost {
             .flatten();
         if let Some(retiring) = retiring {
             let environment = retiring.owned.environment();
-            return match environment.status().await {
+            match environment.status().await {
                 Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {
-                    self.session_slots.update(thread, |slot| {
-                        slot.environment_owner.reactivate_retiring(&retiring)
-                    })?;
-                    Ok((None, false))
+                    if retiring.cause == SessionEnvironmentRetirementCause::RealizationRevocation {
+                        // Revocation stopped the process-level Hand permanently.
+                        // Keep the physical Sandbox, but force provider adoption
+                        // to construct a fresh wrapper and Hand binding.
+                        self.session_slots.update(thread, |slot| {
+                            slot.environment_owner
+                                .prepare_retiring_realization_adoption(&retiring)?;
+                            slot.runtime = None;
+                            Ok::<(), HostError>(())
+                        })?;
+                    } else {
+                        self.session_slots.update(thread, |slot| {
+                            slot.environment_owner.reactivate_retiring(&retiring)
+                        })?;
+                        return Ok((None, false));
+                    }
                 }
                 Ok(awaken_provisioning_contract::SandboxStatus::Terminated)
                     if rebuild_unavailable =>
@@ -379,17 +391,21 @@ impl SharedHost {
                             "terminated recovery owner lost its exact Retiring fence",
                         ));
                     }
-                    Ok((None, true))
+                    return Ok((None, true));
                 }
-                Ok(status) => Err(HostError::internal(format!(
-                    "Session sandbox {} is not ready ({status:?})",
-                    handle.sandbox_id
-                ))),
-                Err(error) => Err(HostError::internal(format!(
-                    "could not inspect Session sandbox {}: {error}",
-                    handle.sandbox_id
-                ))),
-            };
+                Ok(status) => {
+                    return Err(HostError::internal(format!(
+                        "Session sandbox {} is not ready ({status:?})",
+                        handle.sandbox_id
+                    )));
+                }
+                Err(error) => {
+                    return Err(HostError::internal(format!(
+                        "could not inspect Session sandbox {}: {error}",
+                        handle.sandbox_id
+                    )));
+                }
+            }
         }
         if let Some((_, binding)) = self.pending_environment_adoption(thread) {
             if binding != encoded {
@@ -420,6 +436,19 @@ impl SharedHost {
             rebuild_unavailable,
         )
         .await
+    }
+
+    pub(crate) fn has_environment_retired_for_realization_revocation(&self, thread: &str) -> bool {
+        self.session_slots
+            .read(thread, |slot| {
+                matches!(
+                    &slot.environment_owner,
+                    SessionEnvironmentOwner::Retiring(retiring)
+                        if retiring.cause
+                            == SessionEnvironmentRetirementCause::RealizationRevocation
+                )
+            })
+            .unwrap_or(false)
     }
 
     /// Retire the process-local Environment retained when a prior realization

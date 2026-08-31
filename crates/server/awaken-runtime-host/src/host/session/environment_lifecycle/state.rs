@@ -525,6 +525,34 @@ impl SessionEnvironmentOwner {
         *self = Self::Resident(owned.clone());
         Ok(())
     }
+
+    pub(super) fn prepare_retiring_realization_adoption(
+        &mut self,
+        expected: &RetiringSessionEnvironment,
+    ) -> Result<(), HostError> {
+        let Self::Retiring(current) = self else {
+            return Err(HostError::internal(
+                "Session Environment re-adoption has no Retiring owner",
+            ));
+        };
+        if !current.exact_matches(expected)
+            || current.cause != SessionEnvironmentRetirementCause::RealizationRevocation
+        {
+            return Err(HostError::internal(
+                "Session Environment re-adoption lost its exact revocation fence",
+            ));
+        }
+        let RetiringEnvironmentOwner::Bound(owned) = &current.owned else {
+            return Err(HostError::internal(
+                "an unpersisted Environment candidate cannot be re-adopted",
+            ));
+        };
+        *self = Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
+            identity: owned.identity.clone(),
+            binding: owned.binding.clone(),
+        });
+        Ok(())
+    }
 }
 
 pub(super) fn committed_identity(
