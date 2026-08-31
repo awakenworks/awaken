@@ -763,12 +763,21 @@ async fn only_a_new_claim_rebuilds_a_revoked_legacy_direct_environment() {
         effective_model_ref,
     };
     let agent_id = snapshot.root_agent_id.0.clone();
+    let adopted = match environment.as_ref() {
+        crate::session_environment::SessionEnvironment::Workdir(sandbox) => {
+            crate::session_environment::SessionEnvironment::Workdir(sandbox.clone())
+        }
+        _ => unreachable!("the test provider creates a Workdir Environment"),
+    };
     let context = host
         .ctx_for_claimed_snapshot_with_sandbox(
             thread,
             Some(agent_id.as_str()),
             snapshot,
-            None,
+            // Managed realization may resolve the adoption candidate before
+            // the host acquires this lifecycle fence. It must not re-install
+            // the exact Environment whose Hand was closed by revocation.
+            Some(adopted),
             attempt,
         )
         .await

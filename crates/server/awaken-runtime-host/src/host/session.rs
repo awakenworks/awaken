@@ -519,6 +519,31 @@ impl SharedHost {
         {
             self.session_slots
                 .update(thread, |slot| slot.runtime = None);
+            // A Managed claim may have resolved its adoption candidate before
+            // entering this lifecycle fence. If that candidate aliases the
+            // legacy owner just disposed above, it is now a terminated wrapper
+            // around the permanently closed Hand. Never install it into the
+            // rebuilt Runtime; a still-ready distinct adoption remains valid.
+            if let Some(candidate) = adopted.as_ref() {
+                match candidate.status().await {
+                    Ok(awaken_provisioning_contract::SandboxStatus::Terminated) => {
+                        adopted = None;
+                    }
+                    Ok(awaken_provisioning_contract::SandboxStatus::Ready) => {}
+                    Ok(status) => {
+                        return Err(HostError::internal(format!(
+                            "adopted Session sandbox {} is not ready ({status:?})",
+                            candidate.handle().sandbox_id,
+                        )));
+                    }
+                    Err(error) => {
+                        return Err(HostError::internal(format!(
+                            "could not inspect adopted Session sandbox {}: {error}",
+                            candidate.handle().sandbox_id,
+                        )));
+                    }
+                }
+            }
         }
         if let Some(ctx) = self
             .session_slots
