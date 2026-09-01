@@ -4,7 +4,7 @@
 //! makes a descriptor model-visible can register the matching implementation.
 //! Network fetch and the separately configured search plugin live in [`crate::web`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
@@ -25,7 +25,7 @@ const DEFAULT_MAX_FILE_BYTES: u64 = 256 * 1024;
 const BASH_OUTPUT_LIMIT: usize = 100 * 1024;
 const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const GREP_OUTPUT_LIMIT: usize = 100 * 1024;
-const GREP_MAX_LINE_LENGTH: usize = 2_000;
+const GREP_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const GLOB_RESULT_LIMIT: usize = 200;
 const GLOB_EXPANSION_LIMIT: usize = 256;
 const WALK_MAX_DEPTH: usize = 40;
@@ -536,40 +536,25 @@ impl Tool for GlobTool {
             ));
         }
         let (root, relative_pattern) = self.0.resolve_glob(&args.pattern, args.path.as_deref())?;
-        let patterns = expand_glob_alternatives(&relative_pattern)?;
-        let mut paths = Vec::new();
-        let mut seen = BTreeSet::new();
-        for relative_pattern in patterns {
-            let pattern = root.join(&relative_pattern).display().to_string();
-            let entries = glob::glob(&pattern)
-                .map_err(|err| ToolError::InvalidArguments(format!("glob {pattern}: {err}")))?;
-            for entry in entries {
-                let path =
-                    entry.map_err(|err| ToolError::Execution(format!("glob walk: {err}")))?;
-                if path
-                    .components()
-                    .any(|component| matches!(component, Component::Normal(name) if name == ".git" || name == "node_modules"))
-                {
-                    continue;
-                }
-                let Ok(real) = std::fs::canonicalize(&path) else {
-                    continue;
-                };
-                if !path_is_within(&root, &real) || !seen.insert(real.clone()) {
-                    continue;
-                }
-                let Ok(metadata) = std::fs::metadata(&real) else {
-                    continue;
-                };
-                if !metadata.is_file() {
-                    continue;
-                }
-                let modified = metadata
-                    .modified()
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                paths.push((modified, self.0.logical_path(&path).display().to_string()));
-            }
-        }
+        let patterns = expand_glob_alternatives(&relative_pattern)?
+            .into_iter()
+            .map(|pattern| RelativeGlob::compile(&pattern))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut paths = collect_confined_entries(&root, WalkPurpose::Glob)?
+            .into_iter()
+            .filter(|entry| {
+                patterns
+                    .iter()
+                    .any(|pattern| pattern.matches(&entry.search_relative))
+            })
+            .map(|entry| {
+                let physical = root.absolute.join(&entry.search_relative);
+                (
+                    entry.modified,
+                    self.0.logical_path(&physical).display().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
         paths.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
         if paths.is_empty() {
             return Ok("no matches".into());
@@ -580,6 +565,290 @@ impl Tool for GlobTool {
             .map(|(_, path)| path)
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WalkPurpose {
+    Glob,
+    Grep,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WalkedEntryKind {
+    File,
+    Directory,
+}
+
+struct WalkedEntry {
+    capability_relative: PathBuf,
+    search_relative: PathBuf,
+    kind: WalkedEntryKind,
+    modified: Option<cap_std::time::SystemTime>,
+    len: u64,
+}
+
+/// One traversal authority for Glob and Grep. Every lookup remains relative to
+/// the directory handle captured by `ConfinedPath`; returned paths are data for
+/// matching/rendering and are never reparsed for filesystem access.
+fn collect_confined_entries(
+    root: &ConfinedPath,
+    purpose: WalkPurpose,
+) -> Result<Vec<WalkedEntry>, ToolError> {
+    let capability_root = if root.relative.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        &root.relative
+    };
+    let metadata = root
+        .directory
+        .symlink_metadata(capability_root)
+        .map_err(|error| file_error("walk", &root.absolute.display().to_string(), &error))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(Vec::new());
+    }
+    if metadata.is_file() {
+        return Ok(vec![WalkedEntry {
+            capability_relative: capability_root.to_path_buf(),
+            search_relative: PathBuf::new(),
+            kind: WalkedEntryKind::File,
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        }]);
+    }
+    if !metadata.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    let mut remaining = WALK_MAX_ENTRIES;
+    let mut ignore_stack = Vec::new();
+    collect_confined_directory(
+        root,
+        capability_root,
+        Path::new(""),
+        purpose,
+        0,
+        &mut remaining,
+        &mut ignore_stack,
+        &mut entries,
+    )?;
+    Ok(entries)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_confined_directory(
+    root: &ConfinedPath,
+    capability_directory: &Path,
+    search_directory: &Path,
+    purpose: WalkPurpose,
+    depth: usize,
+    remaining: &mut usize,
+    ignore_stack: &mut Vec<ignore::gitignore::Gitignore>,
+    output: &mut Vec<WalkedEntry>,
+) -> Result<(), ToolError> {
+    if depth > WALK_MAX_DEPTH || *remaining == 0 {
+        return Ok(());
+    }
+
+    let inherited_ignore_count = ignore_stack.len();
+    if purpose == WalkPurpose::Grep {
+        load_confined_ignore_files(root, capability_directory, search_directory, ignore_stack);
+    }
+    let directory = root.directory.read_dir(capability_directory);
+    let mut directory_entries = match directory {
+        Ok(directory) => directory.filter_map(Result::ok).collect::<Vec<_>>(),
+        Err(error) => {
+            ignore_stack.truncate(inherited_ignore_count);
+            return Err(file_error(
+                "walk",
+                &root.absolute.join(search_directory).display().to_string(),
+                &error,
+            ));
+        }
+    };
+    directory_entries.sort_by_key(cap_std::fs::DirEntry::file_name);
+
+    for entry in directory_entries {
+        if *remaining == 0 {
+            break;
+        }
+        *remaining -= 1;
+        let name = entry.file_name();
+        if matches!(name.to_str(), Some(".git" | "node_modules")) {
+            continue;
+        }
+        if purpose == WalkPurpose::Grep && name.to_str().is_some_and(|name| name.starts_with('.')) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let capability_relative = capability_directory.join(&name);
+        let search_relative = search_directory.join(&name);
+        let kind = if file_type.is_dir() {
+            WalkedEntryKind::Directory
+        } else if file_type.is_file() {
+            WalkedEntryKind::File
+        } else {
+            continue;
+        };
+        if purpose == WalkPurpose::Grep
+            && path_is_ignored(
+                ignore_stack,
+                &search_relative,
+                kind == WalkedEntryKind::Directory,
+            )
+        {
+            continue;
+        }
+        let Ok(metadata) = root.directory.symlink_metadata(&capability_relative) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        output.push(WalkedEntry {
+            capability_relative: capability_relative.clone(),
+            search_relative: search_relative.clone(),
+            kind,
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        });
+        if kind == WalkedEntryKind::Directory {
+            // An unreadable descendant is omitted like `WalkDir`/ripgrep; the
+            // already-resolved search root itself remains a typed error above.
+            let _ = collect_confined_directory(
+                root,
+                &capability_relative,
+                &search_relative,
+                purpose,
+                depth + 1,
+                remaining,
+                ignore_stack,
+                output,
+            );
+        }
+    }
+    ignore_stack.truncate(inherited_ignore_count);
+    Ok(())
+}
+
+fn load_confined_ignore_files(
+    root: &ConfinedPath,
+    capability_directory: &Path,
+    search_directory: &Path,
+    ignore_stack: &mut Vec<ignore::gitignore::Gitignore>,
+) {
+    for file_name in [".gitignore", ".ignore"] {
+        let capability_path = capability_directory.join(file_name);
+        let Ok(metadata) = root.directory.symlink_metadata(&capability_path) else {
+            continue;
+        };
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() > DEFAULT_MAX_FILE_BYTES
+        {
+            continue;
+        }
+        let Ok(contents) = root.directory.read_to_string(&capability_path) else {
+            continue;
+        };
+        let source = search_directory.join(file_name);
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(search_directory);
+        for line in contents.lines() {
+            let _ = builder.add_line(Some(source.clone()), line);
+        }
+        if let Ok(matcher) = builder.build() {
+            ignore_stack.push(matcher);
+        }
+    }
+}
+
+fn path_is_ignored(
+    ignore_stack: &[ignore::gitignore::Gitignore],
+    path: &Path,
+    is_directory: bool,
+) -> bool {
+    let mut ignored = false;
+    for matcher in ignore_stack {
+        let matched = matcher.matched_path_or_any_parents(path, is_directory);
+        if matched.is_ignore() {
+            ignored = true;
+        } else if matched.is_whitelist() {
+            ignored = false;
+        }
+    }
+    ignored
+}
+
+enum RelativeGlobSegment {
+    Recursive,
+    Pattern(glob::Pattern),
+}
+
+struct RelativeGlob {
+    segments: Vec<RelativeGlobSegment>,
+}
+
+impl RelativeGlob {
+    fn compile(pattern: &str) -> Result<Self, ToolError> {
+        let segments = pattern
+            .split('/')
+            .map(|segment| {
+                if segment == "**" {
+                    Ok(RelativeGlobSegment::Recursive)
+                } else {
+                    glob::Pattern::new(segment)
+                        .map(RelativeGlobSegment::Pattern)
+                        .map_err(|error| {
+                            ToolError::InvalidArguments(format!("glob {pattern}: {error}"))
+                        })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { segments })
+    }
+
+    fn matches(&self, relative: &Path) -> bool {
+        let Some(segments) = relative
+            .components()
+            .map(|component| component.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        self.matches_from(0, 0, &segments, &mut BTreeMap::new())
+    }
+
+    fn matches_from(
+        &self,
+        pattern_index: usize,
+        path_index: usize,
+        path: &[&str],
+        memo: &mut BTreeMap<(usize, usize), bool>,
+    ) -> bool {
+        if let Some(result) = memo.get(&(pattern_index, path_index)) {
+            return *result;
+        }
+        let result = match self.segments.get(pattern_index) {
+            None => path_index == path.len(),
+            Some(RelativeGlobSegment::Recursive) => {
+                self.matches_from(pattern_index + 1, path_index, path, memo)
+                    || (path_index < path.len()
+                        && self.matches_from(pattern_index, path_index + 1, path, memo))
+            }
+            Some(RelativeGlobSegment::Pattern(pattern)) => {
+                path.get(path_index)
+                    .is_some_and(|name| pattern.matches(name))
+                    && self.matches_from(pattern_index + 1, path_index + 1, path, memo)
+            }
+        };
+        memo.insert((pattern_index, path_index), result);
+        result
     }
 }
 
@@ -695,27 +964,35 @@ impl Tool for GrepTool {
         } else {
             &args.path
         })?;
-        if let Some(output) = run_ripgrep(&args.pattern, &root).await? {
-            return Ok(output);
-        }
         let re = regex::Regex::new(&args.pattern)
             .map_err(|err| ToolError::InvalidArguments(format!("grep: invalid regex: {err}")))?;
-        let mut files = Vec::new();
-        let mut remaining = WALK_MAX_ENTRIES;
-        collect_files(&root, &mut files, 0, &mut remaining)?;
-        files.sort();
+        let root_is_file = root.metadata().is_ok_and(|metadata| metadata.is_file());
+        let files = collect_confined_entries(&root, WalkPurpose::Grep)?;
         let mut hits = Vec::new();
         let mut output_bytes = 0;
-        for path in files {
-            let Ok(content) = std::fs::read_to_string(&path) else {
+        for file in files {
+            if file.kind != WalkedEntryKind::File || file.len > GREP_MAX_FILE_BYTES {
+                continue;
+            }
+            let Ok(content) = root.directory.read_to_string(&file.capability_relative) else {
                 continue;
             };
+            if content
+                .as_bytes()
+                .get(..content.len().min(512))
+                .is_some_and(|prefix| prefix.contains(&0))
+            {
+                continue;
+            }
+            let path = root.absolute.join(&file.search_relative);
+            let logical_path = self.0.logical_path(&path);
             for (index, line) in content.split('\n').enumerate() {
-                if line.len() > GREP_MAX_LINE_LENGTH {
-                    continue;
-                }
                 if re.is_match(line) {
-                    let hit = format!("{}:{}:{}", path.display(), index + 1, line);
+                    let hit = if root_is_file {
+                        format!("{}:{}", index + 1, line)
+                    } else {
+                        format!("{}:{}:{}", logical_path.display(), index + 1, line)
+                    };
                     if output_bytes + hit.len() + 1 > GREP_OUTPUT_LIMIT {
                         hits.push(format!("[output truncated at {GREP_OUTPUT_LIMIT} bytes]"));
                         return Ok(hits.join("\n"));
@@ -731,122 +1008,6 @@ impl Tool for GrepTool {
             Ok(hits.join("\n"))
         }
     }
-}
-
-/// Match the official Node helper's preferred path: use ripgrep when it is on
-/// PATH, and return None only when the executable is absent so the bounded
-/// in-process walker can take over.
-async fn run_ripgrep(pattern: &str, path: &Path) -> Result<Option<String>, ToolError> {
-    let mut child = match tokio::process::Command::new("rg")
-        .args(["-n", "--no-heading", "-e", pattern, "--"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(ToolError::Execution(format!("grep: rg failed: {error}")));
-        }
-    };
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let stdout_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stdout
-            .take((GREP_OUTPUT_LIMIT + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr
-            .take((GREP_OUTPUT_LIMIT + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let output = stdout_task
-        .await
-        .map_err(|error| ToolError::Execution(format!("grep: rg stdout: {error}")))?
-        .map_err(|error| ToolError::Execution(format!("grep: rg stdout: {error}")))?;
-    let truncated = output.len() > GREP_OUTPUT_LIMIT;
-    if truncated {
-        let _ = child.kill().await;
-    }
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| ToolError::Execution(format!("grep: rg failed: {error}")))?;
-    let error = stderr_task
-        .await
-        .map_err(|error| ToolError::Execution(format!("grep: rg stderr: {error}")))?
-        .map_err(|error| ToolError::Execution(format!("grep: rg stderr: {error}")))?;
-    if truncated {
-        let prefix = String::from_utf8_lossy(&output[..GREP_OUTPUT_LIMIT]);
-        return Ok(Some(format!(
-            "{prefix}\n[output truncated at {GREP_OUTPUT_LIMIT} bytes]"
-        )));
-    }
-    match status.code() {
-        Some(0) => Ok(Some(String::from_utf8_lossy(&output).into_owned())),
-        Some(1) => Ok(Some("no matches".into())),
-        _ => {
-            let detail = String::from_utf8_lossy(&error);
-            let detail = if detail.is_empty() {
-                format!("exit {status}")
-            } else {
-                detail.into_owned()
-            };
-            Err(ToolError::Execution(format!("grep: rg failed: {detail}")))
-        }
-    }
-}
-
-fn collect_files(
-    path: &Path,
-    files: &mut Vec<PathBuf>,
-    depth: usize,
-    remaining: &mut usize,
-) -> Result<(), ToolError> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|err| file_error("grep", &path.display().to_string(), &err))?;
-    if metadata.file_type().is_symlink() {
-        return Ok(());
-    }
-    if metadata.is_file() {
-        files.push(path.to_path_buf());
-        return Ok(());
-    }
-    if !metadata.is_dir() || depth > WALK_MAX_DEPTH {
-        return Ok(());
-    }
-    let entries = std::fs::read_dir(path)
-        .map_err(|err| ToolError::Execution(format!("read directory {}: {err}", path.display())))?;
-    for entry in entries {
-        if *remaining == 0 {
-            break;
-        }
-        *remaining -= 1;
-        let entry =
-            entry.map_err(|err| ToolError::Execution(format!("walk {}: {err}", path.display())))?;
-        if matches!(entry.file_name().to_str(), Some(".git" | "node_modules")) {
-            continue;
-        }
-        let file_type = entry.file_type().map_err(|err| {
-            ToolError::Execution(format!("stat {}: {err}", entry.path().display()))
-        })?;
-        if file_type.is_dir() {
-            collect_files(&entry.path(), files, depth + 1, remaining)?;
-        } else if file_type.is_file() {
-            files.push(entry.path());
-        }
-    }
-    Ok(())
 }
 
 /// Write `content` to a file, creating or truncating it. Returns a confirmation.
@@ -1688,6 +1849,56 @@ mod write_tests {
         symlink(outside.path(), &pivot).unwrap();
         assert!(atomic_write(&write, "must-not-escape").is_err(), "R2");
         assert!(!outside.path().join("new.txt").exists(), "R2");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_walker_stays_bound_to_the_open_root_after_path_swap() {
+        use std::os::unix::fs::symlink;
+
+        // Search-walker cause/effect graph: C1 FileContext captured the trusted
+        // directory capability; C2 its ambient pathname is unchanged/swapped;
+        // C3 the replacement is an escaping symlink. E1 both Glob and Grep see
+        // the originally opened tree; E2 neither observes replacement bytes.
+        //
+        // | Rule | C1 | C2 | C3 | Purpose | Effect |
+        // |---|---|---|---|---|---|
+        // | W1 | T | unchanged | F | Glob | E1 |
+        // | W2 | T | swapped | T | Glob | E1+E2 |
+        // | W3 | T | swapped | T | Grep | E1+E2 |
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root_path = parent.path().join("root");
+        let held_path = parent.path().join("held");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("inside.txt"), "inside").unwrap();
+        std::fs::write(outside.path().join("outside.txt"), "outside").unwrap();
+        let files = FileContext::new(&HandToolContext::new(&root_path));
+        let confined = files.resolve(".").unwrap();
+
+        let before = collect_confined_entries(&confined, WalkPurpose::Glob).unwrap();
+        assert_eq!(before.len(), 1, "W1/E1");
+        assert_eq!(before[0].search_relative, Path::new("inside.txt"), "W1/E1");
+
+        std::fs::rename(&root_path, &held_path).unwrap();
+        symlink(outside.path(), &root_path).unwrap();
+        for (rule, purpose) in [("W2", WalkPurpose::Glob), ("W3", WalkPurpose::Grep)] {
+            let after = collect_confined_entries(&confined, purpose).unwrap();
+            assert_eq!(after.len(), 1, "{rule}/E1+E2");
+            assert_eq!(
+                after[0].search_relative,
+                Path::new("inside.txt"),
+                "{rule}/E1+E2"
+            );
+            assert_eq!(
+                confined
+                    .directory
+                    .read_to_string(&after[0].capability_relative)
+                    .unwrap(),
+                "inside",
+                "{rule}/E1+E2"
+            );
+        }
     }
 
     #[tokio::test]
