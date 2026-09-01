@@ -379,6 +379,21 @@ not guess from Host, issuer, referrer, or an OAuth token. The browser menu is a
 navigation affordance, never an authorization decision or a second product
 topology.
 
+### Amendment (2026-09-01): sibling selection is a Cloud entry intent
+
+In a hosted suite, the product switcher may append the finite sibling product
+intent to the exact deployment-supplied hub URL. It does not carry the current
+Awaken URL: a sibling switch asks Cloud to select that product's authorized
+default Workspace, while **All products** still opens the exact hub. Cloud
+validates the authenticated Org, entitlement, product availability and launch
+coordinate before returning an OAuth capability.
+
+Awaken therefore knows only the presentation name `flow` and the inert hub; it
+does not know Flow's domain, Cell, placement, Workspace, readiness or Billing
+state. A query value is a request, never authority. Standalone mode renders no
+suite switcher, and Awaken continues to use Foundation's shared continuation
+decision for direct hosted entry.
+
 ## Amendment (2026-07-31): hosted browser entry returns to the account hub
 
 The same inert `SuiteNavigation` prevents an unauthenticated direct hosted URL

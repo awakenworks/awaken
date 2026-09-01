@@ -63,7 +63,7 @@ export function Popover({ children, content, placement = "bottom-start", closeOn
                     setOpen(false);
             }, ref: rootRef, children: [_jsx(HeadlessPopover.Trigger, { "aria-haspopup": role, ref: triggerRef, render: children, nativeButton: true }), _jsx(HeadlessPopover.Portal, { container: rootRef, children: _jsx(HeadlessPopover.Positioner, { align: align, className: "ui-popover__positioner", side: "bottom", sideOffset: 8, children: _jsx(HeadlessPopover.Popup, { "aria-label": ariaLabel, className: cx("ui-popover__content", `ui-popover__content--${placement}`, contentClassName), id: contentId, initialFocus: true, onClick: closeOnContentClick
                                 ? ((event) => {
-                                    if (event.target.closest("button")) {
+                                    if (event.target.closest('button, a[href], [role="menuitem"], [role="option"]')) {
                                         setOpen(false);
                                     }
                                 })

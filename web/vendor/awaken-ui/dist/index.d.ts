@@ -6,6 +6,7 @@ export { Drawer, type DrawerClasses, type DrawerProps, type DrawerSide, type Dra
 export { AlertDialog, type AlertDialogClasses, type AlertDialogImpact, type AlertDialogProps, } from "./overlays/alert-dialog.js";
 export { ConfirmProvider, useConfirm, type Confirm, type ConfirmRequest, } from "./overlays/confirm-provider.js";
 export { MenuPopover, Popover, type MenuPopoverProps, type PopoverPlacement, type PopoverProps, type PopoverRole, } from "./overlays/popover.js";
+export { SuiteSwitcher, type SuiteSwitcherDestination, type SuiteSwitcherProduct, type SuiteSwitcherProps, } from "./navigation/suite-switcher.js";
 export { ToastProvider, useToast, type ToastApi, type ToastAction, type ToastProviderProps, type ToastRequest, type ToastTone, } from "./feedback/toast.js";
 export { Avatar, AvatarGroup, initialsOf, type AvatarClasses, type AvatarGroupProps, type AvatarProps, type AvatarSize, } from "./identity/avatar.js";
 export { Identity, IdentityCard, type IdentityCardProps, type IdentityProps, } from "./identity/identity.js";

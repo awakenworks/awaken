@@ -33,6 +33,27 @@ export function suiteHubUrl(
   return navigation?.hub_url ?? null;
 }
 
+/**
+ * Pure presentation intent. Cloud remains responsible for authenticating the
+ * account and resolving an authorized launch; the product never learns a
+ * sibling origin, Workspace, placement, or readiness coordinate.
+ */
+export function suiteProductEntryUrl(hubUrl: string, product: "awaken" | "flow"): string {
+  const entry = new URL(hubUrl);
+  entry.searchParams.delete("continue");
+  entry.searchParams.set("product", product);
+  return entry.href;
+}
+
+/** Build one Cloud-owned account destination from the projected deployment hub. */
+export function suiteCloudUrl(hubUrl: string, path: "/products" | "/usage-billing" | "/settings" | "/logout"): string {
+  const destination = new URL(hubUrl);
+  destination.pathname = path;
+  destination.search = "";
+  destination.hash = "";
+  return destination.href;
+}
+
 export type HostedBootstrapDecision =
   | { kind: "standalone" }
   | { kind: "verify" }
