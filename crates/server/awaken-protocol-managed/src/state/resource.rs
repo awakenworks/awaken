@@ -126,9 +126,9 @@ impl ManagedState {
                             name: format!("Session repository {index}"),
                             description: "Managed compatibility Session input".into(),
                             remote_url: remote_url.clone(),
-                            authorization_token: authorization_token
+                            credential_material: authorization_token
                                 .clone()
-                                .map(|token| token.into_redacted()),
+                                .map(|token| token.into_credential_material()),
                             credential: None,
                             mount_path: resource.mount_path.clone(),
                             initial_branch: initial_branch.clone(),

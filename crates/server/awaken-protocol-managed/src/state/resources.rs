@@ -215,9 +215,9 @@ impl ManagedState {
                             name: format!("Session repository at /{normalized_mount}"),
                             description: "Managed Session resource manifest input".into(),
                             remote_url: remote_url.clone(),
-                            authorization_token: authorization_token
+                            credential_material: authorization_token
                                 .clone()
-                                .map(|token| token.into_redacted()),
+                                .map(|token| token.into_credential_material()),
                             credential: None,
                             mount_path: input.mount_path.clone(),
                             initial_branch: initial_branch.clone(),
@@ -617,7 +617,7 @@ impl ManagedState {
                 id,
                 &owner_scope,
                 &binding_id,
-                patch.authorization_token.into_redacted(),
+                patch.authorization_token.into_credential_material(),
             )
             .await
             .map_err(Self::map_preparation_error)?;

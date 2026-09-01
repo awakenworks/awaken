@@ -714,56 +714,49 @@ impl awaken_session_contract::ManagedListPriceProvider for RecordingListPricePro
 }
 
 #[derive(Default)]
-struct CountingRepositoryCredentialIngress {
+struct CountingCredentialMaterialIngress {
     writes: std::sync::atomic::AtomicUsize,
     retirements: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_application::RepositoryCredentialIngress
-    for CountingRepositoryCredentialIngress
-{
-    async fn enter_repository_token(
+impl awaken_session_application::CredentialMaterialIngress for CountingCredentialMaterialIngress {
+    async fn enter_material(
         &self,
-        source_id: awaken_credential_contract::CredentialSourceId,
-        _workspace_id: &str,
-        _target: awaken_credential_contract::CredentialTarget,
-        _token: awaken_agent_contract::RedactedString,
-    ) -> Result<awaken_session_application::RepositoryCredentialEntry, String> {
+        command: awaken_session_application::CredentialMaterialIngressCommand,
+    ) -> Result<awaken_session_application::CredentialMaterialIngressReceipt, String> {
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(awaken_session_application::RepositoryCredentialEntry {
-            credential: awaken_credential_contract::CredentialRef {
-                id: source_id.0,
-                revision: 1,
+        Ok(
+            awaken_session_application::CredentialMaterialIngressReceipt {
+                credential: awaken_credential_contract::CredentialRef {
+                    id: command.source_id.0,
+                    revision: 1,
+                },
+                provenance: awaken_session_application::SessionParticipantProvenance::Applied,
             },
-            provenance: awaken_session_application::SessionParticipantProvenance::Applied,
-        })
+        )
     }
 
-    async fn retire_repository_token(
+    async fn rotate_material(
         &self,
-        _credential: &awaken_credential_contract::CredentialRef,
-        _workspace_id: &str,
+        command: awaken_session_application::CredentialMaterialRotationCommand,
+    ) -> Result<u64, String> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        command
+            .expected_revision
+            .checked_add(1)
+            .ok_or_else(|| "repository credential revision overflow".into())
+    }
+
+    async fn retire_material(
+        &self,
+        _command: awaken_session_application::CredentialMaterialRetirementCommand,
     ) -> Result<(), String> {
         self.retirements
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
-    }
-
-    async fn rotate_repository_token(
-        &self,
-        _source_id: &awaken_credential_contract::CredentialSourceId,
-        expected_revision: u64,
-        _workspace_id: &str,
-        _target: awaken_credential_contract::CredentialTarget,
-        _token: awaken_agent_contract::RedactedString,
-    ) -> Result<u64, String> {
-        self.writes
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        expected_revision
-            .checked_add(1)
-            .ok_or_else(|| "repository credential revision overflow".into())
     }
 }
 
@@ -1324,14 +1317,13 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
             SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
         );
         let prices = std::sync::Arc::new(RecordingListPriceProvider::default());
-        let credential_ingress =
-            std::sync::Arc::new(CountingRepositoryCredentialIngress::default());
+        let credential_ingress = std::sync::Arc::new(CountingCredentialMaterialIngress::default());
         let mut state = ManagedState::new(runtime.clone())
             .with_config_source(std::sync::Arc::new(rule.roster))
             .with_session_repo(repo.clone())
             .with_managed_list_price_provider(prices.clone())
             .with_resource_registry(resource_registry())
-            .with_repository_credential_ingress(credential_ingress.clone());
+            .with_credential_material_ingress(credential_ingress.clone());
         if let Some(backend_ref) = rule.override_backend {
             state = state.with_model_publication_resolver(std::sync::Arc::new(
                 FixedSessionModelResolver {
@@ -3127,7 +3119,7 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
                     name: "Profiled Repository".into(),
                     description: String::new(),
                     remote_url: "https://github.com/awaken/profiled.git".into(),
-                    authorization_token: None,
+                    credential_material: None,
                     credential: None,
                     mount_path: "/workspace/profiled".into(),
                     initial_branch: Some("main".into()),

@@ -1,9 +1,9 @@
 //! Protocol-neutral services required by the Session application.
 
-use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::{RedactedString, StructuredCredentialMaterial};
 use awaken_credential_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding, CredentialSourceId,
-    CredentialUsage, PlaintextHolder,
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding, CredentialRef,
+    CredentialSourceId, CredentialTarget, CredentialUsage, PlaintextHolder,
 };
 use awaken_environment_contract::EnvItem;
 use awaken_environment_realization_contract::EnvironmentImageBuildError;
@@ -60,42 +60,98 @@ pub enum SessionParticipantProvenance {
     Replayed,
 }
 
-/// Exact secret-free result of Repository credential ingress. The provenance
-/// is transient command data; the Vault source remains the durable authority.
+/// Plaintext admitted at one write-only Credential boundary.
+///
+/// The consumer adapter owns only the provider-specific transformation into an
+/// opaque or typed material document. Vault encoding, persistence, revisioning,
+/// and retirement remain behind [`CredentialMaterialIngress`].
+pub enum CredentialPlaintext {
+    Opaque(RedactedString),
+    Structured(StructuredCredentialMaterial),
+}
+
+/// Provider identity plus write-only material supplied by a protocol adapter.
+/// Target and usage are deliberately absent: the consuming application owns
+/// those facts and adds them when it constructs an ingress command.
+pub struct CredentialMaterialInput {
+    pub provider: String,
+    pub plaintext: CredentialPlaintext,
+}
+
+impl CredentialMaterialInput {
+    #[must_use]
+    pub fn opaque(provider: impl Into<String>, value: RedactedString) -> Self {
+        Self {
+            provider: provider.into(),
+            plaintext: CredentialPlaintext::Opaque(value),
+        }
+    }
+
+    #[must_use]
+    pub fn structured(provider: impl Into<String>, material: StructuredCredentialMaterial) -> Self {
+        Self {
+            provider: provider.into(),
+            plaintext: CredentialPlaintext::Structured(material),
+        }
+    }
+}
+
+/// One exact, provider-neutral request to create and seal Credential material.
+pub struct CredentialMaterialIngressCommand {
+    pub source_id: CredentialSourceId,
+    pub workspace_id: String,
+    pub target: CredentialTarget,
+    pub usage: CredentialUsage,
+    pub material: CredentialMaterialInput,
+}
+
+/// One exact-revision Credential material rotation.
+pub struct CredentialMaterialRotationCommand {
+    pub source_id: CredentialSourceId,
+    pub expected_revision: u64,
+    pub workspace_id: String,
+    pub target: CredentialTarget,
+    pub usage: CredentialUsage,
+    pub material: CredentialMaterialInput,
+}
+
+/// One terminal Credential retirement request.
+pub struct CredentialMaterialRetirementCommand {
+    pub credential: CredentialRef,
+    pub workspace_id: String,
+}
+
+/// Exact secret-free result of Credential material ingress. The provenance
+/// is transient command data; the Credential source remains durable authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RepositoryCredentialEntry {
-    pub credential: awaken_credential_contract::CredentialRef,
+pub struct CredentialMaterialIngressReceipt {
+    pub credential: CredentialRef,
     pub provenance: SessionParticipantProvenance,
 }
 
-/// Write-only ingress for repository material. Implementations seal material
-/// before returning the opaque source id used by Session compilation.
+/// Generic write-only Credential material authority.
+///
+/// Consumers declare provider material, target, and usage; implementations own
+/// sealing, WAL/CAS publication, exact-revision rotation, and retirement. This
+/// port must not select a Repository, MCP server, model, or execution holder.
 #[async_trait::async_trait]
-pub trait RepositoryCredentialIngress: Send + Sync {
-    async fn enter_repository_token(
+pub trait CredentialMaterialIngress: Send + Sync {
+    async fn enter_material(
         &self,
-        source_id: CredentialSourceId,
-        workspace_id: &str,
-        target: awaken_credential_contract::CredentialTarget,
-        token: RedactedString,
-    ) -> Result<RepositoryCredentialEntry, String>;
+        command: CredentialMaterialIngressCommand,
+    ) -> Result<CredentialMaterialIngressReceipt, String>;
 
-    /// Terminally archive one exact Session-owned Repository source and reclaim
-    /// its material through the canonical credential WAL/CAS path.
-    async fn retire_repository_token(
+    async fn rotate_material(
         &self,
-        credential: &awaken_credential_contract::CredentialRef,
-        workspace_id: &str,
-    ) -> Result<(), String>;
-
-    async fn rotate_repository_token(
-        &self,
-        source_id: &CredentialSourceId,
-        expected_revision: u64,
-        workspace_id: &str,
-        target: awaken_credential_contract::CredentialTarget,
-        token: RedactedString,
+        command: CredentialMaterialRotationCommand,
     ) -> Result<u64, String>;
+
+    /// Terminally archive one exact source and reclaim its material through the
+    /// canonical Credential WAL/CAS path.
+    async fn retire_material(
+        &self,
+        command: CredentialMaterialRetirementCommand,
+    ) -> Result<(), String>;
 }
 
 /// Exact executable Environment projection resolved for one Session creation.

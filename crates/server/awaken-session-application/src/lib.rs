@@ -52,7 +52,9 @@ mod mutation;
 pub use mutation::SessionMutationError;
 mod session_services;
 pub use session_services::{
-    RepositoryCredentialEntry, RepositoryCredentialIngress, ResolvedSessionEnvironment,
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
+    CredentialMaterialInput, CredentialMaterialRetirementCommand,
+    CredentialMaterialRotationCommand, CredentialPlaintext, ResolvedSessionEnvironment,
     SessionCredentialAccessRequest, SessionCredentialSource, SessionEnvironmentSource,
     SessionParticipantProvenance,
 };
