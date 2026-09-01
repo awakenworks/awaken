@@ -1834,6 +1834,16 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
+    async fn validate_session_agent_message_source(
+        &self,
+        command: &awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<(), RunError> {
+        self.host
+            .validate_session_agent_message_source(command)
+            .await
+            .map_err(to_run_error)
+    }
+
     async fn session_thread_run_recovery_snapshot(
         &self,
         session_id: &str,

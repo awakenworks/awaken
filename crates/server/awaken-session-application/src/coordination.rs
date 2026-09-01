@@ -517,6 +517,9 @@ impl SessionAgentCoordination for SessionApplication {
                 "Agent coordination requires a message and Runtime operation identity",
             ));
         }
+        self.runtime()
+            .validate_session_agent_message_source(&command)
+            .await?;
         let (owner, session) = self.coordination_session(&command.session_id).await?;
         let roster = self.coordination_roster(&owner, &session)?;
         let existing_links = self

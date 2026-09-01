@@ -134,6 +134,26 @@ fn non_empty(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+impl SendMessageArgs {
+    /// Normalize the one model-facing target shape. The builtin executor and
+    /// the durable source validator share this classifier so validation cannot
+    /// drift into a second interpretation of the tool schema.
+    pub fn normalized_target(&self) -> Result<AgentMessageTarget, &'static str> {
+        match (
+            non_empty(self.agent_id.clone()),
+            non_empty(self.session_thread_id.clone()),
+        ) {
+            (Some(agent_id), None) => Ok(AgentMessageTarget::Spawn { agent_id }),
+            (None, Some(session_thread_id)) => {
+                Ok(AgentMessageTarget::ExistingThread { session_thread_id })
+            }
+            (Some(_), Some(_)) | (None, None) => {
+                Err("exactly one of `agent_id` or `session_thread_id` is required")
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for SendMessageTool {
     type Args = SendMessageArgs;
@@ -147,17 +167,9 @@ impl Tool for SendMessageTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
-        let target = match (non_empty(args.agent_id), non_empty(args.session_thread_id)) {
-            (Some(agent_id), None) => AgentMessageTarget::Spawn { agent_id },
-            (None, Some(session_thread_id)) => {
-                AgentMessageTarget::ExistingThread { session_thread_id }
-            }
-            (Some(_), Some(_)) | (None, None) => {
-                return Err(ToolError::InvalidArguments(
-                    "exactly one of `agent_id` or `session_thread_id` is required".to_string(),
-                ));
-            }
-        };
+        let target = args
+            .normalized_target()
+            .map_err(|error| ToolError::InvalidArguments(error.to_string()))?;
         if args.message.trim().is_empty() {
             return Err(ToolError::InvalidArguments(
                 "`message` must not be empty".to_string(),

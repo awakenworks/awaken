@@ -5,6 +5,7 @@ use super::*;
 mod canonical_order;
 mod historical_pending;
 mod interval_aggregate_projection;
+mod publication;
 mod refresh_entrypoint;
 mod run_observation_projection;
 mod usage_projection;
@@ -945,7 +946,7 @@ impl ManagedState {
             .cloned()
             .ok_or(StateError::NotFound)?;
         let base_cache_revision = base_record.cache_revision;
-        let initial_cursor = base_record.checkpoint.lifecycle_cursor;
+        let initial_cursor = base_record.checkpoint.source.lifecycle_cursor;
         // Read Outcome observation before the root recovery fence. A terminal
         // Outcome projection is derived from that same Thread aggregate and its
         // evaluation/state command is the immutable public-order anchor. Reading
@@ -1190,13 +1191,15 @@ impl ManagedState {
         record.primary_thread_usage = primary_thread_usage;
         let projected_budget_reach = budget_reach_projections
             .iter()
-            .filter(|(generation, _, _)| *generation > record.checkpoint.budget_reach_generation)
+            .filter(|(generation, _, _)| {
+                *generation > record.checkpoint.source.budget_reach_generation
+            })
             .cloned()
             .collect::<Vec<_>>();
-        let current_cursor = record.checkpoint.lifecycle_cursor;
+        let current_cursor = record.checkpoint.source.lifecycle_cursor;
         accepted_lifecycle.retain(|event| event.cursor > current_cursor);
-        if accepted_cursor > record.checkpoint.lifecycle_cursor {
-            record.checkpoint.lifecycle_cursor = accepted_cursor;
+        if accepted_cursor > record.checkpoint.source.lifecycle_cursor {
+            record.checkpoint.source.lifecycle_cursor = accepted_cursor;
         }
         let root_pending = root_pending.as_ref();
         let transcript_evidence = project::committed_transcript_evidence(&messages, root_pending);
@@ -1219,8 +1222,13 @@ impl ManagedState {
                         | RunLifecycleEventKind::Cancelled
                 )
         });
-        let projected_root_terminal = root_terminal
-            .filter(|event| !record.checkpoint.terminal_cursors.contains(&event.cursor));
+        let projected_root_terminal = root_terminal.filter(|event| {
+            !record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .contains(&event.cursor)
+        });
         // The public aggregate opening belongs to the exact committed root
         // opening transition, not to this Coordinator's process-local
         // observation order. A warm replica can see Running before a cold peer
@@ -1680,7 +1688,11 @@ impl ManagedState {
             record.deferred_session_stop_reason = Some((None, StopReason::BudgetReached));
         }
         if let Some(terminal) = projected_root_terminal {
-            record.checkpoint.terminal_cursors.insert(terminal.cursor);
+            record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .insert(terminal.cursor);
             if let awaken_agent_contract::agent::run::RunState::Ended(
                 awaken_agent_contract::agent::run::EndCause::Error(failure),
             ) = &terminal.state
@@ -1793,7 +1805,7 @@ impl ManagedState {
                             processed_at: Some(PROCESSED_AT.to_string()),
                         },
                     ]);
-                    record.checkpoint.budget_reach_generation = generation;
+                    record.checkpoint.source.budget_reach_generation = generation;
                 }
             } else {
                 let stop_reason = if pending_event_ids.is_empty() {
@@ -1823,6 +1835,7 @@ impl ManagedState {
                     // set covers root and children.
                     let aggregate_terminal_cursor = record
                         .checkpoint
+                        .progress
                         .terminal_cursors
                         .iter()
                         .max()
@@ -1944,7 +1957,11 @@ impl ManagedState {
                 idle_id,
                 PrimaryThreadStatusProjection::Idle { stop_reason },
             ));
-            record.checkpoint.terminal_cursors.insert(terminal.cursor);
+            record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .insert(terminal.cursor);
         }
         Self::replace_interval_aggregate_projections(
             record,
@@ -1965,30 +1982,18 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
-        staged_record.checkpoint.session_revision = persisted.revision;
-        staged_record.checkpoint.root_thread_version = root_snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.thread_version);
-        staged_record.checkpoint.child_thread_versions = child_snapshots
-            .iter()
-            .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.thread_version))
-            .collect();
+        publication::stamp_source(
+            &mut staged_record,
+            persisted.revision,
+            root_snapshot.as_ref(),
+            &child_snapshots,
+        );
 
-        let mut sessions = self.sessions.lock().unwrap();
-        let committed_record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        match decide_projection_publish(
+        self.publish_projection_candidate(
+            session_id,
             base_cache_revision,
-            committed_record.cache_revision,
-            &committed_record.checkpoint,
-            &staged_record.checkpoint,
-        ) {
-            ProjectionPublishDecision::Apply => {}
-            ProjectionPublishDecision::RetryStaleCache
-            | ProjectionPublishDecision::RejectSourceRegression => return Ok(false),
-        }
-        staged_record.advance_cache_revision()?;
-        *committed_record = staged_record;
-        self.broadcast_new_event_ids(session_id, committed_record, &previous_event_ids);
-        Ok(true)
+            staged_record,
+            &previous_event_ids,
+        )
     }
 }

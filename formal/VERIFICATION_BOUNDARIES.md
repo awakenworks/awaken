@@ -49,13 +49,27 @@ type checking are valuable executable evidence, but are not formal proofs.
   separate `ManagedProjectionPublish.tla` model checks two reverse-completing
   refresh writers over independent Session, root/child Thread, lifecycle, and
   budget source coordinates. It proves result/checkpoint pairing, local cache
-  CAS, source non-invention, visible non-regression, and failure/rejection
-  stuttering. The Rust decision-table tests exercise the same publication
+  CAS, source non-invention, visible non-regression, failure/rejection
+  stuttering, and that equal source coordinates plus equal rendered content
+  change neither cache nor broadcast. Equal legacy coordinates with changed
+  rendered content still publish rather than hiding an unversioned source.
+  The Rust decision-table and concurrent-reader tests exercise the same publication
   branches. Together, the models prove that a retained reply no longer needs
   user action while remaining recoverable and that a stale refresher cannot
   roll the visible projection backwards. They do not prove database snapshot
   isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
   or lifecycle-supervisor fairness.
+- Internal Agent messaging has no message store or Dispatch-owned waiting
+  state. `AgentMessageProtocol.tla` models the committed source request,
+  deterministic dispatch, claim handoff, target commit, source receipt, exact
+  replay, payload conflict, and archive/failure closure. It proves that a
+  dispatch follows a durable request, receipts cannot precede durable admission,
+  only one claim is live, active delivery retains Session activity, exact replay
+  and payload conflict stutter, and a closed Thread has no runnable dispatch.
+  Production refinement additionally validates the command against the source
+  Run's committed `ActiveToolBatch`; backend conformance tests own atomic
+  admission. The model does not prove model intent, Worker availability,
+  scheduler fairness, or delivery to an external side effect.
 - Tool permission defaults and exact overrides share the neutral
   `ToolExecutionPolicy`. `ToolPermissionPolicy.tla` exhaustively checks Agent
   default-allow, MCP default-ask, exact allow/ask/disabled configuration, and

@@ -136,6 +136,7 @@ struct RecordingAgentAdmissionRuntime {
     interruptions: Mutex<Vec<(String, awaken_agent_contract::agent::thread::Id)>>,
     boundaries: RecordingBoundaries,
     generic_recovery_available: AtomicBool,
+    source_valid: AtomicBool,
 }
 
 type RecordedBoundaryKey = (String, String);
@@ -318,6 +319,7 @@ impl RecordingAgentAdmissionRuntime {
             interruptions: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
             generic_recovery_available: AtomicBool::new(true),
+            source_valid: AtomicBool::new(true),
         }
     }
 
@@ -481,6 +483,10 @@ impl RecordingAgentAdmissionRuntime {
     fn set_generic_recovery_available(&self, available: bool) {
         self.generic_recovery_available
             .store(available, Ordering::SeqCst);
+    }
+
+    fn reject_agent_message_source(&self) {
+        self.source_valid.store(false, Ordering::SeqCst);
     }
 }
 
@@ -910,6 +916,21 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         install_complete_test_projection(self, thread, projection, mode).await
+    }
+
+    async fn validate_session_agent_message_source(
+        &self,
+        _command: &awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<(), RunError> {
+        if self.source_valid.load(Ordering::SeqCst) {
+            // These application tests exercise policy after the Runtime-owned
+            // provenance boundary. ManagedHost owns the production refinement.
+            Ok(())
+        } else {
+            Err(RunError::bad_request(
+                "test source does not match committed ActiveToolBatch",
+            ))
+        }
     }
 
     async fn coordinated_threads(

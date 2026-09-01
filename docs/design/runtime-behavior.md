@@ -341,7 +341,7 @@ Use this split:
 | Area | Core mechanism | Behavior contribution owner | Rule |
 |---|---|---|---|
 | Multi-agent delegation | tool-call, permission, child-run correlation, `RunIngress` / backend handoff | `agent_run` descriptor/tool, delegate roster config, local/remote execution adapter | core enables delegation safely; installed tools and target choices change agent behavior |
-| Message delivery | committed message write intent, append fence, resume snapshot, frozen input consumption | internal `send_message` tool/effect, external message adapter, durable pending queue, recovery tool | core commits messages; adapters/tools decide how pending input arrives |
+| Message delivery | committed tool request, deterministic activation input, message write intent, append fence | internal `send_message` tool; separately, external message adapter and pending queue | internal Agent messages create a fresh target Run; only external ingress uses pending input |
 | Scheduled/background work | `ScheduledAction`, `ResumeTicket`, correlation/idempotency key, resume validation | action kinds, timers, concrete task tools, result adapters | no core `BackgroundTask` umbrella; ADR-0076 owns only detached ordinary-tool execution |
 | Plugin mechanism | `Plugin` factory, `PluginManifest`, `CapabilityBound`, resolved `Contributions` (hook slots, tool gates, transform slots, key registry, output validation) | plugin packages, first-party extension bundles, product-selected active plugin scope | core resolves and bound-checks contributions; plugins decide behavior |
 | Client-executed tools | pending `ResumeTicket` (client-tool await reason), descriptor fingerprint, neutral resume command validated by the shared `ResumeValidator` | public wait/result projection and client adapter | public result ids are projections; runtime validates the pending call before resume |
@@ -380,7 +380,8 @@ internals or mutate runtime state directly.
 | External need | Stable exposure | Extension point | Runtime-owned validation |
 |---|---|---|---|
 | let a model call another Agent | model-visible `agent_run` descriptor from an extension | config publishes the Agent's delegate roster; a first-class child Run executes locally or remotely through the same lifecycle | target is in resolved roster, descriptor fingerprint matches, permission gate passes |
-| let agents or external callers send messages | shared target-thread pending append mechanism | internal `send_message` tool/effect or external message adapter; durable input buffer | message id idempotency, target thread binding, pending freeze before runtime consumption |
+| let an Agent send another Agent a message | source `ActiveToolBatch` plus deterministic target `RunActivation` | internal `send_message` tool/effect | committed source call/payload, frozen target Run, Run-id idempotency |
+| let an external caller submit later input | target-thread pending append mechanism | external message adapter and durable input buffer | message id idempotency, target binding, pending freeze before runtime consumption |
 | let plugins schedule later work | `ScheduledAction` request committed with the run/thread checkpoint | plugin registers action kinds and result adapter; server owns timer/wake | committed request exists, correlation/idempotency key matches, snapshot/fingerprint match |
 | let a client execute a tool | wait/resume channel (client-tool await reason) | protocol adapter projects wait/result; tool descriptor may come from per-run client config | pending wait exists, descriptor fingerprint matches, result is not duplicate/expired/mismatched |
 | let a service-backed tool execute work | `RawTool` adapter behind resolved descriptors | adapter package owns transport, auth, and result mapping inside its in-process `invoke` | capability satisfies requirements; result returns through tool output and commit path |
@@ -392,7 +393,8 @@ The external API should therefore be a composition of small surfaces:
 configuration publication -> selects tools, plugins, delegate rosters, action kinds
 plugin registration ------> contributes descriptors, hooks, state keys, actions
 run ingress --------------> submits input and live control
-message ingress/effect ----> appends pending input for a target thread
+external message ingress --> appends pending input for a target thread
+internal send_message -----> admits a deterministic fresh target Run
 executor/backend adapter --> runs a tool or agent work by resolved id
 resume endpoint ----------> maps an inbound result to neutral resume command
 projection API -----------> reads committed facts/events/dispatch projections
@@ -487,11 +489,12 @@ configuration publication
   -> builtin extension contributes model-visible descriptors when selected
   -> model calls agent_run, send_message, or another selected tool
   -> tool gate validates descriptor fingerprint, permission, capability, target
-  -> tool/effect returns StateCommand, child-run request, pending-message append,
-     external wait, or ScheduledAction request
+  -> tool/effect returns StateCommand, deterministic child/follow-up Run request,
+     external wait, or ScheduledAction request; only external ingress returns a
+     pending-message append
   -> runtime stages effects and messages in ThreadCommit
-  -> commit makes facts, pending outbox entries, awaiting state, or scheduled
-     requests durable
+  -> commit makes tool requests/facts, awaiting state, or scheduled requests
+     durable; external adapters may separately commit pending outbox entries
   -> dispatch/server observes committed requests and wakes or resumes through
      RunIngress
   -> runtime validates correlation, idempotency, snapshot, and descriptor
@@ -510,7 +513,11 @@ committed fact. Parent and child runs remain ordinary runs.
 Thread's `ActiveToolBatch` commits the request and recovery state. The
 deterministic target Run freezes the user message in `RunActivation.input`, and
 backend Run-id idempotency admits the exact payload once. Dispatch only delivers
-that Run; the target transcript becomes durable through `ThreadCommit`. A future
+that Run; the target transcript becomes durable through `ThreadCommit`. Before
+Session policy or activity admission, the Runtime validates run, call,
+operation, tool id, target, and message against that committed batch. A
+follow-up always queues a fresh Run on the existing Thread; it never answers or
+consumes the current Run's `ResumeTicket`. A future
 generic `send_message` must use the same Thread-scoped StateCommand/reducer shape
 instead of a server read-then-outbox adapter.
 

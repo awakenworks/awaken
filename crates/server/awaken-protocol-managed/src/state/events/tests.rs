@@ -2851,13 +2851,14 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
     // committed prefix is refreshed again. Effects: E1 C1+C2+C3 append and
     // broadcast aggregate Running before primary Thread Running; E2 the
     // lifecycle cursor advances through C3; E3 C5 appends and broadcasts
-    // nothing. The DTO is current-state projection only and cannot prove an
-    // append-only history edge already exists.
+    // nothing; E4 C5 does not advance the process-local cache CAS coordinate.
+    // The DTO is current-state projection only and cannot prove an append-only
+    // history edge already exists.
     //
     // | Rule | Session | DTO | Root lifecycle | Refresh | Effects |
     // |---|---|---|---|---|---|
     // | O1 | Running | Running | latest Running | first | E1,E2 |
-    // | O2 | Running | Running | same prefix | repeat | E3 |
+    // | O2 | Running | Running | same prefix | repeat | E3,E4 |
     let runtime = LifecycleRuntime::default();
     let state = ManagedState::new(runtime.clone());
     let session = state
@@ -2916,6 +2917,13 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
         lifecycle_cursor(1),
         "O1/E2"
     );
+    let first_cache_revision = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .cache_revision;
 
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
@@ -2927,6 +2935,17 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
         2,
         "O2/E3 no duplicate history"
     );
+    assert_eq!(
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&session.id)
+            .unwrap()
+            .cache_revision,
+        first_cache_revision,
+        "O2/E4 stable refresh is a completed read, not a cache write"
+    );
     assert!(
         matches!(
             live.try_recv(),
@@ -2934,6 +2953,51 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
         ),
         "O2/E3 no duplicate broadcast"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_stable_projection_readers_are_all_no_ops() {
+    // Cause/effect graph: C1 sixteen readers observe the same cache revision;
+    // C2 all durable Session/Thread source coordinates remain unchanged; C3 no
+    // overlay mutation races the reads. Effects: E1 every refresh succeeds;
+    // E2 cache revision and event history remain unchanged; E3 no reader can
+    // exhaust PREFIX_RETRIES because another read published an equal source.
+    // Decision rule P1=C1+C2+C3=>E1+E2+E3. Source advance and overlay races are
+    // covered by the adjacent reverse-writer and overlay-fence tests.
+    let state = Arc::new(ManagedState::new(LifecycleRuntime::default()));
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let before = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (record.cache_revision, record.events.clone())
+    };
+
+    let mut readers = tokio::task::JoinSet::new();
+    for _ in 0..16 {
+        let state = state.clone();
+        let session_id = session.id.clone();
+        readers.spawn(async move { state.refresh_committed_events(&session_id).await });
+    }
+    while let Some(result) = readers.join_next().await {
+        result.expect("P1 reader task").expect("P1/E1+E3");
+    }
+
+    let after = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (record.cache_revision, record.events.clone())
+    };
+    assert_eq!(after, before, "P1/E2 stable readers do not publish");
 }
 
 #[tokio::test]
@@ -2968,7 +3032,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         let record = sessions.get(&session.id).unwrap();
         (
             record.cache_revision,
-            record.checkpoint.session_revision,
+            record.checkpoint.source.session_revision,
             record.session.status,
         )
     };
@@ -2979,7 +3043,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         let record = sessions.get(&session.id).unwrap();
         (
             record.cache_revision,
-            record.checkpoint.session_revision,
+            record.checkpoint.source.session_revision,
             record.session.status,
         )
     };
@@ -2991,7 +3055,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         let record = sessions.get(&session.id).unwrap();
         (
             record.cache_revision,
-            record.checkpoint.session_revision,
+            record.checkpoint.source.session_revision,
             record.session.status,
         )
     };

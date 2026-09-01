@@ -168,7 +168,7 @@ impl ManagedState {
         // A Runtime projection and a root command may finish their reads in the
         // opposite order. Never let an older root snapshot roll the disposable
         // DTO backwards; equal revisions are immutable replays and need no write.
-        if persisted.revision <= record.checkpoint.session_revision {
+        if persisted.revision <= record.checkpoint.source.session_revision {
             return Ok(());
         }
         record.session.status = Self::wire_session_status(persisted.execution);
@@ -183,7 +183,7 @@ impl ManagedState {
             .max_list_cost_minor()
             .map(crate::types::BudgetLimit::from_minor);
         record.resource_state = persisted.resources.clone();
-        record.checkpoint.session_revision = persisted.revision;
+        record.checkpoint.source.session_revision = persisted.revision;
         record.advance_cache_revision()?;
         Ok(())
     }

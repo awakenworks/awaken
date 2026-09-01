@@ -60,6 +60,21 @@ not the internal Agent messaging mechanism. A future generic model-visible
 with commit-coupled recovery, following the same ownership shape as
 `ActiveToolBatch`; it must not recreate the removed server adapter.
 
+### D4: Refine every command from committed source truth
+
+An authenticated Worker claim proves which Worker currently executes the source
+Run; it does not authorize that Worker to change a model-emitted call. Before
+Session policy or activity admission, the Runtime reads the source Thread's one
+recovery prefix and requires the command's Run, call, derived operation, tool
+id, normalized target, and message to match an Executing `send_message` entry in
+`ActiveToolBatch`. Missing, stale, completed, or payload-mutated calls fail
+closed. The validator reuses the builtin tool's `SendMessageArgs` normalizer and
+does not create a fingerprint table or command registry.
+
+A follow-up is a deterministic fresh Run queued on the existing logical Thread.
+This remains true while the previous Run is Running or Awaiting: the follow-up
+does not inject live input and never consumes that Run's `ResumeTicket`.
+
 ## Consequences
 
 - Internal Agent messaging has one durable request owner: source Thread state.
@@ -70,6 +85,8 @@ with commit-coupled recovery, following the same ownership shape as
   ticket because it never performs that classification.
 - External pending input and internal Agent coordination remain distinct
   concepts instead of sharing storage merely because both contain text.
+- Worker authentication and committed model intent are separate checks; both
+  must pass before admission.
 
 ## References
 

@@ -968,6 +968,21 @@ pub trait SessionRuntime: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Validate one model-facing Agent command against the source Run's exact
+    /// committed `ActiveToolBatch`. Implementations must use the same atomic
+    /// Thread recovery prefix as ordinary crash recovery; a process-local tool
+    /// context or authenticated Worker claim alone is not sufficient proof of
+    /// call identity or payload. The fail-closed default keeps lightweight
+    /// runtimes from silently becoming a second trusted command source.
+    async fn validate_session_agent_message_source(
+        &self,
+        _command: &crate::SessionAgentMessageCommand,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "durable Agent message source validation is unsupported",
+        ))
+    }
+
     /// Read one internally consistent logical Thread prefix through the parent
     /// Session's physical commit partition. The primary Thread is addressed by
     /// `session_id == thread_id`; coordinated children use their own logical

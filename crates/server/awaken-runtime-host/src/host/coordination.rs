@@ -7,6 +7,8 @@
 
 use super::*;
 
+mod agent_message_source;
+
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::delegation::{DelegationId, DelegationOrigin};
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
@@ -15,7 +17,8 @@ use awaken_run_ingress::Outbox as _;
 use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
-    SessionAgentMessageReceipt, SessionAgentReportContinuation, coordinated_thread_failed,
+    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
+    coordinated_thread_failed,
 };
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
@@ -1049,6 +1052,23 @@ impl SharedHost {
                     thread_id.0, run_id.0
                 ))
             })
+    }
+
+    /// Authenticate one coordination command against the source Thread's exact
+    /// durable tool operation. Worker claims constrain execution ownership; the
+    /// committed `ActiveToolBatch` additionally constrains call and payload.
+    pub(crate) async fn validate_session_agent_message_source(
+        &self,
+        command: &SessionAgentMessageCommand,
+    ) -> Result<(), HostError> {
+        let snapshot = self
+            .session_thread_run_recovery_snapshot(
+                &command.session_id,
+                &command.source_thread_id,
+                &command.source_run_id,
+            )
+            .await?;
+        agent_message_source::validate(&snapshot, command)
     }
 
     pub(crate) async fn session_thread_usage(

@@ -14,8 +14,8 @@ pub(super) struct ProjectedToolIndex {
     pub(super) sources: HashSet<(String, String)>,
 }
 
-#[derive(Clone, Default)]
-pub(super) struct ManagedProjectionCheckpoint {
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(super) struct ManagedProjectionSourceVersion {
     /// Exact Session root revision paired with the rendered projection. Root
     /// mutations and Runtime Thread commits have independent clocks, so neither
     /// coordinate may stand in for the other.
@@ -25,17 +25,11 @@ pub(super) struct ManagedProjectionCheckpoint {
     /// absent: unrelated Threads must not conflict this Session projection.
     pub(super) root_thread_version: u64,
     pub(super) child_thread_versions: HashMap<String, u64>,
-    /// Runtime message identities consumed by the one prefix reducer. Together
-    /// with the lifecycle/budget coordinates below, this is the only state that
-    /// selects the unconsumed committed suffix on the next refresh.
-    pub(super) thread_message_ids: HashSet<(String, String)>,
-    pub(super) child_latest_run_ids: HashMap<String, awaken_agent_contract::agent::run::Id>,
     pub(super) lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
-    pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
     pub(super) budget_reach_generation: u64,
 }
 
-impl ManagedProjectionCheckpoint {
+impl ManagedProjectionSourceVersion {
     /// Component-wise ordering for the independent Session/Thread/lifecycle
     /// authorities consumed by one projection. A removed or older child prefix
     /// is not comparable and must be rebuilt rather than guessed forward.
@@ -53,9 +47,27 @@ impl ManagedProjectionCheckpoint {
     }
 }
 
+#[derive(Clone, Default, PartialEq)]
+pub(super) struct ManagedProjectionProgress {
+    /// Runtime message identities consumed by the one prefix reducer. This is
+    /// incremental reducer progress, never a durable source coordinate.
+    pub(super) thread_message_ids: HashSet<(String, String)>,
+    pub(super) child_latest_run_ids: HashMap<String, awaken_agent_contract::agent::run::Id>,
+    pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub(super) struct ManagedProjectionCheckpoint {
+    /// Independently versioned durable facts paired with the rendered result.
+    pub(super) source: ManagedProjectionSourceVersion,
+    /// Disposable progress used only to reduce the next committed suffix.
+    pub(super) progress: ManagedProjectionProgress,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProjectionPublishDecision {
     Apply,
+    AlreadyCurrent,
     RetryStaleCache,
     RejectSourceRegression,
 }
@@ -66,13 +78,16 @@ pub(super) enum ProjectionPublishDecision {
 pub(super) fn decide_projection_publish(
     expected_cache_revision: u64,
     current_cache_revision: u64,
-    current: &ManagedProjectionCheckpoint,
-    candidate: &ManagedProjectionCheckpoint,
+    current: &ManagedProjectionSourceVersion,
+    candidate: &ManagedProjectionSourceVersion,
+    projection_changed: bool,
 ) -> ProjectionPublishDecision {
     if expected_cache_revision != current_cache_revision {
         ProjectionPublishDecision::RetryStaleCache
     } else if !candidate.dominates(current) {
         ProjectionPublishDecision::RejectSourceRegression
+    } else if candidate == current && !projection_changed {
+        ProjectionPublishDecision::AlreadyCurrent
     } else {
         ProjectionPublishDecision::Apply
     }
@@ -127,6 +142,40 @@ pub(super) struct SessionRecord {
 }
 
 impl SessionRecord {
+    /// Compare every projection and continuation field while deliberately
+    /// excluding the process-local CAS token. Equal durable coordinates are not
+    /// sufficient: legacy and auxiliary committed sources may lack an
+    /// independent monotonic coordinate, but a changed rendered candidate must
+    /// still publish.
+    pub(super) fn same_projected_content(&self, other: &Self) -> Result<bool, StateError> {
+        // These protocol DTOs intentionally do not define domain equality. Their
+        // serialized wire value is exactly what Managed publishes, so compare
+        // that value instead of spreading PartialEq through the public schema.
+        let self_wire = serde_json::to_value((
+            &self.session,
+            &self.events,
+            &self.overlay.pending_events,
+            &self.child_threads,
+            &self.primary_thread_usage,
+        ))
+        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        let other_wire = serde_json::to_value((
+            &other.session,
+            &other.events,
+            &other.overlay.pending_events,
+            &other.child_threads,
+            &other.primary_thread_usage,
+        ))
+        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        Ok(self.agent_id == other.agent_id
+            && self.resource_state == other.resource_state
+            && self.checkpoint == other.checkpoint
+            && self.overlay.anchors == other.overlay.anchors
+            && self.deferred_session_stop_reason == other.deferred_session_stop_reason
+            && self.event_thread_owners == other.event_thread_owners
+            && self_wire == other_wire)
+    }
+
     pub(super) fn advance_cache_revision(&mut self) -> Result<(), StateError> {
         self.cache_revision = self.cache_revision.checked_add(1).ok_or_else(|| {
             StateError::Run(RunError::internal(
@@ -206,12 +255,14 @@ impl SessionRecord {
 
     pub(super) fn message_was_projected(&self, thread_id: &str, message_id: &str) -> bool {
         self.checkpoint
+            .progress
             .thread_message_ids
             .contains(&(thread_id.to_string(), message_id.to_string()))
     }
 
     pub(super) fn consume_message(&mut self, thread_id: &str, message_id: &str) -> bool {
         self.checkpoint
+            .progress
             .thread_message_ids
             .insert((thread_id.to_string(), message_id.to_string()))
     }
@@ -224,7 +275,10 @@ impl SessionRecord {
         events: Vec<Event>,
     ) -> Self {
         let checkpoint = ManagedProjectionCheckpoint {
-            session_revision,
+            source: ManagedProjectionSourceVersion {
+                session_revision,
+                ..Default::default()
+            },
             ..Default::default()
         };
         Self {
@@ -265,25 +319,28 @@ mod tests {
         session_revision: u64,
         root_thread_version: u64,
         child_thread_version: Option<u64>,
-    ) -> ManagedProjectionCheckpoint {
-        let mut checkpoint = ManagedProjectionCheckpoint {
+    ) -> ManagedProjectionSourceVersion {
+        let mut source = ManagedProjectionSourceVersion {
             session_revision: awaken_session_contract::SessionRevision(session_revision),
             root_thread_version,
             ..Default::default()
         };
         if let Some(version) = child_thread_version {
-            checkpoint
+            source
                 .child_thread_versions
                 .insert("child".to_string(), version);
         }
-        checkpoint
+        source
     }
 
     /// Cause/effect graph: C1 the cache revision still equals the writer's base;
-    /// C2 every Session/Thread source component is monotonic. E1 C1+C2 applies;
-    /// E2 !C1 retries without mutation; E3 C1+!C2 rejects regression. Decision
-    /// rows R1=(T,T)->E1, R2=(F,*)->E2, R3=(T,F)->E3. Child disappearance is a
-    /// regression because relationship topology cannot be guessed by the cache.
+    /// C2 every Session/Thread source component is monotonic; C3 at least one
+    /// source component or rendered projection field changed. E1 C1+C2+C3
+    /// applies; E2 !C1 retries without mutation; E3 C1+!C2 rejects regression;
+    /// E4 C1+C2+!C3 completes without
+    /// mutating or broadcasting. Decision rows R1=(T,T,T)->E1,
+    /// R2=(F,*,*)->E2, R3=(T,F,*)->E3, R4=(T,T,F)->E4. Child disappearance is
+    /// a regression because relationship topology cannot be guessed by cache.
     #[test]
     fn projection_publish_decision_covers_cache_and_source_fences() {
         let current = checkpoint(4, 7, Some(2));
@@ -292,24 +349,34 @@ mod tests {
         let missing_child = checkpoint(5, 8, None);
 
         assert_eq!(
-            decide_projection_publish(11, 11, &current, &newer),
+            decide_projection_publish(11, 11, &current, &newer, true),
             ProjectionPublishDecision::Apply,
             "R1/E1"
         );
         assert_eq!(
-            decide_projection_publish(10, 11, &current, &newer),
+            decide_projection_publish(10, 11, &current, &newer, true),
             ProjectionPublishDecision::RetryStaleCache,
             "R2/E2"
         );
         assert_eq!(
-            decide_projection_publish(11, 11, &current, &older_root),
+            decide_projection_publish(11, 11, &current, &older_root, true),
             ProjectionPublishDecision::RejectSourceRegression,
             "R3/E3 root"
         );
         assert_eq!(
-            decide_projection_publish(11, 11, &current, &missing_child),
+            decide_projection_publish(11, 11, &current, &missing_child, true),
             ProjectionPublishDecision::RejectSourceRegression,
             "R3/E3 topology"
+        );
+        assert_eq!(
+            decide_projection_publish(11, 11, &current, &current, false),
+            ProjectionPublishDecision::AlreadyCurrent,
+            "R4/E4 equal source is a completed no-op"
+        );
+        assert_eq!(
+            decide_projection_publish(11, 11, &current, &current, true),
+            ProjectionPublishDecision::Apply,
+            "R1/E1 equal legacy coordinates cannot hide changed projection content"
         );
     }
 
@@ -325,12 +392,12 @@ mod tests {
         let writer_b = checkpoint(1, 2, None);
 
         assert_eq!(
-            decide_projection_publish(0, 0, &initial, &writer_b),
+            decide_projection_publish(0, 0, &initial, &writer_b, true),
             ProjectionPublishDecision::Apply,
             "B publishes V2"
         );
         assert_eq!(
-            decide_projection_publish(0, 1, &writer_b, &writer_a),
+            decide_projection_publish(0, 1, &writer_b, &writer_a, true),
             ProjectionPublishDecision::RetryStaleCache,
             "A cannot overwrite V2 with V1"
         );

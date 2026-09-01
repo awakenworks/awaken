@@ -27,7 +27,8 @@ pub enum SessionAgentTarget {
     ExistingThread { thread_id: ThreadId },
 }
 
-/// Trusted coordinates supplied by the Runtime tool boundary.
+/// Coordinates supplied by the Runtime tool boundary and accepted only after
+/// refinement against the source Thread's committed `ActiveToolBatch`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAgentMessageCommand {
     pub session_id: String,

@@ -2702,13 +2702,15 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 Runtime admission is accepted, definitively rejected,
-    // ambiguously unavailable, or returns a mismatched receipt; C2 an ambiguous
+    // Cause/effect graph: C0 committed source validation accepts/rejects; C1
+    // Runtime admission is accepted, definitively rejected, ambiguously
+    // unavailable, or returns a mismatched receipt; C2 an ambiguous
     // operation is retried with the same identity; C3 its committed child boundary
     // later arrives; C4 a terminal child atomically admits its deterministic
     // primary report continuation; C5 that report Run later reaches its committed
     // boundary. Effects: E1 accepted work retains one active epoch; E2 only a
-    // BadRequest settles immediately; E3 unavailable/internal outcomes retain the
+    // BadRequest settles immediately; E0 invalid source reaches neither activity
+    // nor Runtime admission; E3 unavailable/internal outcomes retain the
     // epoch as durable recovery evidence; E4 exact retry reuses the same child Run
     // and epoch; E5 Awaiting settles that one epoch exactly; E6 C4 transfers the
     // same epoch without an intermediate Idle; E7 C5 settles it exactly once;
@@ -2717,6 +2719,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     //
     // | Rule | Runtime result | Exact retry | Boundary | Effect |
     // |---|---|---|---|---|
+    // | S0 | source mismatch | no | none | E0 |
     // | S1 | accepted | no | pending | E1+E8 |
     // | S2 | BadRequest | no | none | E2 |
     // | S3 | Unavailable | accepted | pending | E3+E4 |
@@ -2729,6 +2732,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
             .expect("Agent admission repository"),
     );
     for id in [
+        "send-invalid-source",
         "send-accepted",
         "send-rejected",
         "send-ambiguous",
@@ -2736,6 +2740,35 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     ] {
         create(repo.as_ref(), coordinated_session(id)).await;
     }
+
+    let invalid_source_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    invalid_source_runtime.reject_agent_message_source();
+    let invalid_source =
+        configured_admission_application(repo.clone(), invalid_source_runtime.clone());
+    let invalid_source_error =
+        awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+            &invalid_source,
+            coordination_spawn_command("send-invalid-source"),
+        )
+        .await
+        .expect_err("S0 source mismatch");
+    assert_eq!(
+        invalid_source_error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "S0/E0"
+    );
+    assert!(
+        invalid_source_runtime.admissions.lock().unwrap().is_empty(),
+        "S0/E0 no Runtime admission"
+    );
+    assert!(
+        repo.get("send-invalid-source")
+            .await
+            .expect("S0 state")
+            .active_activity_epochs
+            .is_empty(),
+        "S0/E0 no Session activity"
+    );
 
     let accepted_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
         AgentAdmissionOutcome::Accepted,
@@ -3059,11 +3092,13 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
     use awaken_agent_contract::agent::run::Failure;
 
     // Cause/effect graph: C1 an ordinary coordinated Thread exists; C2 its
-    // latest committed Run Completed, Cancelled, or Failed; C3 a follow-up is
+    // latest committed Run Running, Awaiting, Completed, Cancelled, or Failed;
+    // C3 a follow-up is
     // submitted after that durable boundary; C4 the target relationship is an
     // ordinary Agent, Advisor, or absent; C5 the ordinary Thread disposition is
-    // Active/Archived. Effects: E1 Completed/Cancelled ordinary Agents admit a
-    // fresh Run on the same Thread; E2 Failed, Advisor, unknown, and Archived
+    // Active/Archived. Effects: E1 Running/Awaiting/Completed/Cancelled ordinary
+    // Agents admit a fresh queued Run on the same Thread; Awaiting is not
+    // resumed and its ticket is not consumed. E2 Failed, Advisor, unknown, and Archived
     // targets reject before opening a Session activity or calling Runtime
     // admission. Constraints: RunState and ThreadDisposition remain the only
     // failure/archive authorities, and the committed relationship projection is
@@ -3071,17 +3106,21 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
     //
     // | Rule | Latest lifecycle | Follow-up | Effects |
     // |---|---|---|---|
-    // | A1 | Completed | submitted | E1 accepted |
-    // | A2 | Cancelled | submitted | E1 accepted |
-    // | A3 | Failed(Error) | submitted | E2 BadRequest/no admission |
-    // | A4 | any | unknown relationship | E2 BadRequest/no admission |
-    // | A5 | any | Advisor relationship | E2 BadRequest/no admission |
-    // | A6 | any | Archived ordinary Thread | E2 BadRequest/no admission |
+    // | A1 | Running | submitted | E1 queued fresh Run |
+    // | A2 | Awaiting | submitted | E1 queued fresh Run/no resume |
+    // | A3 | Completed | submitted | E1 accepted |
+    // | A4 | Cancelled | submitted | E1 accepted |
+    // | A5 | Failed(Error) | submitted | E2 BadRequest/no admission |
+    // | A6 | any | unknown relationship | E2 BadRequest/no admission |
+    // | A7 | any | Advisor relationship | E2 BadRequest/no admission |
+    // | A8 | any | Archived ordinary Thread | E2 BadRequest/no admission |
     for (rule, state, accepted) in [
-        ("A1", RunState::Ended(EndCause::NaturalEnd), true),
-        ("A2", RunState::Ended(EndCause::Cancelled), true),
+        ("A1", RunState::Running, true),
+        ("A2", RunState::Awaiting, true),
+        ("A3", RunState::Ended(EndCause::NaturalEnd), true),
+        ("A4", RunState::Ended(EndCause::Cancelled), true),
         (
-            "A3",
+            "A5",
             RunState::Ended(EndCause::Error(Failure::Inference {
                 code: "unauthorized".into(),
                 message: "terminal child failure".into(),
@@ -3146,25 +3185,25 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
                 "{rule}/E1"
             );
         } else {
-            let error = result.expect_err("A3 Failed must reject");
+            let error = result.expect_err("A5 Failed must reject");
             assert_eq!(
                 error.kind,
                 awaken_session_contract::RunErrorKind::BadRequest,
-                "A3/E2"
+                "A5/E2"
             );
-            assert_eq!(runtime.admissions.lock().unwrap().len(), 1, "A3/E2");
+            assert_eq!(runtime.admissions.lock().unwrap().len(), 1, "A5/E2");
             assert_eq!(
                 repo.get(&session_id)
                     .await
-                    .expect("A3 activity after rejection")
+                    .expect("A5 activity after rejection")
                     .active_activity_epochs,
                 active_before,
-                "A3/E2 admission rejection opens no activity"
+                "A5/E2 admission rejection opens no activity"
             );
         }
     }
 
-    for rule in ["A4", "A5", "A6"] {
+    for rule in ["A6", "A7", "A8"] {
         let session_id = format!("follow-up-{rule}");
         let repo = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -3174,8 +3213,8 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
         let thread_id = ThreadId(format!("{session_id}-target"));
         match rule {
-            "A4" => {}
-            "A5" => runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
+            "A6" => {}
+            "A7" => runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
                 session_id: session_id.clone(),
                 thread_id: thread_id.clone(),
                 target: awaken_session_contract::CoordinatedThreadTarget::Advisor {
@@ -3184,7 +3223,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
                 created_by_operation_id: "advisor-operation".into(),
                 latest_run_id: Some(RunId("advisor-run".into())),
             }),
-            "A6" => {
+            "A8" => {
                 runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
                     session_id: session_id.clone(),
                     thread_id: thread_id.clone(),
@@ -6355,3 +6394,4 @@ async fn work_dispatch_reconciliation_isolates_each_session_failure() {
         "W2 preserves the retry diagnostic"
     );
 }
+// | S0 | source mismatch | no | none | E0 |
