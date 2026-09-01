@@ -165,12 +165,6 @@ pub fn awaken_session_contract::AdmittedSessionRun::run_id(&self) -> &awaken_age
 pub fn awaken_session_contract::AdmittedSessionRun::session_id(&self) -> &str
 pub enum awaken_session_contract::AgentPermissionPreset
 pub awaken_session_contract::AgentPermissionPreset::ControlledModifications
-pub struct awaken_session_contract::AgentPermissionPresetTarget<'a>
-pub awaken_session_contract::AgentPermissionPresetTarget::mcp_servers: &'a [awaken_runtime_contract::agent_bindings::AgentMcpServerBinding]
-pub awaken_session_contract::AgentPermissionPresetTarget::plugin_config: &'a mut alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
-pub awaken_session_contract::AgentPermissionPresetTarget::plugin_ids: &'a mut alloc::vec::Vec<alloc::string::String>
-pub awaken_session_contract::AgentPermissionPresetTarget::tool_ids: &'a mut alloc::vec::Vec<alloc::string::String>
-pub awaken_session_contract::AgentPermissionPresetTarget::toolsets: &'a mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub enum awaken_session_contract::AgentTool
 pub awaken_session_contract::AgentTool::AgentToolset20260401
 pub awaken_session_contract::AgentTool::AgentToolset20260401::configs: alloc::vec::Vec<awaken_session_contract::AgentToolConfig>
@@ -685,6 +679,7 @@ pub awaken_session_contract::SessionRealizationControlFailure::Terminal
 pub awaken_session_contract::SessionRealizationControlFailure::Unavailable(alloc::string::String)
 impl awaken_session_contract::SessionRealizationControlFailure
 pub const fn awaken_session_contract::SessionRealizationControlFailure::disposition(&self) -> awaken_session_contract::SessionRealizationControlDisposition
+pub const fn awaken_session_contract::SessionRealizationControlFailure::proves_current_realization_cannot_continue(&self) -> bool
 pub enum awaken_session_contract::SessionRealizationDriveError
 pub awaken_session_contract::SessionRealizationDriveError::Control(awaken_session_contract::SessionRealizationControlFailure)
 pub awaken_session_contract::SessionRealizationDriveError::DidNotConverge
@@ -797,6 +792,13 @@ pub awaken_session_contract::AgentCapabilities::builtin_tools: alloc::vec::Vec<a
 pub awaken_session_contract::AgentCapabilities::custom_tools: alloc::vec::Vec<awaken_session_contract::CustomTool>
 pub awaken_session_contract::AgentCapabilities::delegates: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::AgentCapabilities::skills: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_session_contract::AgentPermissionPresetTarget<'a>
+pub awaken_session_contract::AgentPermissionPresetTarget::allowed_runtime_override_ids: &'a alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_session_contract::AgentPermissionPresetTarget::mcp_servers: &'a [awaken_runtime_contract::agent_bindings::AgentMcpServerBinding]
+pub awaken_session_contract::AgentPermissionPresetTarget::plugin_config: &'a mut alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+pub awaken_session_contract::AgentPermissionPresetTarget::plugin_ids: &'a mut alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::AgentPermissionPresetTarget::tool_ids: &'a mut alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::AgentPermissionPresetTarget::toolsets: &'a mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub struct awaken_session_contract::AgentToolConfig
 pub awaken_session_contract::AgentToolConfig::allowed_domains: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub awaken_session_contract::AgentToolConfig::blocked_domains: core::option::Option<alloc::vec::Vec<alloc::string::String>>
@@ -2149,7 +2151,7 @@ pub fn awaken_session_contract::is_agent_toolset_member(&str) -> bool
 pub fn awaken_session_contract::is_controlled_modification_member(&str) -> bool
 pub fn awaken_session_contract::legacy_agent_publication_decision(&str, core::option::Option<&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> awaken_session_contract::FrozenAgentPublicationDecision
 pub fn awaken_session_contract::paginate_history<'a>(&'a [awaken_agent_contract::agent::message::Message], core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, awaken_agent_contract::agent::message::Message>, awaken_agent_contract::page::UnknownCursor>
-pub fn awaken_session_contract::preserve_runtime_agent_overrides(&[awaken_agent_contract::toolset::ToolsetPolicy], &mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>)
+pub fn awaken_session_contract::preserve_runtime_agent_overrides(&[awaken_agent_contract::toolset::ToolsetPolicy], &mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &alloc::collections::btree::set::BTreeSet<alloc::string::String>)
 pub fn awaken_session_contract::project_effective_agent_publication(core::option::Option<&awaken_session_contract::SessionModelOverride>, &awaken_session_contract::SessionSystemPromptSelection, &str, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_session_contract::RunError>
 pub fn awaken_session_contract::realization_generation_authorizes(&awaken_session_contract::McpGenerationRef, &awaken_session_contract::McpGenerationRef) -> bool
 pub fn awaken_session_contract::realization_lease_authorizes(&awaken_session_contract::SessionRealizationLease, &awaken_session_contract::SessionRealizationLease, u64) -> bool

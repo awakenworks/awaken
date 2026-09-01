@@ -4786,10 +4786,19 @@ impl LlmExecutor for OkModel {
 #[tokio::test]
 async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
     // Causes: C1 an active Session's Resource inputs change to a new generation;
-    // C2 a cached sandbox/projection exists. Constraint/Invariant: active generation
-    // and installed sandbox projection advance as one authoritative pair. Decision rule:
-    // apply C1 with C2 and require the documented rebuild effect, never a
-    // mixed old/new projection.
+    // C2 a cached sandbox/projection exists; C3 the process slot retains a Run
+    // claim from the preceding settled attempt; C4 the Resource reservation is
+    // authorized by the Session root. Effects: E1 active generation and installed
+    // sandbox projection advance as one pair; E2 the reservation persists through
+    // the root authority without reading or rewriting the attempt's raw sandbox
+    // cache; E3 Create/Adopt claim fencing remains outside this Resource rule.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // | R1 | yes | yes | absent | yes | E1 |
+    // | R2 | yes | yes | stale | yes | E1+E2 |
+    // | R3 | create/adopt | any | stale | n/a | E3; fail closed |
+    //
+    // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
@@ -4844,6 +4853,18 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         "the first Run caches the Thread's sandbox ctx"
     );
     let before = host.sandbox_spec("t-attach").mounts.len();
+
+    // Model the exact post-settlement residue observed by an idle durable
+    // Session. No Dispatch store is installed, so any attempt to reinterpret
+    // this cache as current Resource authority fails the test before effects.
+    let stale_claim = awaken_run_ingress::RunClaim {
+        run_id: RunId("settled-before-live-attach".into()),
+        owner: "retired-worker".into(),
+        epoch: 1,
+    };
+    host.session_slots.update("t-attach", |slot| {
+        slot.dispatch_claim = Some(stale_claim.clone());
+    });
 
     // Attach a file resource on the LIVE session.
     let res = TestInput {
@@ -4913,6 +4934,15 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         carried_mount_bytes(spec.mounts.last().unwrap()),
         b"hello-attached"
     );
+    assert_eq!(
+        host.session_slots
+            .read("t-attach", |slot| slot.dispatch_claim.clone())
+            .flatten(),
+        Some(stale_claim),
+        "R2 Resource reservation leaves the attempt delivery cache untouched"
+    );
+    host.session_slots
+        .update("t-attach", |slot| slot.dispatch_claim = None);
 
     run_prepared_session_messages(&managed, "agent", "t-attach", user("after attach"))
         .await
@@ -5782,36 +5812,49 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
 }
 
 /// Cause/effect graph: C1 the Host is Coordinator-only; C2 immutable
-/// provisioning is BackendOwned; C3 no trusted-host provider is installed on
-/// the Coordinator. C1 dominates C2+C3 because only the claimed Worker may
-/// realize host identity. Effects: E1 context construction succeeds, E2 no
-/// physical environment is created, E3 no provider is requested.
+/// provisioning is BackendOwned; C3 placement is Local or Worker; C4 the
+/// frozen layout is valid or structurally conflicting; C5 the caller installs
+/// Dispatch or physical Realization facts; C6 a trusted-host provider is
+/// present. Effects: E1 a Worker admission/Dispatch performs structural
+/// validation without requesting the Coordinator's provider; E2 a structural
+/// conflict is rejected before frozen facts; E3 Local/physical validation
+/// requires the exact provider; E4 a claimed Worker with that provider passes;
+/// E5 no Coordinator environment is created. Create and persisted Resource
+/// updates share the prospective port, so P1-P3 own both entry points.
 ///
-/// | Rule | Coordinator-only | Provisioning | Trusted provider | Context | Environment |
-/// |---|---|---|---|---|---|
-/// | B1 | yes | BackendOwned | absent | built | absent |
-/// | B2 | no | BackendOwned | absent | error | absent |
+/// | Rule | Placement/stage | Provider | Layout | Effect |
+/// |---|---|---|---|---|
+/// | P1 | Worker prospective | absent | valid | E1+E5 |
+/// | P2 | Worker prospective | absent | conflict | E2+E5 |
+/// | P3 | Local prospective | absent | valid | E3 |
+/// | P4 | Worker Dispatch | absent | valid | E1+E5 |
+/// | P5 | Worker Dispatch | absent | conflict | E2+E5 |
+/// | P6 | Worker physical install | absent | valid | E3 |
+/// | P7 | Worker physical install | present | valid | E4 |
+/// | B1 | Coordinator context | absent | valid | E1+E5 |
+/// | B2 | local context | absent | valid | E3 |
 ///
-/// This regression test owns both rules at the dispatch/context boundary.
+/// The contract-owned path kernel remains the sole structural authority; this
+/// test owns only the placement-to-validation-scope decision.
 #[tokio::test]
 async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let mut host = SharedHost::new(Arc::new(OkModel), "stub");
     host.deployment.disable_local_pool = true;
+    let host = Arc::new(host);
+    let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
+        awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
+        awaken_runtime_contract::CredentialRef {
+            id: "codex-login".into(),
+            revision: 1,
+        },
+        awaken_runtime_contract::resolved::BackendModelSelection::Default,
+        "codex-test",
+        "sha256:codex-test",
+        Default::default(),
+    )
+    .expect("coherent backend-owned candidate");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("local-codex")
-        .resolved_model(
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
-                awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
-                awaken_runtime_contract::CredentialRef {
-                    id: "codex-login".into(),
-                    revision: 1,
-                },
-                awaken_runtime_contract::resolved::BackendModelSelection::Default,
-                "codex-test",
-                "sha256:codex-test",
-                Default::default(),
-            )
-            .expect("coherent backend-owned candidate"),
-        )
+        .resolved_model(candidate.clone())
         .build();
 
     let context = host
@@ -5830,6 +5873,207 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             .is_none(),
         "B1/E2"
     );
+
+    let model_override = || awaken_session_contract::SessionModelOverride {
+        publication: Some(Box::new(awaken_session_contract::SessionModelPublication {
+            primary: candidate.clone(),
+            candidates: Vec::new(),
+        })),
+        inference: Default::default(),
+    };
+    let mount = || awaken_provisioning_contract::MountRequirement {
+        mount_id: "project".into(),
+        source: awaken_provisioning_contract::MountSource::Inline {
+            contents: "project".into(),
+        },
+        mount_path: "/workspace/project".into(),
+        access: awaken_provisioning_contract::MountAccess::ReadOnly,
+        lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
+        required: true,
+    };
+    let repository_binding = awaken_resource_contract::InputBinding {
+        binding_id: awaken_resource_contract::BindingId::from("repo"),
+        target: awaken_resource_contract::InputResourceId::Repository(
+            awaken_resource_contract::RepositoryId::from("repo"),
+        ),
+        mount_path: "/workspace/project/repository".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadWrite,
+        instructions: None,
+    };
+    let layout =
+        |runtime_placement, mounts, resources| awaken_session_contract::SessionSandboxLayout {
+            workspace_id: host.local_workspace().into(),
+            agent_id: "local-codex".into(),
+            agent_revision: None,
+            runtime_placement,
+            model_override: Some(model_override()),
+            runtime: Some("acp:codex".into()),
+            mounts,
+            env: Vec::new(),
+            environment: on_tool_use_environment(),
+            resources,
+        };
+    let managed = crate::ManagedHost::new(host.clone());
+    managed
+        .validate_session_sandbox_layout(
+            "worker-prospective-valid",
+            &layout(
+                awaken_session_contract::SessionRuntimePlacement::Worker,
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .expect("P1 Worker admission needs no Coordinator provider");
+    let conflict = managed
+        .validate_session_sandbox_layout(
+            "worker-prospective-conflict",
+            &layout(
+                awaken_session_contract::SessionRuntimePlacement::Worker,
+                vec![mount()],
+                vec![repository_binding],
+            ),
+        )
+        .expect_err("P2 structural conflict remains fail-closed");
+    assert!(conflict.to_string().contains("overlaps"), "P2: {conflict}");
+    let local_error = managed
+        .validate_session_sandbox_layout(
+            "local-prospective-valid",
+            &layout(
+                awaken_session_contract::SessionRuntimePlacement::Local,
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .expect_err("P3 Local admission requires its exact provider");
+    assert!(
+        local_error
+            .to_string()
+            .contains("BackendOwned provisioning requires a trusted-host Session provider"),
+        "P3: {local_error}"
+    );
+
+    let projection = |mounts, resources| {
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: on_tool_use_environment(),
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                mcp_authoring: Default::default(),
+                agent_id: "local-codex".into(),
+                agent_revision: None,
+                model: candidate.binding().model_ref.clone(),
+                model_override: Some(model_override()),
+                runtime: Some(candidate.binding().backend_ref.clone()),
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts,
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
+        );
+        awaken_session_contract::FrozenSessionProjection {
+            workspace_id: host.local_workspace().into(),
+            revision: awaken_session_contract::SessionRevision(1),
+            baseline,
+            agent_publication: None,
+            environment: Default::default(),
+            resource_revision: 0,
+            resources,
+            previous_resource_manifest: Some(
+                awaken_session_contract::SessionResourceManifest::new(
+                    host.local_workspace(),
+                    awaken_session_contract::ResolvedSessionResources::default(),
+                ),
+            ),
+            tools: Default::default(),
+            mcp: Vec::new(),
+            request_context: Vec::new(),
+        }
+    };
+    host.install_dispatch_frozen_session_projection(
+        "worker-dispatch-valid",
+        projection(
+            Vec::new(),
+            awaken_session_contract::ResolvedSessionResources::default(),
+        ),
+    )
+    .await
+    .expect("P4 Worker Dispatch needs no Coordinator provider");
+    assert!(
+        host.session_environment("worker-dispatch-valid")
+            .await
+            .is_none(),
+        "P4/E5"
+    );
+    let dispatch_conflict = host
+        .install_dispatch_frozen_session_projection(
+            "worker-dispatch-conflict",
+            projection(
+                vec![mount()],
+                effective_resources(vec![TestInput {
+                    kind: "github_repository".into(),
+                    id: "https://example.invalid/repo.git".into(),
+                    mount_path: "/workspace/project/repository".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                    instructions: None,
+                    initial_branch: None,
+                    initial_commit: None,
+                }]),
+            ),
+        )
+        .await
+        .expect_err("P5 Dispatch rejects a structural conflict");
+    assert!(
+        dispatch_conflict.message.contains("overlaps"),
+        "P5: {dispatch_conflict:?}"
+    );
+    assert!(
+        host.session_slots
+            .read("worker-dispatch-conflict", |slot| slot.baseline.is_none())
+            .unwrap_or(true),
+        "P5/E2"
+    );
+
+    let physical_without_provider = SharedHost::new(Arc::new(OkModel), "stub");
+    let realization_error = physical_without_provider
+        .install_frozen_session_projection(
+            "worker-realization-missing-provider",
+            projection(
+                Vec::new(),
+                awaken_session_contract::ResolvedSessionResources::default(),
+            ),
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect_err("P6 physical install requires the exact provider");
+    assert!(
+        realization_error
+            .message
+            .contains("BackendOwned provisioning requires a trusted-host Session provider"),
+        "P6: {realization_error:?}"
+    );
+    let mut physical = SharedHost::new(Arc::new(OkModel), "stub");
+    physical.backend_owned_session_provider = Some(
+        crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
+            std::env::temp_dir().join("awaken-worker-layout-provider"),
+            false,
+        ),
+    );
+    physical
+        .install_frozen_session_projection(
+            "worker-realization-valid",
+            projection(
+                Vec::new(),
+                awaken_session_contract::ResolvedSessionResources::default(),
+            ),
+            None,
+            true,
+            None,
+        )
+        .await
+        .expect("P7 claimed Worker validates its exact trusted provider");
 
     let local = SharedHost::new(Arc::new(OkModel), "stub");
     let error = match local

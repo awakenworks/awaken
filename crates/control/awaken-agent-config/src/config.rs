@@ -579,7 +579,7 @@ impl MultiagentConfig {
 
     /// Whether the roster grants the advisor semantic role.
     #[must_use]
-    pub fn has_advisor_target(&self) -> bool {
+    pub(crate) fn has_advisor_target(&self) -> bool {
         self.agents
             .iter()
             .any(|target| target.advisor_model().is_some())

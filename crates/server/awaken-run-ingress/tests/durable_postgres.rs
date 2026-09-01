@@ -31,7 +31,9 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor as _;
 
-use harness::{THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime};
+use harness::{
+    FailingCommit, THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime,
+};
 
 struct BlockingCommit {
     entered: tokio::sync::Notify,
@@ -744,40 +746,40 @@ async fn list_dispatches_on_postgres() {
     harness::assert_list_dispatches(&store).await;
 }
 
-/// Postgres parity for the mid-flight reclaim exactly-once guarantee (memory-only
-/// until now, `lease_semantics.rs`): a successor may reclaim the mutation Lease,
-/// but it cannot enter model/tool/Sandbox execution until the predecessor's exact
-/// physical-attempt slot acknowledges quiescence. Once that acknowledgement
-/// arrives, the committed Running projection applies NeverReplay and the successor
-/// completes without invoking the external tool again. The terminal-is-final fence
-/// independently rejects a stale post-terminal commit.
+/// Postgres parity for recovery after a process-bound non-recoverable tool has
+/// quiesced (`lease_semantics.rs`). The persisted Executing phase makes the
+/// replacement apply NeverReplay, while the claim fence rejects a delayed stale
+/// commit and keeps the committed log exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_mid_flight_reclaim_waits_for_quiescence_then_applies_never_replay() {
+async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_replay_policy() {
     // Test design — two-coordinator active-active history: B opens before A's
     // Running commit, so B's process-start projection is intentionally empty.
     // Each Worker must install an authoritative claim snapshot before reading;
     // B therefore observes Running and applies NeverReplay, while A refreshes
     // terminal truth after losing its fenced commit. No decision may depend on
     // either coordinator's stale process-start projection.
-    // Causes: C1 owner A is aborted after committing tool Executing; C2 its lease
-    // expires; C3 owner B reclaims through a second coordinator; C4 A's exact
-    // physical-attempt quiescence acknowledgement is absent/present. Effects:
-    // E1 without C4, B remains outside Runtime and no second tool invocation
-    // occurs; E2 with C4, B reads current Running truth and applies NeverReplay;
-    // E3 one terminal log survives A's fenced late commit. Constraint/invariant:
-    // Lease handoff never implies physical quiescence, and every successor claim
-    // installs an authoritative snapshot before replay policy.
-    // Decision table: R1=C1+C2+C3+!C4 -> blocked/E1; R2=R1+C4 -> E2+E3.
+    // Causes: C1 owner A is blocked after committing tool Executing; C2 the
+    // release gate lets its executor Future return with an injected commit
+    // failure; C3 `run_physical_attempt` records A's exact physical quiescence;
+    // C4 its lease then expires; C5 owner B reclaims through a second
+    // coordinator. Effects: E1 B reads current Running truth and applies
+    // NeverReplay; E2 the external tool runs once; E3 one terminal log survives
+    // A's fenced delayed commit. Constraints: every claim installs an
+    // authoritative snapshot before policy; only production executor return,
+    // never abort/drop, clears the slot. The Memory end-to-end and shared store
+    // conformance own the complementary C1+!C2 Blocked rule. Decision rule:
+    // execute C1-C5 and assert E1-E3.
     const LEASE: u64 = 1_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
         return;
     };
-    let commit_a = Arc::new(
+    let commit_a_inner = Arc::new(
         PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("commit A"),
     );
+    let commit_a = Arc::new(FailingCommit::new(commit_a_inner, false));
     let commit_b = Arc::new(
         PostgresCommitCoordinator::with_existing_pool(pool.clone())
             .await
@@ -798,9 +800,8 @@ async fn postgres_mid_flight_reclaim_waits_for_quiescence_then_applies_never_rep
         .expect("enqueue");
 
     // Owner A claims explicitly, then drives in the background. Retaining the
-    // exact lease lets the test terminate A's whole execution/renewal scope at
-    // the crash boundary rather than pretending a healthy renewing Worker can
-    // be stolen.
+    // exact lease lets the fixture observe the production return/renewal scope
+    // without pretending a task abort is physical quiescence.
     let claimed_a = store
         .claim("owner-a", LEASE, 0, &Default::default())
         .await
@@ -832,55 +833,45 @@ async fn postgres_mid_flight_reclaim_waits_for_quiescence_then_applies_never_rep
         "A committed a mid-flight Running"
     );
 
-    // Crash A after its external effect and Running commit. Aborting the drive
-    // also drops its exact renewal guard; execution does not remain alive while
-    // a separate renewal task falsely advertises ownership.
-    a_handle.abort();
+    // Let A's tool return through the real executor, then reject its next commit.
+    // The executor Future therefore returns `Err` through `run_physical_attempt`,
+    // which is the sole production owner of the exact quiescence ACK. The drive
+    // exits and drops its renewal guard without pretending abort/drop is proof.
+    commit_a.set_failing(true);
+    release.add_permits(1);
+    let a_error = tokio::time::timeout(std::time::Duration::from_secs(10), a_handle)
+        .await
+        .expect("C2 A drive returns")
+        .expect("C2 A task does not panic")
+        .expect_err("C2 injected commit failure is re-raised");
     assert!(
-        a_handle
-            .await
-            .expect_err("A task is aborted")
-            .is_cancelled(),
-        "A crash terminates the drive and renewal scope together"
+        a_error.to_string().contains("injected commit failure"),
+        "C2 exact drive failure is preserved: {a_error}"
     );
+    assert!(
+        !store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "C3 production executor return recorded A's exact physical quiescence"
+    );
+    commit_a.set_failing(false);
+    let renewal_stopped_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("host clock is after the Unix epoch")
+        .as_millis() as u64;
     AuthoritativeWallClock
-        .advance_past(lease_a.expires_ms)
+        .advance_past(
+            lease_a
+                .expires_ms
+                .max(renewal_stopped_at_ms.saturating_add(LEASE)),
+        )
         .await;
 
-    // Owner B may recover the mutation Lease, but the aborted future is not an
-    // authoritative terminal receipt. Its exact physical-attempt slot therefore
-    // keeps B outside Runtime until the predecessor quiescence ACK arrives.
-    let worker_b = Arc::new(
-        DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
-            .with_lease_ms(LEASE),
-    );
-    let b_handle = {
-        let worker_b = worker_b.clone();
-        tokio::spawn(async move { worker_b.tick(harness::clock(LEASE + 1)).await })
-    };
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(
-        !b_handle.is_finished(),
-        "R1: B waits for predecessor quiescence"
-    );
-    assert_eq!(
-        ran.load(Ordering::SeqCst),
-        1,
-        "R1: no overlapping tool execution"
-    );
-
-    assert_eq!(
-        store
-            .finish_attempt(&RunClaim::from(&lease_a))
-            .await
-            .expect("record predecessor quiescence"),
-        awaken_run_ingress::SettleOutcome::Applied,
-        "R2: only A's exact slot may acknowledge its quiescence"
-    );
-    let processed = tokio::time::timeout(std::time::Duration::from_secs(10), b_handle)
+    // Owner B's lease-expired reclaim recovers the committed Executing phase and
+    // completes the run without entering the non-recoverable tool again.
+    let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
+        .with_lease_ms(LEASE);
+    let processed = worker_b
+        .tick(harness::clock(LEASE + 1))
         .await
-        .expect("B resumes after quiescence")
-        .expect("B task joins")
         .expect("B drives");
     assert_eq!(
         processed,
@@ -888,15 +879,15 @@ async fn postgres_mid_flight_reclaim_waits_for_quiescence_then_applies_never_rep
         "B reclaimed the still-running run and drove it to completion"
     );
 
-    // A delayed post-crash write carrying epoch 1 is fenced before it reaches
+    // A delayed stale write carrying epoch 1 is fenced before it reaches
     // committed Thread truth. This independently preserves the slow/stale
-    // message partition without requiring the crashed Worker to keep renewing.
+    // message partition after B has advanced the exact mutation claim.
     let stale_service: Arc<dyn ClaimedRunCommit> =
         Arc::new(GuardedRunCommit::new(commit_a.clone(), store.clone()));
     let stale_commit = ClaimedCommitCoordinator::new(stale_service, RunClaim::from(&lease_a));
     assert!(
         stale_commit.commit(running_commit("run-1")).await.is_err(),
-        "the crashed owner's delayed commit is fenced"
+        "the stale owner's delayed commit is fenced"
     );
 
     // The persisted Executing phase prevents an unsafe second invocation.

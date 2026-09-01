@@ -120,7 +120,7 @@ async function captureTurn(mode, port, file, text, { extraEnv = {} } = {}) {
       });
       assert.equal(created.status, 200, 'trace memory store created');
       memoryStore = await created.json();
-      resources = [{ type: 'memory_store', memory_store_id: memoryStore.id, mount_path: '/memory' }];
+      resources = [{ type: 'memory_store', memory_store_id: memoryStore.id }];
     }
     await createAndTurn(base, text, resources);
     if (memoryStore) {

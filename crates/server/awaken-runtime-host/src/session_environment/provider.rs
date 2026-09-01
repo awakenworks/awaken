@@ -684,6 +684,7 @@ impl SessionEnvironmentProvider {
                     expected_effect_fence,
                     terminal_effect_fence,
                 )
+                .await
                 .map(|sandbox| sandbox.map(SessionEnvironment::workdir)),
             Self::Namespace {
                 provider,
@@ -697,6 +698,7 @@ impl SessionEnvironmentProvider {
                     expected_effect_fence,
                     terminal_effect_fence,
                 )
+                .await
                 .map(|sandbox| {
                     sandbox.map(|sandbox| {
                         SessionEnvironment::namespace(

@@ -315,6 +315,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             Some(source(&fingerprint, &evidence)),
             Some(&fence("same-lease-other-operation", 1)),
             &terminal,
+            None,
         )
         .is_err(),
         "T4 expected operation identity must exactly equal the handle source"
@@ -325,6 +326,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &terminal,
+        None,
     )
     .expect("T1")
     .expect("T1 participant");
@@ -336,6 +338,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &successor,
+        None,
     )
     .expect("T6 restart takeover")
     .expect("T6 participant");
@@ -374,6 +377,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &final_effect,
+        None,
     )
     .expect("T2 exact terminal reconstruction")
     .expect("T2 participant");
@@ -385,6 +389,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             Some(source(&fingerprint, &evidence)),
             Some(&create),
             &final_effect,
+            None,
         )
         .unwrap()
         .is_none(),
@@ -397,6 +402,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             Some(source(&fingerprint, &evidence)),
             Some(&create),
             &fence("foreign", 0),
+            None,
         )
         .is_err(),
         "T4"
@@ -433,6 +439,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             None,
             Some(&fence("wrong-restore", 3)),
             &fence("terminal-restore", 3),
+            None,
         )
         .is_err(),
         "T5 drifted restore evidence"
@@ -444,6 +451,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         None,
         Some(&restore),
         &partial_preparation,
+        None,
     )
     .unwrap()
     .expect("T5 exact stage participant");
@@ -459,6 +467,298 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         .expect("T5 aggregate-authorized physical authorization");
     partial.remove_root().unwrap();
     partial.finish().unwrap();
+}
+
+#[test]
+fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
+    // Terminal-preflight decision table: C1 marker phase is Creating/Ready/
+    // Removing/Removed; C2 source is an older exact restore fence while the
+    // marker carries a same-effect renewal; C3 root is present/removed; C4 the
+    // preflight receipt is exact/drifted. P1 an
+    // incomplete attempt is typed Incomplete; P2 Ready and Removing return the
+    // one immutable receipt while both source and renewed marker authorize the
+    // live successor; P3 remove-root response loss still returns that receipt;
+    // P4 only the durable Removed tombstone is Closed, for both handle-free and
+    // exact-handle replay; P5 C4 drift rejects before Ready changes phase; P6
+    // an Incomplete token cannot reinterpret a concurrently published Ready
+    // receipt; P7 Closed+absent publishes the existing Removed tombstone so a
+    // late old creator remains fenced. Every observation is read-only; takeover
+    // owns phase mutation and token equality under the later marker lock.
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("terminal-preflight");
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("terminal-preflight"));
+    let expected =
+        pc::SandboxEffectFence::new("restore", "owner", "runtime", 7, u64::MAX - 2).unwrap();
+    let renewed =
+        pc::SandboxEffectFence::new("restore", "owner", "runtime", 7, u64::MAX - 1).unwrap();
+    let terminal =
+        pc::SandboxEffectFence::new("terminal", "owner", "runtime", 7, u64::MAX).unwrap();
+
+    let first = begin(&root, &fingerprint, &expected, None, None).unwrap();
+    first.prepare_root().unwrap();
+    drop(first);
+    let incomplete =
+        observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal).unwrap();
+    assert_eq!(incomplete, TerminalReceiptObservation::Incomplete, "P1");
+
+    let mut renewed_guard = begin(&root, &fingerprint, &renewed, None, None).unwrap();
+    let evidence = renewed_guard.complete(&empty_receipt()).unwrap();
+    assert_eq!(
+        observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal,).unwrap(),
+        TerminalReceiptObservation::Receipt(empty_receipt()),
+        "P2 Ready renewal",
+    );
+    assert!(
+        begin_terminal_takeover(
+            &root,
+            &fingerprint,
+            None,
+            Some(&expected),
+            &terminal,
+            Some(&incomplete),
+        )
+        .is_err(),
+        "P6",
+    );
+    assert!(
+        matches!(
+            observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal)
+                .unwrap(),
+            TerminalReceiptObservation::Receipt(_)
+        ),
+        "P6 zero phase mutation",
+    );
+    let drifted_receipt = RealizationCompletionReceipt::new(
+        &[pc::RealizedMount {
+            mount_id: "drift".into(),
+            mount_path: "/drift".into(),
+            access: pc::MountAccess::ReadOnly,
+            realization: pc::Realization::Bind,
+            content_hash: None,
+        }],
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        begin_terminal_takeover(
+            &root,
+            &fingerprint,
+            None,
+            Some(&expected),
+            &terminal,
+            Some(&TerminalReceiptObservation::Receipt(drifted_receipt)),
+        )
+        .is_err(),
+        "P5",
+    );
+    assert!(
+        matches!(
+            observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal,)
+                .unwrap(),
+            TerminalReceiptObservation::Receipt(_)
+        ),
+        "P5 zero phase mutation",
+    );
+
+    let (_, removal) = begin_terminal_takeover(
+        &root,
+        &fingerprint,
+        None,
+        Some(&expected),
+        &terminal,
+        Some(&TerminalReceiptObservation::Receipt(empty_receipt())),
+    )
+    .unwrap()
+    .expect("P2 Removing participant");
+    drop(removal);
+    assert_eq!(
+        observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal,).unwrap(),
+        TerminalReceiptObservation::Receipt(empty_receipt()),
+        "P2 Removing response loss",
+    );
+
+    let (_, mut removal) = begin_terminal_takeover(
+        &root,
+        &fingerprint,
+        None,
+        Some(&expected),
+        &terminal,
+        Some(&TerminalReceiptObservation::Receipt(empty_receipt())),
+    )
+    .unwrap()
+    .expect("P3 exact Removing replay");
+    let authorization = disposal_authorization(
+        &terminal,
+        "terminal-preflight-preparation",
+        "owner",
+        "runtime",
+        7,
+    );
+    removal.authorize_disposal(&authorization).unwrap();
+    removal.remove_root().unwrap();
+    drop(removal);
+    assert_eq!(
+        observe_terminal_receipt(
+            &root,
+            &fingerprint,
+            None,
+            Some(&expected),
+            authorization.effect_fence(),
+        )
+        .unwrap(),
+        TerminalReceiptObservation::Receipt(empty_receipt()),
+        "P3 removed root before tombstone",
+    );
+
+    let (_, replay) = begin_terminal_takeover(
+        &root,
+        &fingerprint,
+        None,
+        Some(&expected),
+        authorization.effect_fence(),
+        Some(&TerminalReceiptObservation::Receipt(empty_receipt())),
+    )
+    .unwrap()
+    .expect("P3 guard-free finish replay");
+    assert!(
+        replay.owned_root().unwrap().is_none(),
+        "P3 no remount owner"
+    );
+    replay.finish().unwrap();
+    assert_eq!(
+        observe_terminal_receipt(
+            &root,
+            &fingerprint,
+            None,
+            Some(&expected),
+            authorization.effect_fence(),
+        )
+        .unwrap(),
+        TerminalReceiptObservation::Closed,
+        "P4 handle-free",
+    );
+    let exact_source = source(&fingerprint, &evidence);
+    assert_eq!(
+        observe_terminal_receipt(
+            &root,
+            &fingerprint,
+            Some(&exact_source),
+            Some(&expected),
+            authorization.effect_fence(),
+        )
+        .unwrap(),
+        TerminalReceiptObservation::Closed,
+        "P4 exact handle",
+    );
+
+    let absent_root = base.path().join("terminal-absent");
+    let absent_fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("terminal-absent"));
+    let absent_create = fence("terminal-absent-create", 11);
+    let absent_terminal = fence("terminal-absent-finish", 11);
+    let closed = observe_terminal_receipt(
+        &absent_root,
+        &absent_fingerprint,
+        None,
+        Some(&absent_create),
+        &absent_terminal,
+    )
+    .unwrap();
+    assert_eq!(closed, TerminalReceiptObservation::Closed, "P7 preflight");
+    assert!(
+        begin_terminal_takeover(
+            &absent_root,
+            &absent_fingerprint,
+            None,
+            Some(&absent_create),
+            &absent_terminal,
+            Some(&closed),
+        )
+        .unwrap()
+        .is_none(),
+        "P7 terminal absence",
+    );
+    assert!(
+        begin(
+            &absent_root,
+            &absent_fingerprint,
+            &absent_create,
+            None,
+            None,
+        )
+        .is_err(),
+        "P7 late old creator fenced",
+    );
+    assert_eq!(
+        observe_terminal_receipt(
+            &absent_root,
+            &absent_fingerprint,
+            None,
+            Some(&absent_create),
+            &absent_terminal,
+        )
+        .unwrap(),
+        TerminalReceiptObservation::Closed,
+        "P7 durable tombstone",
+    );
+}
+
+#[test]
+fn expired_terminal_takeover_is_zero_write_for_absent_and_ready() {
+    // Terminal-expiry decision table. Causes: C1 the terminal successor is
+    // expired; C2 the current state is marker-free/Ready. R1 C1+C2 rejects;
+    // R2 marker-free remains marker-free (no Removed tombstone); R3 Ready
+    // retains its exact completion and never enters Removing. `acquire` is a
+    // nonblocking try-lock, so there is no honest lock-wait test row; production
+    // additionally repeats this same validator immediately before both first
+    // writes to cover expiry after entry validation.
+    let base = tempfile::tempdir().unwrap();
+    let absent_root = base.path().join("terminal-expiry-absent");
+    let ready_root = base.path().join("terminal-expiry-ready");
+    let absent_fingerprint =
+        pc::SandboxRealizationFingerprint::from_spec(&spec("terminal-expiry-absent"));
+    let ready_fingerprint =
+        pc::SandboxRealizationFingerprint::from_spec(&spec("terminal-expiry-ready"));
+    let source = fence("create", 1);
+    let mut ready_creation = begin(&ready_root, &ready_fingerprint, &source, None, None).unwrap();
+    ready_creation.prepare_root().unwrap();
+    ready_creation.complete(&empty_receipt()).unwrap();
+    let terminal =
+        pc::SandboxEffectFence::new("terminal-expired", "owner", "runtime", 2, 0).unwrap();
+    assert!(
+        begin_terminal_takeover(
+            &absent_root,
+            &absent_fingerprint,
+            None,
+            Some(&source),
+            &terminal,
+            Some(&TerminalReceiptObservation::Closed),
+        )
+        .is_err(),
+        "R1 marker-free"
+    );
+    assert!(
+        begin_terminal_takeover(
+            &ready_root,
+            &ready_fingerprint,
+            None,
+            Some(&source),
+            &terminal,
+            Some(&TerminalReceiptObservation::Receipt(empty_receipt())),
+        )
+        .is_err(),
+        "R1 Ready"
+    );
+
+    let lock = acquire(&absent_root).unwrap();
+    assert!(
+        read_marker_locked(&absent_root, &lock).unwrap().is_none(),
+        "R2"
+    );
+    drop(lock);
+    let lock = acquire(&ready_root).unwrap();
+    let marker = read_marker_locked(&ready_root, &lock).unwrap().unwrap();
+    assert_eq!(marker.phase, RealizationPhase::Ready, "R3 phase");
+    assert_eq!(marker.completion, Some(empty_receipt()), "R3 receipt");
 }
 
 #[test]
@@ -509,6 +809,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared_a,
+        None,
     )
     .unwrap()
     .expect("T7 durable continuation preparation");
@@ -541,6 +842,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
                 Some(source(&fingerprint, &evidence)),
                 Some(&create),
                 rejected,
+                None,
             )
             .is_err(),
             "T7c {label}"
@@ -567,6 +869,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &terminal_t,
+        None,
     )
     .unwrap()
     .expect("T7a exact reconstruction");
@@ -630,6 +933,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         Some(source(&ordinary_fingerprint, &ordinary_evidence)),
         Some(&create),
         &ordinary_t,
+        None,
     )
     .unwrap()
     .expect("T7e ordinary terminal participant");
@@ -644,6 +948,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         Some(source(&ordinary_fingerprint, &ordinary_evidence)),
         Some(&create),
         &ordinary_t2,
+        None,
     )
     .unwrap()
     .expect("T7e ordinary reconstruction");
@@ -702,6 +1007,7 @@ fn terminal_successor_admission_is_expiry_monotonic() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared,
+        None,
     )
     .unwrap()
     .expect("S1a exact participant");
@@ -713,6 +1019,7 @@ fn terminal_successor_admission_is_expiry_monotonic() {
             Some(source(&fingerprint, &evidence)),
             Some(&create),
             &shorter,
+            None,
         )
         .is_err(),
         "S1b/E2"
@@ -723,6 +1030,7 @@ fn terminal_successor_admission_is_expiry_monotonic() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared,
+        None,
     )
     .unwrap()
     .expect("S1c retained participant");
@@ -747,6 +1055,7 @@ fn terminal_successor_admission_is_expiry_monotonic() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &higher,
+        None,
     )
     .unwrap()
     .expect("S1e/E1 higher epoch");
@@ -773,6 +1082,7 @@ fn terminal_successor_admission_is_expiry_monotonic() {
             Some(source(&fingerprint, &evidence)),
             Some(&create),
             &foreign,
+            None,
         )
         .is_err(),
         "S1f/E2"
@@ -805,6 +1115,7 @@ fn provider_preparation_returns_one_immutable_same_generation_predecessor() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared_c,
+        None,
     )
     .unwrap()
     .expect("P1 durable C participant");
@@ -896,6 +1207,7 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared,
+        None,
     )
     .unwrap()
     .expect("F1a exact Removing participant");
@@ -920,6 +1232,7 @@ fn physical_authorization_preserves_original_preparation_across_failover() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         authorization_c.effect_fence(),
+        None,
     )
     .unwrap()
     .expect("F1c reopen exact participant after B response loss");
@@ -1006,6 +1319,7 @@ fn disposal_authorization_projection_is_canonical_and_phase_bound() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared,
+        None,
     )
     .unwrap()
     .expect("F2a exact Removing participant");
@@ -1038,6 +1352,7 @@ fn disposal_authorization_projection_is_canonical_and_phase_bound() {
         Some(source(&fingerprint, &evidence)),
         Some(&create),
         &prepared,
+        None,
     )
     .unwrap()
     .expect("F2b exact Removing participant");
@@ -1199,6 +1514,7 @@ fn checkpoint_participant_wal_closes_every_upload_crash_cut() {
         Some(source(&fingerprint, &evidence)),
         None,
         &terminal,
+        None,
     )
     .unwrap()
     .expect("U2 Removing participant");
@@ -1243,6 +1559,7 @@ fn checkpoint_participant_wal_closes_every_upload_crash_cut() {
         Some(source(&fingerprint, &evidence)),
         None,
         &terminal,
+        None,
     )
     .unwrap()
     .expect("U3 response-loss participant");

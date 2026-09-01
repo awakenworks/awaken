@@ -337,8 +337,6 @@ pub fn awaken_ext_builtin_tools::all_hand_tools_in(awaken_ext_builtin_tools::Han
 pub fn awaken_ext_builtin_tools::builtin_tools() -> alloc::vec::Vec<awaken_ext_builtin_tools::BuiltinTool>
 pub fn awaken_ext_builtin_tools::coordination_tools(alloc::sync::Arc<dyn awaken_ext_builtin_tools::AgentCoordinator>) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_ext_builtin_tools::erase<T: awaken_runtime_contract::tool::Tool + 'static>(T) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>
-pub fn awaken_ext_builtin_tools::executable_hand_tools() -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
-pub fn awaken_ext_builtin_tools::executable_hand_tools_in(awaken_ext_builtin_tools::HandToolContext) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub async fn awaken_ext_builtin_tools::invoke_auxiliary_agent(&dyn awaken_runtime_contract::tool::RawTool, impl core::convert::Into<alloc::string::String>, awaken_ext_builtin_tools::AuxiliaryAgentInput, core::option::Option<&tokio_util::sync::cancellation_token::CancellationToken>) -> core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
 pub fn awaken_ext_builtin_tools::managed_web_route_ref<'a>(&str, &'a serde_json::value::Value) -> core::option::Option<&'a str>
 pub fn awaken_ext_builtin_tools::selected_hand_recovery_modes(&[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::collections::btree::set::BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>

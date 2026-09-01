@@ -576,20 +576,21 @@ impl SessionApplication {
         Box<dyn std::future::Future<Output = Result<EventBatchProgress, RunError>> + Send + 'a>,
     > {
         // This reconciliation is polled by the lifecycle supervisor, whose
-        // recovery future is already deep. Keep the per-Event state machine at
-        // the same boxed application seam used by ordinary Run admission; an
-        // unboxed User/System/Outcome union exceeds a default Tokio worker stack
-        // in debug builds and risks doing the same under a large production
-        // recovery prefix. Boxing changes placement only, not ownership.
-        Box::pin(async move {
-            let SelectedSessionEvent {
-                batch_id,
-                event,
-                traceparent,
-                processed_anchor,
-                superseded_tool_reply,
-            } = selected;
-            if let Some(anchor) = processed_anchor {
+        // recovery future is already deep. Select the exact Event kind before
+        // constructing its boxed future: one async block spanning every Event
+        // variant makes Rust's debug poll frame reserve the largest temporary
+        // union on every path, even when only a User message is running. The
+        // variant futures retain this sole selector and all existing durable
+        // authorities; only their execution-shaped stack frames are isolated.
+        let SelectedSessionEvent {
+            batch_id,
+            event,
+            traceparent,
+            processed_anchor,
+            superseded_tool_reply,
+        } = selected;
+        if let Some(anchor) = processed_anchor {
+            return Box::pin(async move {
                 // A prior recovery attempt may have durably anchored the exact
                 // later Interrupt before closing the failed reply. Reuse that
                 // root provenance without repeating the Runtime effect. Settle
@@ -609,21 +610,85 @@ impl SessionApplication {
                     superseded_tool_reply.as_ref(),
                 )
                 .await?;
-                return Ok(EventBatchProgress::Advanced);
-            }
-            match event {
-                SessionEventCommand::UserMessage {
-                    operation_id,
-                    run_id,
-                    content,
-                    data_subject_id,
-                } => {
-                    match self
-                        .runtime()
-                        .session_run_state(&session.session_id, &run_id)
-                        .await?
-                    {
-                        Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
+                Ok(EventBatchProgress::Advanced)
+            });
+        }
+        match event {
+            SessionEventCommand::UserMessage {
+                operation_id,
+                run_id,
+                content,
+                data_subject_id,
+            } => Box::pin(async move {
+                match self
+                    .runtime()
+                    .session_run_state(&session.session_id, &run_id)
+                    .await?
+                {
+                    Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
+                        let anchor = self
+                            .user_message_projection_anchor(
+                                &session.session_id,
+                                &run_id,
+                                &MessageId::session_event_input(&session.session_id, &operation_id),
+                            )
+                            .await?;
+                        self.settle_event_batch_wake(session, &batch_id).await?;
+                        self.mark_session_event_processed(
+                            &session.session_id,
+                            &batch_id,
+                            &operation_id,
+                            anchor,
+                            None,
+                        )
+                        .await?;
+                        return Ok(EventBatchProgress::Advanced);
+                    }
+                    Some(RunState::Running) => {
+                        self.settle_event_batch_wake(session, &batch_id).await?;
+                        return Ok(EventBatchProgress::Pending);
+                    }
+                    None => {}
+                }
+                if self
+                    .another_root_run_blocks_user(&session.session_id, &run_id)
+                    .await?
+                {
+                    return Ok(EventBatchProgress::Pending);
+                }
+
+                let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
+                let admission = self
+                    .admit_session_user_run(SessionUserRunCommand {
+                        session_id: session.session_id.clone(),
+                        agent_id: session
+                            .agent_id()
+                            .ok_or_else(|| RunError::internal("Session Agent is not frozen"))?
+                            .to_string(),
+                        operation_id: operation_id.clone(),
+                        run_id: run_id.clone(),
+                        content,
+                        accompanying_system,
+                        data_subject_id,
+                        traceparent,
+                    })
+                    .await?;
+                self.settle_event_batch_wake(session, &batch_id).await?;
+
+                let delivery = match admission {
+                    AdmittedSessionRun::Reserved(delivery)
+                    | AdmittedSessionRun::AlreadyReserved(delivery)
+                    | AdmittedSessionRun::AlreadyActivated(delivery) => delivery,
+                    AdmittedSessionRun::RecoveryClaimed { .. } => {
+                        return Ok(EventBatchProgress::Pending);
+                    }
+                    AdmittedSessionRun::Completed { .. } => {
+                        if matches!(
+                            self.runtime()
+                                .session_run_state(&session.session_id, &run_id)
+                                .await?,
+                            Some(RunState::Awaiting) | Some(RunState::Ended(_))
+                        ) {
                             let anchor = self
                                 .user_message_projection_anchor(
                                     &session.session_id,
@@ -634,7 +699,6 @@ impl SessionApplication {
                                     ),
                                 )
                                 .await?;
-                            self.settle_event_batch_wake(session, &batch_id).await?;
                             self.mark_session_event_processed(
                                 &session.session_id,
                                 &batch_id,
@@ -645,309 +709,240 @@ impl SessionApplication {
                             .await?;
                             return Ok(EventBatchProgress::Advanced);
                         }
-                        Some(RunState::Running) => {
-                            self.settle_event_batch_wake(session, &batch_id).await?;
-                            return Ok(EventBatchProgress::Pending);
-                        }
-                        None => {}
+                        return Ok(EventBatchProgress::Pending);
                     }
-                    if self
-                        .another_root_run_blocks_user(&session.session_id, &run_id)
+                };
+                match self.runtime().activate_session_run(delivery).await? {
+                    SessionRunActivation::Activated
+                    | SessionRunActivation::AlreadyActivated {
+                        session_activity_epoch: _,
+                    }
+                    | SessionRunActivation::RecoveryClaimed => Ok(EventBatchProgress::Pending),
+                    SessionRunActivation::Completed => {
+                        if matches!(
+                            self.runtime()
+                                .session_run_state(&session.session_id, &run_id)
+                                .await?,
+                            Some(RunState::Awaiting) | Some(RunState::Ended(_))
+                        ) {
+                            let anchor = self
+                                .user_message_projection_anchor(
+                                    &session.session_id,
+                                    &run_id,
+                                    &MessageId::session_event_input(
+                                        &session.session_id,
+                                        &operation_id,
+                                    ),
+                                )
+                                .await?;
+                            self.mark_session_event_processed(
+                                &session.session_id,
+                                &batch_id,
+                                &operation_id,
+                                anchor,
+                                None,
+                            )
+                            .await?;
+                            Ok(EventBatchProgress::Advanced)
+                        } else {
+                            Ok(EventBatchProgress::Pending)
+                        }
+                    }
+                }
+            }),
+            SessionEventCommand::SystemMessage {
+                operation_id,
+                content,
+            } => Box::pin(async move {
+                let message_id = MessageId::session_system(&session.session_id, &operation_id);
+                let committed = self
+                    .runtime()
+                    .committed_messages(&session.session_id)
+                    .await?;
+                let Some(message) = committed.iter().find(|message| message.id == message_id)
+                else {
+                    return Ok(EventBatchProgress::Pending);
+                };
+                if message.role != Role::System || message.content != content {
+                    return Err(RunError::internal(
+                        "committed Session System input conflicts with root command intent",
+                    ));
+                }
+                let (thread_id, run_id) = preceding_event_runtime_target(
+                    session,
+                    &batch_id,
+                    &operation_id,
+                )
+                .ok_or_else(|| {
+                    RunError::internal("committed Session System input has no retained Run owner")
+                })?;
+                let anchor = self
+                    .message_projection_anchor(
+                        &session.session_id,
+                        &thread_id.0,
+                        &run_id,
+                        &message_id,
+                    )
+                    .await?;
+                self.settle_event_batch_wake(session, &batch_id).await?;
+                self.mark_session_event_processed(
+                    &session.session_id,
+                    &batch_id,
+                    &operation_id,
+                    anchor,
+                    None,
+                )
+                .await?;
+                Ok(EventBatchProgress::Advanced)
+            }),
+            SessionEventCommand::DefineOutcome {
+                operation_id,
+                outcome_id,
+                description,
+                rubric,
+                max_iterations,
+            } => Box::pin(async move {
+                let source_commit_cursor = match self
+                    .prepare_outcome(
+                        &session.session_id,
+                        &outcome_id,
+                        &description,
+                        rubric.execution_reference(),
+                        max_iterations.unwrap_or(3),
+                    )
+                    .await
+                {
+                    Ok(source_commit_cursor) => source_commit_cursor,
+                    Err(error) if error.code == OUTCOME_BUSY_CODE => {
+                        return Ok(EventBatchProgress::Pending);
+                    }
+                    Err(error) => return Err(error),
+                };
+                self.settle_event_batch_wake(session, &batch_id).await?;
+                self.mark_session_event_processed(
+                    &session.session_id,
+                    &batch_id,
+                    &operation_id,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor,
+                    },
+                    None,
+                )
+                .await?;
+                Ok(EventBatchProgress::Advanced)
+            }),
+            SessionEventCommand::ToolReply {
+                operation_id,
+                reply,
+            } => Box::pin(async move {
+                let answered_pending_anchor = reply
+                    .answered_pending_commit_cursor
+                    .filter(|cursor| *cursor != 0)
+                    .map(|source_commit_cursor| SessionEventProjectionAnchor {
+                        source_commit_cursor,
+                    });
+                let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
+                SessionAgentCoordination::reply_session_thread_tool(
+                    self,
+                    reply.delivery_command(&session.session_id, accompanying_system),
+                )
+                .await?;
+                let target_thread = reply.target.thread_id(&session.session_id);
+                // Current admissions freeze the Awaiting commit before
+                // delivery. Legacy rows lack it and retain the old
+                // post-delivery recovery fallback for compatibility.
+                let anchor = match answered_pending_anchor {
+                    Some(anchor) => anchor,
+                    None => {
+                        self.run_snapshot_projection_anchor(
+                            &session.session_id,
+                            &target_thread.0,
+                            &reply.expected_run_id,
+                        )
+                        .await?
+                    }
+                };
+                self.settle_event_batch_wake(session, &batch_id).await?;
+                self.mark_session_event_processed(
+                    &session.session_id,
+                    &batch_id,
+                    &operation_id,
+                    anchor,
+                    None,
+                )
+                .await?;
+                Ok(EventBatchProgress::Advanced)
+            }),
+            SessionEventCommand::Interrupt {
+                operation_id,
+                interrupt,
+            } => Box::pin(async move {
+                let mut first_error = None;
+                let targets = interrupt.targets;
+                for target in &targets {
+                    let result = match target {
+                        SessionThreadTarget::Primary => self.interrupt(&session.session_id).await,
+                        SessionThreadTarget::Child(child_thread_id) => {
+                            SessionAgentCoordination::interrupt_session_thread(
+                                self,
+                                &session.session_id,
+                                child_thread_id,
+                            )
+                            .await
+                        }
+                    };
+                    if let Err(error) = result
+                        && first_error.is_none()
+                    {
+                        first_error = Some(error);
+                    }
+                }
+                if let Some(error) = first_error {
+                    return Err(error);
+                }
+                // Cancellation is accepted independently of the in-flight
+                // Runtime future. It can make a retained Outcome
+                // terminalizable without producing a dispatch completion
+                // event (for example an in-process grader), so nudge the
+                // sole reconciler now; Notify retains the permit until the
+                // currently blocked drive yields.
+                self.wake_lifecycle_supervisor();
+                let mut source_commit_cursor = session
+                    .event_batches
+                    .iter()
+                    .flat_map(|batch| &batch.events)
+                    .filter_map(|entry| entry.projection_anchor)
+                    .map(|anchor| anchor.source_commit_cursor)
+                    .max()
+                    .unwrap_or_default();
+                for target in &targets {
+                    let thread_id = target.thread_id(&session.session_id);
+                    if let Some(snapshot) = self
+                        .runtime()
+                        .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
                         .await?
                     {
-                        return Ok(EventBatchProgress::Pending);
+                        source_commit_cursor = source_commit_cursor.max(snapshot.store_cursor);
                     }
-
-                    let accompanying_system =
-                        adjacent_system_input(session, &batch_id, &operation_id);
-                    let admission = self
-                        .admit_session_user_run(SessionUserRunCommand {
-                            session_id: session.session_id.clone(),
-                            agent_id: session
-                                .agent_id()
-                                .ok_or_else(|| RunError::internal("Session Agent is not frozen"))?
-                                .to_string(),
-                            operation_id: operation_id.clone(),
-                            run_id: run_id.clone(),
-                            content,
-                            accompanying_system,
-                            data_subject_id,
-                            traceparent,
-                        })
+                }
+                self.settle_event_batch_wake(session, &batch_id).await?;
+                if let Some(failed) = superseded_tool_reply.as_ref() {
+                    self.settle_superseded_tool_reply_activity(&session.session_id, failed)
                         .await?;
-                    self.settle_event_batch_wake(session, &batch_id).await?;
-
-                    let delivery = match admission {
-                        AdmittedSessionRun::Reserved(delivery)
-                        | AdmittedSessionRun::AlreadyReserved(delivery)
-                        | AdmittedSessionRun::AlreadyActivated(delivery) => delivery,
-                        AdmittedSessionRun::RecoveryClaimed { .. } => {
-                            return Ok(EventBatchProgress::Pending);
-                        }
-                        AdmittedSessionRun::Completed { .. } => {
-                            if matches!(
-                                self.runtime()
-                                    .session_run_state(&session.session_id, &run_id)
-                                    .await?,
-                                Some(RunState::Awaiting) | Some(RunState::Ended(_))
-                            ) {
-                                let anchor = self
-                                    .user_message_projection_anchor(
-                                        &session.session_id,
-                                        &run_id,
-                                        &MessageId::session_event_input(
-                                            &session.session_id,
-                                            &operation_id,
-                                        ),
-                                    )
-                                    .await?;
-                                self.mark_session_event_processed(
-                                    &session.session_id,
-                                    &batch_id,
-                                    &operation_id,
-                                    anchor,
-                                    None,
-                                )
-                                .await?;
-                                return Ok(EventBatchProgress::Advanced);
-                            }
-                            return Ok(EventBatchProgress::Pending);
-                        }
-                    };
-                    match self.runtime().activate_session_run(delivery).await? {
-                        SessionRunActivation::Activated
-                        | SessionRunActivation::AlreadyActivated {
-                            session_activity_epoch: _,
-                        }
-                        | SessionRunActivation::RecoveryClaimed => Ok(EventBatchProgress::Pending),
-                        SessionRunActivation::Completed => {
-                            if matches!(
-                                self.runtime()
-                                    .session_run_state(&session.session_id, &run_id)
-                                    .await?,
-                                Some(RunState::Awaiting) | Some(RunState::Ended(_))
-                            ) {
-                                let anchor = self
-                                    .user_message_projection_anchor(
-                                        &session.session_id,
-                                        &run_id,
-                                        &MessageId::session_event_input(
-                                            &session.session_id,
-                                            &operation_id,
-                                        ),
-                                    )
-                                    .await?;
-                                self.mark_session_event_processed(
-                                    &session.session_id,
-                                    &batch_id,
-                                    &operation_id,
-                                    anchor,
-                                    None,
-                                )
-                                .await?;
-                                Ok(EventBatchProgress::Advanced)
-                            } else {
-                                Ok(EventBatchProgress::Pending)
-                            }
-                        }
-                    }
                 }
-                SessionEventCommand::SystemMessage {
-                    operation_id,
-                    content,
-                } => {
-                    let message_id = MessageId::session_system(&session.session_id, &operation_id);
-                    let committed = self
-                        .runtime()
-                        .committed_messages(&session.session_id)
-                        .await?;
-                    let Some(message) = committed.iter().find(|message| message.id == message_id)
-                    else {
-                        return Ok(EventBatchProgress::Pending);
-                    };
-                    if message.role != Role::System || message.content != content {
-                        return Err(RunError::internal(
-                            "committed Session System input conflicts with root command intent",
-                        ));
-                    }
-                    let (thread_id, run_id) =
-                        preceding_event_runtime_target(session, &batch_id, &operation_id)
-                            .ok_or_else(|| {
-                                RunError::internal(
-                                    "committed Session System input has no retained Run owner",
-                                )
-                            })?;
-                    let anchor = self
-                        .message_projection_anchor(
-                            &session.session_id,
-                            &thread_id.0,
-                            &run_id,
-                            &message_id,
-                        )
-                        .await?;
-                    self.settle_event_batch_wake(session, &batch_id).await?;
-                    self.mark_session_event_processed(
-                        &session.session_id,
-                        &batch_id,
-                        &operation_id,
-                        anchor,
-                        None,
-                    )
-                    .await?;
-                    Ok(EventBatchProgress::Advanced)
-                }
-                SessionEventCommand::DefineOutcome {
-                    operation_id,
-                    outcome_id,
-                    description,
-                    rubric,
-                    max_iterations,
-                } => {
-                    let source_commit_cursor = match self
-                        .prepare_outcome(
-                            &session.session_id,
-                            &outcome_id,
-                            &description,
-                            rubric.execution_reference(),
-                            max_iterations.unwrap_or(3),
-                        )
-                        .await
-                    {
-                        Ok(source_commit_cursor) => source_commit_cursor,
-                        Err(error) if error.code == OUTCOME_BUSY_CODE => {
-                            return Ok(EventBatchProgress::Pending);
-                        }
-                        Err(error) => return Err(error),
-                    };
-                    self.settle_event_batch_wake(session, &batch_id).await?;
-                    self.mark_session_event_processed(
-                        &session.session_id,
-                        &batch_id,
-                        &operation_id,
-                        SessionEventProjectionAnchor {
-                            source_commit_cursor,
-                        },
-                        None,
-                    )
-                    .await?;
-                    Ok(EventBatchProgress::Advanced)
-                }
-                SessionEventCommand::ToolReply {
-                    operation_id,
-                    reply,
-                } => {
-                    let answered_pending_anchor = reply
-                        .answered_pending_commit_cursor
-                        .filter(|cursor| *cursor != 0)
-                        .map(|source_commit_cursor| SessionEventProjectionAnchor {
-                            source_commit_cursor,
-                        });
-                    let accompanying_system =
-                        adjacent_system_input(session, &batch_id, &operation_id);
-                    SessionAgentCoordination::reply_session_thread_tool(
-                        self,
-                        reply.delivery_command(&session.session_id, accompanying_system),
-                    )
-                    .await?;
-                    let target_thread = reply.target.thread_id(&session.session_id);
-                    // Current admissions freeze the Awaiting commit before
-                    // delivery. Legacy rows lack it and retain the old
-                    // post-delivery recovery fallback for compatibility.
-                    let anchor = match answered_pending_anchor {
-                        Some(anchor) => anchor,
-                        None => {
-                            self.run_snapshot_projection_anchor(
-                                &session.session_id,
-                                &target_thread.0,
-                                &reply.expected_run_id,
-                            )
-                            .await?
-                        }
-                    };
-                    self.settle_event_batch_wake(session, &batch_id).await?;
-                    self.mark_session_event_processed(
-                        &session.session_id,
-                        &batch_id,
-                        &operation_id,
-                        anchor,
-                        None,
-                    )
-                    .await?;
-                    Ok(EventBatchProgress::Advanced)
-                }
-                SessionEventCommand::Interrupt {
-                    operation_id,
-                    interrupt,
-                } => {
-                    let mut first_error = None;
-                    let targets = interrupt.targets;
-                    for target in &targets {
-                        let result = match target {
-                            SessionThreadTarget::Primary => {
-                                self.interrupt(&session.session_id).await
-                            }
-                            SessionThreadTarget::Child(child_thread_id) => {
-                                SessionAgentCoordination::interrupt_session_thread(
-                                    self,
-                                    &session.session_id,
-                                    child_thread_id,
-                                )
-                                .await
-                            }
-                        };
-                        if let Err(error) = result
-                            && first_error.is_none()
-                        {
-                            first_error = Some(error);
-                        }
-                    }
-                    if let Some(error) = first_error {
-                        return Err(error);
-                    }
-                    // Cancellation is accepted independently of the in-flight
-                    // Runtime future. It can make a retained Outcome
-                    // terminalizable without producing a dispatch completion
-                    // event (for example an in-process grader), so nudge the
-                    // sole reconciler now; Notify retains the permit until the
-                    // currently blocked drive yields.
-                    self.wake_lifecycle_supervisor();
-                    let mut source_commit_cursor = session
-                        .event_batches
-                        .iter()
-                        .flat_map(|batch| &batch.events)
-                        .filter_map(|entry| entry.projection_anchor)
-                        .map(|anchor| anchor.source_commit_cursor)
-                        .max()
-                        .unwrap_or_default();
-                    for target in &targets {
-                        let thread_id = target.thread_id(&session.session_id);
-                        if let Some(snapshot) = self
-                            .runtime()
-                            .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
-                            .await?
-                        {
-                            source_commit_cursor = source_commit_cursor.max(snapshot.store_cursor);
-                        }
-                    }
-                    self.settle_event_batch_wake(session, &batch_id).await?;
-                    if let Some(failed) = superseded_tool_reply.as_ref() {
-                        self.settle_superseded_tool_reply_activity(&session.session_id, failed)
-                            .await?;
-                    }
-                    self.mark_session_event_processed(
-                        &session.session_id,
-                        &batch_id,
-                        &operation_id,
-                        SessionEventProjectionAnchor {
-                            source_commit_cursor,
-                        },
-                        superseded_tool_reply.as_ref(),
-                    )
-                    .await?;
-                    Ok(EventBatchProgress::Advanced)
-                }
-            }
-        })
+                self.mark_session_event_processed(
+                    &session.session_id,
+                    &batch_id,
+                    &operation_id,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor,
+                    },
+                    superseded_tool_reply.as_ref(),
+                )
+                .await?;
+                Ok(EventBatchProgress::Advanced)
+            }),
+        }
     }
 
     /// Close the sole activity receipt opened by the exact failed ToolReply.

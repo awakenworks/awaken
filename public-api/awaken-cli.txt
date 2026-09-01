@@ -95,6 +95,7 @@ pub awaken_cli::config::ResolvedDeployment::coordinator: awaken_cli::config::Coo
 pub awaken_cli::config::ResolvedDeployment::data_dir: std::path::PathBuf
 pub awaken_cli::config::ResolvedDeployment::deprecations: alloc::vec::Vec<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::executable_agent_registration: awaken_cli::config::ExecutableAgentRegistrationConfig
+pub awaken_cli::config::ResolvedDeployment::expected_platform_workspace_id: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::iam_workspaces: alloc::vec::Vec<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::identity_mode: awaken_control::authz::ManagementIdentityMode
 pub awaken_cli::config::ResolvedDeployment::internal_bind: core::option::Option<alloc::string::String>
@@ -134,8 +135,7 @@ pub awaken_cli::console::Command::ControlHostedRuntimeRouteProfile
 pub awaken_cli::console::Command::ControlIamProfile
 pub awaken_cli::console::Command::ControlIamRuntimeProfile
 pub awaken_cli::console::Command::Coordinator(awaken_cli::console::ServiceArgs)
-pub awaken_cli::console::Command::DatabaseMigrate
-pub awaken_cli::console::Command::DatabaseMigrate::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::Command::DatabaseMigrate(awaken_cli::console::DatabaseMigrateArgs)
 pub awaken_cli::console::Command::Doctor
 pub awaken_cli::console::Command::Doctor::config_path: core::option::Option<std::path::PathBuf>
 pub awaken_cli::console::Command::Doctor::json: bool
@@ -144,10 +144,13 @@ pub awaken_cli::console::Command::DoctorAcp::json: bool
 pub awaken_cli::console::Command::Help
 pub awaken_cli::console::Command::Version
 pub enum awaken_cli::console::ServiceBinaryCommand
-pub awaken_cli::console::ServiceBinaryCommand::DatabaseMigrate
-pub awaken_cli::console::ServiceBinaryCommand::DatabaseMigrate::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::ServiceBinaryCommand::DatabaseMigrate(awaken_cli::console::DatabaseMigrateArgs)
 pub awaken_cli::console::ServiceBinaryCommand::Help
 pub awaken_cli::console::ServiceBinaryCommand::Serve(awaken_cli::console::ServiceArgs)
+pub struct awaken_cli::console::DatabaseMigrateArgs
+pub awaken_cli::console::DatabaseMigrateArgs::adoption_reference: core::option::Option<alloc::string::String>
+pub awaken_cli::console::DatabaseMigrateArgs::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::DatabaseMigrateArgs::initialization_reference: core::option::Option<alloc::string::String>
 pub struct awaken_cli::console::ServiceArgs
 pub awaken_cli::console::ServiceArgs::cloud_models: core::option::Option<awaken_cli::config::CloudModelMode>
 pub awaken_cli::console::ServiceArgs::config_path: core::option::Option<std::path::PathBuf>
@@ -240,6 +243,7 @@ pub async fn awaken_cli::build_control_router_with_publication_resolver_and_web_
 pub async fn awaken_cli::local_acp_diagnostics(bool) -> alloc::string::String
 pub async fn awaken_cli::migrate_deployment_schema(&awaken_cli::config::ResolvedDeployment, core::option::Option<&[u8; 32]>) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_cli::migrate_service(core::option::Option<std::path::PathBuf>) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_cli::migrate_service_with_request(awaken_cli::console::DatabaseMigrateArgs) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_cli::mount_console(axum::routing::Router) -> axum::routing::Router
 pub fn awaken_cli::mount_console_with_navigation(axum::routing::Router, awaken_api_contract::console::SuiteNavigation) -> axum::routing::Router
 pub async fn awaken_cli::prepare_all_in_one_process(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>

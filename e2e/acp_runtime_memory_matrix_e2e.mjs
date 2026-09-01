@@ -6,7 +6,7 @@
 // mounted MemoryStore, then write its own distinct memory file. A second pass
 // makes every runtime recall every runtime's file (N writers × N readers). The
 // Memory API is observation only: all subject writes/reads happen through
-// `/mnt/memory`.
+// the catalog-derived `/mnt/memory/cross-runtime-memory` projection.
 //
 // Run:
 //   CARGO_TARGET_DIR=/tmp/awaken-memory-runtime-target \
@@ -20,9 +20,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  allowManagedToolBoundaries,
   cleanupFixtureTree,
   pass,
-  waitForSessionEventReceipt,
   withServer,
 } from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
@@ -42,16 +42,10 @@ import {
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
+const MEMORY_STORE_NAME = 'cross-runtime-memory';
+const MEMORY_MOUNT_PATH = `/mnt/memory/${MEMORY_STORE_NAME}`;
 const RUNTIMES = parseAcpRuntimes(process.env.ACP_RUNTIMES);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(event);
-  }
-  return events;
-}
 
 function assistantText(events) {
   return events
@@ -60,105 +54,40 @@ function assistantText(events) {
     .join(' ');
 }
 
-async function approveGated(client, sessionId, events, approved, confirmationReceiptIds) {
-  for (const event of events) {
-    if (
-      event.type === 'agent.tool_use'
-      && event.evaluated_permission === 'ask'
-      && !approved.has(event.id)
-    ) {
-      approved.add(event.id);
-      const response = await client.beta.sessions.events.send(sessionId, {
-        events: [{ type: 'user.tool_confirmation', tool_use_id: event.id, result: 'allow' }],
-        betas: BETAS,
-      });
-      confirmationReceiptIds.push(response.data[0].id);
-    }
-  }
-}
-
-async function send(client, sessionId, text) {
-  return client.beta.sessions.events.send(sessionId, {
+// The Managed HTTP route commits and returns the exact User receipt before ACP
+// execution settles, so every ACP runtime reuses the one canonical approval
+// driver. Causes: C1 one exact User receipt; C2 zero or more receipt-scoped
+// requires_action boundaries; C3 a receipt-scoped end_turn. Effects: E1=C1+C2
+// approves each qualified tool id once; E2=C1+C3 returns terminal committed
+// history; E3 a missing/ambiguous receipt or exhausted boundary budget fails.
+// Rules D1=C1+C3=>E2; D2=C1+C2+C3=>E1+E2; D3=!C1|!C3=>E3. Scenario-specific
+// content checks and whole-operation retries remain with the three callers.
+async function driveTurn(client, sessionId, text) {
+  const response = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
-}
-
-async function driveUntil(client, sessionId, text, check) {
-  const approved = new Set();
-  const confirmationReceiptIds = [];
-  const waitForConfirmations = async (description) => {
-    for (const receiptId of confirmationReceiptIds) {
-      await waitForSessionEventReceipt(
-        client,
-        sessionId,
-        receiptId,
-        BETAS,
-        () => true,
-        description,
-        { timeoutMs: 120_000, pollMs: 500 },
-      );
-    }
-  };
-  // A turn that reaches an `ask` permission remains open until the confirmation
-  // arrives. Poll concurrently with the original send; awaiting send first would
-  // deadlock exactly on the write/edit operations this matrix must exercise.
-  let sendError = null;
-  let sendDone = false;
-  let sendResponse;
-  // Driver decision D1: C1 exact prompt receipt, C2 zero-or-more intermediate
-  // permission gates, C3 scenario check succeeds. Effects: E1 gates are driven;
-  // E2 the exact receipt is processed with C3 still true. K1 polling may observe
-  // intermediate state, but older history cannot complete this turn.
-  // D1=C1+C3=>E2; D2=C1+C2+C3=>E1+E2.
-  const sending = send(client, sessionId, text)
-    .then((response) => {
-      sendResponse = response;
-    })
-    .catch((error) => {
-      sendError = error;
-    })
-    .finally(() => {
-      sendDone = true;
-    });
-  for (let round = 0; round < 240; round += 1) {
-    await sleep(500);
-    const events = await listEvents(client, sessionId);
-    await approveGated(client, sessionId, events, approved, confirmationReceiptIds);
-    if (sendError) throw sendError;
-    if (await check(events)) {
-      await sending;
-      if (sendError) throw sendError;
-      const receipt = sendResponse?.data?.[0];
-      const observation = await waitForSessionEventReceipt(
-        client,
-        sessionId,
-        receipt?.id,
-        BETAS,
-        ({ events: committed }) => check(committed),
-        `ACP runtime Memory turn ${JSON.stringify(text)}`,
-        { timeoutMs: 120_000, pollMs: 500 },
-      );
-      await waitForConfirmations('ACP runtime Memory permission receipt to process');
-      return { events: observation.events, approved };
-    }
-    if (sendDone && events.some((event) => event.type === 'session.status_idle')) {
-      if (sendError) throw sendError;
-      const receipt = sendResponse?.data?.[0];
-      const observation = await waitForSessionEventReceipt(
-        client,
-        sessionId,
-        receipt?.id,
-        BETAS,
-        () => true,
-        `ACP runtime Memory turn ${JSON.stringify(text)} to settle`,
-        { timeoutMs: 120_000, pollMs: 500 },
-      );
-      await waitForConfirmations('settled ACP runtime Memory permission receipt');
-      return { events: observation.events, approved };
-    }
-  }
-  return { events: await listEvents(client, sessionId), approved };
+  assert.equal(response.data.length, 1, 'D1-D3 one prompt returns one exact receipt');
+  const receipt = response.data[0];
+  assert.equal(typeof receipt?.id, 'string', 'D1-D3 receipt identity is explicit');
+  const events = await allowManagedToolBoundaries({
+    client,
+    sessionId,
+    taskReceiptId: receipt.id,
+    betas: BETAS,
+    description: `ACP runtime Memory turn ${JSON.stringify(text)}`,
+    timeoutMs: 120_000,
+    maxBoundaries: 20,
+  });
+  const receiptIndex = events.findIndex((event) => event.id === receipt.id);
+  assert.notEqual(receiptIndex, -1, 'D1-D3 terminal history retains the task receipt');
+  const approved = new Set(
+    events
+      .slice(receiptIndex + 1)
+      .filter((event) => event.type === 'user.tool_confirmation' && event.result === 'allow')
+      .map((event) => event.tool_use_id),
+  );
+  return { events, approved };
 }
 
 async function memoryContent(client, storeId) {
@@ -235,7 +164,7 @@ async function main() {
         });
         if (storeId === null) {
           const store = await client.post('/v1/memory_stores', {
-            body: { name: 'cross-runtime-memory' },
+            body: { name: MEMORY_STORE_NAME },
             headers: MEMORY_HEADERS,
           });
           storeId = store.id;
@@ -245,16 +174,28 @@ async function main() {
           });
         }
 
-        const createSession = () => client.beta.sessions.create({
+        const createSession = async () => {
+          const session = await client.beta.sessions.create({
             agent: acpAgent.id,
             environment_id: 'env_local',
             resources: [{
               type: 'memory_store',
               memory_store_id: storeId,
-              mount_path: '/memory',
             }],
             betas: BETAS,
           });
+          // Memory wire/path decision rule: C1 exact store id and no client
+          // mount_path -> E1 server returns the catalog-derived path; C2 any
+          // client mount_path -> typed admission rejects before a Session root.
+          // This positive matrix covers C1/E1; the lifecycle negative oracle
+          // covers C2. No ACP runtime may invent a second path authority.
+          assert.equal(
+            session.resources.find((resource) => resource.type === 'memory_store')?.mount_path,
+            MEMORY_MOUNT_PATH,
+            `${runtime}: exact catalog-derived MemoryStore mount`,
+          );
+          return session;
+        };
         const configureSession = (session) => {
           if (runtime !== 'claude') return;
           const configHome = path.join(sandboxDir, session.id, '.acp-config');
@@ -275,11 +216,10 @@ async function main() {
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           readAttempts = attempt;
           readSession = await createSession();
-          read = await driveUntil(
+          read = await driveTurn(
             client,
             readSession.id,
-            `Read /mnt/memory/${predecessor.runtime}.md with your file tools and reply with only its exact contents.`,
-            (events) => assistantText(events).includes(predecessor.marker),
+            `Read ${MEMORY_MOUNT_PATH}/${predecessor.runtime}.md with your file tools and reply with only its exact contents.`,
           );
           if (assistantText(read.events).includes(predecessor.marker)) break;
           if (attempt < 3) {
@@ -317,12 +257,11 @@ async function main() {
         const writeStarted = performance.now();
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           writeAttempts = attempt;
-          write = await driveUntil(
+          write = await driveTurn(
             client,
             writeSession.id,
-            `Use your file write tool to create /mnt/memory/${runtime}.md with exactly ${marker}. `
+            `Use your file write tool to create ${MEMORY_MOUNT_PATH}/${runtime}.md with exactly ${marker}. `
               + 'Do not write any other content. Reply with only SAVED.',
-            (events) => assistantText(events).includes('SAVED'),
           );
           if (assistantText(write.events).includes('SAVED')) break;
           if (attempt < 3) {
@@ -375,7 +314,7 @@ async function main() {
           model: selectedModel,
           betas: BETAS,
         });
-        const paths = chain.map(({ runtime: writer }) => `/mnt/memory/${writer}.md`);
+        const paths = chain.map(({ runtime: writer }) => `${MEMORY_MOUNT_PATH}/${writer}.md`);
         let session;
         let recalled;
         let recallAttempts = 0;
@@ -389,16 +328,19 @@ async function main() {
             resources: [{
               type: 'memory_store',
               memory_store_id: storeId,
-              mount_path: '/memory',
             }],
             betas: BETAS,
           });
-          recalled = await driveUntil(
+          assert.equal(
+            session.resources.find((resource) => resource.type === 'memory_store')?.mount_path,
+            MEMORY_MOUNT_PATH,
+            `${runtime}: recall uses the same catalog-derived MemoryStore mount`,
+          );
+          recalled = await driveTurn(
             client,
             session.id,
             `Read all of these memory files with your file tools: ${paths.join(', ')}. `
               + 'Reply with their exact contents, one per line, and no other text.',
-            (events) => chain.every(({ marker }) => assistantText(events).includes(marker)),
           );
           if (chain.every(({ marker }) => assistantText(recalled.events).includes(marker))) break;
           await client.beta.sessions.delete(session.id, { betas: BETAS });

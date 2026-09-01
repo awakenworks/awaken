@@ -44,6 +44,30 @@ export const SKILLS_BETAS = [SKILLS_BETA];
 // this selector; GA Files callers deliberately omit it and test that route.
 export const FILES_BETA = 'files-api-2025-04-14';
 export const FILES_BETAS = [FILES_BETA];
+// The Memory/full-chain scenario publishes exactly one real Resource definition
+// before mounting its immutable Agent publication. Cause/effect rule: C1 the
+// deterministic scenario exposes one terminal list page with exactly one Store
+// -> E1 return that server-owned identity; C2 malformed, empty, additional, or
+// paginated data -> E2 fail rather than guessing a first/default Memory.
+export async function scenarioMemoryStore(client, headers) {
+  const page = await client.get('/v1/memory_stores', { headers });
+  const store = page?.data?.[0];
+  if (
+    !Array.isArray(page?.data)
+    || page.data.length !== 1
+    || page.next_page !== null
+    || !store
+    || typeof store !== 'object'
+    || typeof store.id !== 'string'
+    || store.id.length === 0
+  ) {
+    throw new Error(
+      'deterministic Memory scenario must publish exactly one MemoryStore '
+      + `on one terminal page; observed ${JSON.stringify(page)}`,
+    );
+  }
+  return store;
+}
 // Canonical secret-free evidence for a test driver that stands in for the
 // installed Native provider adapter while it claims (but never executes) a
 // production-authored seed dispatch. Keep the wire encoding here so fixtures do
@@ -160,6 +184,7 @@ export function managedFileUploadForm(content, filename) {
 // orphaned and keep Node alive past the test.
 let serverBin = null;
 let productionBin = null;
+const initializedInstallationConfigurations = new Set();
 const spawnedServersByPort = new Map();
 const spawnedServerPorts = new WeakMap();
 
@@ -242,6 +267,96 @@ export function ensureProductionBuilt() {
   return productionBin;
 }
 
+// The production installation state machine remains the only authority for
+// first-use storage. This E2E adapter owns only when a positive fixture invokes
+// that existing CLI boundary. Cause/effect decision table:
+//
+// | Rule | exact config observation | prior successful observation | effect |
+// |---|---|---|---|
+// | I1 | valid | no | run explicit initialization before child spawn |
+// | I2 | unchanged | yes | skip migration so restart uses ordinary Serve |
+// | I3 | initialization fails | no | throw, do not cache, do not spawn child |
+// | I4 | unchanged but durable bytes later corrupt | yes | skip migration; Serve detects damage |
+// | I5 | path, cwd, config bytes, or resolved binary identity changes | either | independently initialize/verify |
+//
+// Constraint K1: this helper never adopts legacy storage and never weakens the
+// read-only Serve fence. Negative startup fixtures deliberately bypass it.
+export function initializeE2EInstallation(environment, options = {}) {
+  if (!environment || typeof environment !== 'object') {
+    throw new TypeError('initializeE2EInstallation requires the child environment');
+  }
+  if (
+    options.configPath === undefined
+    && (typeof environment.HOME !== 'string' || environment.HOME.length === 0)
+  ) {
+    throw new TypeError('initializeE2EInstallation requires the child HOME');
+  }
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const configPath = path.resolve(
+    cwd,
+    options.configPath ?? path.join(environment.HOME, '.awaken', 'config.toml'),
+  );
+  const binary = options.binary ?? ensureProductionBuilt();
+  // Cache only an observation made by the exact executable we later spawn.
+  // realpath removes alias spellings; the bytes digest detects an in-place
+  // rebuild without inventing a second migration or installation authority.
+  const resolvedBinary = fs.realpathSync(path.resolve(cwd, binary));
+  const binaryDigest = createHash('sha256')
+    .update(fs.readFileSync(resolvedBinary))
+    .digest('hex');
+  const configBytes = fs.readFileSync(configPath);
+  const configDigest = createHash('sha256').update(configBytes).digest('hex');
+  const cacheKey = `${cwd}\0${configPath}\0${configDigest}\0${resolvedBinary}\0${binaryDigest}`;
+  if (initializedInstallationConfigurations.has(cacheKey)) return 'cached';
+  const reference = createHash('sha256')
+    .update(`${cwd}\0${configPath}`)
+    .digest('hex')
+    .slice(0, 24);
+
+  const result = spawnSync(
+    resolvedBinary,
+    [
+      'database',
+      'migrate',
+      '--config',
+      configPath,
+      '--initialize-installation',
+      '--initialization-reference',
+      `e2e-harness-${reference}`,
+    ],
+    {
+      cwd,
+      env: environment,
+      encoding: 'utf8',
+    },
+  );
+  if (result.error || result.status !== 0) {
+    const detail = [result.error?.message, result.stdout, result.stderr]
+      .filter(Boolean)
+      .join('\n')
+      .slice(-8_000);
+    throw new Error(
+      `explicit E2E installation failed for ${configPath} `
+      + `(status=${result.status}, signal=${result.signal}): ${detail}`,
+    );
+  }
+  const finalDigest = createHash('sha256').update(fs.readFileSync(configPath)).digest('hex');
+  if (finalDigest !== configDigest) {
+    throw new Error(`E2E installation config changed during migration: ${configPath}`);
+  }
+  initializedInstallationConfigurations.add(cacheKey);
+  return 'initialized';
+}
+
+function preparedServerProcessEnv(addr, configured = {}, inheritedEnvironment = process.env) {
+  const environment = serverProcessEnv(addr, configured, inheritedEnvironment);
+  const mode = environment.AWAKEN_MODEL_MODE;
+  if (mode === 'management' || mode?.startsWith('management-')) {
+    initializeE2EInstallation(environment);
+  }
+  return environment;
+}
+
 // Start the production composition from its single typed deployment source.
 // Scenario-only metadata may be passed as process metadata, but deployment,
 // credential, model, and resource configuration must remain in config.toml.
@@ -287,6 +402,7 @@ export function spawnProduction(
     ...extraEnv,
   };
   if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;
+  initializeE2EInstallation(env);
   return trackSpawnedServer(
     port,
     spawn(ensureProductionBuilt(), automatedAllInOneArgs('--port', String(port)), {
@@ -579,7 +695,7 @@ export async function allowManagedToolBoundaries({
 }) {
   const approved = new Set();
   const nextBoundary = ({ events, delta }) => {
-    if (hasEndTurn(events)) return true;
+    if (hasEndTurn(delta)) return true;
     const idle = [...delta]
       .reverse()
       .find((event) => event.type === 'session.status_idle');
@@ -596,7 +712,7 @@ export async function allowManagedToolBoundaries({
     { timeoutMs },
   );
   for (let boundary = 0; boundary < maxBoundaries; boundary += 1) {
-    if (hasEndTurn(observation.events)) return observation.events;
+    if (hasEndTurn(observation.delta)) return observation.events;
     const idle = [...observation.delta]
       .reverse()
       .find((event) => event.type === 'session.status_idle');
@@ -831,7 +947,7 @@ export async function withServer(mode, port, fn) {
     // Generic scenario fixtures use the portable Workdir substrate. A test for
     // Namespace/Container owns its provider selection explicitly and does not
     // use this convenience wrapper.
-    env: serverProcessEnv(addr, {
+    env: preparedServerProcessEnv(addr, {
       AWAKEN_MODEL_MODE: mode,
       SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
     }),
@@ -915,7 +1031,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
   // accumulated text is exposed to `fn` as a third `{ text() }` argument.
   const capture = opts.capture ? { buf: '' } : null;
   const server = spawn(bin, {
-    env: serverProcessEnv(addr, realServerEnv(behavior, upstream, opts)),
+    env: preparedServerProcessEnv(addr, realServerEnv(behavior, upstream, opts)),
     stdio: capture ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'inherit', 'inherit'],
   });
   if (capture) {
@@ -945,7 +1061,7 @@ export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = pr
   const server = trackSpawnedServer(
     port,
     spawn(bin, {
-      env: serverProcessEnv(
+      env: preparedServerProcessEnv(
         addr,
         { ...extraEnv, AWAKEN_MODEL_MODE: mode },
         inheritedEnvironment,

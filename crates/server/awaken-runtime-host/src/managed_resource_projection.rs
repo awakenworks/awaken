@@ -1069,6 +1069,27 @@ pub(crate) enum ManagedLayoutProjection {
     },
 }
 
+/// Authority available while validating one frozen Managed Sandbox layout.
+///
+/// A Coordinator dispatching a Worker-owned Session can validate only the
+/// provider-neutral frozen structure. The claimed Worker owns the exact
+/// provider projection and repeats the same structural kernel against that
+/// provider's effective spec before any physical effect.
+#[derive(Clone, Copy)]
+enum ManagedLayoutValidationScope<'a> {
+    Structural,
+    Exact(&'a crate::session_environment::SessionEnvironmentProvider),
+}
+
+impl ManagedLayoutValidationScope<'_> {
+    fn network_isolation(self) -> bool {
+        match self {
+            Self::Structural => true,
+            Self::Exact(provider) => provider.capabilities().network_isolation,
+        }
+    }
+}
+
 impl ManagedLayoutProjection {
     pub(crate) fn mount_path(&self) -> &str {
         match self {
@@ -1195,7 +1216,7 @@ impl crate::SharedHost {
         &self,
         thread: &str,
         inputs: impl IntoIterator<Item = ManagedLayoutProjection>,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
+        scope: ManagedLayoutValidationScope<'_>,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
@@ -1241,7 +1262,7 @@ impl crate::SharedHost {
                 }),
                 content_delivery,
                 environment,
-                network_isolation: provider.capabilities().network_isolation,
+                network_isolation: scope.network_isolation(),
             },
         );
         let historical_owned_paths = live_environment
@@ -1265,13 +1286,24 @@ impl crate::SharedHost {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        self.validate_repository_environment_adoption_paths(
-            provider,
-            &spec,
-            &repository_paths,
-            &historical_owned_paths,
-        )
-        .map(|_| ())
+        match scope {
+            ManagedLayoutValidationScope::Structural => {
+                awaken_provisioning_contract::validate_repository_sandbox_adoption_layout(
+                    &repository_paths,
+                    &spec,
+                    &historical_owned_paths,
+                )
+                .map_err(|error| crate::host::HostError::internal(error.to_string()))
+            }
+            ManagedLayoutValidationScope::Exact(provider) => self
+                .validate_repository_environment_adoption_paths(
+                    provider,
+                    &spec,
+                    &repository_paths,
+                    &historical_owned_paths,
+                )
+                .map(|_| ()),
+        }
     }
 
     pub(crate) fn validate_managed_resource_layout(
@@ -1289,7 +1321,28 @@ impl crate::SharedHost {
                 .inputs()
                 .iter()
                 .map(resolved_input_layout_projection),
-            provider,
+            ManagedLayoutValidationScope::Exact(provider),
+            baseline_mounts,
+            baseline_env,
+            environment,
+        )
+    }
+
+    pub(crate) fn validate_structural_managed_resource_layout(
+        &self,
+        thread: &str,
+        resources: &awaken_session_contract::ResolvedSessionResources,
+        baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
+        baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
+        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    ) -> Result<(), crate::host::HostError> {
+        self.validate_managed_layout_inputs(
+            thread,
+            resources
+                .inputs()
+                .iter()
+                .map(resolved_input_layout_projection),
+            ManagedLayoutValidationScope::Structural,
             baseline_mounts,
             baseline_env,
             environment,
@@ -1308,7 +1361,25 @@ impl crate::SharedHost {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),
-            provider,
+            ManagedLayoutValidationScope::Exact(provider),
+            baseline_mounts,
+            baseline_env,
+            environment,
+        )
+    }
+
+    pub(crate) fn validate_structural_managed_binding_layout(
+        &self,
+        thread: &str,
+        resources: &[awaken_resource_contract::InputBinding],
+        baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
+        baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
+        environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    ) -> Result<(), crate::host::HostError> {
+        self.validate_managed_layout_inputs(
+            thread,
+            resources.iter().map(binding_layout_projection),
+            ManagedLayoutValidationScope::Structural,
             baseline_mounts,
             baseline_env,
             environment,
@@ -1331,17 +1402,27 @@ impl crate::ManagedHost {
                 None,
             )
             .map_err(|error| awaken_session_contract::RunError::bad_request(error.to_string()))?;
-        let provider = if let Some(candidate) = candidate.as_ref() {
-            self.host
-                .session_environment_provider(candidate.provisioning())
-        } else {
-            self.host.session_environment_provider(
-                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+        let result = if layout.runtime_placement
+            == awaken_session_contract::SessionRuntimePlacement::Worker
+        {
+            self.host.validate_structural_managed_binding_layout(
+                thread,
+                &layout.resources,
+                Some(&layout.mounts),
+                Some(&layout.env),
+                Some(&environment),
             )
-        }
-        .map_err(|error| awaken_session_contract::RunError::bad_request(error.to_string()))?;
-        self.host
-            .validate_managed_binding_layout(
+        } else {
+            let provider = if let Some(candidate) = candidate.as_ref() {
+                self.host
+                    .session_environment_provider(candidate.provisioning())
+            } else {
+                self.host.session_environment_provider(
+                    &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                )
+            }
+            .map_err(|error| awaken_session_contract::RunError::bad_request(error.to_string()))?;
+            self.host.validate_managed_binding_layout(
                 thread,
                 &layout.resources,
                 provider,
@@ -1349,7 +1430,8 @@ impl crate::ManagedHost {
                 Some(&layout.env),
                 Some(&environment),
             )
-            .map_err(|error| awaken_session_contract::RunError::bad_request(error.to_string()))
+        };
+        result.map_err(|error| awaken_session_contract::RunError::bad_request(error.to_string()))
     }
 
     pub(super) fn validate_effective_resource_layout(

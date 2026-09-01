@@ -20,7 +20,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { FILES_BETA, pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import {
+  FILES_BETA,
+  allowManagedToolBoundaries,
+  pass,
+  withServer,
+} from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 import {
   aggregateUsage,
@@ -37,158 +42,51 @@ const TOKEN = 'ZEBRA_QUASAR_4718'; // awaken-allow: secret
 const ARTIFACT = 'DONE_9931'; // awaken-allow: secret
 const MEMTOKEN = 'AWKFACT_NATIVE_MEMORY_MOSS_ORBIT_5527'; // awaken-allow: secret
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function listEvents(client, sid) {
-  const evs = [];
-  for await (const e of client.beta.sessions.events.list(sid, { betas: BETAS })) evs.push(e);
-  return evs;
-}
-
-async function send(client, sid, text) {
-  return client.beta.sessions.events.send(sid, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    betas: BETAS,
-  });
-}
-
-// Send a user.message, tolerating a thread that is awaiting awaiting a tool decision:
-// the server rejects a fresh message while gated, so approve any pending calls and
-// retry until it lands (or give up after a bounded number of tries).
-async function sendSafe(client, sid, text, approved, confirmationReceiptIds) {
-  for (let tries = 0; tries < 10; tries++) {
-    try {
-      return await send(client, sid, text);
-    } catch (e) {
-      if (!String(e).includes('awaiting a tool decision')) throw e;
-      await approveGated(
-        client,
-        sid,
-        await listEvents(client, sid),
-        approved,
-        confirmationReceiptIds,
-      );
-      await sleep(1200);
-    }
-  }
-  return false;
-}
-
-// Approve every gated (`evaluated_permission === 'ask'`) tool call not yet approved.
-// `write` is not auto-allowed (only read/glob/grep are), so writes await for a
-// confirmation — this releases them.
-async function approveGated(client, sid, evs, approved, confirmationReceiptIds) {
-  for (const e of evs) {
-    if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
-      approved.add(e.id);
-      // This is an intermediate gate release, not a terminal acceptance oracle;
-      // driveUntil receipt-gates the owning prompt after the resulting effects.
-      const response = await client.beta.sessions.events.send(sid, {
-        events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
-        betas: BETAS,
-      });
-      confirmationReceiptIds.push(response.data[0].id);
-    }
-  }
-}
-
 const assistantText = (evs) =>
   evs
     .filter((e) => e.type === 'agent.message')
     .flatMap((m) => (m.content ?? []).map((c) => c.text ?? ''))
     .join(' ');
 
-// Drive one instruction to completion against a real (non-deterministic) model:
-// send `text`, approve any gated tool calls each round, and wait until `check()`
-// returns true. `check` is re-run every round (it may inspect the assistant's reply
-// or external host state such as files.list / a memory store). If the model goes idle
-// without satisfying `check`, re-send a firmer `nudgeText` (up to `nudges` times).
-// Returns { approved, ok }.
-async function driveUntil(client, sid, text, check, { nudges = 2, rounds = 16, nudgeText } = {}) {
+// Drive one real-model instruction while leaving receipt→approval→end_turn
+// sequencing to the canonical harness. Causes: C1 an exact prompt/nudge receipt;
+// C2 the harness reaches its receipt-scoped end_turn; C3 the scenario-specific
+// event/external-state check succeeds; C4 nudge budget remains. Effects: E1
+// C1+C2+C3 returns terminal history and only confirmations owned after C1; E2
+// C1+C2+!C3+C4 sends a nudge only after the prior turn is idle; E3
+// C1+C2+!C3+!C4 returns ok=false. C2 failure is surfaced by the harness and never
+// converted to a nudge. Constraint: every caller creates a fresh uniquely marked
+// target, so a preexisting-effect/zero-send partition is not legal here. Rules
+// S1=C1+C2+C3=>E1; S2=C1+C2+!C3+C4=>E2; S3=C1+C2+!C3+!C4=>E3.
+async function driveUntil(client, sid, text, check, { nudges = 2, nudgeText } = {}) {
   const approved = new Set();
-  const confirmationReceiptIds = [];
-  const processedConfirmationIds = new Set();
-  const waitForConfirmations = async () => {
-    for (const receiptId of confirmationReceiptIds) {
-      if (processedConfirmationIds.has(receiptId)) continue;
-      await waitForSessionEventReceipt(
-        client,
-        sid,
-        receiptId,
-        BETAS,
-        () => true,
-        'resource permission receipt to process',
-        { timeoutMs: 120_000, pollMs: 500 },
-      );
-      processedConfirmationIds.add(receiptId);
-    }
-  };
-  let lastReceipt;
-  // Driver decision R1: C1 an exact prompt/nudge receipt, C2 optional permission
-  // releases, and C3 the scenario event/external-state predicate succeeds.
-  // Effects: E1 intermediate gates advance; E2 C1 is processed while C3 remains
-  // true. K1 pre-receipt history may drive gates but cannot complete the turn.
-  // R1=C1+C3=>E2; R2=C1+C2+C3=>E1+E2.
+  let events = [];
   for (let attempt = 0; attempt <= nudges; attempt++) {
-    // A nudge is a fresh user.message; `sendSafe` approves any pending gated call and
-    // retries so an awaiting thread ("awaiting a tool decision") still accepts it.
-    if (await check(await listEvents(client, sid))) return { approved, ok: true };
-    const sendResponse = await sendSafe(
+    const prompt = attempt === 0 ? text : nudgeText ?? text;
+    const taskReceipt = (await client.beta.sessions.events.send(sid, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
+      betas: BETAS,
+    })).data[0];
+    assert.equal(typeof taskReceipt?.id, 'string', `S1-S3 exact receipt for ${prompt}`);
+    events = await allowManagedToolBoundaries({
       client,
-      sid,
-      attempt === 0 ? text : nudgeText ?? text,
-      approved,
-      confirmationReceiptIds,
-    );
-    lastReceipt = sendResponse?.data?.[0];
-    if (!lastReceipt) continue;
-    for (let i = 0; i < rounds; i++) {
-      await sleep(1500);
-      const evs = await listEvents(client, sid);
-      await approveGated(client, sid, evs, approved, confirmationReceiptIds);
-      if (await check(evs)) {
-        await waitForSessionEventReceipt(
-          client,
-          sid,
-          lastReceipt.id,
-          BETAS,
-          ({ events }) => check(events),
-          `resource turn ${JSON.stringify(attempt === 0 ? text : nudgeText ?? text)}`,
-          { timeoutMs: 120_000, pollMs: 500 },
-        );
-        await waitForConfirmations();
-        return { approved, ok: true };
-      }
-      if (evs.length && evs[evs.length - 1].type === 'session.status_idle') {
-        await waitForSessionEventReceipt(
-          client,
-          sid,
-          lastReceipt.id,
-          BETAS,
-          () => true,
-          `resource nudge ${attempt + 1} to settle`,
-          { timeoutMs: 120_000, pollMs: 500 },
-        );
-        await waitForConfirmations();
-        break; // idle without success → nudge
+      sessionId: sid,
+      taskReceiptId: taskReceipt.id,
+      betas: BETAS,
+      description: `resource turn ${JSON.stringify(prompt)}`,
+      timeoutMs: 120_000,
+      maxBoundaries: 20,
+    });
+    const receiptIndex = events.findIndex((event) => event.id === taskReceipt.id);
+    assert.notEqual(receiptIndex, -1, 'S1-S3 terminal history retains its task receipt');
+    for (const event of events.slice(receiptIndex + 1)) {
+      if (event.type === 'user.tool_confirmation' && event.result === 'allow') {
+        approved.add(event.tool_use_id);
       }
     }
+    if (await check(events)) return { approved, ok: true, events };
   }
-  const finalEvents = await listEvents(client, sid);
-  const ok = await check(finalEvents);
-  if (ok && lastReceipt) {
-    await waitForSessionEventReceipt(
-      client,
-      sid,
-      lastReceipt.id,
-      BETAS,
-      ({ events }) => check(events),
-      'final resource turn receipt',
-      { timeoutMs: 120_000, pollMs: 500 },
-    );
-    await waitForConfirmations();
-  }
-  return { approved, ok };
+  return { approved, ok: false, events };
 }
 
 async function main() {
@@ -285,18 +183,30 @@ async function main() {
       const sessionA = await client.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
-        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
+        resources: [{ type: 'memory_store', memory_store_id: mem.id }],
         betas: BETAS,
       });
+      // Memory path decision rule: C1 the official id-only input names this
+      // exact Store; E1 Session create returns the catalog-owned frozen mount.
+      // The live prompt consumes E1 and never reimplements display-name slugging.
+      const memoryResource = sessionA.resources.find(
+        (resource) => resource.type === 'memory_store' && resource.memory_store_id === mem.id,
+      );
+      assert.equal(
+        typeof memoryResource?.mount_path,
+        'string',
+        'Session create returns the exact catalog-derived MemoryStore mount',
+      );
+      const memoryNotePath = `${memoryResource.mount_path}/note.md`;
       let memContent = '';
       const memoryWriteStarted = performance.now();
       const memWrite = await driveUntil(
         client,
         sessionA.id,
-        `Your sandbox has a memory directory mounted at /mnt/memory. ` +
-          `Using your write tool, write exactly /mnt/memory/note.md so ` +
+        `Your sandbox has a persistent memory directory mounted at ${memoryResource.mount_path}. ` +
+          `Using your write tool, write exactly ${memoryNotePath} so ` +
           `its entire contents become: ${MEMTOKEN}. Do not create any other file and do ` +
-          `not use an absolute path. Reply with "saved" when done.`,
+          `not write anywhere else. Reply with "saved" when done.`,
         async () => {
           // The Memory API is a read-only observation here. The governed mount
           // writes through to the same repository; Files GET has no hidden write edge.
@@ -311,7 +221,7 @@ async function main() {
         { nudgeText: `Use the write tool to save the exact text ${MEMTOKEN} into your persistent memory file.` },
       );
       assert.ok(memWrite.approved.size > 0, 'the memory write should have awaiting for a confirmation');
-      const writerEvents = await listEvents(client, sessionA.id);
+      const writerEvents = memWrite.events;
       if (!memWrite.ok) {
         console.error('Memory writer events:', JSON.stringify(writerEvents.map((event) => ({
           type: event.type,
@@ -329,7 +239,7 @@ async function main() {
       const sessionB = await client.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
-        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
+        resources: [{ type: 'memory_store', memory_store_id: mem.id }],
         betas: BETAS,
       });
       const memoryReadStarted = performance.now();
@@ -345,7 +255,7 @@ async function main() {
       const memoryReadLatency = performance.now() - memoryReadStarted;
       pass(`new session read the persisted memory note back: ${MEMTOKEN}`);
 
-      const readerEvents = await listEvents(client, sessionB.id);
+      const readerEvents = memRead.events;
       const quality = taggedFactMetrics({ expected: [MEMTOKEN], text: assistantText(readerEvents) });
       const usage = aggregateUsage([...writerEvents, ...readerEvents]);
       emitEvaluation(makeEvaluation({

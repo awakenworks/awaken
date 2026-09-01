@@ -1895,7 +1895,6 @@ impl core::default::Default for awaken_protocol_managed::ManagedRateLimits
 pub fn awaken_protocol_managed::ManagedRateLimits::default() -> Self
 pub struct awaken_protocol_managed::ManagedState
 impl awaken_protocol_managed::ManagedState
-pub async fn awaken_protocol_managed::ManagedState::accept_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::archive_session(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::check_bind(&self, &str, &awaken_protocol_managed::types::SessionCreateParams) -> core::result::Result<(), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::create_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
@@ -1907,9 +1906,6 @@ pub async fn awaken_protocol_managed::ManagedState::list_sessions_scoped_durable
 pub fn awaken_protocol_managed::ManagedState::owner_scope(&self, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_protocol_managed::ManagedState::resolve_owner(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::session_revision(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::repository_port::SessionRevision, awaken_protocol_managed::StateError>
-impl awaken_protocol_managed::ManagedState
-pub async fn awaken_protocol_managed::ManagedState::accept_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::create_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::archive_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::get_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
@@ -1925,6 +1921,8 @@ pub fn awaken_protocol_managed::ManagedState::list_resources(&self, &str) -> cor
 pub async fn awaken_protocol_managed::ManagedState::reconcile_resource_activations(&self) -> usize
 pub async fn awaken_protocol_managed::ManagedState::replace_resource_manifest(&self, &str, awaken_protocol_managed::types::resource::ResourceManifestReplaceParams, core::option::Option<alloc::string::String>, core::option::Option<u64>, alloc::string::String) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResourceManifest, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::update_resource(&self, &str, &str, awaken_protocol_managed::types::resource::ResourceUpdateParams) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
+impl awaken_protocol_managed::ManagedState
+pub async fn awaken_protocol_managed::ManagedState::create_session_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::environment_execution(&self) -> alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>
 pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<awaken_session_application::SessionApplication>, alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> Self

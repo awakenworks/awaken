@@ -21,19 +21,21 @@ export AWAKEN_K8S_FIXTURE_IMAGE="$FIXTURE_IMAGE"
 SESSION_IMAGE="${AWAKEN_K8S_SESSION_IMAGE:-awaken-sandbox:local}"
 export AWAKEN_K8S_SESSION_IMAGE="$SESSION_IMAGE"
 KUBECONFIG_FILE="$(mktemp)"
+export KUBECONFIG="$KUBECONFIG_FILE"
 FIXTURE_CONTAINER="awaken-bb-tmp-$$"
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
 cleanup() {
   docker rm -f "$FIXTURE_CONTAINER" >/dev/null 2>&1 || true
-  rm -f "$KUBECONFIG_FILE"
-  if [ "${AWAKEN_K8S_KEEP:-0}" != "1" ]; then
+  if [ "${AWAKEN_K8S_KEEP:-0}" = "1" ]; then
+    log "retaining cluster ${CLUSTER} and kubeconfig ${KUBECONFIG_FILE}"
+  else
     log "deleting cluster ${CLUSTER}"
-    k3d_delete_cluster "$CLUSTER"
+    k3d_delete_cluster_and_remove "$CLUSTER" "$KUBECONFIG_FILE"
   fi
 }
-trap cleanup EXIT
+k3d_install_exit_cleanup cleanup
 
 k3d_admit_or_exit "Kubernetes container E2E" 1
 
@@ -54,7 +56,6 @@ docker rm -f "$FIXTURE_CONTAINER" >/dev/null
 log "creating k3d cluster ${CLUSTER}"
 k3d_create_cluster "$CLUSTER" 0 2
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
-export KUBECONFIG="$KUBECONFIG_FILE"
 if [ "$(uname -s)" = "Darwin" ]; then
   # k3d may emit host.docker.internal on Docker Desktop. That address is for
   # containers reaching the host and can time out when kubectl itself runs on

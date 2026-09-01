@@ -230,7 +230,6 @@ async function main() {
       resources: [{
         type: 'memory_store',
         memory_store_id: memory.id,
-        mount_path: '/workspace/catalog-memory',
       }],
       betas: [MANAGED_BETA],
     });
@@ -321,7 +320,6 @@ async function main() {
         resources: [{
           type: 'memory_store',
           memory_store_id: memory.id,
-          mount_path: '/workspace/memory',
         }],
         betas: [MANAGED_BETA],
       }),

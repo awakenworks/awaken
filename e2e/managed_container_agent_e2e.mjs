@@ -34,6 +34,8 @@ import { cargoExecutable } from './cargo_binary.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
+const MEMORY_STORE_NAME = 'container-agent-memory';
+const MEMORY_MOUNT_PATH = `/mnt/memory/${MEMORY_STORE_NAME}`;
 const MARKER = 'CONTAINER-AGENT-OK';
 const ENGINE = process.env.AWAKEN_E2E_CONTAINER_ENGINE ?? 'docker';
 assert.ok(['docker', 'podman'].includes(ENGINE), `unsupported container engine ${ENGINE}`);
@@ -650,7 +652,7 @@ async function main() {
     // M1 is observed by the in-container seed assertion; M2 by the post-delete
     // repository assertion. The delete boundary between them excludes M3.
     const memory = await client.post('/v1/memory_stores', {
-      body: { name: 'container-agent-memory' },
+      body: { name: MEMORY_STORE_NAME },
       headers: MEMORY_HEADERS,
     });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
@@ -668,11 +670,16 @@ async function main() {
       environment_id: 'env_local',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/input.txt' },
-        { type: 'memory_store', memory_store_id: memory.id, mount_path: '/notes' },
+        { type: 'memory_store', memory_store_id: memory.id },
         { type: 'github_repository', url: skillRepository, mount_path: '/workspace/skills' },
       ],
       betas: BETAS,
     });
+    assert.equal(
+      session.resources.find((resource) => resource.type === 'memory_store')?.mount_path,
+      MEMORY_MOUNT_PATH,
+      'the MemoryStore catalog name owns the frozen container mount path',
+    );
     // Main container Run rule: C1 Session owns File+Memory+Repository+Skill;
     // C2 exact User receipt is admitted; C3 ACP container commits MARKER after
     // C2. Effects: one later Agent message and one shared Session container.
@@ -739,7 +746,7 @@ async function main() {
     ]);
     const memorySeed = spawnSync(
       ENGINE,
-      ['exec', container, 'cat', '/mnt/notes/seed.txt'],
+      ['exec', container, 'cat', `${MEMORY_MOUNT_PATH}/seed.txt`],
       { encoding: 'utf8' },
     );
     const workspaceFiles = memorySeed.status === 0
@@ -868,7 +875,7 @@ async function main() {
       container,
       'sh',
       '-c',
-      'printf %s CONTAINER-MEMORY-OK > /mnt/notes/container.txt',
+      `printf %s CONTAINER-MEMORY-OK > ${MEMORY_MOUNT_PATH}/container.txt`,
     ]);
     // Copy-backed MemoryRepository mounts reconcile only at the Session's terminal
     // release edge. Read-only resource APIs must never acquire this write side effect.

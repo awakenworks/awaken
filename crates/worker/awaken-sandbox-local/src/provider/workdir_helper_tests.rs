@@ -37,6 +37,130 @@ fn git(cwd: &std::path::Path, args: &[&str]) {
     assert!(ok, "git {args:?}");
 }
 
+struct FailedCreationMount {
+    teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Drop for FailedCreationMount {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl pc::MemoryMount for FailedCreationMount {
+    fn realization(&self) -> pc::Realization {
+        pc::Realization::Fuse
+    }
+
+    async fn teardown(&self) -> Result<(), pc::SandboxError> {
+        self.teardowns
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(pc::SandboxError::new("injected teardown failure"))
+    }
+}
+
+struct FailedCreationMounter {
+    mount_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl pc::MemoryMounter for FailedCreationMounter {
+    async fn mount(
+        &self,
+        _store_id: &str,
+        host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
+        let call = self
+            .mount_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call == 1 {
+            return Err(pc::SandboxError::new("injected later mount failure"));
+        }
+        if call != 0 {
+            return Err(pc::SandboxError::new(format!(
+                "unexpected Memory mount call {call}"
+            )));
+        }
+        std::fs::create_dir_all(host_path)
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        Ok(Box::new(FailedCreationMount {
+            teardowns: self.teardowns.clone(),
+            drops: self.drops.clone(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
+    // Ownerless-rollback decision row: C1 Memory mount succeeds; C2 a later
+    // frozen mount fails; C3 Memory teardown fails. R1 C1+C2 invokes teardown;
+    // R2 C3 transfers the complete guard set out of the temporary LocalSandbox
+    // and retains it for process lifetime, so returning Err and dropping that
+    // wrapper cannot call MemoryMount::drop on the still-live participant.
+    let tmp = tempfile::tempdir().unwrap();
+    let mount_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let teardowns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = LocalProvider::new(tmp.path()).with_memory_mounter(std::sync::Arc::new(
+        FailedCreationMounter {
+            mount_calls: mount_calls.clone(),
+            teardowns: teardowns.clone(),
+            drops: drops.clone(),
+        },
+    ));
+    let mut spec = workdir_spec("failed-creation-memory-retention", false);
+    spec.mounts = vec![
+        pc::MountRequirement {
+            mount_id: "memory".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "store".into(),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/mnt/memory/test".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        },
+        pc::MountRequirement {
+            mount_id: "later-memory".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "later-store".into(),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/mnt/memory/later".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        },
+    ];
+    let effect = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+    assert!(
+        provider
+            .create_sandbox_for_effect(&spec, &effect, None)
+            .await
+            .is_err(),
+        "R1"
+    );
+    assert_eq!(
+        mount_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "C1+C2"
+    );
+    assert_eq!(teardowns.load(std::sync::atomic::Ordering::SeqCst), 1, "R1");
+    assert_eq!(
+        drops.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "R2 temporary Sandbox already left scope"
+    );
+}
+
 #[tokio::test]
 async fn ready_create_replay_projects_the_receipt_without_rematerializing() {
     // Create-replay cause/effect table: C1 marker is Creating/Ready; C2
@@ -745,6 +869,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     assert!(
         provider
             .prepare_terminal_sandbox_for_effect(&spec, Some(&missing), None, &terminal,)
+            .await
             .is_err(),
         "M2 missing evidence"
     );
@@ -761,6 +886,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         .unwrap();
     let cold = provider
         .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .await
         .unwrap()
         .expect("M1");
     assert!(cold.memory_mounts.lock().await.is_empty(), "M1/M3");
@@ -790,6 +916,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
     assert!(root.is_dir(), "M3 root retained");
     let replay = provider
         .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .await
         .unwrap()
         .expect("M3 exact replay");
     let stale = pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, 0).unwrap();
@@ -993,6 +1120,7 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
     let handle = pc::Sandbox::handle(&sandbox);
     let terminal_sandbox = provider
         .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .await
         .unwrap()
         .expect("R1 Removing participant");
     let store = CheckpointStore::default();
@@ -1145,6 +1273,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     drop(source);
     let terminal_sandbox = provider
         .prepare_terminal_sandbox_for_effect(&spec, Some(&source_handle), None, &terminal)
+        .await
         .expect("T1 terminal prepare")
         .expect("T1 exact terminal participant");
     terminal_sandbox

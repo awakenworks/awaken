@@ -32,6 +32,7 @@ impl awaken_control::admin_assistant::ConfigServiceDraftValidator
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>) -> Self
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::request_scoped(awaken_config_service::config_plane::ConfigPlane) -> Self
 impl awaken_admin_assistant::DraftValidator for awaken_control::admin_assistant::ConfigServiceDraftValidator
+pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::runtime_agent_override_ids<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::collections::btree::set::BTreeSet<alloc::string::String>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::validate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_control::admin_assistant::HostResourceInventory
 impl awaken_control::admin_assistant::HostResourceInventory
@@ -192,6 +193,7 @@ impl awaken_control::admin_assistant::ConfigServiceDraftValidator
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>) -> Self
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::request_scoped(awaken_config_service::config_plane::ConfigPlane) -> Self
 impl awaken_admin_assistant::DraftValidator for awaken_control::admin_assistant::ConfigServiceDraftValidator
+pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::runtime_agent_override_ids<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::collections::btree::set::BTreeSet<alloc::string::String>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::validate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_control::ControlComponent
 pub awaken_control::ControlComponent::admin_tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>

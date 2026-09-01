@@ -221,7 +221,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("acp-managed-mcp") => awaken_scenario_host::build_acp_managed_mcp_router().await,
         Ok("acp-real-mcp") => awaken_scenario_host::build_acp_real_mcp_router().await,
         Ok("memory") => {
-            let (router, lifecycle) = awaken_scenario_host::build_memory_service();
+            let (router, lifecycle) = awaken_scenario_host::build_memory_service().await;
             scenario_lifecycle = Some(lifecycle);
             router
         }
@@ -481,7 +481,7 @@ mod dispatch_tests {
                 sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
             ),
             ("acp-gateway", sh::build_acp_gateway_router()),
-            ("memory", sh::build_memory_router()),
+            ("memory", sh::build_memory_router().await),
             ("memory-resource", sh::build_memory_resource_router()),
             (
                 "git-repo",

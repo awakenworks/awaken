@@ -351,15 +351,19 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
       agent,
       environment_id: "env_local",
       title: "files-e2e",
-      resources: [{ type: "memory_store", memory_store_id: storeId, mount_path: "/mnt/memory/notes" }],
+      resources: [{ type: "memory_store", memory_store_id: storeId }],
     },
   });
   expect(sessionResponse.ok(), await sessionResponse.text()).toBe(true);
-  const sid = ((await sessionResponse.json()).id) as string;
+  const session = await sessionResponse.json();
+  const sid = session.id as string;
+  const derivedMountPath = session.resources[0]?.mount_path as string;
+  expect(derivedMountPath).toBe(`/mnt/memory/${store}`);
 
   // Resource projection decision table: create+no Worker effect leaves the
-  // generation Prepared and must not label it mounted; a successful claimed run
-  // activates the exact frozen generation, after which Inputs shows mount/id.
+  // id-only Memory input at the catalog-derived path and must not label it
+  // mounted; a successful claimed run activates the exact frozen generation,
+  // after which Inputs and resource retrieval preserve that returned path/id.
   // Artifacts remain independently empty until output bytes are published.
   const run = await request.post(await workspaceApiPath(request, `/v1/sessions/${sid}/events`), {
     headers: MANAGED_HEADERS,
@@ -369,7 +373,7 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
 
   await page.goto(`/w/default/sessions/${sid}`);
   await page.getByRole("button", { name: "Inputs", exact: true }).click();
-  await expect(page.getByText("/mnt/memory/notes")).toBeVisible(); // mounted resource path
+  await expect(page.getByText(derivedMountPath)).toBeVisible(); // mounted resource path
   await expect(page.getByRole("main").getByText("Memory", { exact: true })).toBeVisible();
   const resourcesResponse = await request.get(await workspaceApiPath(request, `/v1/sessions/${sid}/resources`), {
     headers: MANAGED_HEADERS,
@@ -379,7 +383,7 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
   expect(resources.data).toContainEqual(expect.objectContaining({
     type: "memory_store",
     memory_store_id: storeId,
-    mount_path: "/mnt/memory/notes",
+    mount_path: derivedMountPath,
   }));
   await expect(page.getByText(/stay the same for the life|本次 Session 中保持不变/)).toBeVisible();
   await page.locator(".segmented").getByRole("button", { name: "Artifacts", exact: true }).click();

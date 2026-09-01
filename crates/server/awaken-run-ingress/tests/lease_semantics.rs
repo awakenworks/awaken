@@ -11,9 +11,9 @@
 //!    settles Done without re-executing (committed truth is authority);
 //! 4. lease renewal keeps a slow-but-alive owner from being stolen across many
 //!    lease periods (the exact fence that stops a fleet double-drive); and
-//! 5. a run reclaimed while a non-recoverable tool is genuinely in flight does
-//!    NOT replay the tool: its committed Executing phase becomes an Indeterminate
-//!    result, while the stale owner's late commit remains fenced.
+//! 5. a run reclaimed after a process-bound non-recoverable tool has quiesced
+//!    does NOT replay the tool: its committed Executing phase becomes an
+//!    Indeterminate result, while the stale owner's mutation remains fenced.
 //! 6. a reclaimed opaque ACP Run is terminally Indeterminate and its prompt is
 //!    never sent again without an official idempotent receipt.
 
@@ -614,16 +614,19 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
     );
 }
 
-// --- 5. Mid-flight reclaim — the committed LOG stays exactly-once ------------
+// --- 5. Reclaim after quiescence — the committed LOG stays exactly-once ------
 
 #[tokio::test]
-async fn mid_flight_reclaim_applies_never_replay_policy() {
+async fn reclaim_after_process_bound_attempt_quiesces_applies_never_replay_policy() {
     // Test design. Causes: C1 owner A commits tool Executing then blocks; C2 its
-    // lease expires; C3 owner B recovers. Effects: E1 B emits Indeterminate for
-    // the NeverReplay tool; E2 it never enters the external effect twice; E3 one
-    // terminal log wins while A's late write is fenced. Constraint/Invariant:
-    // durable tool phase selects replay policy before any recovered effect.
-    // Decision rule: execute C1+C2+C3 under contention and require E1-E3.
+    // lease expires and B takes the mutation claim; C3 A's owned executor Future
+    // cooperatively returns after the release gate opens; C4 A's later commit is
+    // fenced. Effects: E1 before C3, B remains physically blocked and no second
+    // external effect enters; E2 after C3, `run_physical_attempt` records the one
+    // exact quiescence ACK and B applies NeverReplay; E3 one terminal log
+    // survives. Constraints: lease expiry is not quiescence, and abort/drop is
+    // covered separately by RG10 as a permanently occupied slot. Decision rules:
+    // R1=C1+C2+!C3 -> E1; R2=C1+C2+C3+C4 -> E2+E3.
     // Owner A commits Requested -> Executing before entering the blocking tool.
     // When its lease lapses, owner B recovers that durable phase. The descriptor's
     // conservative default is NeverReplay, so B publishes an Indeterminate tool
@@ -639,15 +642,22 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
         .await
         .unwrap();
 
-    // Owner A drives in the background; it will block inside the tool after
-    // committing the run's first `Running` step.
+    // Owner A claims explicitly and drives in the background. The only code
+    // allowed to acknowledge its physical return is the production
+    // `run_physical_attempt` scope around that drive.
+    let claimed_a = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .expect("A claim query")
+        .expect("A claims");
+    let claim_a = RunClaim::from(&claimed_a.lease);
     let worker_a = Arc::new(
         DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "owner-a")
             .with_lease_ms(LEASE),
     );
     let a_handle = {
         let worker_a = worker_a.clone();
-        tokio::spawn(async move { worker_a.tick(harness::clock(0)).await })
+        tokio::spawn(async move { worker_a.drive_claimed(claimed_a, harness::clock(0)).await })
     };
 
     // Wait until A is frozen inside the tool (its first invocation).
@@ -672,34 +682,67 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
         "and there is no awaiting ticket — the reclaim hits the no-ticket branch"
     );
 
-    // B's lease-expired reclaim drives the same Run to completion without replay.
+    // B may take the expired mutation claim, but its production drive must wait
+    // at physical admission while A's executor Future is still blocked.
+    let replacement = store
+        .claim("owner-b", LEASE, LEASE + 1, &Default::default())
+        .await
+        .expect("C2 B claim query")
+        .expect("C2 B replacement claim");
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .await
+            .expect("R1 B physical admission"),
+        AttemptAdmission::Blocked,
+        "R1/E1 B's exact durable attempt remains blocked before A returns"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "R1/E1 replacement admission cannot enter a second external effect"
+    );
+
+    // Opening the gate makes A's owned executor Future return normally. The
+    // production scope records quiescence before its stale commit is fenced;
+    // only then may B recover the same Run without replay.
+    release.add_permits(1);
+    let a_error = tokio::time::timeout(Duration::from_secs(5), a_handle)
+        .await
+        .expect("C3 A's background task joins")
+        .expect("C3 A's task does not panic")
+        .expect_err("C4 A's stale commit is fenced");
+    assert!(
+        a_error.to_string().contains("superseded")
+            && a_error.to_string().contains("no longer holds lease epoch"),
+        "C4 stale commit has the exact authority-loss cause: {a_error}"
+    );
+    assert!(
+        !store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "R2/E2 production return recorded A's exact physical quiescence"
+    );
     let worker_b =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
-    let processed = worker_b.tick(harness::clock(LEASE + 1)).await.unwrap();
+    let processed = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker_b.drive_claimed(replacement, harness::clock(LEASE + 1)),
+    )
+    .await
+    .expect("R2 replacement unblocks")
+    .expect("R2 replacement drive succeeds");
     assert_eq!(
         processed,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
         "B reclaimed the still-running run and drove it to completion"
     );
 
-    // Release A so it unwinds. Its re-drive re-runs the tool, then tries to commit
-    // a duplicate transcript over the now-terminal run — terminal-is-final REJECTS
-    // that commit, and the worker absorbs it as an already-done settle. That settle
-    // now carries A's STALE lease epoch, so the dispatch fence rejects it too: B
-    // already settled the run under a higher epoch and removed the row. A's tick
-    // therefore returns the explicit fenced commit error — it durably settled
-    // nothing, because B won the lease. This is the fence doing its job: the
-    // stale owner cannot re-settle behind the reclaimer.
-    release.add_permits(1);
-    let a_error = tokio::time::timeout(Duration::from_secs(5), a_handle)
-        .await
-        .expect("A's background task joined")
-        .expect("A's task did not panic")
-        .expect_err("E3 stale owner must surface its fenced commit");
-    assert!(
-        a_error.to_string().contains("superseded")
-            && a_error.to_string().contains("no longer holds lease epoch"),
-        "E3 stale commit has the exact authority-loss cause: {a_error}"
+    assert_eq!(
+        store
+            .settle(&run, claim_a.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("stale settle query"),
+        awaken_run_ingress::SettleOutcome::Fenced,
+        "E3 the stale predecessor cannot mutate the completed dispatch"
     );
 
     // The policy guarantee: the unknown external side effect is not repeated.
@@ -709,8 +752,8 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
         "NeverReplay prevents a second external invocation"
     );
 
-    // The committed log is also exactly-once. Despite A's fenced late commit, the
-    // run has exactly ONE terminal `Ended` fact and the
+    // The committed log is also exactly-once. The recovered run has exactly ONE
+    // terminal `Ended` fact and the
     // transcript carries exactly ONE final "all done" assistant message.
     let committed = commit.committed();
     let ended_facts = committed
@@ -720,7 +763,7 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
         .count();
     assert_eq!(
         ended_facts, 1,
-        "exactly one terminal Ended fact — the stale owner's second Ended was fenced"
+        "recovery produced exactly one terminal Ended fact"
     );
     let all_done = committed
         .messages

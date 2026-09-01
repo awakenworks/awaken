@@ -383,6 +383,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     .unwrap();
     let cold = provider
         .prepare_terminal_sandbox_for_effect(&spec, Some(&handle), None, &terminal)
+        .await
         .unwrap()
         .expect("N1");
     assert!(cold.memory_mounts.lock().await.is_empty(), "N1");

@@ -24,7 +24,7 @@ ok() { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
 
 cleanup() {
-  local status=$?
+  local status="$1"
   [ -z "$WORKER_TLS_DIR" ] || rm -rf -- "$WORKER_TLS_DIR"
   if [ "$status" -ne 0 ] && [ "${ADR71_KEEP_FAILED_CLUSTER:-0}" = "1" ]; then
     err "retaining failed k3d cluster $CLUSTER for diagnostics"
@@ -33,12 +33,16 @@ cleanup() {
   [ -z "$STOPPED_NODE" ] || docker start "$STOPPED_NODE" >/dev/null 2>&1 || true
   [ -z "$API_PF" ] || kill "$API_PF" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster "$CLUSTER"
-  rm -f "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-worker"
+  k3d_delete_cluster_and_remove \
+    "$CLUSTER" \
+    "$DEPLOY_DIR/awaken-control" \
+    "$DEPLOY_DIR/awaken-coordinator" \
+    "$DEPLOY_DIR/awaken-server" \
+    "$DEPLOY_DIR/awaken-worker"
 }
-trap cleanup EXIT
 
 k3d_admit_or_exit "ADR-0071 distributed E2E"
+k3d_install_exit_cleanup cleanup
 
 start_public_endpoint() {
   if [ -n "$API_PF" ]; then

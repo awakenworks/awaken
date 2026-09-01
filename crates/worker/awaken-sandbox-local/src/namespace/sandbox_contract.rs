@@ -108,8 +108,13 @@ impl pc::Sandbox for NamespaceSandbox {
         }
         let host = host_projection_path(&self.root, &self.host_workspace, &req.mount_path)?;
         let mut acquired_mounts = Vec::new();
-        let memory =
-            realize_memory_mount(&self.memory_mounter, &req, &host, &mut acquired_mounts).await;
+        let memory = crate::mount_memory_requirement(
+            &self.memory_mounter,
+            &req,
+            &host,
+            &mut acquired_mounts,
+        )
+        .await;
         let memory = match memory {
             Ok(memory) => memory,
             Err(cause) => {
@@ -117,7 +122,13 @@ impl pc::Sandbox for NamespaceSandbox {
                 return Err(cause);
             }
         };
-        if let Some((rendered, realized, materialization)) = memory {
+        if let Some((realized, materialization)) = memory {
+            let rendered = RenderMount {
+                host,
+                dest: req.mount_path.clone(),
+                read_only: req.access == pc::MountAccess::ReadOnly,
+                boundary: RenderMountBoundary::ManagedMemoryStore,
+            };
             // Publish the guard and its evidence under the same lock order used
             // by reconciliation acknowledgement, so no snapshot can drain an
             // unrepresented Copy participant.

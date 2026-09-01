@@ -10,6 +10,7 @@
 set -euo pipefail
 
 K3D_PLATFORM="${AWAKEN_K3D_PLATFORM:-linux/amd64}"
+K3D_EXIT_CLEANUP_FUNCTION=""
 
 k3d_validate_name() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]
@@ -65,7 +66,128 @@ k3d_delete_cluster() {
     echo "invalid k3d cluster name: $cluster" >&2
     return 2
   }
-  k3d cluster delete "$cluster" >/dev/null 2>&1 || true
+  command -v k3d >/dev/null 2>&1 || {
+    echo "cannot delete or verify k3d cluster $cluster: k3d is unavailable" >&2
+    return 1
+  }
+  local delete_status=0
+  k3d cluster delete "$cluster" >/dev/null 2>&1 || delete_status=$?
+  local observation_status=0
+  k3d_cluster_residue "$cluster" || observation_status=$?
+  case "$observation_status" in
+    0)
+      echo "k3d cluster cleanup left exact residue for $cluster (delete status $delete_status)" >&2
+      return 1
+      ;;
+    1) ;;
+    *)
+      echo "cannot verify k3d cluster cleanup for $cluster (delete status $delete_status)" >&2
+      return 1
+      ;;
+  esac
+  # `cluster delete` is not uniformly idempotent across k3d versions. Durable
+  # absence, not an error emitted for an already-absent cluster, is authoritative.
+  return 0
+}
+
+# Delete one exact cluster and remove its caller-owned local artifacts even when
+# the cluster postcondition fails. The cluster failure remains the return value:
+# local cleanup must not hide infrastructure residue, and `set -e` must not leave
+# copied binaries or an anonymous kubeconfig merely because that residue exists.
+k3d_delete_cluster_and_remove() {
+  local cluster="$1"
+  shift
+  local cluster_status=0 remove_status=0
+  k3d_delete_cluster "$cluster" || cluster_status=$?
+  if (( $# > 0 )); then
+    rm -f -- "$@" || remove_status=$?
+  fi
+  if (( cluster_status != 0 )); then
+    return "$cluster_status"
+  fi
+  return "$remove_status"
+}
+
+# Install one process-level EXIT owner around a scenario cleanup function. Bash
+# otherwise preserves the scenario body's successful status when an EXIT trap
+# merely returns non-zero, which can turn exact cluster residue into a false
+# green. The cleanup receives the body status as its sole argument; cleanup
+# failure takes precedence, while successful cleanup preserves the body status.
+k3d_install_exit_cleanup() {
+  local cleanup_function="${1:-}"
+  [[ "$cleanup_function" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] \
+    && declare -F "$cleanup_function" >/dev/null || {
+    echo "invalid k3d EXIT cleanup function: $cleanup_function" >&2
+    return 2
+  }
+  K3D_EXIT_CLEANUP_FUNCTION="$cleanup_function"
+  trap 'k3d_run_exit_cleanup "$?"' EXIT
+}
+
+k3d_run_exit_cleanup() {
+  local body_status="$1" cleanup_status=0
+  trap - EXIT
+  "$K3D_EXIT_CLEANUP_FUNCTION" "$body_status" || cleanup_status=$?
+  if (( cleanup_status != 0 )); then
+    exit "$cleanup_status"
+  fi
+  exit "$body_status"
+}
+
+# Observe only exact resources owned by one validated cluster name. This is the
+# postcondition for both pre-create cleanup and trap cleanup; it never prunes or
+# mutates unrelated Docker/Kubernetes state. Return 0 when any residue exists,
+# 1 only when every owner confirms absence, and 2 when an owner cannot be read.
+k3d_cluster_residue() {
+  local cluster="$1" context="k3d-$1" network="k3d-$1"
+  local images_volume="k3d-$1-images" observed
+  command -v k3d >/dev/null 2>&1 \
+    && command -v docker >/dev/null 2>&1 \
+    && command -v kubectl >/dev/null 2>&1 || return 2
+
+  # Exact-name queries use a non-zero exit both for "absent" and for observer
+  # failure in k3d/kubectl. Read each owner once without a name filter, then
+  # distinguish confirmed absence from a failed owner read ourselves.
+  if ! observed=$(k3d cluster list --no-headers 2>/dev/null); then
+    return 2
+  fi
+  if awk -v expected="$cluster" '$1 == expected { found = 1 } END { exit !found }' \
+    <<<"$observed"; then
+    return 0
+  fi
+
+  if ! observed=$(docker network ls --filter "name=^${network}$" --format '{{.Name}}' 2>/dev/null); then
+    return 2
+  fi
+  if awk -v expected="$network" '$0 == expected { found = 1 } END { exit !found }' \
+    <<<"$observed"; then
+    return 0
+  fi
+
+  if ! observed=$(docker ps -a --filter "name=^k3d-${cluster}-" --format '{{.Names}}' 2>/dev/null); then
+    return 2
+  fi
+  if awk -v prefix="k3d-${cluster}-" 'index($0, prefix) == 1 { found = 1 } END { exit !found }' \
+    <<<"$observed"; then
+    return 0
+  fi
+
+  if ! observed=$(docker volume ls --filter "name=^${images_volume}$" --format '{{.Name}}' 2>/dev/null); then
+    return 2
+  fi
+  if awk -v expected="$images_volume" '$0 == expected { found = 1 } END { exit !found }' \
+    <<<"$observed"; then
+    return 0
+  fi
+
+  if ! observed=$(kubectl config get-contexts --no-headers 2>/dev/null); then
+    return 2
+  fi
+  if awk -v expected="$context" '$1 == expected || $2 == expected { found = 1 } END { exit !found }' \
+    <<<"$observed"; then
+    return 0
+  fi
+  return 1
 }
 
 # k3d_create_cluster <name> <agent-count> [eviction-percent] [registry-coordinate]
@@ -239,10 +361,50 @@ k3d_harness_selftest() (
   # H10 tools unavailable + optional mode -> successful explicit skip; H11 tools
   # unavailable + strict mode -> failure; H12 malformed strictness -> configuration
   # failure; H13 no build-network override -> Docker's default build network;
-  # H14 explicit override -> exactly one typed Docker build network option.
+  # H14 explicit override -> exactly one typed Docker build network option;
+  # H15 each cluster-owned resource independently makes deletion fail until it
+  # is absent; H16 an already-absent cluster remains idempotent even when that
+  # k3d version returns a non-zero delete status; H17 an observation error is
+  # never interpreted as absence; H18 cluster cleanup failure still removes
+  # caller-owned local artifacts while preserving the failure; H19-H22 compose
+  # body and cleanup status through a real EXIT trap as follows.
+  #
+  # | Rule | body status | exact cleanup | Effect |
+  # | H19  | success     | residue       | cleanup failure |
+  # | H20  | success     | absent        | success |
+  # | H21  | failure     | absent        | original body failure |
+  # | H22  | failure     | residue       | cleanup failure takes precedence |
   # The scenario tests own network and topology effects.
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=()
-  k3d() { k3d_calls+=("$*"); }
+  local delete_fails=0 observation_error="" residue=""
+  k3d() {
+    k3d_calls+=("$*")
+    if [[ "$1 $2" = "cluster delete" && "$delete_fails" = "1" ]]; then
+      return 1
+    fi
+    if [[ "$1 $2" = "cluster list" ]]; then
+      [[ "$observation_error" != "k3d" ]] || return 1
+      [[ "$residue" != "cluster" ]] || printf '%s\n' 'awaken-test 1/1 0/0 true'
+    fi
+  }
+  docker() {
+    if [[ "$1 $2" = "network ls" ]]; then
+      [[ "$observation_error" != "docker" ]] || return 1
+      [[ "$residue" != "network" ]] || printf '%s\n' 'k3d-awaken-test'
+    elif [[ "$1" = "ps" ]]; then
+      [[ "$observation_error" != "docker" ]] || return 1
+      [[ "$residue" != "container" ]] || printf '%s\n' 'k3d-awaken-test-server-0'
+    elif [[ "$1 $2" = "volume ls" ]]; then
+      [[ "$observation_error" != "docker" ]] || return 1
+      [[ "$residue" != "volume" ]] || printf '%s\n' 'k3d-awaken-test-images'
+    fi
+  }
+  kubectl() {
+    if [[ "$1 $2" = "config get-contexts" ]]; then
+      [[ "$observation_error" != "kubectl" ]] || return 1
+      [[ "$residue" != "context" ]] || printf '%s\n' '  k3d-awaken-test k3d-awaken-test admin@k3d-awaken-test'
+    fi
+  }
 
   k3d_validate_name "awaken-test-1"
   ! k3d_validate_name "--all"
@@ -265,6 +427,69 @@ k3d_harness_selftest() (
   k3d_calls=()
   ! k3d_create_cluster "awaken-test" 1 2 "--all"
   (( ${#k3d_calls[@]} == 0 ))
+  for residue in cluster network container volume context; do
+    ! k3d_delete_cluster "awaken-test"
+  done
+  residue=""
+  delete_fails=1
+  k3d_delete_cluster "awaken-test"
+  delete_fails=0
+  for observation_error in k3d docker kubectl; do
+    ! k3d_delete_cluster "awaken-test"
+  done
+  observation_error=""
+  local cleanup_artifact
+  cleanup_artifact="$(mktemp)"
+  residue="cluster"
+  ! k3d_delete_cluster_and_remove "awaken-test" "$cleanup_artifact"
+  [[ ! -e "$cleanup_artifact" ]]
+  residue=""
+
+  local exit_status
+  set +e
+  (
+    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    residue="cluster"
+    k3d_install_exit_cleanup exit_cleanup
+    true
+  )
+  exit_status=$?
+  set -e
+  [[ "$exit_status" = "1" ]]
+
+  set +e
+  (
+    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    residue=""
+    k3d_install_exit_cleanup exit_cleanup
+    true
+  )
+  exit_status=$?
+  set -e
+  [[ "$exit_status" = "0" ]]
+
+  set +e
+  (
+    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    residue=""
+    k3d_install_exit_cleanup exit_cleanup
+    exit 23
+  )
+  exit_status=$?
+  set -e
+  [[ "$exit_status" = "23" ]]
+
+  set +e
+  (
+    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    residue="cluster"
+    k3d_install_exit_cleanup exit_cleanup
+    exit 23
+  )
+  exit_status=$?
+  set -e
+  [[ "$exit_status" = "1" ]]
+
   ! k3d_start_port_forward "--all" "svc/brain" 38080 3000 /tmp/unused
   ! k3d_start_port_forward "awaken-test" "deployment/brain" 38080 3000 /tmp/unused
   local available_port

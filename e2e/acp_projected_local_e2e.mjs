@@ -41,7 +41,7 @@ import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { waitForSessionEventReceipt } from './harness.mjs';
+import { initializeE2EInstallation, waitForSessionEventReceipt } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38442);
@@ -162,16 +162,18 @@ function start(binary, cli) {
     'sandbox_allow_local_fallback = true',
     `acp_clis = [${JSON.stringify(cli)}]`,
   ].join('\n'));
+  const childEnvironment = {
+    ...environment,
+    PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,
+    // These non-secret ambient values are deliberately wrong. Provider keys
+    // are absent because production rejects them at startup. The launched CLI
+    // must receive only the endpoint, model, and credential published below.
+    GOOGLE_GEMINI_BASE_URL: 'http://ambient-gemini.invalid/v1',
+    GEMINI_MODEL: 'environment-fallback-must-not-win',
+  };
+  initializeE2EInstallation(childEnvironment, { binary, configPath });
   return spawn(binary, automatedAllInOneArgs('--config', configPath), {
-    env: {
-      ...environment,
-      PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,
-      // These non-secret ambient values are deliberately wrong. Provider keys
-      // are absent because production rejects them at startup. The launched CLI
-      // must receive only the endpoint, model, and credential published below.
-      GOOGLE_GEMINI_BASE_URL: 'http://ambient-gemini.invalid/v1',
-      GEMINI_MODEL: 'environment-fallback-must-not-win',
-    },
+    env: childEnvironment,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
 }

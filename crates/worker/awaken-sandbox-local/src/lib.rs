@@ -27,6 +27,13 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use serde_json::Value;
 
+#[path = "namespace/memory_mount.rs"]
+mod memory_mount;
+pub(crate) use memory_mount::{
+    AdoptionMemoryReplay, TerminalMemoryReplay, compensate_memory_mounts, mount_memory_requirement,
+    prepare_adoption_memory_replay, prepare_terminal_memory_replay, replay_memory_mount_guards,
+};
+
 /// Validate and project the one provider-neutral Ready receipt against the
 /// frozen effective spec. Local and Namespace intentionally share this code so
 /// response-loss recovery cannot grow provider-specific reconstruction rules.
@@ -232,6 +239,12 @@ mod memory_mount_release_tests {
         realization: pc::Realization,
     }
 
+    struct ReplayMounter {
+        mount_calls: Arc<AtomicUsize>,
+        teardown_calls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
     impl Drop for CountedMount {
         fn drop(&mut self) {
             self.drops.fetch_add(1, Ordering::SeqCst);
@@ -251,6 +264,26 @@ mod memory_mount_release_tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    #[async_trait]
+    impl pc::MemoryMounter for ReplayMounter {
+        async fn mount(
+            &self,
+            _store_id: &str,
+            host_path: &std::path::Path,
+            _access: pc::MountAccess,
+        ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
+            self.mount_calls.fetch_add(1, Ordering::SeqCst);
+            std::fs::create_dir_all(host_path)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            Ok(Box::new(CountedMount {
+                calls: self.teardown_calls.clone(),
+                drops: self.drops.clone(),
+                fail_first: true,
+                realization: pc::Realization::Fuse,
+            }))
         }
     }
 
@@ -285,6 +318,134 @@ mod memory_mount_release_tests {
         assert!(mounts.lock().await.is_empty(), "R3");
         assert_eq!(successful_calls.load(Ordering::SeqCst), 2, "R2");
         assert_eq!(retry_calls.load(Ordering::SeqCst), 2, "R2");
+    }
+
+    #[tokio::test]
+    async fn temporary_compensation_failure_never_drops_the_only_guard_set() {
+        // Temporary-compensation decision table: C1 every teardown is Ok / at
+        // least one is Err; E1 all-Ok permits normal guard drop; E2 any Err
+        // returns failure and retains the complete ownerless set for process
+        // lifetime. This test owns E2; the retryable Mutex test above owns the
+        // distinct case where a Sandbox still exists to retain and retry E2.
+        let successful_calls = Arc::new(AtomicUsize::new(0));
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let successful_drops = Arc::new(AtomicUsize::new(0));
+        let failed_drops = Arc::new(AtomicUsize::new(0));
+        let mounts: Vec<Box<dyn pc::MemoryMount>> = vec![
+            Box::new(CountedMount {
+                calls: successful_calls.clone(),
+                drops: successful_drops.clone(),
+                fail_first: false,
+                realization: pc::Realization::Fuse,
+            }),
+            Box::new(CountedMount {
+                calls: failed_calls.clone(),
+                drops: failed_drops.clone(),
+                fail_first: true,
+                realization: pc::Realization::Fuse,
+            }),
+        ];
+
+        assert!(super::compensate_memory_mounts(mounts).await.is_err(), "E2");
+        assert_eq!(successful_calls.load(Ordering::SeqCst), 1, "E2 all tried");
+        assert_eq!(
+            failed_calls.load(Ordering::SeqCst),
+            1,
+            "E2 failure observed"
+        );
+        assert_eq!(
+            successful_drops.load(Ordering::SeqCst),
+            0,
+            "E2 full set retained"
+        );
+        assert_eq!(
+            failed_drops.load(Ordering::SeqCst),
+            0,
+            "E2 full set retained"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_revalidates_after_mount_and_retains_failed_compensation() {
+        // Replay decision table: C1 the held lifecycle validator is exact
+        // before mount and remains exact / changes while the external mount is
+        // in flight; C2 compensation succeeds/fails. R1 stable+exact publishes
+        // the guard; R2 post-mount drift rejects and compensates; R3 R2+failed
+        // teardown reports both causes and retains the only guard rather than
+        // dropping it. This row proves the second validation is not cosmetic.
+        let mount_calls = Arc::new(AtomicUsize::new(0));
+        let teardown_calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mounter: Arc<dyn pc::MemoryMounter> = Arc::new(ReplayMounter {
+            mount_calls: mount_calls.clone(),
+            teardown_calls: teardown_calls.clone(),
+            drops: drops.clone(),
+        });
+        let mounter = Arc::new(std::sync::RwLock::new(Some(mounter)));
+        let requirement = pc::MountRequirement {
+            mount_id: "memory".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "store".into(),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/mnt/memory/test".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        };
+        let spec = pc::SandboxSpec {
+            scope: "memory-replay-post-validate".into(),
+            isolation: pc::IsolationClass::Workdir,
+            environment: None,
+            command: Vec::new(),
+            deny_tool_egress: false,
+            mounts: vec![requirement],
+            env: Vec::new(),
+            packages: Default::default(),
+            network: pc::NetworkPolicy::Unrestricted,
+            outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.into(),
+            requests: Default::default(),
+            limits: Default::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
+            lease_ttl_secs: None,
+            control_services: Default::default(),
+        };
+        let realized = vec![pc::RealizedMount {
+            mount_id: "memory".into(),
+            mount_path: "/mnt/memory/test".into(),
+            access: pc::MountAccess::ReadWrite,
+            realization: pc::Realization::Fuse,
+            content_hash: None,
+        }];
+        let root = tempfile::tempdir().unwrap();
+        let validations = AtomicUsize::new(0);
+        let error = match super::replay_memory_mount_guards(
+            &mounter,
+            &spec,
+            &realized,
+            &[root.path().join("memory")],
+            || {
+                if validations.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(())
+                } else {
+                    Err(pc::SandboxError::new("post-mount fence changed"))
+                }
+            },
+        )
+        .await
+        {
+            Ok(_) => panic!("R2 post-mount drift must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("post-mount fence changed"), "R2");
+        assert!(
+            error.to_string().contains("Memory replay teardown failed"),
+            "R3",
+        );
+        assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "R2");
+        assert_eq!(teardown_calls.load(Ordering::SeqCst), 1, "R3");
+        assert_eq!(drops.load(Ordering::SeqCst), 0, "R3 retained");
     }
 
     #[tokio::test]
@@ -550,6 +711,7 @@ pub(crate) fn authorize_terminal_disposal(
             }),
             None,
             effect_fence,
+            None,
         )?
         .map(|(_, removal)| removal);
     }

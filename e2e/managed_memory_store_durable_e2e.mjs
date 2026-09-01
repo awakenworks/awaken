@@ -75,7 +75,7 @@ async function main() {
     const session = await client.beta.sessions.create({
       agent: managedAgentWithAlwaysAskTools(['write']),
       environment_id: 'env_local',
-      resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: mem.id }],
       betas: BETAS,
     });
     // M0 lifecycle: C0=the Session explicitly owns write=always_ask; C1=exact

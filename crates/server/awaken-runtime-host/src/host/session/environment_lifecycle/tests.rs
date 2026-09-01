@@ -326,6 +326,81 @@ fn closed_pending_adoption_discards_only_the_pre_observation_identity() {
     assert!(matches!(owner, SessionEnvironmentOwner::Vacant), "P2/E2");
 }
 
+#[tokio::test]
+async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() {
+    // Resident reservation cause/effect graph. Causes: C1 a durable Resident
+    // retains one exact Arc, identity and V2 binding; C2 the provider Arc has
+    // actually reserved a superset of owned paths; C3 the root projection keeps
+    // the same durable generation; C4 the projected handle names the same or a
+    // different substrate. Effects: E1 C1+C2+C3+same substrate atomically
+    // advances identity+binding on that one owner while retaining the Arc; E2 a
+    // foreign substrate is rejected with the owner unchanged. Exact replay is
+    // already covered by ordinary projection tests, and the provisioning
+    // contract owns path-loss/legacy/different-effect negatives.
+    //
+    // | Rule | Arc reserved | generation | substrate | Effect |
+    // | P1 | yes | same | same | E1 |
+    // | P2 | yes | same | different | E2 |
+    let thread = "resident-resource-reservation";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let resident_environment = environment(&provider, thread).await;
+    let initial_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let initial_identity = identity(thread);
+    let mut owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+        identity: initial_identity,
+        binding: initial_binding,
+        environment: resident_environment.clone(),
+    });
+
+    resident_environment
+        .reserve_owned_path("/workspace/live.txt")
+        .expect("P1 reserve provider-owned path");
+    let reserved_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let reserved_identity = BoundSessionEnvironmentIdentity::Durable {
+        effect_id: "resource-reservation-effect".into(),
+        generation: generation(thread),
+    };
+    owner
+        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+            identity: reserved_identity.clone(),
+            binding: reserved_binding.clone(),
+        })
+        .expect("P1 absorb exact root reservation");
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Resident(owned)
+            if owned.identity == reserved_identity
+                && owned.binding == reserved_binding
+                && Arc::ptr_eq(&owned.environment, &resident_environment)
+    ));
+
+    let foreign = environment(&provider, "foreign-resource-reservation").await;
+    foreign
+        .reserve_owned_path("/workspace/foreign.txt")
+        .expect("P2 reserve foreign path");
+    let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
+    assert!(
+        owner
+            .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: BoundSessionEnvironmentIdentity::Durable {
+                    effect_id: "foreign-resource-reservation-effect".into(),
+                    generation: generation(thread),
+                },
+                binding: foreign_binding,
+            })
+            .is_err(),
+        "P2 foreign substrate remains fenced"
+    );
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Resident(owned)
+            if owned.identity == reserved_identity
+                && owned.binding == reserved_binding
+                && Arc::ptr_eq(&owned.environment, &resident_environment)
+    ));
+}
+
 fn retry_input_mount() -> awaken_provisioning_contract::MountRequirement {
     awaken_provisioning_contract::MountRequirement {
         mount_id: "retry-input".into(),

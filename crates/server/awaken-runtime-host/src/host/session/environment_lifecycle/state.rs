@@ -148,6 +148,46 @@ impl SessionEnvironmentOwner {
                 | Self::Resident(_) => Ok(()),
             },
             ProjectedEnvironmentOwner::AwaitingAdoption { identity, binding } => {
+                if let Self::Resident(owned) = self
+                    && owned.binding != binding
+                {
+                    // A live Resource reservation is the sole durable update
+                    // that can change a Resident handle without replacing its
+                    // substrate. The aggregate has already admitted the receipt;
+                    // this owner additionally requires the same durable
+                    // generation, the provisioning contract's canonical
+                    // monotonic-handle proof, and the exact handle currently
+                    // emitted by its retained Arc. No projected string alone can
+                    // rebind a process-local owner.
+                    let current = serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(
+                        &owned.binding,
+                    );
+                    let projected = serde_json::from_str::<
+                        awaken_provisioning_contract::SandboxHandle,
+                    >(&binding);
+                    let same_generation = matches!(
+                        (&owned.identity, &identity),
+                        (
+                            BoundSessionEnvironmentIdentity::Durable {
+                                generation: current,
+                                ..
+                            },
+                            BoundSessionEnvironmentIdentity::Durable {
+                                generation: projected,
+                                ..
+                            },
+                        ) if current == projected
+                    );
+                    if let (Ok(current), Ok(projected)) = (current, projected)
+                        && same_generation
+                        && current.owned_paths_are_monotonic_to(&projected)
+                        && owned.environment.handle() == projected
+                    {
+                        owned.identity = identity;
+                        owned.binding = binding;
+                        return Ok(());
+                    }
+                }
                 if let Some(existing) = owned_binding(self)
                     && existing != binding
                 {

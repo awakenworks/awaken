@@ -96,7 +96,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' },
+        { type: 'memory_store', memory_store_id: mem.id },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
@@ -149,7 +149,7 @@ async function main() {
 
     const badMem = await createRaw(base, {
       agent: 'assistant',
-      resources: [{ type: 'memory_store', memory_store_id: 'memstore_nope', mount_path: '/x' }],
+      resources: [{ type: 'memory_store', memory_store_id: 'memstore_nope' }],
     });
     assert.ok(badMem.status >= 400, `missing memory_store fails closed (got ${badMem.status})`);
 

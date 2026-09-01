@@ -14,12 +14,14 @@
 // End-to-end FMECA / cause-effect graph (the assertions in `main` own the table):
 // C1 authoritative Skill/Memory/Repository configuration exists; C2 Session
 // freezes those resources and env_local; C3 the real provider turn completes;
-// C4 gated mutations are approved; C5 archive/reconciliation succeeds; C6 exported
+// C4 gated mutations are approved; C5 archive publishes its durable terminal
+// fence without implicitly publishing sandbox-local files; C6 exported
 // evidence verifies and applies externally. Effects: E1 attached and repository-local
 // Skills are announced and read; E2 Memory publishes while the Repository remote is unchanged;
 // E3 patch, typed manifest and output Files have exact bytes; E4 extraction
-// persists cross-Session memory; E5 equal authored Skill bytes are idempotent and
-// changed bytes append one version. Any missing cause must fail the scenario,
+// persists cross-Session memory; E5 an Agent-authored Skill is written and read
+// back with exact bytes inside its originating Managed Session, while the explicit Skill
+// catalog remains unchanged. Any missing cause must fail the scenario,
 // never be interpreted as an empty store or successful no-op.
 //
 // | Rule | C1 | C2 | C3 | C4 | C5 | Required effects |
@@ -27,7 +29,7 @@
 // | F2 | missing/invalid | any | any | any | any | fail closed before invocation |
 // | F3 | yes | yes | provider/turn fails | any | any | no fabricated terminal success |
 // | F4 | yes | yes | yes | denied | any | no gated Resource mutation |
-// | F5 | yes | yes | yes | yes | fails | no false publication success; retryable intent remains |
+// | F5 | yes | yes | yes | yes | fails | no false cleanup success; retryable intent remains |
 // Negative partitions F2-F5 are exercised at their authoritative unit/integration
 // boundaries; F1 is the non-redundant real-process composition proof here.
 //
@@ -42,9 +44,12 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   FILES_BETA,
+  allowManagedToolBoundaries,
   cleanupFixtureTree,
+  hasEndTurn,
   pass,
   realServerEnv,
+  scenarioMemoryStore,
   SKILLS_BETA,
   SKILLS_BETAS,
   spawnServer,
@@ -112,30 +117,6 @@ function addLateRepositorySkill(bare) {
   git(['push', '-q', 'origin', 'HEAD:main'], work);
 }
 
-const listEvents = async (c, sid) => {
-  const evs = [];
-  for await (const ev of c.beta.sessions.events.list(sid, { betas: BETAS })) evs.push(ev);
-  return evs;
-};
-
-// Release every gated (`ask`) tool call not yet approved — each `write` awaits for a
-// confirmation, so approving lets the run advance to its terminal message.
-async function approveGated(c, sid, evs, approved, receiptIds) {
-  for (const e of evs) {
-    if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
-      approved.add(e.id);
-      // Intermediate permission admission is intentionally not a terminal
-      // oracle: the owning prompt receipt below gates the whole turn after all
-      // confirmations. This send only releases C4 and the loop observes state.
-      const response = await c.beta.sessions.events.send(sid, {
-        events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
-        betas: BETAS,
-      });
-      receiptIds.push(response.data[0].id);
-    }
-  }
-}
-
 // Artifact projection rule: C8 exact Session scope + C9 Files beta selector ->
 // E8 read-only catalog observation. K8 GA Files has no scope_id; reverse
 // resource operations remain owned by replacement/release. R8 C8&&C9->E8.
@@ -160,7 +141,8 @@ async function probeRepositorySkillPaths(c, sid) {
     sid,
     receipt.id,
     BETAS,
-    ({ delta: events }) => events.some((event) => event.type === 'agent.message'),
+    ({ delta: events }) => events.some((event) => event.type === 'agent.message')
+      && hasEndTurn(events),
     'repository Skill metadata probe to complete',
     { timeoutMs: 30_000, pollMs: 200 },
   );
@@ -201,25 +183,35 @@ async function main() {
       betas: SKILLS_BETAS,
     });
     assert.ok(greet.id.startsWith('skill_'));
-    const mem = await c.post('/v1/memory_stores', {
-      body: { name: 'full-chain-memory' },
-      headers: MEMORY_HEADERS,
-    });
-    assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
-    pass(`configured a memory_store via the API: ${mem.id}`);
+    const mem = await scenarioMemoryStore(c, MEMORY_HEADERS);
+    assert.ok(mem.id, 'the scenario Resources application published a real MemoryStore');
+    pass(`resolved the Agent-bound memory_store through the API: ${mem.id}`);
 
     // 2) One session binds BOTH resources; the skill is offered by the host.
     const session = await c.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'memory_store', memory_store_id: mem.id },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
     });
+    const sessionMemory = session.resources.find(
+      (resource) => resource.type === 'memory_store' && resource.memory_store_id === mem.id,
+    );
+    assert.equal(
+      typeof sessionMemory?.mount_path,
+      'string',
+      'full-chain Session returns its exact frozen MemoryStore mount',
+    );
+    const memoryNotePath = `${sessionMemory.mount_path}/note.md`;
     const skillIds = (session.agent.skills ?? []).map((s) => s.skill_id ?? s);
-    assert.ok(skillIds.includes(greet.id), `the skill is offered: ${JSON.stringify(session.agent.skills)}`);
+    assert.deepEqual(
+      skillIds,
+      [greet.id],
+      `only the explicitly published Skill is offered: ${JSON.stringify(session.agent.skills)}`,
+    );
     assert.equal(session.resources.length, 2, 'both resources bound to the session');
     const remoteHeadBefore = git(['rev-parse', 'main'], bare).trim();
     pass('one session binds memory_store + github_repository and is offered the skill');
@@ -233,43 +225,41 @@ async function main() {
       betas: BETAS,
     })).data[0];
 
-    // Drive await→approve until the turn ends. Artifact GET remains read-only.
-    const approved = new Set();
-    const approvalReceiptIds = [];
-    let evs = [];
-    let files = null;
+    // The canonical harness owns await→approve→end_turn sequencing. Artifact
+    // GET remains a read-only observation after that one driver completes.
+    const evs = await allowManagedToolBoundaries({
+      client: c,
+      sessionId: session.id,
+      taskReceiptId: chainReceipt.id,
+      betas: BETAS,
+      description: 'full-chain prompt',
+      timeoutMs: 30_000,
+      maxBoundaries: 20,
+    });
+    let files = await listArtifacts(c, session.id);
     let memContent = '';
-    for (let i = 0; i < 60; i += 1) {
-      await sleep(400);
-      evs = await listEvents(c, session.id);
-      await approveGated(c, session.id, evs, approved, approvalReceiptIds);
-      files = await listArtifacts(c, session.id);
-      const done = evs.some((e) => e.type === 'agent.message' && (e.content ?? []).some((b) => (b.text ?? '').includes('done')));
-      if (done) break;
-    }
-    ({ events: evs } = await waitForSessionEventReceipt(
-      c,
-      session.id,
-      chainReceipt.id,
-      BETAS,
-      ({ delta }) => delta.some((event) => event.type === 'agent.message'
+    assert.ok(
+      evs.some((event) => event.type === 'agent.message'
         && (event.content ?? []).some((content) => (content.text ?? '').includes('done'))),
-      'full-chain prompt to process into its terminal done message',
-      { timeoutMs: 30_000, pollMs: 200 },
-    ));
-    for (const receiptId of approvalReceiptIds) {
-      await waitForSessionEventReceipt(
-        c,
-        session.id,
-        receiptId,
-        BETAS,
-        () => true,
-        'full-chain permission receipt to process',
-        { timeoutMs: 30_000, pollMs: 200 },
-      );
-    }
+      'the terminal full-chain message carries the scenario-owned done effect',
+    );
     const failedTools = evs.filter((event) => event.type === 'agent.tool_result' && event.is_error);
     assert.deepEqual(failedTools, [], `every full-chain tool effect succeeds: ${JSON.stringify(failedTools)}`);
+
+    // Memory coordinate decision: C1 Session create returns the frozen Memory
+    // resource mount; C2 the provider request carries exactly one corresponding
+    // frozen prompt (missing/multiple fail closed in the fixture); C3 the write
+    // is emitted. E1 the tool path is exactly `${C1}/note.md`, not a copied or
+    // re-derived catalog path.
+    const memoryWrites = evs.filter(
+      (event) => event.type === 'agent.tool_use' && event.name === 'write'
+        && event.input?.path === memoryNotePath,
+    );
+    assert.equal(
+      memoryWrites.length,
+      1,
+      `one Memory write uses the Session-returned path ${memoryNotePath}`,
+    );
 
     assert.equal(
       git(['rev-parse', 'main'], bare).trim(),
@@ -277,7 +267,11 @@ async function main() {
       'Files GET does not advance the Repository remote',
     );
     const archivedMain = await c.beta.sessions.archive(session.id, { betas: BETAS });
-    assert.equal(archivedMain.status, 'terminated', 'main Session archive is the synchronous harvest edge');
+    assert.equal(
+      archivedMain.status,
+      'terminated',
+      'main Session archive publishes the durable terminal fence; cleanup is observed below',
+    );
     for (let i = 0; i < 60; i += 1) {
       // Observation decision table: full+success exposes durable bytes; basic
       // deliberately elides them; transport/decode failure is a test failure,
@@ -298,8 +292,9 @@ async function main() {
       await sleep(200);
     }
 
-    // Artifact handoff decision table: C1 a sandbox commit exists; C2 archive
-    // harvested all three outputs; C3 the manifest binds the exact patch bytes; C4 the
+    // Artifact handoff decision table: C1 a sandbox commit exists; C2 the
+    // post-archive lifecycle observation finds all three outputs; C3 the manifest
+    // binds the exact patch bytes; C4 the
     // external checkout is still at the recorded base; C5 an operator explicitly
     // selects a review ref. Effects: E1 main stays unchanged; E2 `git apply
     // --check` succeeds; E3 apply changes only CHAIN.txt; E4 repository test and
@@ -416,7 +411,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'memory_store', memory_store_id: mem.id },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
@@ -435,7 +430,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'memory_store', memory_store_id: mem.id },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
@@ -468,7 +463,7 @@ async function main() {
       },
       environment_id: 'env_local',
       resources: [
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' },
+        { type: 'memory_store', memory_store_id: mem.id },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
@@ -515,121 +510,93 @@ async function main() {
     assert.ok(extracted, 'out-of-band extraction persisted a memory to the durable store');
     pass('out-of-band memory extraction saved a cross-session memory');
 
-    // The same production sandbox can author a Skill under `skills/<id>/SKILL.md`.
-    // Harvest persists it into the canonical SkillStore: identical bytes are a no-op,
-    // changed bytes append exactly one immutable version, and later Sessions see it.
+    // A Managed Session may author a canonical Skill file inside its own frozen
+    // sandbox, but only an explicit publication API owns the Skill catalog.
     const author = async (prompt) => {
       const authored = await c.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
-        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
+        resources: [{ type: 'memory_store', memory_store_id: mem.id }],
         betas: BETAS,
       });
-      // Authoring rule A1: C1 exact authoring receipt and C2 gated writes release;
-      // E1 processed receipt with the matching authored marker. K1 a marker from
-      // another Session/version cannot satisfy this turn. D1=C1+C2=>E1.
+      assert.deepEqual(
+        (authored.agent.skills ?? []).map((skill) => skill.skill_id ?? skill),
+        [greet.id],
+        'the authoring Session starts from the one explicitly published Agent Skill',
+      );
+      // Authoring decision table A1. Causes: C1 one originating Managed Session;
+      // C2 gated write is approved; C3 ordinary read targets the same canonical
+      // path; C4 the exact User receipt reaches the committed end_turn idle;
+      // C5 archive returns its durable terminal fence. Effects: E1 one successful
+      // write and read expose exact bytes inside that Session; E2 the Session
+      // becomes terminated; E3 the Skill catalog gains no implicit entry. Rule
+      // A1=C1+C2+C3+C4+C5=>E1+E2+E3. Missing/error/drifted C2-C4 must fail before
+      // E1/E2; lower-level lifecycle tests own asynchronous cleanup retry and
+      // no-promotion recovery.
       const authoredReceipt = (await c.beta.sessions.events.send(authored.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
         betas: BETAS,
       })).data[0];
-      const approved = new Set();
-      const approvalReceiptIds = [];
-      let authoredEvents = [];
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        await sleep(200);
-        authoredEvents = await listEvents(c, authored.id);
-        await approveGated(c, authored.id, authoredEvents, approved, approvalReceiptIds);
-        if (authoredEvents.some((event) =>
-          event.type === 'agent.message' &&
-          (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`)),
-        )) break;
-      }
-      ({ events: authoredEvents } = await waitForSessionEventReceipt(
-        c,
-        authored.id,
-        authoredReceipt.id,
-        BETAS,
-        ({ delta }) => delta.some((event) => event.type === 'agent.message'
-          && (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`))),
-        `authored Skill turn ${prompt}`,
-        { timeoutMs: 30_000, pollMs: 200 },
-      ));
-      for (const receiptId of approvalReceiptIds) {
-        await waitForSessionEventReceipt(
-          c,
-          authored.id,
-          receiptId,
-          BETAS,
-          () => true,
-          `authored Skill permission receipt for ${prompt}`,
-          { timeoutMs: 30_000, pollMs: 200 },
-        );
-      }
+      const authoredEvents = await allowManagedToolBoundaries({
+        client: c,
+        sessionId: authored.id,
+        taskReceiptId: authoredReceipt.id,
+        betas: BETAS,
+        description: `authored Skill turn ${prompt}`,
+        timeoutMs: 30_000,
+      });
       assert.ok(
         authoredEvents.some((event) =>
           event.type === 'agent.message' &&
           (event.content ?? []).some((content) => (content.text ?? '').includes(`authored ${prompt}`)),
         ),
       );
-      // Archive is the synchronous terminal edge: it returns only after Skill
-      // harvest and sandbox cleanup settle. Delete intentionally detaches the
-      // same durable cleanup, so a 404 is not a completion receipt.
+      const authoredPath = 'skills/authored/SKILL.md';
+      const writes = authoredEvents.filter((event) =>
+        event.type === 'agent.tool_use'
+          && event.name === 'write'
+          && event.input?.path === authoredPath);
+      const reads = authoredEvents.filter((event) =>
+        event.type === 'agent.tool_use'
+          && event.name === 'read'
+          && event.input?.path === authoredPath);
+      assert.equal(writes.length, 1, 'A1/E1 writes one canonical authored Skill file');
+      assert.match(writes[0].input?.content ?? '', /AUTHORED_SKILL_V1/u, 'A1/E1 write bytes');
+      assert.equal(reads.length, 1, 'A1/E1 reads the same canonical authored Skill file');
+      const writeResults = authoredEvents.filter((event) =>
+        event.type === 'agent.tool_result' && event.tool_use_id === writes[0].id);
+      const readResults = authoredEvents.filter((event) =>
+        event.type === 'agent.tool_result' && event.tool_use_id === reads[0].id);
+      assert.equal(writeResults.length, 1, 'A1/E1 writes have one linked result');
+      assert.equal(readResults.length, 1, 'A1/E1 reads have one linked result');
+      const [writeResult] = writeResults;
+      const [readResult] = readResults;
+      assert.ok(writeResult && !writeResult.is_error, 'A1/E1 write completed successfully');
+      assert.ok(readResult && !readResult.is_error, 'A1/E1 read completed successfully');
+      const readText = (readResult.content ?? [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text ?? '')
+        .join('');
+      assert.equal(
+        readText,
+        writes[0].input.content,
+        'A1/E1 read result exactly equals the authored bytes',
+      );
+      // Archive commits the logical terminal fence; physical cleanup is an
+      // independently retryable lifecycle and is not a Skill publication receipt.
       const archived = await c.beta.sessions.archive(authored.id, { betas: BETAS });
-      assert.equal(archived.status, 'terminated');
-    };
-    let authoredSkillId = '';
-    const skillVersions = async () => {
-      const response = await c.get(`/v1/skills/${authoredSkillId}/versions`, {
-        headers: SKILL_HEADERS,
-      });
-      return response.data ?? [];
+      assert.equal(archived.status, 'terminated', 'A1/E2 archive publishes the terminal fence');
     };
     await author('author-skill-v1');
     const authoredCatalog = await c.get('/v1/skills', { headers: SKILL_HEADERS });
-    authoredSkillId = (authoredCatalog.data ?? [])
-      .find((skill) => skill.id !== greet.id)?.id ?? '';
-    assert.ok(authoredSkillId, 'terminal harvest published the authored Skill aggregate');
-    assert.deepEqual((await skillVersions()).map((version) => version.version), ['1']);
-    await author('author-skill-v1');
     assert.deepEqual(
-      (await skillVersions()).map((version) => version.version),
-      ['1'],
-      're-harvesting identical SKILL.md bytes is idempotent',
-    );
-    await author('author-skill-v2');
-    assert.deepEqual((await skillVersions()).map((version) => version.version), ['1', '2']);
-    const authoredLatest = await c.get(`/v1/skills/${authoredSkillId}/versions/latest`, {
-      headers: SKILL_HEADERS,
-    });
-    assert.equal(authoredLatest.version, '2');
-    assert.match(
-      await (await fetch(`http://127.0.0.1:${PORT}/v1/skills/${authoredSkillId}/versions/2/content`, {
-        headers: SKILL_HEADERS,
-      })).text(),
-      /AUTHORED_SKILL_V2/u,
-    );
-    const consumingSession = await c.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: 'env_local',
-      resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
-      betas: BETAS,
-    });
-    const selectedSkills = (consumingSession.agent.skills ?? []).map((skill) => skill.skill_id ?? skill);
-    assert.deepEqual(
-      selectedSkills,
+      (authoredCatalog.data ?? []).map((skill) => skill.id),
       [greet.id],
-      'persisting an authored Skill does not mutate the immutable Agent publication',
+      'A1/E3 archive does not implicitly promote a sandbox-local authored file',
     );
-    const skillCatalog = await c.get('/v1/skills', { headers: SKILL_HEADERS });
-    assert.ok(
-      (skillCatalog.data ?? []).some((skill) => skill.id === authoredSkillId),
-      'the authored aggregate remains available for an explicit future publication update',
-    );
-    const consumingArchived = await c.beta.sessions.archive(consumingSession.id, { betas: BETAS });
-    assert.equal(consumingArchived.status, 'terminated');
-    pass('agent-authored Skill versions persist without implicitly mutating Agent selection');
+    pass('one Managed Session authored and read a sandbox-local Skill file without implicit promotion');
 
-    console.log('E2E PASS: full chain — config → mounts → skill → memory + sandbox commit → verified patch handoff → authored Skill versions.');
+    console.log('E2E PASS: full chain — config → mounts → skill → memory + sandbox commit → verified patch handoff → sandbox-local authored Skill.');
   } finally {
     await stopServer(server);
     upstream.close();

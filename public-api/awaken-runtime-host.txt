@@ -376,6 +376,7 @@ pub fn awaken_runtime_host::SharedHost::hub(&self) -> &alloc::sync::Arc<awaken_r
 pub fn awaken_runtime_host::SharedHost::install_capture_sink(&self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
 pub fn awaken_runtime_host::SharedHost::install_committed_progress_wakeup(&self, alloc::sync::Arc<(dyn core::ops::function::Fn() + core::marker::Send + core::marker::Sync)>) -> core::result::Result<(), &'static str>
 pub fn awaken_runtime_host::SharedHost::local_workspace(&self) -> &str
+pub fn awaken_runtime_host::SharedHost::local_workspace_at(&std::path::Path) -> core::io::error::Result<core::option::Option<alloc::string::String>>
 pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::model_for_thread(&self, &str) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::new_with_runtime_resources_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, awaken_runtime_host::DeploymentConfig) -> Self
@@ -388,7 +389,7 @@ pub async fn awaken_runtime_host::SharedHost::prewarm_default_environment_capaci
 pub async fn awaken_runtime_host::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::foundation::SandboxError>
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace() -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace_at(&std::path::Path) -> alloc::string::String
-pub fn awaken_runtime_host::SharedHost::publish_local_workspace_at(&std::path::Path, &str) -> core::result::Result<alloc::string::String, std::io::error::Error>
+pub fn awaken_runtime_host::SharedHost::publish_local_workspace_at(&std::path::Path, &str) -> core::io::error::Result<alloc::string::String>
 pub fn awaken_runtime_host::SharedHost::ready_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot) -> usize
 pub fn awaken_runtime_host::SharedHost::register_thread_delegates(&self, &str, alloc::vec::Vec<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
@@ -491,7 +492,7 @@ impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::interrupt_all_session_runs(&self) -> usize
 pub async fn awaken_runtime_host::SharedHost::reconcile_resident_terminal_cleanups(&self) -> core::result::Result<usize, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::recover_terminal_cleanup_assignments(&self, awaken_session_contract::session_realization::SessionRealizationTarget) -> core::result::Result<usize, awaken_runtime_host::HostError>
-pub async fn awaken_runtime_host::SharedHost::renew_due_session_realizations(&self, u64, u64) -> core::result::Result<usize, awaken_runtime_host::HostError>
+pub async fn awaken_runtime_host::SharedHost::renew_due_session_realizations(&self, u64, awaken_runtime_contract::authority_lease::AuthorityLeaseTiming) -> core::result::Result<usize, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::revoke_all_session_realizations(&self) -> core::result::Result<usize, awaken_runtime_host::HostError>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>

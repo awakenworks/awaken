@@ -29,6 +29,7 @@ import {
   pass,
   startUpstream,
   realServerEnv,
+  scenarioMemoryStore,
   waitForSessionEventReceipt,
 } from './harness.mjs';
 
@@ -99,7 +100,7 @@ async function recallsMarker(storeId, tries = 24) {
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: storeId, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: storeId }],
     });
     if ((await turn(b.id, 'please recall what you know')).includes(MARKER)) return true;
   }
@@ -117,10 +118,7 @@ async function main() {
     servers.push(a.server);
     await waitForPort(PORT);
 
-    const store = await client.post('/v1/memory_stores', {
-      body: { name: 'durable-extraction' },
-      headers: MEMORY_HEADERS,
-    });
+    const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
     const readOnly = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
@@ -128,7 +126,6 @@ async function main() {
       resources: [{
         type: 'memory_store',
         memory_store_id: store.id,
-        mount_path: '/memory',
         access: 'read_only',
       }],
     });
@@ -205,7 +202,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: store.id }],
     });
     assert.ok((await turn(s.id, `remember ${MARKER}`)).includes(`echo:remember ${MARKER}`), 'turn A ran');
     assert.ok(await recallsMarker(store.id), 'a later session recalled the marker memory in-process (sanity)');

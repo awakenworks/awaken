@@ -110,6 +110,22 @@ impl ReadyOperationGuard {
         validate_live_effect_fence(&self.authorization_effect_fence)?;
         self.current_marker().map(|_| ())
     }
+
+    /// Keep response-loss Memory replay bound to the same immutable Ready
+    /// completion receipt observed before this lock was acquired. The live
+    /// effect and exact root are rechecked at every external mount boundary.
+    pub(crate) fn validate_receipt_before_effect(
+        &self,
+        expected: &RealizationCompletionReceipt,
+    ) -> Result<(), pc::SandboxError> {
+        self.validate_before_effect()?;
+        if self.marker.completion.as_ref() != Some(expected) {
+            return Err(err(
+                "ready filesystem effect changed the exact completion receipt",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn completed_checkpoint(

@@ -105,8 +105,8 @@ pub async fn awaken_scenario_host::build_git_repo_router(awaken_runtime_host::de
 pub fn awaken_scenario_host::build_graded_router(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> axum::routing::Router
 pub async fn awaken_scenario_host::build_management_web_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_memory_resource_router() -> axum::routing::Router
-pub fn awaken_scenario_host::build_memory_router() -> axum::routing::Router
-pub fn awaken_scenario_host::build_memory_service() -> (axum::routing::Router, awaken_service_lifecycle::ServiceLifecycle)
+pub async fn awaken_scenario_host::build_memory_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_memory_service() -> (axum::routing::Router, awaken_service_lifecycle::ServiceLifecycle)
 pub fn awaken_scenario_host::build_model_route_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_oauth_resolved_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_outcome_matrix_router() -> axum::routing::Router

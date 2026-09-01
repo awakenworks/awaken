@@ -599,6 +599,42 @@ impl RemovalGuard {
         Ok(())
     }
 
+    /// Revalidate the one locked Removing participant immediately before an
+    /// external reconstruction effect. Before aggregate authorization it reads
+    /// (but never replaces) the durable prepared predecessor; after
+    /// authorization it accepts only a live successor of that physical-disposal
+    /// authority. The exact marker and root identity are checked in both phases.
+    pub(crate) fn validate_before_reconstruction(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+    ) -> Result<(), pc::SandboxError> {
+        validate_live_effect_fence(effect_fence)?;
+        let authority = self
+            .marker
+            .disposal_authorization
+            .as_ref()
+            .map_or(&self.marker.effect_fence, |authorization| {
+                authorization.effect_fence()
+            });
+        if !authority.authorizes_successor(effect_fence) {
+            return Err(err(
+                "terminal reconstruction is not authorized by its durable predecessor",
+            ));
+        }
+        let observed = read_marker_locked(&self.root, &self.lock)?
+            .ok_or_else(|| err("terminal reconstruction lost its realization marker"))?;
+        if observed != self.marker || self.marker.phase != RealizationPhase::Removing {
+            return Err(err(
+                "terminal reconstruction marker changed under its held lifecycle lock",
+            ));
+        }
+        require_exact_root_locked(
+            &self.root,
+            &self.lock,
+            required_root_identity(&self.marker)?,
+        )
+    }
+
     /// Admit the provider-preparation boundary and return its exact durable
     /// predecessor. A same-operation renewal proves that the existing marker
     /// remains usable but does not replace it: if an earlier root CAS later
@@ -1585,8 +1621,9 @@ pub(crate) fn begin_legacy(root: &Path) -> Result<LegacyCreationGuard, pc::Sandb
 }
 
 mod observation;
-use observation::validate_handle_marker;
-pub(crate) use observation::{observe_adoption, verify_adoption};
+pub(crate) use observation::{
+    TerminalReceiptObservation, observe_adoption, observe_terminal_receipt, verify_adoption,
+};
 
 fn validate_ready_operation_marker(
     root: &Path,
@@ -1699,55 +1736,32 @@ fn begin_ready_operation_with_authorization(
 /// that handle and must instead present the exact effect that created the
 /// marker. The returned guard owns the lifecycle lock through shred/delete and
 /// tombstone publication. `None` means both physical names are proven absent
-/// and the marker is absent or durably `Removed`.
+/// and the same lock observed or durably published the `Removed` tombstone.
 pub(crate) fn begin_terminal_takeover(
     root: &Path,
     fingerprint: &pc::SandboxRealizationFingerprint,
     handle: Option<RebuildSource<'_>>,
     expected_effect_fence: Option<&pc::SandboxEffectFence>,
     terminal_effect_fence: &pc::SandboxEffectFence,
+    expected_preflight: Option<&TerminalReceiptObservation>,
 ) -> Result<Option<(RealizationEvidence, RemovalGuard)>, pc::SandboxError> {
     validate_live_effect_fence(terminal_effect_fence)?;
     if let Some(expected) = expected_effect_fence {
         expected.validate_identity()?;
     }
     let lock = acquire(root)?;
-    let Some(mut marker) = read_marker_locked(root, &lock)? else {
-        let (source_fence, incarnation) = match handle {
-            Some(source) => {
-                source.effect_fence.validate_identity()?;
-                if source.fingerprint != fingerprint
-                    || source.physical_incarnation.trim().is_empty()
-                {
-                    return Err(err(
-                        "terminal handle does not bind the absent filesystem realization",
-                    ));
-                }
-                (
-                    source.effect_fence,
-                    Some(source.physical_incarnation.to_owned()),
-                )
-            }
-            None => {
-                let expected = expected_effect_fence.ok_or_else(|| {
-                    err("handle-free terminal cleanup requires its exact restore effect fence")
-                })?;
-                (expected, None)
-            }
-        };
-        if !source_fence.authorizes_successor(terminal_effect_fence)
-            || expected_effect_fence
-                .is_some_and(|expected| !source_fence.same_effect_identity(expected))
-            || expected_effect_fence
-                .is_some_and(|expected| !expected.authorizes_successor(terminal_effect_fence))
-        {
-            return Err(err(
-                "terminal fence does not authorize the absent realization evidence",
-            ));
-        }
+    let observed = read_marker_locked(root, &lock)?;
+    observation::validate_terminal_preflight(expected_preflight, observed.as_ref())?;
+    let Some(mut marker) = observed else {
+        let (terminal_source, incarnation) = observation::validate_absent_terminal_source(
+            fingerprint,
+            handle.as_ref(),
+            expected_effect_fence,
+            terminal_effect_fence,
+        )?;
         require_absent_locked(root, &lock, root_leaf(root)?, "terminal sandbox root")?;
-        if let Some(incarnation) = incarnation {
-            let record = root_record(root, &incarnation)?;
+        if let Some(incarnation) = incarnation.as_ref() {
+            let record = root_record(root, incarnation)?;
             require_absent_locked(
                 root,
                 &lock,
@@ -1757,115 +1771,39 @@ pub(crate) fn begin_terminal_takeover(
         } else {
             require_no_untracked_stage_locked(root, &lock)?;
         }
+        // A marker-free terminal response cannot simply return absence: an old
+        // but still-live create effect could otherwise publish after this lock
+        // is released. Persist the existing Removed phase as the one durable
+        // lifecycle fence; ordinary creation already rejects this tombstone and
+        // only an exact completed-checkpoint restore may ever leave it.
+        let mut tombstone = marker_for_new_attempt(
+            root,
+            fingerprint,
+            terminal_effect_fence,
+            RealizationPhase::Removed,
+            None,
+            None,
+        )?;
+        if let Some(incarnation) = incarnation.as_ref() {
+            tombstone.physical_incarnation = incarnation.clone();
+            tombstone.root = root_record(root, incarnation)?;
+        }
+        tombstone.terminal_source = Some(terminal_source);
+        // Scheduling, observation, and tombstone construction may outlive the
+        // entry validation even though acquisition itself is a nonblocking
+        // try-lock. Recheck immediately at the durable publication boundary.
+        validate_live_effect_fence(terminal_effect_fence)?;
+        publish_marker_locked(root, &lock, &tombstone)?;
         return Ok(None);
     };
-    if marker.fingerprint != *fingerprint {
-        return Err(err(
-            "terminal cleanup specification does not identify the realization marker",
-        ));
-    }
 
-    let existing_terminal_source = marker.terminal_source.clone();
-    let terminal_source = match marker.phase {
-        RealizationPhase::Removing | RealizationPhase::Removed => {
-            let recorded = existing_terminal_source.ok_or_else(|| {
-                err("terminal realization marker has no immutable source evidence")
-            })?;
-            match &handle {
-                Some(source) => {
-                    validate_handle_marker(
-                        &marker,
-                        source.fingerprint,
-                        source.effect_fence,
-                        source.physical_incarnation,
-                    )?;
-                    if !recorded
-                        .realization_effect_fence
-                        .same_effect_identity(source.effect_fence)
-                    {
-                        return Err(err(
-                            "terminal handle conflicts with the recorded physical source",
-                        ));
-                    }
-                }
-                None => {
-                    let expected = expected_effect_fence.ok_or_else(|| {
-                        err("handle-free terminal replay requires its exact restore effect")
-                    })?;
-                    if !recorded
-                        .realization_effect_fence
-                        .same_effect_identity(expected)
-                    {
-                        return Err(err(
-                            "handle-free terminal replay does not identify the restore source",
-                        ));
-                    }
-                }
-            }
-            let expected_matches = match (
-                recorded.expected_effect_fence.as_ref(),
-                expected_effect_fence,
-            ) {
-                (None, None) => true,
-                (Some(recorded), Some(expected)) => recorded.same_effect_identity(expected),
-                _ => false,
-            };
-            if !expected_matches {
-                return Err(err(
-                    "terminal replay changed the expected in-flight operation fence",
-                ));
-            }
-            recorded
-        }
-        RealizationPhase::Creating | RealizationPhase::Recreating | RealizationPhase::Ready => {
-            let realization_effect_fence = match &handle {
-                Some(source) => {
-                    validate_handle_marker(
-                        &marker,
-                        source.fingerprint,
-                        source.effect_fence,
-                        source.physical_incarnation,
-                    )?;
-                    source.effect_fence.clone()
-                }
-                None => {
-                    let expected = expected_effect_fence.ok_or_else(|| {
-                        err("handle-free terminal cleanup requires its exact restore effect")
-                    })?;
-                    if !marker.effect_fence.same_effect_identity(expected) {
-                        return Err(err(
-                            "handle-free terminal cleanup does not identify the in-flight restore",
-                        ));
-                    }
-                    expected.clone()
-                }
-            };
-            if let Some(expected) = expected_effect_fence
-                && !realization_effect_fence.same_effect_identity(expected)
-            {
-                return Err(err(
-                    "expected operation fence does not exactly identify the physical source effect",
-                ));
-            }
-            TerminalSourceRecord {
-                realization_effect_fence,
-                expected_effect_fence: expected_effect_fence.cloned(),
-            }
-        }
-    };
-
-    if !terminal_source
-        .realization_effect_fence
-        .authorizes_successor(terminal_effect_fence)
-        || terminal_source
-            .expected_effect_fence
-            .as_ref()
-            .is_some_and(|expected| !expected.authorizes_successor(terminal_effect_fence))
-    {
-        return Err(err(
-            "terminal fence does not authorize the exact physical or in-flight source",
-        ));
-    }
+    let terminal_source = observation::validate_terminal_source(
+        &marker,
+        fingerprint,
+        handle.as_ref(),
+        expected_effect_fence,
+        terminal_effect_fence,
+    )?;
 
     let owned = owned_realization_path_locked(root, &lock, &marker)?;
     if marker.phase == RealizationPhase::Removed {
@@ -1885,6 +1823,10 @@ pub(crate) fn begin_terminal_takeover(
     }
 
     if marker.phase != RealizationPhase::Removing {
+        // Source/receipt/root preflight is deliberately effect-free. Revalidate
+        // the terminal successor under the retained lock at the first durable
+        // phase mutation, closing expiry after the entry observation.
+        validate_live_effect_fence(terminal_effect_fence)?;
         let previous = marker.clone();
         marker.phase = RealizationPhase::Removing;
         marker.effect_fence = terminal_effect_fence.clone();

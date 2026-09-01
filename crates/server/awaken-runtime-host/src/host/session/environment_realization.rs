@@ -346,11 +346,23 @@ impl SharedHost {
         .map_err(|error| EnvironmentBindingPersistenceError {
             error: HostError::internal(error.to_string()),
         })?;
+        // A Resource reservation extends the already-published Environment
+        // handle under the Session root. It is not a Run placement and must not
+        // rewrite `RunDispatch.sandbox`: the slot can legitimately retain the
+        // preceding settled attempt's claim while an idle Session accepts a
+        // live Resource generation. Create/Adopt/Rebuild remain the only raw
+        // dispatch-cache writers and retain their exact claim fence below.
+        let binds_deferred_dispatch = !matches!(
+            effect.intent.kind(),
+            awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
+        );
         match &effect.authorization {
             awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned => {
-                self.bind_deferred_dispatch_before_publish(thread, &binding)
-                    .await
-                    .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+                if binds_deferred_dispatch {
+                    self.bind_deferred_dispatch_before_publish(thread, &binding)
+                        .await
+                        .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+                }
                 return Ok(
                     crate::session_slot::BoundSessionEnvironmentIdentity::LegacyDirect(
                         crate::session_slot::LegacyDirectEnvironmentProvenance::Direct(receipt),
@@ -389,9 +401,11 @@ impl SharedHost {
             .await
             .map_err(crate::managed_adapter_error::from_run_error)
             .map_err(|error| EnvironmentBindingPersistenceError { error })?;
-        self.bind_deferred_dispatch_before_publish(thread, &binding)
-            .await
-            .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+        if binds_deferred_dispatch {
+            self.bind_deferred_dispatch_before_publish(thread, &binding)
+                .await
+                .map_err(|error| EnvironmentBindingPersistenceError { error })?;
+        }
         super::environment_lifecycle::committed_identity(&receipt, committed)
             .map_err(|error| EnvironmentBindingPersistenceError { error })
     }

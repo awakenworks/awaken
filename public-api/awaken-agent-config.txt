@@ -192,6 +192,7 @@ pub awaken_agent_config::ManagementAuditRecord::tool: alloc::string::String
 pub struct awaken_agent_config::MultiagentConfig
 pub awaken_agent_config::MultiagentConfig::agents: alloc::vec::Vec<awaken_agent_config::MultiagentTarget>
 impl awaken_agent_config::MultiagentConfig
+pub fn awaken_agent_config::MultiagentConfig::has_delegation_target(&self) -> bool
 pub fn awaken_agent_config::MultiagentConfig::validate(&self, &str) -> core::result::Result<(), alloc::string::String>
 impl serde_core::ser::Serialize for awaken_agent_config::MultiagentConfig
 pub fn awaken_agent_config::MultiagentConfig::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>

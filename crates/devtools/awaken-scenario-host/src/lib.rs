@@ -149,16 +149,16 @@ pub fn build_outcome_matrix_router() -> Router {
 /// A router with out-of-band memory extraction + bounded recall (the memory
 /// e2e): after each Run the extractor sub-run saves a memory, and later
 /// sessions see it injected request-only by the recall plugin.
-/// `AWAKEN_MODEL_MODE=memory`; the caller must create and attach a governed
-/// MemoryStore resource to each participating Session.
-pub fn build_memory_router() -> Router {
-    build_memory_service().0
+/// `AWAKEN_MODEL_MODE=memory`; the scenario seeds one governed MemoryStore and
+/// callers attach that exact resource to each participating Session.
+pub async fn build_memory_router() -> Router {
+    build_memory_service().await.0
 }
 
 /// The Memory Scenario's one mounted Router and outer-owned service lifecycle.
 /// The process entrypoint retains the lifecycle so graceful shutdown drains the
 /// exact auxiliary Runtime work whose spans and durable effects it serves.
-pub fn build_memory_service() -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
+pub async fn build_memory_service() -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
     let host = resource_host(model, model_ref);
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
@@ -167,7 +167,8 @@ pub fn build_memory_service() -> (Router, awaken_service_lifecycle::ServiceLifec
         "memory",
         Vec::new(),
         lifecycle.clone(),
-    );
+    )
+    .await;
     (router, lifecycle)
 }
 
@@ -223,6 +224,7 @@ pub async fn build_full_chain_router_with_deployment(
             awaken_resource_contract::skill_catalog_id("greet"),
         )],
     )
+    .await
 }
 
 /// A router with context compaction (the compaction e2e): a low token window folds

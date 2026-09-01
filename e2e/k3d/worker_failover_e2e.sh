@@ -43,12 +43,11 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster "$CLUSTER"
-  rm -f "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server"
 }
-trap cleanup EXIT
 
 k3d_admit_or_exit "worker-failover E2E"
+k3d_install_exit_cleanup cleanup
 
 # Port-forward to the brain Service (any pod serves the durable API — it is the
 # coordinator, backed by shared Postgres).

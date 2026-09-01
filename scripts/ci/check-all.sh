@@ -86,6 +86,7 @@ run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
+run static "k3d harness self-test" e2e/k3d/harness.sh --self-test
 run static "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.py
 run static "secrets self-test" python3 scripts/ci/check_secrets.py --self-test
 run static "secrets" python3 scripts/ci/check_secrets.py

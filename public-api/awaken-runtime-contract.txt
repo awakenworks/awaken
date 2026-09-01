@@ -1511,6 +1511,7 @@ pub fn awaken_runtime_contract::tool::ToolConcurrency::narrowed_with(self, Self)
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::InvalidArguments(alloc::string::String)
+pub awaken_runtime_contract::tool::ToolError::StateInvalidatedAfterDispatch(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::Unknown(alloc::string::String)
 pub enum awaken_runtime_contract::tool::ToolExecutionTarget

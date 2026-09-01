@@ -33,6 +33,8 @@ const SKILL_HEADERS = { 'anthropic-beta': SKILLS_BETA };
 const TMP = path.join(os.tmpdir(), `awaken-namespace-session-e2e-${process.pid}`);
 const TIER = process.env.SESSION_ENVIRONMENT_TIER ?? 'namespace';
 const AGENT = 'namespace-agent';
+const MEMORY_STORE_NAME = 'namespace-session-memory';
+const MEMORY_MOUNT_PATH = `/mnt/memory/${MEMORY_STORE_NAME}`;
 
 async function waitUntil(predicate, message, attempts = 200) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -69,7 +71,9 @@ function seedRepository() {
 
 function seedAgentFixtureRepository() {
   const work = `${TMP}/fixture-seed`;
-  const memoryPath = TIER === 'namespace' ? '/mnt/notes/seed.txt' : 'mnt/notes/seed.txt';
+  const memoryPath = TIER === 'namespace'
+    ? `${MEMORY_MOUNT_PATH}/seed.txt`
+    : `${MEMORY_MOUNT_PATH.slice(1)}/seed.txt`;
   fs.mkdirSync(work, { recursive: true });
   initMainRepository(work);
   git(['config', 'user.email', 'namespace-e2e@awaken.invalid'], work);
@@ -107,10 +111,12 @@ const mutateExisting = (path) => {
 // Constraint: this newline protocol is a scenario-only fixture, not production ACP.
 //
 // Memory path decision table (C1=tier has sandbox path fidelity; C2=the mount
-// is read-only): local (!C1,!C2) -> read the Workdir-root-relative projection
-// and observe writable=true; namespace (C1,C2) -> read the exact absolute
-// /mnt contract path and observe writable=false. Any other path must remain a
-// hard test failure; no fallback may hide a broken provider projection.
+// is read-only; C3=the catalog owns the MemoryStore display name): local
+// (!C1,!C2,C3) -> read the Workdir-root-relative server-derived projection and
+// observe writable=true; namespace (C1,C2,C3) -> read the exact absolute
+// /mnt/memory/<display-name> path and observe writable=false. Any client-authored
+// mount or fallback path must remain a hard test failure; it would bypass the
+// one catalog-derived Session projection.
 const memoryPath = ${JSON.stringify(memoryPath)};
 readline.createInterface({ input: process.stdin }).on('line', () => {
   // The reserved path is the sole output boundary across Workdir/Namespace/
@@ -230,7 +236,7 @@ async function main() {
     await waitForPort(PORT, 180_000, server);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: running.baseUrl });
     const memory = await client.post('/v1/memory_stores', {
-      body: { name: 'namespace-session-memory' },
+      body: { name: MEMORY_STORE_NAME },
       headers: MEMORY_HEADERS,
     });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
@@ -257,6 +263,8 @@ async function main() {
     // Decision table:
     // projected acp:claude | agent reference || fixed ACP test launch
     // no projection        | assistant       || host default (not this test)
+    // Memory id/access     | no mount_path   || server derives the frozen path
+    // Memory mount_path    | any value       || typed ingress rejects the create
 
     const session = await client.beta.sessions.create({
       agent: AGENT,
@@ -265,7 +273,6 @@ async function main() {
         {
           type: 'memory_store',
           memory_store_id: memory.id,
-          mount_path: '/notes',
           access: TIER === 'namespace' ? 'read_only' : 'read_write',
         },
         ...(TIER === 'namespace' ? [

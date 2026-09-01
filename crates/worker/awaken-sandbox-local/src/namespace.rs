@@ -200,10 +200,6 @@ fn control_directory_for(
     }
 }
 
-#[path = "namespace/memory_mount.rs"]
-mod memory_mount;
-use memory_mount::realize_memory_mount;
-
 /// Render a `bwrap` command line (unprivileged, Linux). Deterministic and pure.
 /// Layout: unshare namespaces, mount `/proc` `/dev` `/tmp`, read-only-bind the
 /// host userland (so interpreters exist), bind the workspace and outputs, bind
@@ -483,11 +479,26 @@ impl NamespaceProvider {
             // materialized files on the copy fallback) which then binds into the namespace
             // — live write-through FUSE-in-bwrap works (ADR-0053 item 2); copy harvests on
             // dispose.
-            mutation_guard.validate_before_mutation()?;
-            if let Some((rendered, mount, materialization)) =
-                realize_memory_mount(&self.memory_mounter, req, &host, memory_mounts).await?
-            {
-                layout.push(rendered);
+            let is_memory = matches!(&req.source, pc::MountSource::MemoryStore { .. });
+            if is_memory {
+                mutation_guard.validate_before_mutation()?;
+            }
+            let memory =
+                crate::mount_memory_requirement(&self.memory_mounter, req, &host, memory_mounts)
+                    .await?;
+            // The external mounter may finish after the admission observed
+            // above. Revalidate under the same held creation guard before the
+            // realized mode/evidence can enter the completion receipt.
+            if memory.is_some() {
+                mutation_guard.validate_before_mutation()?;
+            }
+            if let Some((mount, materialization)) = memory {
+                layout.push(RenderMount {
+                    host,
+                    dest: req.mount_path.clone(),
+                    read_only: req.access == pc::MountAccess::ReadOnly,
+                    boundary: RenderMountBoundary::ManagedMemoryStore,
+                });
                 realized.push(mount);
                 if let Some(materialization) = materialization {
                     memory_materializations.push(materialization);
@@ -687,7 +698,8 @@ impl pc::SandboxProvider for NamespaceProvider {
                 handle,
                 expected_effect_fence,
                 terminal_effect_fence,
-            )?
+            )
+            .await?
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 }
@@ -767,10 +779,10 @@ impl NamespaceProvider {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Ready response-loss recovery is projection-only. The completed root
-        // and mount decisions are already authoritative in the marker receipt;
-        // canonicalization below observes that inode but performs no mount,
-        // extraction, directory creation, or byte reconciliation.
+        // The completed root and mount decisions are authoritative in the marker
+        // receipt. Replay preserves every surviving Bind/Copy projection and uses
+        // the same MemoryMounter only to reacquire a process-owned FUSE guard; it
+        // never re-extracts ordinary inputs or invents a different realization.
         if let Some(receipt) = realization_guard.completed_receipt()?.cloned() {
             let (realized, memory_materializations) =
                 crate::replay_completion_receipt(spec, &receipt, pc::Realization::Bind)?;
@@ -795,11 +807,35 @@ impl NamespaceProvider {
                 .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
                 .collect::<Result<Vec<_>, _>>()?;
             let layout = replay_render_layout(&root, &host_workspace, spec)?;
+            let host_paths = layout
+                .iter()
+                .take(spec.mounts.len())
+                .map(|mount| mount.host.clone())
+                .collect::<Vec<_>>();
+            let memory_mounts = crate::replay_memory_mount_guards(
+                &self.memory_mounter,
+                spec,
+                &realized,
+                &host_paths,
+                || realization_guard.validate_before_mutation(),
+            )
+            .await?;
             let control_directory = layout
                 .iter()
                 .find(|mount| mount.boundary == RenderMountBoundary::PrivateRendezvous)
                 .map(|mount| mount.host.clone());
-            let realization = realization_guard.complete(&receipt)?;
+            let realization = match realization_guard.complete(&receipt) {
+                Ok(realization) => realization,
+                Err(cause) => {
+                    let teardown = crate::compensate_memory_mounts(memory_mounts).await;
+                    return Err(match teardown {
+                        Ok(()) => cause,
+                        Err(teardown) => err(format!(
+                            "Namespace Ready replay publication failed: {cause}; Memory replay teardown failed: {teardown}"
+                        )),
+                    });
+                }
+            };
             return Ok(NamespaceSandbox {
                 id: spec.scope.clone(),
                 realization_root: raw_root,
@@ -817,7 +853,7 @@ impl NamespaceProvider {
                 layout: std::sync::RwLock::new(layout),
                 realized,
                 secret_paths,
-                memory_mounts: tokio::sync::Mutex::new(Vec::new()),
+                memory_mounts: tokio::sync::Mutex::new(memory_mounts),
                 memory_materializations: std::sync::Mutex::new(memory_materializations),
                 memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
                 memory_mounter: self.memory_mounter.clone(),
@@ -928,10 +964,8 @@ impl NamespaceProvider {
         ) = match realization {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = crate::teardown_memory_mounts(&memory_mounts).await;
-                if teardown.is_ok() {
-                    memory_mounts.clear();
-                }
+                let teardown =
+                    crate::compensate_memory_mounts(std::mem::take(&mut memory_mounts)).await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &raw_isolated_root,
@@ -965,10 +999,8 @@ impl NamespaceProvider {
         let realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = crate::teardown_memory_mounts(&memory_mounts).await;
-                if teardown.is_ok() {
-                    memory_mounts.clear();
-                }
+                let teardown =
+                    crate::compensate_memory_mounts(std::mem::take(&mut memory_mounts)).await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &raw_isolated_root,
@@ -1062,19 +1094,17 @@ impl NamespaceProvider {
     }
 
     /// Reconstruct only the exact terminal participant for a `Removing`
-    /// namespace realization. No canonicalization, mount, launcher, or ordinary
+    /// namespace realization. Copy participants retain their exact durable
+    /// evidence; an exact Ready receipt may reacquire only its process-owned
+    /// FUSE guard through the canonical MemoryMounter. No launcher or ordinary
     /// adoption effect occurs on this seam.
-    pub fn prepare_terminal_sandbox_for_effect(
+    pub async fn prepare_terminal_sandbox_for_effect(
         &self,
         spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
     ) -> Result<Option<NamespaceSandbox>, pc::SandboxError> {
-        // Pure validation precedes marker admission. Exact copy evidence is
-        // carried for the Host's one recovered-CAS reconciliation; this cold
-        // provider object intentionally reconstructs no MemoryMount guard.
-        let mut materializations = crate::terminal_copy_materializations(spec, handle)?;
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let (id, outputs_path, base_env, network, owned_paths) = if let Some(handle) = handle {
             let payload = handle.namespace_payload(Self::provider_kind())?;
@@ -1108,34 +1138,6 @@ impl NamespaceProvider {
             )
         };
         let raw_root = crate::sandbox_dir(&self.base, id);
-        let terminal = crate::realization_marker::begin_terminal_takeover(
-            &raw_root,
-            &fingerprint,
-            handle
-                .map(crate::realization_marker::rebuild_source)
-                .transpose()?,
-            expected_effect_fence,
-            terminal_effect_fence,
-        )?;
-        let Some((realization, removal)) = terminal else {
-            return Ok(None);
-        };
-        let mut realized = Vec::new();
-        if let Some(receipt) = removal.completed_receipt()? {
-            let (receipt_realized, receipt_materializations) =
-                crate::replay_completion_receipt(spec, receipt, pc::Realization::Bind)?;
-            if receipt_materializations != materializations {
-                return Err(err(
-                    "Namespace terminal handle Memory evidence differs from the Ready receipt",
-                ));
-            }
-            realized = receipt_realized;
-            materializations = receipt_materializations;
-        } else if handle.is_some() {
-            return Err(err(
-                "Namespace terminal handle targets a realization without a Ready receipt",
-            ));
-        }
         let root = IsolatedRoot::new(raw_root.clone());
         let host_workspace = root.resolve(pc::WorkspaceLayout::ROOT).map_err(err)?;
         let host_outputs = root.resolve(outputs_path).map_err(err)?;
@@ -1145,6 +1147,43 @@ impl NamespaceProvider {
             .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
             .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
             .collect::<Result<_, _>>()?;
+        let replay_layout = replay_render_layout(&root, &host_workspace, spec)?;
+        let host_paths = replay_layout
+            .iter()
+            .take(spec.mounts.len())
+            .map(|mount| mount.host.clone())
+            .collect::<Vec<_>>();
+        // The provider-neutral terminal Memory owner performs the one typed
+        // preflight->takeover->receipt/FUSE replay sequence. Namespace only
+        // supplies its root/path projection and wraps the returned participant.
+        let terminal = crate::prepare_terminal_memory_replay(
+            &self.memory_mounter,
+            &raw_root,
+            &fingerprint,
+            spec,
+            handle,
+            expected_effect_fence,
+            terminal_effect_fence,
+            pc::Realization::Bind,
+            &host_paths,
+        )
+        .await?;
+        let Some(crate::TerminalMemoryReplay {
+            realization,
+            removal,
+            owned_root_present,
+            realized,
+            materializations,
+            memory_mounts,
+        }) = terminal
+        else {
+            return Ok(None);
+        };
+        let layout = if realized.is_empty() || !owned_root_present {
+            Vec::new()
+        } else {
+            replay_layout
+        };
         Ok(Some(NamespaceSandbox {
             id: id.to_owned(),
             realization_root: raw_root,
@@ -1159,10 +1198,10 @@ impl NamespaceProvider {
             control_services: spec.control_services.clone(),
             control_directory: None,
             control_publication: Arc::new(NamespaceControlPublicationRegistry::default()),
-            layout: std::sync::RwLock::new(Vec::new()),
+            layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
-            memory_mounts: tokio::sync::Mutex::new(Vec::new()),
+            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
             memory_materializations: std::sync::Mutex::new(materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
@@ -1211,6 +1250,7 @@ impl NamespaceProvider {
             effect_fence,
         )?;
         let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
+        let current_evidence = verified.as_ref().map(|(evidence, _)| evidence.clone());
         let realization = match verified {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
@@ -1245,32 +1285,59 @@ impl NamespaceProvider {
         } else {
             Vec::new()
         };
-        let handle_materializations = handle
-            .memory_materializations()?
-            .unwrap_or_default()
-            .to_vec();
-        let (realized, materializations) = if let Some(receipt) = completion {
-            let (realized, materializations) = match spec {
-                Some(spec) => {
-                    crate::replay_completion_receipt(spec, &receipt, pc::Realization::Bind)?
-                }
-                None => (receipt.mounts(), receipt.memory_materializations().to_vec()),
-            };
-            if handle_materializations != materializations {
-                return Err(err(
-                    "Namespace sandbox handle Memory evidence differs from the Ready receipt",
-                ));
-            }
-            (realized, materializations)
+        let legacy_control_directory = if spec.is_none() {
+            control_directory_for(&root, &control_services)?
         } else {
-            (Vec::new(), handle_materializations)
+            None
         };
+        // Finish every fallible provider-specific path projection before the
+        // shared adoption owner can reacquire an external FUSE participant.
         let mut layout = if let Some(spec) = spec {
             replay_render_layout(&root, &host_workspace, spec)?
         } else {
             Vec::new()
         };
-        let control_directory = control_directory_for(&root, &control_services)?;
+        let host_paths = spec.map(|spec| {
+            layout
+                .iter()
+                .take(spec.mounts.len())
+                .map(|mount| mount.host.clone())
+                .collect::<Vec<_>>()
+        });
+        let (realized, materializations, memory_mounts) = if let Some(receipt) = completion.as_ref()
+        {
+            let crate::AdoptionMemoryReplay {
+                realized,
+                materializations,
+                memory_mounts,
+            } = crate::prepare_adoption_memory_replay(
+                &self.memory_mounter,
+                &raw_root,
+                current_evidence.as_ref(),
+                effect_fence,
+                spec,
+                receipt,
+                handle,
+                pc::Realization::Bind,
+                host_paths.as_deref(),
+            )
+            .await?;
+            (realized, materializations, memory_mounts)
+        } else {
+            (
+                Vec::new(),
+                handle
+                    .memory_materializations()?
+                    .unwrap_or_default()
+                    .to_vec(),
+                Vec::new(),
+            )
+        };
+        let control_directory = layout
+            .iter()
+            .find(|mount| mount.boundary == RenderMountBoundary::PrivateRendezvous)
+            .map(|mount| mount.host.clone())
+            .or(legacy_control_directory);
         if spec.is_none()
             && let Some(directory) = control_directory.clone()
         {
@@ -1293,7 +1360,7 @@ impl NamespaceProvider {
             layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
-            memory_mounts: tokio::sync::Mutex::new(Vec::new()),
+            memory_mounts: tokio::sync::Mutex::new(memory_mounts),
             memory_materializations: std::sync::Mutex::new(materializations),
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             memory_mounter: self.memory_mounter.clone(),
@@ -1325,11 +1392,13 @@ pub struct NamespaceSandbox {
     control_publication: Arc<NamespaceControlPublicationRegistry>,
     layout: std::sync::RwLock<Vec<RenderMount>>,
     realized: Vec<pc::RealizedMount>,
-    /// Host paths of realized secrets, shredded at dispose before the tree is reaped
-    /// (ADR-0023). Empty after an `adopt`.
+    /// Host paths of realized secrets, shredded at dispose before the tree is
+    /// reaped (ADR-0023). Unfenced legacy adoption has no frozen projection;
+    /// exact spec-aware adoption reconstructs these paths.
     secret_paths: Vec<PathBuf>,
-    /// Live memory-store mounts, harvested / unmounted at dispose before the tree is
-    /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
+    /// Live memory-store mounts, harvested / unmounted at dispose before the
+    /// tree is reaped. Exact spec-aware adoption reacquires Ready FUSE guards;
+    /// unfenced adoption rejects FUSE because it cannot reconstruct one.
     memory_mounts: tokio::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
     /// Canonical durable heads for copy-backed Memory mounts.
     memory_materializations: std::sync::Mutex<Vec<pc::MemoryMaterializationEvidence>>,

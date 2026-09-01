@@ -43,6 +43,18 @@ function systemText(parsed) {
   return blockText(parsed.system);
 }
 
+function exactMountedMemoryPath(parsed) {
+  const paths = [...systemText(parsed).matchAll(
+    /Persistent memory store `[^`]+` is mounted (?:read-only|read\/write) at `([^`]+)`\./gu,
+  )].map((match) => match[1]);
+  if (paths.length !== 1) {
+    throw new Error(
+      `fake Memory behavior requires exactly one frozen mounted Memory path; observed ${JSON.stringify(paths)}`,
+    );
+  }
+  return paths[0];
+}
+
 function userMessages(parsed) {
   // A tool result rides on a `user` message as a `tool_result` block; it is not a
   // User message. A User message carries text (not just tool_result).
@@ -384,14 +396,20 @@ export const BEHAVIORS = {
     return text(`recall:[${sys}] echo:${lastUserText(parsed)}`);
   },
   // MemoryResourceModel cause/effect table (shared with the in-process scenario):
-  // R1 no tool result -> write the marker; R2 exactly one result -> read the same
-  // mounted path; R3 two results -> terminate. R2 makes the observation independent
-  // of the host's later harvest API: a successful terminal Run must have observed
+  // C1 exactly one frozen Memory prompt -> use its exact mount; C2 missing or
+  // multiple prompts -> fail closed before issuing a tool. Given C1, R1 no tool
+  // result -> write the marker; R2 exactly one result -> read the same mounted
+  // path; R3 two results -> terminate. R2 makes the observation independent of
+  // the host's later harvest API: a successful terminal Run must have observed
   // the exact bytes through the sandbox mount first.
   memoryResource(parsed) {
+    const notePath = `${exactMountedMemoryPath(parsed)}/note.md`;
     switch (toolResults(parsed).length) {
-      case 0: return tool('memres-1', 'write', { path: '/mnt/memory/note.md', content: lastUserText(parsed) });
-      case 1: return tool('memres-2', 'read', { path: '/mnt/memory/note.md' });
+      case 0: return tool('memres-1', 'write', {
+        path: notePath,
+        content: lastUserText(parsed),
+      });
+      case 1: return tool('memres-2', 'read', { path: notePath });
       default: return text('memory persisted');
     }
   },
@@ -491,13 +509,22 @@ export const BEHAVIORS = {
         .filter((part) => part.includes('/.claude/skills/') && part.endsWith('/SKILL.md'));
       return text(JSON.stringify(paths));
     }
-    if (prompt === 'author-skill-v1' || prompt === 'author-skill-v2') {
-      if (toolResults(parsed).length > 0) return text(`authored ${prompt}`);
-      const body = prompt.endsWith('v2') ? 'AUTHORED_SKILL_V2' : 'AUTHORED_SKILL_V1';
-      return tool(`author-${prompt}`, 'write', {
-        path: 'skills/authored/SKILL.md',
-        content: `---\nname: authored\ndescription: agent authored skill\n---\n${body}`,
-      });
+    if (prompt === 'author-skill-v1') {
+      const body = 'AUTHORED_SKILL_V1';
+      const authoredPath = 'skills/authored/SKILL.md';
+      const results = toolResults(parsed);
+      if (results.length === 0) {
+        return tool(`author-${prompt}`, 'write', {
+          path: authoredPath,
+          content: `---\nname: authored\ndescription: agent authored skill\n---\n${body}`,
+        });
+      }
+      if (results.length === 1) {
+        return tool(`read-${prompt}`, 'read', { path: authoredPath });
+      }
+      // Drive the final answer from the actual read result. A failed or
+      // drifted read can no longer be hidden behind a hard-coded marker.
+      return text(`authored ${prompt}\n${toolResultText(results[results.length - 1])}`);
     }
     // The extraction sub-run (out-of-band): save one memory, then finish. It is seeded
     // with the whole main-Run transcript (which carries tool results), so we can't key
@@ -529,8 +556,13 @@ export const BEHAVIORS = {
         if (!repositorySkillPath) return text('missing repository filesystem Skill path');
         return tool('sk-read-repository', 'read', { path: repositorySkillPath });
       }
-      // Write into the mounted MemoryStore directory.
-      case 2: return tool('wm', 'write', { path: '/mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
+      // Memory coordinate decision: exactly one existing frozen Memory prompt
+      // supplies the tool path; missing/multiple prompts fail closed instead of
+      // selecting or reconstructing a catalog path.
+      case 2: return tool('wm', 'write', {
+        path: `${exactMountedMemoryPath(parsed)}/note.md`,
+        content: 'MEMO_FULLCHAIN_5521',
+      });
       // Write into the cloned repo working tree; lifecycle cleanup never pushes it.
       case 3: return tool('wr', 'write', { path: '/workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
       // Produce an output artifact (harvested into the blob store, listed by /v1/files).

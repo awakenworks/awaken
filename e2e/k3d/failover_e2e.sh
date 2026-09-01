@@ -32,10 +32,9 @@ cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   [ -n "$CORDONED" ] && kubectl uncordon "$CORDONED" >/dev/null 2>&1 || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster "$CLUSTER"
-  rm -f "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server"
 }
-trap cleanup EXIT
+k3d_install_exit_cleanup cleanup
 
 # Open a port-forward to a SPECIFIC pod (not the Service) so we control which node
 # handles a request; wait until the local port answers. Sets PF_PID.

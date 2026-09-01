@@ -74,6 +74,22 @@ async function main() {
     assert.equal((await listResources(client, seeded.id)).length, 1, 'create-time resource is listed');
     pass('create-time resources are backfilled on the session and listed');
 
+    await assert.rejects(
+      () => client.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: 'env_local',
+        resources: [{
+          type: 'memory_store',
+          memory_store_id: mem.id,
+          mount_path: '/client-owned-path',
+        }],
+        betas: BETAS,
+      }),
+      (error) => error?.status === 400 && /mount_path|unknown field/u.test(error.message),
+      'R1X client-authored Memory mount_path fails the closed ResourceInput union',
+    );
+    pass('client-authored MemoryStore mount_path is rejected at typed admission');
+
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',

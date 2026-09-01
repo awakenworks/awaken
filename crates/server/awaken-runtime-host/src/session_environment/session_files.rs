@@ -278,15 +278,35 @@ impl SessionEnvironment {
         self.sandbox().attach(requirement).await
     }
 
-    /// Rebuild the dynamic bind layout of an adopted Namespace from the frozen
-    /// Session manifest. Workdir paths survive directly and container runtimes
-    /// retain their own mount namespace across process ownership changes.
+    /// Complete an adopted Namespace from the frozen Session manifest. The
+    /// provider's Ready receipt already owns create-time Bind/Copy participants
+    /// and reacquires its exact FUSE participants during adoption; only late
+    /// mounts absent from that receipt flow through the ordinary attach port.
+    /// Workdir paths survive directly and container runtimes retain their own
+    /// mount namespace across process ownership changes.
     pub(crate) async fn reconcile_adopted_mounts(
         &self,
         requirements: &[pc::MountRequirement],
     ) -> Result<(), pc::SandboxError> {
         if let Self::Namespace { sandbox, .. } = self {
             for requirement in requirements {
+                let retained = pc::Sandbox::realized(sandbox.as_ref())
+                    .iter()
+                    .any(|realized| {
+                        realized.mount_id == requirement.mount_id
+                            && realized.mount_path == requirement.mount_path
+                            && realized.access == requirement.access
+                            && match &requirement.source {
+                                pc::MountSource::MemoryStore { .. } => matches!(
+                                    realized.realization,
+                                    pc::Realization::Copy | pc::Realization::Fuse
+                                ),
+                                _ => realized.realization == pc::Realization::Bind,
+                            }
+                    });
+                if retained {
+                    continue;
+                }
                 pc::Sandbox::attach(sandbox.as_ref(), requirement.clone()).await?;
             }
         }

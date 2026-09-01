@@ -5,6 +5,8 @@
 //! prompts, and MCP generations come only from the frozen Control projection
 //! and are installed into the same Session slot for the Native/ACP backend path.
 
+mod realization_control_deadline;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -14,6 +16,8 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use futures_util::stream::{self, StreamExt};
+
+use realization_control_deadline::DeadlineSessionRealizationControl;
 
 /// Independent Session lease renewals are fast root CAS operations. Bound them
 /// per Worker so cloud replica count scales total capacity without removing
@@ -169,240 +173,6 @@ fn realization_renewal_failure_disposition(
         RenewalFailureDisposition::RevokeImmediately
     } else {
         RenewalFailureDisposition::RetryWhileLeaseLive
-    }
-}
-
-#[derive(Clone)]
-struct DeadlineSessionRealizationControl {
-    inner: Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
-    request_timeout: std::time::Duration,
-}
-
-impl DeadlineSessionRealizationControl {
-    async fn call<T>(
-        &self,
-        operation: &'static str,
-        future: impl std::future::Future<
-            Output = Result<T, awaken_session_contract::SessionRealizationControlFailure>,
-        >,
-    ) -> Result<T, awaken_session_contract::SessionRealizationControlFailure> {
-        tokio::time::timeout(self.request_timeout, future)
-            .await
-            .map_err(|_| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                    "Session realization Control `{operation}` exceeded its authority-derived request deadline"
-                ))
-            })?
-    }
-}
-
-/// Deadline decoration only bounds transport waiting. The wrapped Control
-/// remains the sole owner of leases, phases, cleanup commands, and receipts.
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for DeadlineSessionRealizationControl {
-    async fn begin_session_realization(
-        &self,
-        command: awaken_session_contract::BeginSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call("begin", self.inner.begin_session_realization(command))
-            .await
-    }
-
-    async fn renew_session_realization(
-        &self,
-        command: awaken_session_contract::RenewSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationLease,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call("renew", self.inner.renew_session_realization(command))
-            .await
-    }
-
-    async fn activate_session_realization(
-        &self,
-        command: awaken_session_contract::ActivateSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call("activate", self.inner.activate_session_realization(command))
-            .await
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        command: awaken_session_contract::AcknowledgeSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "acknowledge",
-            self.inner.acknowledge_session_realization(command),
-        )
-        .await
-    }
-
-    async fn fail_session_realization(
-        &self,
-        command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call("fail", self.inner.fail_session_realization(command))
-            .await
-    }
-
-    async fn claim_next_terminal_cleanup(
-        &self,
-        target: awaken_session_contract::SessionRealizationTarget,
-    ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "claim_terminal_cleanup",
-            self.inner.claim_next_terminal_cleanup(target),
-        )
-        .await
-    }
-
-    async fn terminal_cleanup_work(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupWork>,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "poll_terminal_cleanup",
-            self.inner.terminal_cleanup_work(session_id, lease),
-        )
-        .await
-    }
-
-    async fn authorize_terminal_cleanup_effect(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    ) -> Result<
-        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "authorize_terminal_cleanup_effect",
-            self.inner.authorize_terminal_cleanup_effect(effect),
-        )
-        .await
-    }
-
-    async fn authorize_terminal_cleanup_disposal(
-        &self,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "authorize_terminal_cleanup_disposal",
-            self.inner.authorize_terminal_cleanup_disposal(effect),
-        )
-        .await
-    }
-
-    async fn authorize_checkpoint_release_artifact_effect(
-        &self,
-        session_id: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "authorize_checkpoint_release_artifact_effect",
-            self.inner
-                .authorize_checkpoint_release_artifact_effect(session_id, operation),
-        )
-        .await
-    }
-
-    async fn authorize_terminal_memory_intent(
-        &self,
-        intent: &awaken_session_contract::SessionTerminalMemoryIntent,
-    ) -> Result<
-        awaken_session_contract::SessionTerminalMemoryTarget,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "authorize_terminal_memory_intent",
-            self.inner.authorize_terminal_memory_intent(intent),
-        )
-        .await
-    }
-
-    async fn terminal_repository_publication_command(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<
-        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.call(
-            "poll_terminal_repository_publication",
-            self.inner
-                .terminal_repository_publication_command(session_id, lease),
-        )
-        .await
-    }
-
-    async fn record_terminal_repository_publication_receipt(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_repository_publication",
-            self.inner
-                .record_terminal_repository_publication_receipt(session_id, lease, receipt),
-        )
-        .await
-    }
-
-    async fn record_terminal_repository_publication_rejection(
-        &self,
-        session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_repository_publication_rejection",
-            self.inner
-                .record_terminal_repository_publication_rejection(session_id, lease, rejection),
-        )
-        .await
-    }
-
-    async fn record_terminal_cleanup_preparation(
-        &self,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_cleanup_preparation",
-            self.inner
-                .record_terminal_cleanup_preparation(lease, preparation),
-        )
-        .await
-    }
-
-    async fn record_terminal_cleanup_disposal(
-        &self,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.call(
-            "record_terminal_cleanup_disposal",
-            self.inner.record_terminal_cleanup_disposal(lease, receipt),
-        )
-        .await
     }
 }
 
@@ -1333,11 +1103,9 @@ impl crate::SharedHost {
         })?;
         let requested_expiry_unix_ms = now_unix_ms
             .saturating_add(u64::try_from(timing.lease_ttl().as_millis()).unwrap_or(u64::MAX));
-        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> =
-            Arc::new(DeadlineSessionRealizationControl {
-                inner: Arc::clone(control),
-                request_timeout: timing.request_timeout(),
-            });
+        let control: Arc<dyn awaken_session_contract::SessionRealizationControl> = Arc::new(
+            DeadlineSessionRealizationControl::new(Arc::clone(control), timing.request_timeout()),
+        );
         // This cadence owns only due lease writes. The independent lifecycle
         // lane owns cold claim-next recovery and complete effect execution.
         let order =
@@ -1576,25 +1344,42 @@ impl crate::SharedHost {
                 "thread {thread} is already bound to a different frozen Environment"
             )));
         }
-        let provider = if let Some(candidate) = model_candidate.as_ref() {
-            self.session_environment_provider(candidate.provisioning())?
-        } else {
-            self.session_environment_provider(
-                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            )?
-        };
         // Validate the prospective complete layout before publishing any part of
         // a cold projection. The baseline is not resident yet on first install,
         // so a validator that reads only the current slot would miss a Repository
-        // nested below one of its frozen mounts and could load Skills first.
-        self.validate_managed_resource_layout(
-            thread,
-            &projection.resources,
-            provider,
-            Some(&baseline.mounts),
-            Some(&baseline.env),
-            Some(&environment_projection),
-        )?;
+        // nested below one of its frozen mounts and could load Skills first. A
+        // Worker-owned Dispatch is projection-only on the Coordinator: it uses
+        // the same structural kernel without resolving a trusted-host provider
+        // that only the claimed Worker may own. Every realization/cleanup path
+        // and every Local dispatch retains the exact provider-effective check.
+        if resource_mode == FrozenResourceProjectionMode::Dispatch
+            && projection.baseline.runtime_placement
+                == awaken_session_contract::SessionRuntimePlacement::Worker
+        {
+            self.validate_structural_managed_resource_layout(
+                thread,
+                &projection.resources,
+                Some(&baseline.mounts),
+                Some(&baseline.env),
+                Some(&environment_projection),
+            )?;
+        } else {
+            let provider = if let Some(candidate) = model_candidate.as_ref() {
+                self.session_environment_provider(candidate.provisioning())?
+            } else {
+                self.session_environment_provider(
+                    &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                )?
+            };
+            self.validate_managed_resource_layout(
+                thread,
+                &projection.resources,
+                provider,
+                Some(&baseline.mounts),
+                Some(&baseline.env),
+                Some(&environment_projection),
+            )?;
+        }
 
         let baseline_to_install = if let Some(existing) = self
             .session_slots

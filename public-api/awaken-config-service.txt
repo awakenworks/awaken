@@ -58,6 +58,7 @@ pub async fn awaken_config_service::ConfigPlane::put_with_audit_effect(&self, &a
 pub async fn awaken_config_service::ConfigPlane::record_management_audit(&self, &awaken_tenancy::ScopeId, &awaken_agent_config::store::ManagementAuditRecord) -> core::result::Result<awaken_agent_config::store::AuditedConfigWrite, alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::registry_for(&self, &awaken_tenancy::ScopeId) -> awaken_agent_config::store::ScopedConfig<dyn awaken_agent_config::store::ScopedConfigRegistry>
 pub async fn awaken_config_service::ConfigPlane::remove_preview(&self, &str, &str) -> core::result::Result<(), alloc::string::String>
+pub fn awaken_config_service::ConfigPlane::runtime_agent_override_ids(&self, &awaken_tenancy::ScopeId, &awaken_agent_config::config::AgentConfig) -> alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::service(&self) -> &alloc::sync::Arc<awaken_config_service::ConfigService>
 pub async fn awaken_config_service::ConfigPlane::validate(&self, &awaken_tenancy::ScopeId, &awaken_agent_config::config::AgentConfig) -> core::result::Result<(), awaken_config_service::ValidationIssue>
 pub async fn awaken_config_service::ConfigPlane::validate_for_execution_workspace(&self, &awaken_tenancy::ScopeId, &str, &awaken_agent_config::config::AgentConfig) -> core::result::Result<(), awaken_config_service::ValidationIssue>

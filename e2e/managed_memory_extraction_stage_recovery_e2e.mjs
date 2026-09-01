@@ -20,6 +20,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
   realServerEnv,
+  scenarioMemoryStore,
   spawnServer,
   startUpstream,
   stopServer,
@@ -142,10 +143,7 @@ async function main() {
     servers.push(first.server);
     await waitForPort(PORT);
 
-    const store = await client.post('/v1/memory_stores', {
-      body: { name: 'stage-recovery' },
-      headers: MEMORY_HEADERS,
-    });
+    const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
     const oldUpdate = 'old update value';
     const already = 'already committed value';
     const updateHead = await createMemory(store.id, '/update.md', oldUpdate);
@@ -154,7 +152,7 @@ async function main() {
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: store.id }],
     });
     // Initial Run cause/effect rules: I1 accepted User command => exact receipt
     // may be unprocessed while inference runs; I2 committed agent.message with

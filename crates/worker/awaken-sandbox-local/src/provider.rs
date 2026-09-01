@@ -284,9 +284,34 @@ impl LocalProvider {
         if let Some(receipt) = realization_guard.completed_receipt()?.cloned() {
             let (realized, materializations) =
                 crate::replay_completion_receipt(spec, &receipt, pc::Realization::Copy)?;
+            let host_paths = spec
+                .mounts
+                .iter()
+                .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+                .collect::<Result<Vec<_>, _>>()?;
+            let memory_mounts = crate::replay_memory_mount_guards(
+                &self.memory_mounter,
+                spec,
+                &realized,
+                &host_paths,
+                || realization_guard.validate_before_mutation(),
+            )
+            .await?;
             sandbox.realized = realized;
             sandbox.memory_materializations = materializations;
-            sandbox.realization = realization_guard.complete(&receipt)?;
+            sandbox.realization = match realization_guard.complete(&receipt) {
+                Ok(realization) => realization,
+                Err(cause) => {
+                    let teardown = crate::compensate_memory_mounts(memory_mounts).await;
+                    return Err(match teardown {
+                        Ok(()) => cause,
+                        Err(teardown) => err(format!(
+                            "Local Ready replay publication failed: {cause}; Memory replay teardown failed: {teardown}"
+                        )),
+                    });
+                }
+            };
+            *sandbox.memory_mounts.lock().await = memory_mounts;
             return Ok(sandbox);
         }
         // A retry must shred credential bytes left by the previous interrupted
@@ -351,7 +376,7 @@ impl LocalProvider {
         let receipt = match realization {
             Ok(receipt) => receipt,
             Err(cause) => {
-                let teardown = sandbox.release_memory_mounts().await;
+                let teardown = sandbox.compensate_failed_creation_memory_mounts().await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &sandbox.root,
@@ -385,7 +410,7 @@ impl LocalProvider {
         sandbox.realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = sandbox.release_memory_mounts().await;
+                let teardown = sandbox.compensate_failed_creation_memory_mounts().await;
                 let shredding = if realization_guard.is_incomplete() {
                     crate::shred_secret_paths_at(
                         &sandbox.root,
@@ -497,18 +522,15 @@ impl LocalProvider {
 
     /// Enter the terminal edge of the same marker lifecycle and reconstruct at
     /// most the exact physical participant that still requires disposal. No
-    /// ordinary adoption, process, mount, or Hand effect occurs here.
-    pub fn prepare_terminal_sandbox_for_effect(
+    /// ordinary adoption, process, or Hand effect occurs here. An exact Ready
+    /// FUSE participant is reacquired through the canonical MemoryMounter.
+    pub async fn prepare_terminal_sandbox_for_effect(
         &self,
         spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
     ) -> Result<Option<LocalSandbox>, pc::SandboxError> {
-        // Pure validation precedes marker admission. Exact copy evidence is
-        // carried for the Host's one recovered-CAS reconciliation; this cold
-        // provider object intentionally reconstructs no MemoryMount guard.
-        let mut materializations = crate::terminal_copy_materializations(spec, handle)?;
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
         let (id, outputs_path, base_env, owned_paths) = if let Some(handle) = handle {
             let payload = handle.local_payload()?;
@@ -538,50 +560,56 @@ impl LocalProvider {
             )
         };
         let mut sandbox = self.build(id, outputs_path);
-        let terminal = crate::realization_marker::begin_terminal_takeover(
-            sandbox.root.root(),
-            &fingerprint,
-            handle
-                .map(crate::realization_marker::rebuild_source)
-                .transpose()?,
-            expected_effect_fence,
-            terminal_effect_fence,
-        )?;
-        let Some((realization, removal)) = terminal else {
-            return Ok(None);
-        };
-        if let Some(receipt) = removal.completed_receipt()? {
-            let (realized, receipt_materializations) =
-                crate::replay_completion_receipt(spec, receipt, pc::Realization::Copy)?;
-            if receipt_materializations != materializations {
-                return Err(err(
-                    "Local terminal handle Memory evidence differs from the Ready receipt",
-                ));
-            }
-            sandbox.realized = realized;
-            materializations = receipt_materializations;
-        } else if handle.is_some() {
-            return Err(err(
-                "Local terminal handle targets a realization without a Ready receipt",
-            ));
-        }
-        sandbox.realization = crate::realization_marker::LiveRealization::Current(realization);
-        *sandbox
-            .terminal_removal
-            .lock()
-            .expect("terminal removal lock poisoned") = Some(removal);
-        sandbox.base_env = base_env;
         sandbox.secret_paths = spec
             .mounts
             .iter()
             .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
             .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
             .collect::<Result<_, _>>()?;
+        let host_paths = spec
+            .mounts
+            .iter()
+            .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The provider-neutral terminal Memory owner performs the one typed
+        // preflight->takeover->receipt/FUSE replay sequence. Local only supplies
+        // its root/path projection and wraps the returned physical participant.
+        let terminal = crate::prepare_terminal_memory_replay(
+            &self.memory_mounter,
+            sandbox.root.root(),
+            &fingerprint,
+            spec,
+            handle,
+            expected_effect_fence,
+            terminal_effect_fence,
+            pc::Realization::Copy,
+            &host_paths,
+        )
+        .await?;
+        let Some(crate::TerminalMemoryReplay {
+            realization,
+            removal,
+            owned_root_present: _,
+            realized,
+            materializations,
+            memory_mounts,
+        }) = terminal
+        else {
+            return Ok(None);
+        };
+        sandbox.realized = realized;
+        sandbox.realization = crate::realization_marker::LiveRealization::Current(realization);
+        *sandbox
+            .terminal_removal
+            .lock()
+            .expect("terminal removal lock poisoned") = Some(removal);
+        sandbox.base_env = base_env;
         *sandbox
             .owned_paths
             .lock()
             .expect("owned paths lock poisoned") = owned_paths;
         sandbox.memory_materializations = materializations;
+        *sandbox.memory_mounts.lock().await = memory_mounts;
         Ok(Some(sandbox))
     }
 
@@ -616,6 +644,7 @@ impl LocalProvider {
             effect_fence,
         )?;
         let completion = verified.as_ref().map(|(_, receipt)| receipt.clone());
+        let current_evidence = verified.as_ref().map(|(evidence, _)| evidence.clone());
         sandbox.realization = match verified {
             Some((evidence, _)) => crate::realization_marker::LiveRealization::Current(evidence),
             None => crate::realization_marker::LiveRealization::LegacyAdopted,
@@ -639,26 +668,39 @@ impl LocalProvider {
             .lock()
             .expect("owned paths lock poisoned") =
             handle.owned_paths().unwrap_or_default().to_vec();
-        let handle_materializations = handle
-            .memory_materializations()?
-            .unwrap_or_default()
-            .to_vec();
-        if let Some(receipt) = completion {
-            let (realized, materializations) = match spec {
-                Some(spec) => {
-                    crate::replay_completion_receipt(spec, &receipt, pc::Realization::Copy)?
-                }
-                None => (receipt.mounts(), receipt.memory_materializations().to_vec()),
-            };
-            if handle_materializations != materializations {
-                return Err(err(
-                    "Local sandbox handle Memory evidence differs from the Ready receipt",
-                ));
-            }
+        if let Some(receipt) = completion.as_ref() {
+            let host_paths = spec
+                .map(|spec| {
+                    spec.mounts
+                        .iter()
+                        .map(|mount| sandbox.root.resolve(&mount.mount_path).map_err(err))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?;
+            let crate::AdoptionMemoryReplay {
+                realized,
+                materializations,
+                memory_mounts,
+            } = crate::prepare_adoption_memory_replay(
+                &self.memory_mounter,
+                sandbox.root.root(),
+                current_evidence.as_ref(),
+                effect_fence,
+                spec,
+                receipt,
+                handle,
+                pc::Realization::Copy,
+                host_paths.as_deref(),
+            )
+            .await?;
             sandbox.realized = realized;
             sandbox.memory_materializations = materializations;
+            *sandbox.memory_mounts.lock().await = memory_mounts;
         } else {
-            sandbox.memory_materializations = handle_materializations;
+            sandbox.memory_materializations = handle
+                .memory_materializations()?
+                .unwrap_or_default()
+                .to_vec();
         }
         Ok(sandbox)
     }
@@ -695,83 +737,26 @@ impl LocalProvider {
         // realize it through the injected mounter (FUSE where the kernel supports it,
         // else a harvested copy). Without a mounter, fail loud rather than fake it
         // with an empty file that misleads the agent into thinking it has a store.
-        if let pc::MountSource::MemoryStore {
-            store_id,
-            materialization_reference,
-            write_consistency,
-        } = &req.source
-        {
-            let mounter = self
-                .memory_mounter
-                .read()
-                .expect("memory mounter lock poisoned")
-                .clone();
-            let Some(mounter) = mounter else {
-                return Err(err(format!(
-                    "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
-                    req.mount_id
-                )));
-            };
+        if matches!(&req.source, pc::MountSource::MemoryStore { .. }) {
             mutation_guard.validate_before_mutation()?;
-            let guard = mounter
-                .mount(
-                    materialization_reference.as_deref().unwrap_or(store_id),
-                    &host,
-                    req.access,
-                )
-                .await?;
-            let realization = guard.realization();
-            let materialization = match (realization, guard.materialization_heads()) {
-                (pc::Realization::Copy, Some(heads)) => {
-                    match pc::MemoryMaterializationEvidence::new(
-                        store_id.clone(),
-                        req.mount_path.clone(),
-                        heads,
-                    ) {
-                        Ok(evidence) => Some(evidence),
-                        Err(cause) => {
-                            retained_mounts.lock().await.push(guard);
-                            return Err(err(format!(
-                                "mount {:?}: invalid memory materialization evidence: {cause}; teardown guard retained",
-                                req.mount_id
-                            )));
-                        }
-                    }
+            let mut acquired = Vec::new();
+            let mounted =
+                crate::mount_memory_requirement(&self.memory_mounter, req, &host, &mut acquired)
+                    .await;
+            let mounted = match mounted {
+                Ok(mounted) => {
+                    retained_mounts.lock().await.extend(acquired);
+                    mutation_guard.validate_before_mutation()?;
+                    mounted
                 }
-                (pc::Realization::Copy, None) => {
-                    retained_mounts.lock().await.push(guard);
-                    return Err(err(format!(
-                        "mount {:?}: copy-backed memory_store returned no durable heads; teardown guard retained",
-                        req.mount_id
-                    )));
+                Err(cause) => {
+                    retained_mounts.lock().await.extend(acquired);
+                    return Err(cause);
                 }
-                (_, Some(_)) => {
-                    retained_mounts.lock().await.push(guard);
-                    return Err(err(format!(
-                        "mount {:?}: non-copy memory_store returned copy materialization heads; teardown guard retained",
-                        req.mount_id
-                    )));
-                }
-                (_, None) => None,
             };
-            if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-                && realization != pc::Realization::Fuse
-            {
-                retained_mounts.lock().await.push(guard);
-                return Err(err(format!(
-                    "mount {:?}: memory_store requires write-through FUSE realization; teardown guard retained",
-                    req.mount_id
-                )));
-            }
-            let realized = pc::RealizedMount {
-                mount_id: req.mount_id.clone(),
-                mount_path: req.mount_path.clone(),
-                access: req.access,
-                realization,
-                content_hash: None,
-            };
-            retained_mounts.lock().await.push(guard);
-            return Ok((realized, materialization));
+            return mounted.ok_or_else(|| {
+                err("Memory requirement did not reach the canonical Memory mount adapter")
+            });
         }
         let secret_broker = self
             .secret_broker
@@ -984,7 +969,8 @@ impl pc::SandboxProvider for LocalProvider {
                 handle,
                 expected_effect_fence,
                 terminal_effect_fence,
-            )?
+            )
+            .await?
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 
@@ -1115,6 +1101,18 @@ impl LocalSandbox {
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
     pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
         crate::release_memory_mounts(&self.memory_mounts).await
+    }
+
+    /// Creation failure has no live Sandbox owner to retain a failed teardown.
+    /// Transfer the complete guard set into the shared all-or-leak compensation
+    /// before this temporary wrapper can drop; normal/terminal disposal keeps
+    /// using the retryable `release_memory_mounts` path above.
+    async fn compensate_failed_creation_memory_mounts(&self) -> Result<(), pc::SandboxError> {
+        let mounts = {
+            let mut retained = self.memory_mounts.lock().await;
+            std::mem::take(&mut *retained)
+        };
+        crate::compensate_memory_mounts(mounts).await
     }
 
     /// Remove only the runtime-owned resource projection, preserving the rest of

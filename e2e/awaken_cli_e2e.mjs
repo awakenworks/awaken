@@ -27,6 +27,7 @@ import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import {
   cleanupFixtureTree,
+  initializeE2EInstallation,
   managedFileUploadForm,
   waitForSessionEventReceipt,
   waitForValue,
@@ -52,19 +53,22 @@ function awakenBin() {
   });
 }
 
-function startAwaken(bin, port, configPath, extraEnv = {}) {
+function awakenProcessEnv(extraEnv = {}) {
   // This is a process-lifecycle test, not a browser-launch test. Keeping the
   // product opener enabled can leave a desktop/browser descendant holding the
   // harness PTY after Awaken itself has shut down and make a passing run hang.
   // This production-composition test authors its credential through the
   // provider-connections boundary below.  Do not let a developer/CI runner's
   // unrelated provider keys trip the product's intentional ambient-key guard.
-  const childEnv = Object.fromEntries(
+  return Object.fromEntries(
     Object.entries({ ...process.env, ...extraEnv }).filter(([name]) => {
       const normalized = name.toUpperCase();
       return normalized !== 'API_KEY' && !normalized.endsWith('_API_KEY');
     }),
   );
+}
+
+function startAwaken(bin, port, configPath, childEnv) {
   const server = spawn(bin, automatedAllInOneArgs('--config', configPath, '--port', String(port)), {
     env: childEnv,
     stdio: ['ignore', 'inherit', 'pipe'],
@@ -135,7 +139,8 @@ async function main() {
     // that deterministic model with an unverified Worker capability.
     'acp_clis = ["gemini"]',
   ].join('\n'));
-  const serverEnv = {};
+  const serverEnv = awakenProcessEnv();
+  initializeE2EInstallation(serverEnv, { binary: bin, configPath });
   let h = startAwaken(bin, PORT, configPath, serverEnv);
   try {
     await ready(h.baseUrl);
