@@ -68,6 +68,39 @@ async fn glob_lists_matching_paths() {
 }
 
 #[tokio::test]
+async fn glob_matches_files_and_directories_with_doublestar_segments() {
+    // Cause/effect graph: C1 the candidate is a file/directory; C2 the pattern
+    // contains a zero-or-more-segment `**`; C3 the suffix matches/does not
+    // match. E1 both matching entry kinds are returned; E2 `**` consumes zero
+    // or multiple segments; E3 non-matching entries are absent.
+    //
+    // | Rule | Kind | `**` depth | Suffix | Effect |
+    // |---|---|---|---|---|
+    // | G5 | directory | zero | match | E1+E2 |
+    // | G6 | file | multiple | match | E1+E2 |
+    // | G7 | file | multiple | miss | E3 |
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src/nested")).expect("nested directory");
+    std::fs::write(dir.path().join("src/nested/lib.rs"), "").expect("matching file");
+    std::fs::write(dir.path().join("src/nested/lib.txt"), "").expect("non-matching file");
+
+    let directories = tool_at("glob", dir.path())
+        .invoke(call("glob", serde_json::json!({ "pattern": "**/src" })))
+        .await
+        .expect("G5 directory match")
+        .text();
+    assert!(directories.ends_with("/src"), "G5/E1+E2: {directories}");
+
+    let files = tool_at("glob", dir.path())
+        .invoke(call("glob", serde_json::json!({ "pattern": "**/*.rs" })))
+        .await
+        .expect("G6 recursive file match")
+        .text();
+    assert!(files.ends_with("/src/nested/lib.rs"), "G6/E1+E2: {files}");
+    assert!(!files.contains("lib.txt"), "G7/E3: {files}");
+}
+
+#[tokio::test]
 async fn glob_absolute_pattern_reuses_the_confined_logical_path_projection() {
     // Cause/effect graph: C1 pattern is relative/absolute; C2 an absolute
     // pattern is inside/outside a trusted logical projection; C3 `path` is
@@ -196,18 +229,8 @@ async fn grep_finds_matching_lines_with_line_numbers() {
     let content = out.text();
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 2);
-    if std::process::Command::new("rg")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
-        // ripgrep omits the filename when the explicit search path is one file.
-        assert_eq!(lines[0], "2:beta error");
-        assert_eq!(lines[1], "4:delta error");
-    } else {
-        assert!(lines[0].contains(":2:beta error"));
-        assert!(lines[1].contains(":4:delta error"));
-    }
+    assert_eq!(lines[0], "2:beta error");
+    assert_eq!(lines[1], "4:delta error");
 }
 
 #[tokio::test]
@@ -325,30 +348,25 @@ async fn grep_invalid_regex_is_a_typed_error() {
         ))
         .await
         .expect_err("bad regex");
-    assert!(
-        matches!(
-            err,
-            ToolError::InvalidArguments(_) | ToolError::Execution(_)
-        ),
-        "ripgrep reports an execution error; the no-rg fallback reports invalid arguments"
-    );
+    assert!(matches!(err, ToolError::InvalidArguments(_)));
 }
 
 #[tokio::test]
-async fn grep_matches_official_ripgrep_ignore_and_hidden_file_semantics() {
-    if std::process::Command::new("rg")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        return;
-    }
+async fn grep_matches_managed_ignore_and_hidden_file_semantics_without_host_tools() {
+    // Cause/effect graph: C1 the search root has a visible file; C2 a root
+    // `.gitignore` excludes one file; C3 one file is hidden. E1 visible content
+    // is reported; E2 ignored and hidden content are absent. Rule S1:
+    // C1+C2+C3 => E1+E2, independently of host PATH or an installed `rg`.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
     std::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
     std::fs::write(dir.path().join("visible.txt"), "needle\n").unwrap();
     std::fs::write(dir.path().join("ignored.txt"), "needle\n").unwrap();
     std::fs::write(dir.path().join(".hidden.txt"), "needle\n").unwrap();
+    std::fs::create_dir(dir.path().join("nested")).unwrap();
+    std::fs::write(dir.path().join("nested/ignored.txt"), "needle\n").unwrap();
+    std::fs::write(dir.path().join("nested/keep.txt"), "needle\n").unwrap();
+    std::fs::write(dir.path().join("nested/.gitignore"), "*.txt\n!keep.txt\n").unwrap();
 
     let output = tool_at("grep", dir.path())
         .invoke(call("grep", serde_json::json!({ "pattern": "needle" })))
@@ -358,17 +376,14 @@ async fn grep_matches_official_ripgrep_ignore_and_hidden_file_semantics() {
     assert!(output.contains("visible.txt:1:needle"));
     assert!(!output.contains("ignored.txt"));
     assert!(!output.contains(".hidden.txt"));
+    assert!(output.contains("nested/keep.txt:1:needle"));
 }
 
 #[tokio::test]
-async fn grep_caps_ripgrep_output_and_marks_truncation() {
-    if std::process::Command::new("rg")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        return;
-    }
+async fn grep_caps_output_and_marks_truncation_without_host_tools() {
+    // Cause/effect graph: C1 matching output is below/above 100 KiB. E1 output
+    // is complete below the cap; E2 output is bounded and marked above it.
+    // This case covers C1=above => E2 on the deterministic in-process path.
     let dir = tempfile::tempdir().unwrap();
     let line = format!("needle-{}", "x".repeat(1900));
     std::fs::write(
@@ -383,6 +398,39 @@ async fn grep_caps_ripgrep_output_and_marks_truncation() {
         .text();
     assert!(output.contains("[output truncated at 102400 bytes]"));
     assert!(output.len() <= 102400 + "\n[output truncated at 102400 bytes]".len());
+}
+
+#[tokio::test]
+async fn grep_searches_long_text_lines_and_skips_binary_and_oversized_files() {
+    // Cause/effect graph: C1 UTF-8 text/binary input; C2 file size is at/beyond
+    // the 8 MiB managed limit; C3 a matching line is short/long. E1 ordinary
+    // and long text lines are searched; E2 binary and oversized files are
+    // skipped without an error or leaked match.
+    //
+    // | Rule | Input | Size | Line | Effect |
+    // |---|---|---|---|---|
+    // | S2 | text | below cap | >2000 bytes | E1 |
+    // | S3 | binary | below cap | matching bytes | E2 |
+    // | S4 | text | above cap | matching line | E2 |
+    let dir = tempfile::tempdir().expect("tempdir");
+    let long_line = format!("{}needle-long", "x".repeat(3_000));
+    std::fs::write(dir.path().join("long.txt"), &long_line).expect("long text line");
+    std::fs::write(dir.path().join("binary.bin"), b"needle-binary\0payload").expect("binary file");
+    let oversized =
+        std::fs::File::create(dir.path().join("oversized.txt")).expect("oversized file");
+    oversized
+        .set_len(8 * 1024 * 1024 + 1)
+        .expect("sparse oversized file");
+
+    let output = tool_at("grep", dir.path())
+        .invoke(call("grep", serde_json::json!({ "pattern": "needle" })))
+        .await
+        .expect("bounded grep")
+        .text();
+    assert!(output.contains("long.txt:1:"), "S2/E1: {output}");
+    assert!(output.contains("needle-long"), "S2/E1: {output}");
+    assert!(!output.contains("binary.bin"), "S3/E2: {output}");
+    assert!(!output.contains("oversized.txt"), "S4/E2: {output}");
 }
 
 #[tokio::test]
