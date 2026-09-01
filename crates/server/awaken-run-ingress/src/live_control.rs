@@ -363,7 +363,12 @@ mod tests {
         let thread_id = awaken_agent_contract::agent::thread::Id("external-thread".into());
         let pause = PauseSignal::new();
         let context = RuntimeRunContext::new().with_pause(pause.clone());
-        let tracking = runtime.track_active_attempt(&run_id, &thread_id, &context);
+        let tracking = runtime.begin_active_attempt(
+            &run_id,
+            &thread_id,
+            context,
+            awaken_runtime_contract::execution::LiveInput::None,
+        );
 
         service
             .pause(&run_id.0)

@@ -31,10 +31,10 @@ use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
-    DispatchServiceConfig, DurableRunIngress, Inbox, PendingInput, RunDispatch, SubmitOptions,
-    SystemClock, WorkerResolver,
+    DispatchServiceConfig, Inbox, PendingInput, RunDispatch, SubmitOptions, SystemClock,
+    WorkerResolver,
 };
-use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
+use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;
 use awaken_runtime_contract::activation::RunActivation;

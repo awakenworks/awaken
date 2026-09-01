@@ -369,13 +369,14 @@ impl SharedHost {
         // path goes through `pool.submit` (which stamps the trace); a superseding
         // submit needs the supersede option, so it enqueues on the shared store and
         // nudges the pool directly.
-        let ingress = ctx
-            .durable_ingress
-            .as_ref()
-            .ok_or_else(|| HostError::internal("durable submit requires durable ingress"))?;
+        if !ctx.delivery.is_durable() {
+            return Err(HostError::internal(
+                "durable submit requires durable delivery",
+            ));
+        }
+        let worker = &ctx.claimed_worker;
         if supersede {
-            ingress
-                .worker()
+            worker
                 .store()
                 .enqueue_with(
                     request,
@@ -398,8 +399,7 @@ impl SharedHost {
             // registered remote Workers are its only claimers. Their authenticated
             // settle route wakes this Host's completion registry from committed
             // Run truth, so no local executor or polling compatibility path exists.
-            ingress
-                .worker()
+            worker
                 .store()
                 .enqueue(request)
                 .await
@@ -423,10 +423,12 @@ impl SharedHost {
         // publication and waiter installation.
         let (settled, _waiter_guard) = self.completion.register(&run_id, None);
         let input = durable_resume_input(command);
-        let ingress = ctx
-            .durable_ingress
-            .as_ref()
-            .ok_or_else(|| HostError::internal("durable resume requires durable ingress"))?;
+        if !ctx.delivery.is_durable() {
+            return Err(HostError::internal(
+                "durable resume requires durable delivery",
+            ));
+        }
+        let worker = &ctx.claimed_worker;
         if let Some(pool) = self.dispatch_pool.get() {
             pool.deliver(input)
                 .await
@@ -435,8 +437,7 @@ impl SharedHost {
             // Coordinator-only cells publish to the same shared store. Remote
             // Workers claim it on their ordinary wake/poll path and committed-truth
             // reconciliation below observes their settlement.
-            ingress
-                .worker()
+            worker
                 .store()
                 .append(input)
                 .await

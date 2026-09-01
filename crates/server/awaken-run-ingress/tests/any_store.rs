@@ -2,7 +2,7 @@
 //! wiring). Proves the enum-free wrapper delegates the full `Dispatch` bundle to
 //! its active backend and preserves the owner-scoped claim/lease semantics the
 //! fleet relies on. The SQLite paths always run; the Postgres path skips when no
-//! database is reachable. Also exercises `DurableRunIngress::with_owner`, the seam
+//! database is reachable. Also exercises `DispatchTestHarness::with_owner`, the seam
 //! that gives each fleet process its own unique claim owner.
 
 mod harness;
@@ -13,12 +13,11 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_run_ingress::{
     AnyDispatchStore, DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchOutcome,
-    DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
+    DispatchQueue, DispatchTestHarness, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
     PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements, RankedWorker,
     RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
-use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -685,8 +684,13 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(any_in_memory());
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
-    let ingress =
-        DurableRunIngress::with_owner(runtime, store.clone(), commit.clone(), "fleet-node-7", None);
+    let ingress = DispatchTestHarness::with_owner(
+        runtime,
+        store.clone(),
+        commit.clone(),
+        "fleet-node-7",
+        None,
+    );
 
     let state = ingress
         .submit_background(activation("run-1"))

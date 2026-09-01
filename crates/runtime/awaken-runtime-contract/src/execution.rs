@@ -93,6 +93,19 @@ pub enum Wait {
     Both,
 }
 
+/// Whether an executor consumes attempt-local input at the shared safe boundary.
+///
+/// This is deliberately independent from [`Wait`]: an opaque executor may support
+/// durable await-and-resume without exposing an in-process boundary at which a
+/// [`LiveInbox`](crate::live_inbox::LiveInbox) can be drained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveInput {
+    /// No process-local input endpoint may be advertised for this executor.
+    None,
+    /// The executor drains the attempt's inbox through the shared boundary policy.
+    SafeBoundary,
+}
+
 /// The in-flight-control surface an executor supports, so the host adapts rather
 /// than assuming the native-engine model for every backend (ADR-0055). Only the
 /// axes the host branches on are modeled; more are added when a consumer needs them.
@@ -100,6 +113,7 @@ pub enum Wait {
 pub struct ExecutorCapabilities {
     pub cancellation: Cancellation,
     pub wait: Wait,
+    pub live_input: LiveInput,
 }
 
 impl ExecutorCapabilities {
@@ -108,6 +122,7 @@ impl ExecutorCapabilities {
     pub const NATIVE: Self = Self {
         cancellation: Cancellation::CooperativeToken,
         wait: Wait::Both,
+        live_input: LiveInput::SafeBoundary,
     };
 }
 

@@ -3,7 +3,7 @@
 //! fleet sharing one Postgres queue, ADR-0019). It holds the active backend as an
 //! `Arc<dyn Dispatch>` and re-implements the `DispatchQueue`/`Inbox`/`Outbox`
 //! bundle by delegating through that trait object, so
-//! `DurableRunIngress<AnyDispatchStore>` and `DispatchService<AnyDispatchStore>`
+//! `DispatchWorker<AnyDispatchStore>` and `DispatchService<AnyDispatchStore>`
 //! carry either backend behind one concrete, non-generic type — the host holds a
 //! non-generic field and picks the variant from configuration.
 //!

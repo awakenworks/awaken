@@ -1,6 +1,6 @@
 //! Focused unit coverage for the small surfaces the end-to-end suites do not
 //! exercise: the clock port, the request/context accessors, the worker builders
-//! and live-stream wiring, and the synchronous `DurableRunIngress` façade.
+//! and live-stream wiring, and the synchronous `DispatchTestHarness` façade.
 
 mod harness;
 
@@ -9,10 +9,9 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_run_ingress::{
-    Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
+    Clock, DispatchQueue, DispatchTestHarness, DispatchWorker, ManualClock, MemoryDispatchStore,
     RunDispatch, SystemClock,
 };
-use awaken_runtime::{RunIngress, RunService};
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
@@ -119,8 +118,8 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
 }
 
 #[tokio::test]
-async fn durable_ingress_attaches_one_best_effort_stream_sink_to_its_worker() {
-    // Cause/effect graph: C1 DurableRunIngress is configured before sharing its
+async fn dispatch_harness_attaches_one_best_effort_stream_sink_to_its_worker() {
+    // Cause/effect graph: C1 DispatchTestHarness is configured before sharing its
     // worker; C2 a sink is present vs absent; C3 the runtime emits live deltas.
     // Effects: E1 the existing worker path forwards deltas to the supplied sink;
     // E2 committed terminal state remains identical and authoritative. Constraint:
@@ -130,12 +129,12 @@ async fn durable_ingress_attaches_one_best_effort_stream_sink_to_its_worker() {
     // | Rule | sink | runtime delta | Effects |
     // | R1 | present | yes | E1+E2 |
     // | R2 | absent | yes | E2 only (existing default path) |
-    // R2 is covered by durable_ingress_foreground_submit_and_cancel below.
+    // R2 is covered by the foreground submit/cancel integration below.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone())
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone())
         .with_stream_sink(sink.clone() as Arc<dyn Sink>);
 
     let state = ingress
@@ -212,12 +211,12 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
 }
 
 #[tokio::test]
-async fn durable_ingress_unknown_live_cancel_is_typed() {
+async fn dispatch_harness_unknown_live_cancel_is_typed() {
     // Cause U1: cancellation names no active Runtime attempt. Effect E1: the
     // public control surface returns typed NotActive and performs no execution.
     // The Durable inline start/resume decision table is owned once by
     // `durable_inline_start_and_resume_fail_closed_before_executor_entry`.
-    let ingress = DurableRunIngress::new(
+    let ingress = DispatchTestHarness::new(
         text_runtime(),
         Arc::new(MemoryDispatchStore::new()),
         Arc::new(MemoryCommitCoordinator::new()),

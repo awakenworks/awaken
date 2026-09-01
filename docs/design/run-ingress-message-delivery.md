@@ -1,7 +1,7 @@
 # Run Ingress And Message Delivery
 
-This document owns the Dispatch / Server boundary for run ingress, durable
-delivery, pending message intake, and message-consumption handoff into runtime.
+This document owns the Dispatch / Server boundary for Run admission, durable
+delivery, pending input, attempt-local control, and committed handoff into runtime.
 It exists to keep durable delivery and distributed message mechanics out of
 runtime core while still making the runtime boundary testable.
 
@@ -9,49 +9,51 @@ runtime core while still making the runtime boundary testable.
 
 | Behavior | Owner |
 |---|---|
-| Direct run submission and live control | Runtime Core through `DirectRunIngress` role projections |
-| Durable queue, pending input, recovery, replay | Dispatch / Server through `DurableRunIngress` |
+| Direct physical-attempt delivery | Runtime Core through `DirectAttemptDriver` |
+| Durable queue, pending input, recovery, replay | Dispatch / Server through `RunDispatch`, `DispatchPool`, and `DispatchWorker` |
+| Attempt-local input and neutral controls | Runtime `ActiveAttemptScope` |
 | Public sessions and product status | Product adapters |
 
-## Run Ingress
+## Delivery Boundary
 
-Use one server-facing port:
+There is no common direct/durable service port. Application admission selects one
+private foreground-delivery value, then both paths meet at the physical executor:
 
 ```text
-RunIngress
-  |- DirectRunIngress   -> direct runtime ingress
-  `- DurableRunIngress  -> durable buffered ingress
+Application admission
+  |- Direct -> DirectAttemptDriver -------------------.
+  `- Durable -> RunDispatch -> claim/epoch -> Worker -+-> ActiveAttemptScope
+                                                        -> RunAttemptExecutor
+                                                        -> ThreadCommit
 ```
 
-`DirectRunIngress` submits a prepared activation to the runtime through
-`RunExecutor` and forwards live control through `LiveRunControl`. It has no
-durable queue, no recovery scan, no replay, and no scheduled wake.
+`DirectAttemptDriver` has only `start`, `resume`, and live cancellation. Durable
+submission is unrepresentable on that type rather than a runtime error branch.
 
-`DurableRunIngress` delegates to durable ingress internals. It adds durable
-pending input, dispatch claiming, wake reconciliation, resolved-config
-materialization, lifecycle wiring, and committed-event handoff before calling the
-narrow runtime roles.
+Durable delivery persists `RunDispatch`, then `DispatchPool` and
+`DispatchWorker` own claim, fencing, recovery, pending-input correlation,
+materialization, execution, and settlement. Production Hosts compose those
+authorities directly; no durable-ingress façade is stored beside the Worker.
 
 ## Simplified Current Shape
 
-The current design intentionally collapses the older run-ingress surface. Public
-server code should see one port and a small command family:
+The current design removes the older common port and capability report. Public
+server code sees application commands; infrastructure sees the exact owner:
 
-| Public surface | Purpose | Must not include |
+| Surface | Purpose | Must not include |
 |---|---|---|
-| `submit` | accept a neutral run submit or internally authorized message handoff command | live-vs-queue routing mode, batching policy, pending edit semantics |
-| `control` | cancel, deliver decision, or wake an active/pending boundary | durable queue internals, product protocol names |
-| `capabilities` | report whether the selected ingress supports durable, recoverable, replayable, or scheduled-wake behavior | runtime execution semantics or product policy |
-| optional query | inspect durable dispatch state for operations | message payload truth, public session status |
+| Session/Run application | authorize, reserve, activate, and select direct or durable delivery | queue claim state, LiveInbox identity |
+| `DirectAttemptDriver` | run one queue-less physical attempt | durable submit/recovery/query methods |
+| `DispatchQueue` / `DispatchPool` | persist, wake, claim, fence, and settle durable work | Run outcome or Thread transcript truth |
+| `ActiveAttemptScope` | register one exact process-local attempt and optionally create its fresh LiveInbox | Session cache, cross-attempt carry-over, remote mailbox |
+| operational query | inspect durable dispatch state | message payload truth, public Session status |
 
-Delivery routing such as live-vs-durable, inline claim, live-then-queue,
-boundary selection, batching, and fallback is an internal durable-ingress policy.
-It must not become stable route vocabulary or a public `DeliveryIntent` axis.
-If an implementation needs a policy value, keep it private to durable ingress and
-prove it with table-driven tests.
+The private delivery enum replaces the former trait object, durability boolean,
+and optional concrete durable wrapper. Live input is not a routing fallback:
+only an already-active local attempt can expose it.
 
 Pending edit, retract, reorder, and recovery operations belong to the
-thread-message or operations surface. They are not public `RunIngress` internals.
+thread-message or operations surface. They are not direct-driver or Dispatch internals.
 
 ## External Use Surface
 
@@ -69,42 +71,44 @@ commands.
 
 | External operation | Public owner | Internal target | Boundary rule |
 |---|---|---|---|
-| start or continue a run | Product adapter / Server | `RunIngress.submit` | payload becomes neutral activation or message submit data |
-| cancel, decide, wake, or resume | Product adapter / Server | `RunIngress.control` or `LiveRunControl` | control is observed at safe runtime boundaries; durable fallback stays ingress-owned |
+| start or continue a run | Product adapter / Server | application admission then direct driver or `RunDispatch` | payload becomes immutable activation data |
+| cancel, decide, wake, or resume | Product adapter / Server | exact active-attempt control or durable Dispatch/PendingInput path | no common control façade guesses the target state |
 | send external input | Product message adapter | target-thread pending append | accepted-before-Run input uses the pending/freeze/commit lifecycle |
 | coordinate another Agent | internal `send_message` command | source `ActiveToolBatch` plus deterministic target activation | no PendingInput or Dispatch outbox duplicates the Thread-owned request |
 | edit, retract, or reorder pending input | Thread-message API | pending input store with revision checks | not a run-ingress route or dispatch mutation |
 | inspect queued/recoverable work | Operations surface | dispatch projection/query | no message payload truth or public session status |
 | receive stream or replay | Protocol adapter | committed events/facts plus live stream when connected | replay derives after commit; live stream is best-effort |
 
-An attempt-local `LiveInbox` is not durable run ingress and is never a remote
-mailbox. It is advertised only while the serving process owns the active attempt.
+An attempt-local `LiveInbox` is not durable ingress and is never a remote
+mailbox. `ActiveAttemptScope` creates a fresh instance only while the serving
+process owns the active attempt and the executor advertises safe-boundary input.
 For a queued, awaiting, ended, or remotely placed run, the live endpoint fails
 closed and the caller submits the message through the ordinary Session event
-path. That path appends to the one durable pending-message lifecycle described
-below; there is no parallel steer queue and no Coordinator-to-Worker callback.
+path. A closed scope discards unconsumed best-effort input; it never carries it
+into the next attempt or silently duplicates it into `PendingInput`. There is no
+parallel steer queue and no Coordinator-to-Worker callback.
 
 External extensions that need durable delivery should register tools, action
 kinds, backend adapters, or protocol adapters above this boundary. They should
-not add new `RunIngress` methods unless they introduce a new authority that
-cannot be represented as submit, control, capability, query, message adapter,
-executor adapter, or resume.
+not reintroduce a common direct/durable port. Extend the exact application,
+Dispatch, executor, or attempt-control authority that owns the new behavior.
 
-## Durable Ingress Internal Responsibilities
+## Durable Delivery Responsibilities
 
 Keep durable ingress internals named by ownership, not exposed as public seams.
 The design should care about the authority, not the private struct name:
 
 | Responsibility | Owns | Stable boundary it supports |
 |---|---|---|
-| Durable input buffering | durable submit, decision, wake, and pending input intake | `RunIngress` / `DurableRunIngress` |
-| Dispatch coordination | claim, reconcile, freeze, prepare, activate | `DurableRunIngress` |
-| Live binding | active runtime handles and live-delivery access | `LiveRunControl` and `RuntimeRunContext` construction |
-| Recovery replay | startup scan, reclaim, replay decision | `DurableRunIngress` recovery behavior |
+| Durable input buffering | durable submit, decision, wake, and pending input intake | `DispatchQueue` / `Inbox` |
+| Dispatch coordination | claim, reconcile, freeze, prepare, activate | `DispatchPool` / `DispatchWorker` |
+| Live binding | one exact attempt's controls and optional inbox | `ActiveAttemptScope` |
+| Recovery replay | startup scan, reclaim, replay decision | `DispatchService` / `DispatchWorker` |
 | Event handoff | observe committed runtime events or stage adapter-owned drafts through the commit boundary | `DurableEventSink` and event-store ports |
 | Resolution preparation | carry resolved config and catalog-fingerprint data without owning resolution policy | `RunResolver` and `RunDispatch` |
 
-Routes depend on `RunIngress`, not directly on these internals.
+Application routes depend on their application service. Infrastructure adapters
+depend only on the exact Dispatch or attempt-control authority they invoke.
 
 ## Durable Ingress Component Catalog
 
@@ -115,10 +119,10 @@ responsibility table above rather than expanding this catalog.
 
 | Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
 |---|---|---|---|---|---|---|
-| `RunIngress` | server-facing delivery port | delivery semantics and capability reporting | direct or durable ingress implementation | runtime internals, durable ingress internals, product DTOs | unsupported durable behavior is hidden until runtime | G5; capability tests |
-| `DirectRunIngress` | queue-less ingress implementation | direct submit/control over live runtime roles | `RunExecutor`, `LiveRunControl` | durable queue, recovery, replay, scheduled wake | caller assumes durability that does not exist | G5; direct rejects durable-only operations |
-| `DurableRunIngress` | durable ingress implementation | durable delivery contract for submit, decision, wake, replay, scheduled wake, and recovery operations | durable stores, runtime role ports, event-store ports | runtime loop internals, product protocol status, public DTOs | routes depend on durable internals or assume direct ingress is durable | G5, G6; route parity and recovery tests |
-| `RunIngressCapabilities` | capability value | explicit durable, recoverable, replayable, and scheduled-wake support | selected ingress implementation | runtime execution semantics, product policy, background-task semantics | server exposes unsupported operation as if it were safe | G5; fail-closed route tests |
+| `DirectAttemptDriver` | queue-less concrete driver | direct start/resume and exact attempt scope | `RunAttemptExecutor`, Runtime registry | durable queue, recovery, replay | direct/durable invalid combinations are unrepresentable | G5; direct driver tests |
+| `DispatchQueue` | durable delivery authority | dispatch/pending rows and claim transitions | durable backend | Run outcome, Thread transcript | a second execution state machine emerges | G5/G6; backend conformance |
+| `DispatchWorker` | claimed execution composition | fence, physical attempt, execute/resume, settlement | Queue, executor, committed view | application admission, LiveInbox persistence | stale or duplicated execution | G5/G6; recovery and fencing tests |
+| `ActiveAttemptScope` | process-local attempt owner | generation, neutral controls, fresh optional LiveInbox | Runtime registry, executor live-input capability | durable delivery or cross-attempt input | stale discovery or phantom durability | G18; generation/ownership tests |
 | `SubmitCommand` | command value | neutral activation or message submit data plus caller intent | `RunActivation`, caller/server intent | runtime loop state, durable internals, routing mode, batching policy | delivery policy leaks into public route contracts | G5, G6; submit-mode tests |
 | `RunDispatch` | data value | ingress-to-runtime execution data without live handles | `RunActivation`, durable persistence hints | registry handles, commit coordinator, inbox, cancellation handles | durable replay depends on process-local objects | G3, G4; serialization and replay tests |
 | `WorkerContext` | ingress worker wiring | sink, thread context, pending boundary, remote wait, and optional commit/catalog wiring used to build `RuntimeRunContext` | durable worker execution construction | durable input storage, product DTOs, immutable activation data | dispatch data and live handles become indistinguishable | G3, G13; worker-context tests |
@@ -138,8 +142,8 @@ calling `RunExecutor`.
 A first slice of this boundary ships in the `awaken-run-ingress` crate
 ([ADR-0009](../adr/0009-durable-run-ingress-slice.md)); the Rustdoc there co-owns
 the realized behaviour, this document owns the boundary it must keep. Realized
-roles: `RunIngress` / `DirectRunIngress` / `DurableRunIngress`,
-`RunIngressCapabilities`, `RunDispatch` / `WorkerContext`, the
+roles: `DirectAttemptDriver`, `ActiveAttemptScope`, `RunDispatch`,
+`DispatchQueue` / `DispatchPool` / `DispatchWorker`, `WorkerContext`, the
 `RunDispatch` queue (enqueue, single-owner claim/lease, lease-expiry recovery)
 and the `PendingInbox` (idempotent append) backed by an in-memory reference store
 and a Postgres adapter. The worker decides execute-versus-resume from committed
@@ -266,8 +270,8 @@ separate authorities:
 | Concern | Owner | Rule |
 |---|---|---|
 | External request parsing | Product adapter / Server | translate public payloads to neutral submit/control commands; do not leak public status names into runtime |
-| Run delivery | `RunIngress` | accept submit/control intent and report capabilities; direct and durable implementations differ only by delivery guarantees |
-| Durable dispatch | `DurableRunIngress` internals | own claim, lease, retry, wake, and activation opportunity; never own message bodies as truth |
+| Run delivery | Application plus private foreground-delivery value | select concrete direct execution or durable Dispatch admission once |
+| Durable dispatch | `DispatchQueue` / `DispatchPool` / `DispatchWorker` | own claim, lease, retry, wake, and activation opportunity; never own message bodies as truth |
 | Pending message intake | target thread message lifecycle | receive input as durable pending records keyed by stable message ids |
 | Run execution | Runtime Core | consume frozen input at a safe boundary and commit runtime facts through `CommitCoordinator` |
 | Committed messages | thread aggregate | append-only log with an append fence; projections and protocol replay derive after commit |
@@ -357,8 +361,8 @@ general execution lease.
 
 ## Failure And Recovery
 
-- `DirectRunIngress` failure is live-control or direct execution failure only.
-- `DurableRunIngress` recovers by scanning durable pending state and replaying
+- `DirectAttemptDriver` failure is live-control or direct execution failure only.
+- `DispatchService` / `DispatchWorker` recover by scanning durable pending state and replaying
   from committed facts.
 - Retry exhaustion is first claimed under a newer dispatch epoch, then the one
   Worker terminal path commits `Ended(Indeterminate)` and settles `Done`; commit

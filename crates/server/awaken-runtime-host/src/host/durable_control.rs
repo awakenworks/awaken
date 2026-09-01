@@ -100,9 +100,7 @@ impl SharedHost {
     /// Wake a live run by id through the durable live-control seam (ADR-0018): a
     /// live-only nudge. Fail-closed — no live subscriber is a hard error (G5).
     pub async fn wake_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        self.durable_ingress(thread)
-            .await?
-            .live_control()
+        awaken_run_ingress::LiveRunControlService::new(self.durable_worker(thread).await?)
             .wake(run_id)
             .await
             .map_err(|e| HostError::bad_request(e.to_string()))
@@ -128,10 +126,12 @@ impl SharedHost {
                 .map(|run_id| run_id.0)
                 .ok_or_else(|| HostError::bad_request("thread has no locally owned active run"))?,
         };
-        ctx.durable_ingress
-            .as_ref()
-            .ok_or_else(|| HostError::bad_request("pause requires durable ingress"))?
-            .live_control()
+        let worker = ctx
+            .delivery
+            .is_durable()
+            .then(|| ctx.claimed_worker.clone())
+            .ok_or_else(|| HostError::bad_request("pause requires durable delivery"))?;
+        awaken_run_ingress::LiveRunControlService::new(worker)
             .pause(&run_id)
             .await
             .map_err(|e| HostError::bad_request(e.to_string()))?;

@@ -1,27 +1,21 @@
-//! `DurableRunIngress`: the durable half of the `RunIngress` port (G5).
+//! Test-support composition over the authoritative Dispatch Worker and store.
 //!
-//! Direct ingress executes inline and fails its durable-only operation closed.
-//! Durable ingress instead *persists* an accepted run, then drives it through the
-//! dispatch worker, so the submission survives a crash and is recovered. It adds
-//! durability over the same runtime control a direct ingress uses (G6); it does
-//! not own the loop, agent truth, or a second commit mechanism.
+//! Production code composes `DispatchWorker`, `DispatchPool`, and `DispatchService`
+//! directly. This feature-gated fixture keeps concise backend conformance tests;
+//! it owns no state or transition authority beyond those existing components.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_runtime::{RunIngress, RunService, Runtime};
+use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResult};
-use awaken_runtime_contract::resume::ResumeCommand;
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use crate::Error;
-use crate::capability::RunIngressCapabilities;
 use crate::clock::Clock;
 use crate::dispatch::{Dispatch, DispatchSummary, PendingInput, SubmitOptions};
 use crate::live_control::LiveRunControlService;
@@ -29,25 +23,19 @@ use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
 use awaken_run_ingress_contract::RunDispatch;
 
-/// Durable Run ingress over a dispatch store. Holds the Worker that converts durable
-/// dispatches into runtime attempts; the worker is shared (`Arc`) so an
-/// autonomous [`DispatchService`] can drain the same queue.
-pub struct DurableRunIngress<S> {
+/// Feature-gated synchronous harness over one Worker and its committed reader.
+pub struct DispatchTestHarness<S> {
     worker: Arc<DispatchWorker<S>>,
     /// Same committed-history source the worker consults. A replayed completed
     /// run is blocked by the dispatch tombstone, so submit returns this existing
     /// state rather than creating a second execution (ADR-0060).
     reader: Arc<dyn CommittedThreadView>,
-    /// The per-session live inbox shared by the worker's drive (drained at safe
-    /// loop boundaries) and the offer side (ADR-0054 P2). Neutral `Message`s only;
-    /// this is why durable steer needs no protocol type in the worker.
-    live_inbox: awaken_runtime_contract::live_inbox::LiveInbox,
 }
 
-impl<S: Dispatch + 'static> DurableRunIngress<S> {
+impl<S: Dispatch + 'static> DispatchTestHarness<S> {
     /// Install the session-selected attempt executor before the first claim.
     /// Queueing, fencing, scheduled actions, metrics, and settlement remain owned
-    /// by this durable ingress; only fresh/resume execution is polymorphic.
+    /// by the authoritative Worker; only fresh/resume execution is polymorphic.
     pub fn install_attempt_executor(
         &self,
         executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
@@ -55,14 +43,14 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self.worker.install_attempt_executor(executor);
     }
 
-    /// Build durable ingress from a runtime, a dispatch store, and the durable
+    /// Build a test harness from a runtime, a dispatch store, and the durable
     /// commit boundary. The commit handle is the single source of truth shared by
     /// the runtime's writes and the worker's reads (G6 same-source wiring).
     pub fn new<C>(runtime: Arc<Runtime>, store: Arc<S>, commit: Arc<C>) -> Self
     where
         C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
-        Self::with_owner(runtime, store, commit, "durable-run-ingress", None)
+        Self::with_owner(runtime, store, commit, "dispatch-test-harness", None)
     }
 
     /// Like [`new`](Self::new) but with an explicit claim `owner`. Each process in
@@ -85,7 +73,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 
     /// Like [`with_owner`](Self::with_owner) but also installs the model→executor
-    /// resolver (R1), so this ingress's worker runs the run's configured model without
+    /// resolver (R1), so this harness's Worker runs the configured model without
     /// a config service — the provider owns how the model is reached (local
     /// credentials or a gateway offering). A `None` resolver leaves the worker on the
     /// runtime's bound (host default) executor.
@@ -102,9 +90,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     where
         C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
-        let live_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
-        let mut worker =
-            DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());
+        let mut worker = DispatchWorker::new(runtime, store, commit, owner);
         if let Some(store) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(store);
         }
@@ -115,20 +101,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         Self {
             worker: Arc::new(worker),
             reader,
-            live_inbox,
         }
-    }
-
-    /// The per-session live inbox the worker drains at boundaries — the offer side
-    /// queues External steer here so it reaches a worker-driven run (ADR-0054 P2).
-    pub fn live_inbox(&self) -> &awaken_runtime_contract::live_inbox::LiveInbox {
-        &self.live_inbox
-    }
-
-    /// The durable guarantees this ingress reports (G5): durable, recoverable,
-    /// replayable. A direct ingress would report [`RunIngressCapabilities::DIRECT`].
-    pub fn capabilities(&self) -> RunIngressCapabilities {
-        RunIngressCapabilities::DURABLE
     }
 
     /// The worker, for out-of-band driving (recovery sweeps, background loops).
@@ -183,7 +156,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 
     /// Install the one fallible committed-boundary observer before this
-    /// ingress's worker is shared with a process pool.
+    /// harness's Worker is shared with a process pool.
     #[must_use]
     pub fn with_settlement_observer(
         mut self,
@@ -242,7 +215,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         let worker = Arc::into_inner(self.worker)
             .expect("recovery projection must be configured before sharing the worker")
             .with_recovery_projection(projection);
-        // The ingress replay guard and the Worker execution path must retain the
+        // The harness replay guard and the Worker execution path must retain the
         // exact same projection. Do not keep the constructor's provisional
         // reader alive as a parallel empty committed view.
         self.reader = worker.committed_reader();
@@ -250,7 +223,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self
     }
 
-    /// A fail-closed live-control service over this ingress's worker (G18): cancel
+    /// A fail-closed live-control service over this harness's Worker (G18): cancel
     /// a live/queued/awaiting run, or pause/wake a live one, by correlation id (ADR-0018).
     /// Shares the same worker/store/runtime, so it owns no second commit boundary.
     pub fn live_control(&self) -> LiveRunControlService<S> {
@@ -430,34 +403,9 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     }
 }
 
-#[async_trait]
-impl<S: Dispatch + 'static> RunService for DurableRunIngress<S> {
-    /// Durable ingress never executes inline. Its only legal executor boundary
-    /// is `submit_background` -> persisted dispatch -> exact Thread claim ->
-    /// physical-attempt admission. Keeping the trait method fail-closed removes
-    /// the former public bypass around that authority chain.
-    async fn start(
-        &self,
-        _activation: RunActivation,
-        _context: RuntimeRunContext,
-    ) -> ExecResult<RunState> {
-        Err(awaken_runtime_contract::execution::Error::Execution(
-            "durable ingress start requires claimed background dispatch".to_string(),
-        ))
-    }
-
-    async fn resume(
-        &self,
-        _activation: RunActivation,
-        _command: ResumeCommand,
-        _context: RuntimeRunContext,
-    ) -> ExecResult<RunState> {
-        Err(awaken_runtime_contract::execution::Error::Execution(
-            "durable ingress resume requires claimed durable input".to_string(),
-        ))
-    }
-
-    async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
+impl<S: Dispatch + 'static> DispatchTestHarness<S> {
+    /// Persist or signal cancellation through the durable control authority.
+    pub async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
         self.live_control()
             .cancel(&run_id.0)
             .await
@@ -469,14 +417,10 @@ impl<S: Dispatch + 'static> RunService for DurableRunIngress<S> {
                 crate::live_control::Error::Dispatch(message) => ControlError::Rejected(message),
             })
     }
-}
-
-#[async_trait]
-impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
-    /// Durable submit: persist the accepted run first (so it survives a crash),
-    /// then drive it. A direct ingress fails this closed; durable ingress does
-    /// not (G5).
-    async fn submit_background(&self, activation: RunActivation) -> ExecResult<RunState> {
+    /// Test/support convenience: persist a run, drive the worker, and return its
+    /// committed result. Production foreground delivery uses DispatchPool and
+    /// never treats this synchronous helper as an application ingress port.
+    pub async fn submit_background(&self, activation: RunActivation) -> ExecResult<RunState> {
         let run_id = activation.run_id.clone();
         self.worker
             .store()
@@ -520,16 +464,16 @@ mod tests {
     use awaken_store_inmem::MemoryCommitCoordinator;
 
     #[test]
-    fn remote_ingress_releases_its_provisional_reader() {
+    fn remote_harness_releases_its_provisional_reader() {
         // Cause/effect decision rule: C1 the constructor creates one provisional
         // local reader; C2 remote composition replaces the Worker projection.
-        // C1+C2 => E1 both ingress replay and Worker execution point at the
+        // C1+C2 => E1 both harness replay and Worker execution point at the
         // replacement Arc, and E2 no old reader remains retained. This covers the
-        // outer ingress holder that the Worker's own projection test cannot see.
+        // outer harness holder that the Worker's own projection test cannot see.
         // Constraint/Invariant: remote composition has exactly one committed
         // reader authority; the provisional local reader cannot survive. Decision
         // rule: replace once and assert pointer identity plus weak-handle release.
-        let ingress = DurableRunIngress::new(
+        let ingress = DispatchTestHarness::new(
             Arc::new(Runtime::new()),
             Arc::new(crate::MemoryDispatchStore::new()),
             Arc::new(MemoryCommitCoordinator::new()),

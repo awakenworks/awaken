@@ -129,7 +129,7 @@ mod tests {
         // Effects: E1 defer, E2 relinquish through Execution, and E3 absorb the
         // Run. In particular C3 must never enter the claim/relinquish hot loop.
         //
-        // | Rule | Control cause | RunIngress effect |
+        // | Rule | Control cause | durable Dispatch effect |
         // | R1 | NotReady | ResolutionNotReady |
         // | R2 | stale/conflict/unavailable | Execution |
         // | R3 | not-found/retired/terminal/invalid | TerminalResolution |

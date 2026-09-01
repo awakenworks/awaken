@@ -17,10 +17,9 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DispatchCursor, DispatchOperation,
-    DispatchOperationalFeed, DispatchQueue, DurableRunIngress, GuardedRunCommit, Inbox,
+    DispatchOperationalFeed, DispatchQueue, DispatchTestHarness, GuardedRunCommit, Inbox,
     PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
 };
-use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -167,7 +166,7 @@ async fn durable_loop_runs_entirely_on_sqlite() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Durable submit awaits on the gate.
     let state = ingress
@@ -338,7 +337,7 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
 
     let store = Arc::new(SqliteDispatchStore::open(&dispatch_path).expect("restarted store"));
     let commit = Arc::new(SqliteCommitCoordinator::open(&commit_path).expect("commit store"));
-    let ingress = DurableRunIngress::new(harness::text_runtime(), store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(harness::text_runtime(), store.clone(), commit.clone());
     assert_eq!(
         ingress
             .recover(harness::clock(0))

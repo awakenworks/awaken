@@ -2,8 +2,9 @@
 //!
 //! Runtime does not define a Subagent service. An integration may register any
 //! [`RawTool`] that accepts [`AuxiliaryAgentInput`]; callers invoke it exactly like every
-//! other tool. The implementation may use a local/remote [`RunService`], but that
-//! placement and lifecycle wiring stays outside the Runtime contract.
+//! other tool. The implementation may choose a local attempt, durable dispatch,
+//! or a remote execution adapter, but that placement and lifecycle wiring stays
+//! outside the Runtime contract.
 
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::Message;

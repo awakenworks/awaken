@@ -5038,7 +5038,7 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
     // cannot overwrite the first command; E4 C4 preserves Session/Agent, uses
     // DenyAll and PreservePrior; E5 C5 remains frozen in durable admission.
     // Rules R1=C1=>E1, R2=C2=>E2, R3=C3=>E3, R4=C4=>E4, R9=C5=>E5. Runtime Host
-    // and RunIngress conformance tests own capability selection/claim behavior;
+    // and Dispatch conformance tests own capability selection/claim behavior;
     // this adapter test owns only exact delivery into that existing authority.
     let runtime = AcceptingFake::default();
     let sessions = std::sync::Arc::new(

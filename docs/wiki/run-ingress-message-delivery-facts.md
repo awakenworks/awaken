@@ -12,18 +12,18 @@ Owner: [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.
 owns run ingress, durable dispatch, pending input, message delivery, and recovery
 guidance.
 
-## FACT-DISPATCH-001: Run ingress has direct and durable forms
+## FACT-DISPATCH-001: Direct attempts and durable dispatch are distinct shapes
 
 - Status: active
-- Owner: [Run ingress](../design/run-ingress-message-delivery.md#run-ingress)
-- Fact: direct runtime control and durable buffered ingress are distinct entry shapes; durable-only operations must reject direct ingress.
+- Owner: [Delivery boundary](../design/run-ingress-message-delivery.md#delivery-boundary)
+- Fact: `DirectAttemptDriver` performs only queue-less attempts, while durable delivery is expressed by `RunDispatch`, `DispatchQueue`, and `DispatchWorker`; there is no common capability-reporting ingress interface.
 - Links: guardrail G5
-- Verification: `RunIngressCapabilities` tests.
+- Verification: public API surface tests, direct-attempt tests, and dispatch worker tests.
 
 ## FACT-DISPATCH-002: Durable ingress behavior is additive
 
 - Status: active
-- Owner: [Durable ingress internal responsibilities](../design/run-ingress-message-delivery.md#durable-ingress-internal-responsibilities)
+- Owner: [Durable delivery responsibilities](../design/run-ingress-message-delivery.md#durable-delivery-responsibilities)
 - Fact: input buffering, claims, recovery, and scheduling are internal responsibilities layered over runtime control, not public runtime extension points or stable route dependencies.
 - Links: guardrail G6
 - Verification: API surface tests and route tests covering both ingress modes.

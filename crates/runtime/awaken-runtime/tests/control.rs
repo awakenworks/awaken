@@ -1,5 +1,5 @@
-//! Cancellation produces a terminal Cancelled outcome and DirectRunIngress is
-//! the direct delivery seam; durable-only operations fail closed (G5).
+//! Cancellation produces a terminal Cancelled outcome and DirectAttemptDriver
+//! is the concrete queue-less delivery seam.
 
 use std::sync::{
     Arc,
@@ -18,11 +18,11 @@ use awaken_agent_contract::agent::state::{
 };
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
+use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
-use awaken_runtime_contract::execution::{Error, RunAttemptExecutor, RunExecutor};
-use awaken_runtime_contract::live_inbox::{LiveInbox, Offer};
+use awaken_runtime_contract::execution::{Error, LiveInput, RunAttemptExecutor, RunExecutor};
+use awaken_runtime_contract::live_inbox::Offer;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::resolved::{
@@ -266,6 +266,9 @@ async fn claimed_cancellation_commits_unpublished_activation_input_with_terminal
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_cancel_steers_an_in_flight_run() {
+    // Decision rule D1: C1 a direct attempt is active and C2 cancellation names
+    // its exact Run => E1 the single ActiveAttemptScope receives Cancel and E2
+    // the attempt ends Cancelled. C3 no scope would instead yield NotActive.
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(GatedLlm {
@@ -276,8 +279,8 @@ async fn live_cancel_steers_an_in_flight_run() {
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
 
-    let runtime_for_run = runtime.clone();
-    let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
+    let driver = DirectAttemptDriver::new(runtime.clone());
+    let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
     // Wait until the first inference is in-flight, then cancel via live control.
     started.notified().await;
@@ -303,7 +306,7 @@ async fn direct_ingress_tracks_external_attempt_for_live_cancellation() {
     // cancellation table. Decision rule D1=C1+C2+C3+C4 -> E1+E2+E3+E4.
     let entered = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new());
-    let ingress = DirectRunIngress::with_attempt_executor(
+    let ingress = DirectAttemptDriver::with_attempt_executor(
         runtime.clone(),
         Arc::new(BlockingExternalAttempt {
             entered: entered.clone(),
@@ -350,7 +353,7 @@ async fn direct_ingress_never_enters_two_external_attempts_for_one_thread() {
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let runtime = Arc::new(Runtime::new());
-    let ingress = DirectRunIngress::with_attempt_executor(
+    let ingress = DirectAttemptDriver::with_attempt_executor(
         runtime,
         Arc::new(ConcurrencyTrackingExternalAttempt {
             active: active.clone(),
@@ -426,6 +429,9 @@ async fn direct_ingress_never_enters_two_external_attempts_for_one_thread() {
 async fn live_pause_awaits_an_in_flight_run_at_the_next_boundary() {
     use awaken_runtime_contract::pause::PauseSignal;
 
+    // Decision rule D1: C1 a direct attempt is active, C2 Pause names that Run,
+    // and C3 inference reaches the next safe boundary => E1 the exact scope
+    // observes Pause and E2 commits Awaiting rather than a terminal result.
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(GatedLlm {
@@ -434,8 +440,8 @@ async fn live_pause_awaits_an_in_flight_run_at_the_next_boundary() {
     })));
 
     let context = RuntimeRunContext::new().with_pause(PauseSignal::new());
-    let runtime_for_run = runtime.clone();
-    let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
+    let driver = DirectAttemptDriver::new(runtime.clone());
+    let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
     // Once the first inference is in-flight (so the run is registered), pause it via
     // live control; it awaits at the boundary after the step completes.
@@ -470,6 +476,9 @@ impl LlmExecutor for HangingLlm {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_cancel_aborts_a_hung_inference() {
+    // Decision rule D1: C1 a direct attempt is active, C2 inference is pending,
+    // and C3 exact live Cancel arrives => E1 cancellation aborts the provider
+    // future and E2 the Run ends Cancelled without waiting for a loop boundary.
     let started = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(HangingLlm {
         started: started.clone(),
@@ -478,8 +487,8 @@ async fn live_cancel_aborts_a_hung_inference() {
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
 
-    let runtime_for_run = runtime.clone();
-    let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
+    let driver = DirectAttemptDriver::new(runtime.clone());
+    let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
     // The provider never returns, so the cancel must abort inference in
     // flight — a step-boundary check alone would hang forever.
@@ -955,6 +964,9 @@ impl RawTool for HangingTool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_cancel_aborts_a_hung_tool_invocation() {
+    // Decision rule D1: C1 a direct attempt is active, C2 its tool future is
+    // pending, and C3 exact live Cancel arrives => E1 the future is dropped and
+    // E2 the Run ends Cancelled. A non-current Run must remain NotActive.
     let started = Arc::new(Notify::new());
     let dropped = Arc::new(AtomicBool::new(false));
     let runtime = Arc::new(
@@ -973,8 +985,8 @@ async fn live_cancel_aborts_a_hung_tool_invocation() {
         serde_json::json!({"type": "object"}),
     )];
     let context = RuntimeRunContext::new().with_cancellation(CancellationToken::new());
-    let runtime_for_run = runtime.clone();
-    let handle = tokio::spawn(async move { runtime_for_run.execute(run, context).await });
+    let driver = DirectAttemptDriver::new(runtime.clone());
+    let handle = tokio::spawn(async move { driver.start(run, context).await });
 
     started.notified().await;
     runtime
@@ -1029,27 +1041,25 @@ fn wake_on_unknown_run_is_not_active() {
 }
 
 #[tokio::test]
-async fn direct_ingress_runs_inline_and_rejects_durable() {
+async fn direct_attempt_driver_runs_inline() {
+    // Cause D1: a prepared activation is explicitly assigned queue-less delivery.
+    // Effect E1: the exact attempt runs inline and returns its committed terminal
+    // state. Constraint: durable submission is absent from this concrete type,
+    // making the former invalid direct/durable combination unrepresentable.
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)));
-    let ingress = DirectRunIngress::new(runtime);
+    let ingress = DirectAttemptDriver::new(runtime);
 
     let outcome = ingress
         .start(activation(), RuntimeRunContext::new())
         .await
         .expect("inline run");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-
-    // Durable submission fails closed on direct ingress (G5).
-    assert!(matches!(
-        ingress.submit_background(activation()).await,
-        Err(Error::Execution(_))
-    ));
 }
 
 #[tokio::test]
 async fn direct_ingress_cancel_on_unknown_run_is_not_active() {
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(TextLlm)));
-    let ingress = DirectRunIngress::new(runtime);
+    let ingress = DirectAttemptDriver::new(runtime);
     assert_eq!(
         ingress.cancel(&RunId("ghost".to_string())).await,
         Err(ControlError::NotActive)
@@ -1059,8 +1069,9 @@ async fn direct_ingress_cancel_on_unknown_run_is_not_active() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wake_on_an_active_run_is_accepted() {
     // Test design — Causes: C1 an execution has crossed into a live gated model
-    // call; C2 a Wake targets that exact active Run. Effects: delivery returns
-    // Ok and, after release, the same Run completes naturally.
+    // call; C2 a Wake targets that exact active Run; C3 the native executor
+    // advertises safe-boundary input. Effects: delivery returns Ok, one fresh
+    // inbox is discoverable, and after release the same Run completes naturally.
     // Constraints/invariants: Wake is an accepted no-op in this Runtime; it must
     // neither create another attempt nor terminate the live one. Decision rule
     // W1=C1+C2=>accepted delivery plus one unchanged terminal outcome.
@@ -1073,10 +1084,17 @@ async fn wake_on_an_active_run_is_accepted() {
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
-    let runtime_for_run = runtime.clone();
-    let handle = tokio::spawn(async move { runtime_for_run.execute(activation(), context).await });
+    let driver = DirectAttemptDriver::new(runtime.clone());
+    let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
     started.notified().await;
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&ThreadId("thread-1".into()))
+            .await
+            .is_some(),
+        "C1+C3 expose only the current attempt inbox"
+    );
     // A wake on a live run is accepted (no-op in the MVP) rather than failing.
     assert_eq!(
         runtime.deliver(LiveCommand::Wake {
@@ -1106,6 +1124,38 @@ impl AttemptOwnershipVerifier for SwitchableOwnership {
 }
 
 #[tokio::test]
+async fn attempt_without_safe_boundary_never_advertises_a_live_inbox() {
+    // Causes: C1 an exact local attempt is current; C2 its executor declares
+    // LiveInput::None. Effects: E1 Run identity remains discoverable for neutral
+    // control, while E2 Thread live-inbox lookup fails closed. Decision table:
+    // C1+SafeBoundary is covered by the generation test below; C1+None => E1+E2.
+    // Constraint: wait/resume capability cannot be used as a substitute signal.
+    let runtime = Runtime::new();
+    let run_id = RunId("no-live-run".into());
+    let thread_id = ThreadId("no-live-thread".into());
+    let attempt = runtime.begin_active_attempt(
+        &run_id,
+        &thread_id,
+        RuntimeRunContext::new().with_cancellation(CancellationToken::new()),
+        LiveInput::None,
+    );
+
+    assert_eq!(
+        runtime.active_attempt_run_id(&thread_id).await,
+        Some(run_id),
+        "C1/E1"
+    );
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&thread_id)
+            .await
+            .is_none(),
+        "C1+C2/E2"
+    );
+    drop(attempt);
+}
+
+#[tokio::test]
 async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed() {
     // Cause/effect graph: C1 an old attempt is registered for Run R/Thread T;
     // C2 a replacement claim registers the same R/T with a different inbox; C3
@@ -1130,24 +1180,29 @@ async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed(
     let thread_id = ThreadId("replacement-thread".into());
     let other_thread = ThreadId("other-thread".into());
 
-    let old_inbox = LiveInbox::new();
-    let old = runtime.track_active_attempt(
+    let old = runtime.begin_active_attempt(
         &run_id,
         &thread_id,
-        &RuntimeRunContext::new().with_live_inbox(old_inbox.clone()),
+        RuntimeRunContext::new(),
+        LiveInput::SafeBoundary,
     );
+    let old_inbox = old.context().live_inbox.clone().expect("old attempt inbox");
 
     let ownership = Arc::new(SwitchableOwnership(AtomicUsize::new(0)));
-    let replacement_inbox = LiveInbox::new();
     let replacement_pause = PauseSignal::new();
-    let replacement = runtime.track_active_attempt(
+    let replacement = runtime.begin_active_attempt(
         &run_id,
         &thread_id,
-        &RuntimeRunContext::new()
-            .with_live_inbox(replacement_inbox.clone())
+        RuntimeRunContext::new()
             .with_pause(replacement_pause.clone())
             .with_ownership(ownership.clone()),
+        LiveInput::SafeBoundary,
     );
+    let replacement_inbox = replacement
+        .context()
+        .live_inbox
+        .clone()
+        .expect("replacement attempt inbox");
     drop(old);
 
     assert_eq!(
@@ -1167,7 +1222,17 @@ async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed(
         )),
         Offer::Accepted(_)
     ));
-    assert!(old_inbox.list().is_empty(), "A1/E2 exact replacement inbox");
+    assert!(
+        matches!(
+            old_inbox.offer(Message::text(
+                MessageId("stale-old-input".into()),
+                Role::User,
+                "stale"
+            )),
+            Offer::Closed
+        ),
+        "A1/E2 stale inbox closes instead of carrying over"
+    );
     assert_eq!(replacement_inbox.list().len(), 1, "A1/E2");
     assert!(
         runtime

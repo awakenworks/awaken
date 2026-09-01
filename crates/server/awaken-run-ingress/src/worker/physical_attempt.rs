@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_runtime_contract::execution::LiveInput;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
@@ -33,12 +34,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claim: &RunClaim,
         thread_id: &ThreadId,
         context: &RuntimeRunContext,
+        live_input: LiveInput,
         clock: Arc<dyn Clock>,
         cancellation: &CancellationToken,
         operation: F,
     ) -> Result<Result<T, E>, Error>
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce(RuntimeRunContext) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         // Cause L1: one Runtime receives the same exact claimed dispatch twice.
@@ -84,10 +86,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             ));
         }
 
-        let _attempt_tracking =
-            self.runtime
-                .track_active_attempt(&claim.run_id, thread_id, context);
-        let operation = operation();
+        let attempt = self.runtime.begin_active_attempt(
+            &claim.run_id,
+            thread_id,
+            context.clone(),
+            live_input,
+        );
+        let operation = operation(attempt.context().clone());
         tokio::pin!(operation);
         let result = tokio::select! {
             result = &mut operation => Some(result),

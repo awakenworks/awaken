@@ -18,11 +18,9 @@ use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_run_ingress::PlacementRequirements;
 use awaken_run_ingress::{
     DEFAULT_LEASE_MS, DispatchOutcome, DispatchQueue, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchWorker, DurableRunIngress, Inbox, ManualClock,
-    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, RunIngressCapabilities,
-    SessionChildAdmission,
+    DispatchSettlementObserver, DispatchTestHarness, DispatchWorker, Inbox, ManualClock,
+    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
 };
-use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -32,8 +30,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
-    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, counting_text_runtime,
-    schedule_runtime, text_runtime, text_runtime_with_metrics, tool_runtime,
+    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, schedule_runtime, text_runtime,
+    text_runtime_with_metrics, tool_runtime,
 };
 
 struct RecordingSettlementObserver {
@@ -473,6 +471,11 @@ struct RecordingAttemptExecutor {
     cancels: AtomicUsize,
 }
 
+struct LiveBoundaryAttemptExecutor {
+    entered: tokio::sync::mpsc::UnboundedSender<awaken_runtime_contract::live_inbox::LiveInbox>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
 struct OwnershipCheckingAttemptExecutor {
     verified: AtomicUsize,
 }
@@ -614,6 +617,63 @@ impl RunAttemptExecutor for RecordingAttemptExecutor {
     }
 }
 
+#[async_trait::async_trait]
+impl RunExecutor for LiveBoundaryAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let inbox = context
+            .live_inbox
+            .clone()
+            .expect("safe-boundary executor receives an attempt-local inbox");
+        self.entered
+            .send(inbox)
+            .expect("test receiver remains available");
+        self.release
+            .acquire()
+            .await
+            .expect("test release remains open")
+            .forget();
+        let fold = match awaken_runtime_contract::boundary::evaluate_boundary(
+            &context,
+            &activation.run_id,
+            &[],
+        ) {
+            awaken_runtime_contract::boundary::BoundaryOutcome::Continue { fold }
+            | awaken_runtime_contract::boundary::BoundaryOutcome::Await { fold, .. } => fold,
+            awaken_runtime_contract::boundary::BoundaryOutcome::Idle => Vec::new(),
+        };
+        let disposition = awaken_agent_contract::thread::commit::RunDisposition::ended(
+            activation.run_id.clone(),
+            EndCause::NaturalEnd,
+        );
+        awaken_agent_contract::thread::commit::commit_run(
+            context.commit.as_ref().expect("claimed commit").as_ref(),
+            &activation.thread_id,
+            disposition,
+            fold,
+            Vec::new(),
+        )
+        .await
+        .map_err(|error| ExecutionError::Commit(error.to_string()))?;
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for LiveBoundaryAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.execute(activation, context).await
+    }
+}
+
 fn provider_candidate(
     reference: &str,
 ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
@@ -682,7 +742,7 @@ async fn durable_submit_persists_then_runs_to_completion() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     let state = ingress
         .submit_background(activation("run-1"))
@@ -704,7 +764,7 @@ async fn durable_submit_persists_then_runs_to_completion() {
 async fn installed_attempt_executor_drives_a_fresh_durable_run() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(text_runtime(), store, commit);
+    let ingress = DispatchTestHarness::new(text_runtime(), store, commit);
     let selected = Arc::new(RecordingAttemptExecutor::default());
     ingress.install_attempt_executor(selected.clone());
 
@@ -834,7 +894,7 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_run_ingress::InferenceMaterializerFn =
         Arc::new(|_activation, _context| Ok(Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>)));
-    let ingress = DurableRunIngress::with_owner_and_resolver(
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
         text_runtime(), // its bound model would reply "done"
         store.clone(),
         commit.clone(),
@@ -897,7 +957,7 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
         awaken_runtime_contract::PlaintextBoundary::Worker,
         awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
     );
-    let ingress = DurableRunIngress::with_owner_and_resolver(
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
         text_runtime(),
         store,
         commit.clone(),
@@ -979,7 +1039,7 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
                 _ => Ok(Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>)),
             },
         );
-    let ingress = DurableRunIngress::with_owner_and_resolver(
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
         text_runtime(),
         store.clone(),
         commit.clone(),
@@ -1010,107 +1070,115 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
 }
 
 #[tokio::test]
-async fn durable_run_drains_live_inbox_steer_at_the_boundary() {
-    // ADR-0054 P2: a steer message offered into the durable ingress's per-session
-    // inbox is drained by the worker-driven run at its safe loop boundary — steer
-    // reaches a durable (worker-driven) run, not only the direct native path.
+async fn durable_worker_opens_one_fresh_live_inbox_per_physical_attempt() {
+    // Cause/effect graph: C1 a durable dispatch is queued but unclaimed; C2 its
+    // exact local claim crosses physical-attempt admission; C3 the executor
+    // supports safe-boundary input; C4 an external message is offered before the
+    // boundary; C5 the scope returns; C6 a second attempt starts on the same
+    // Thread. Effects: E1 C1 exposes no inbox; E2 C2+C3 exposes exactly the
+    // executor's inbox; E3 C4 commits once at the boundary; E4 C5 closes it and
+    // rejects later offers; E5 C6 receives a different empty inbox.
+    //
+    // | Rule | claimed/current | supports live | scope | effect |
+    // |---|---|---|---|---|
+    // | L1 | no | yes | absent | E1 |
+    // | L2 | yes | yes | open | E2+E3 |
+    // | L3 | settled | yes | closed | E4 |
+    // | L4 | next claim | yes | fresh | E5 |
+    //
+    // Constraint: no Session, ingress façade, WorkerContext, or prior attempt
+    // retains an inbox; reliable input remains the durable Session-event path.
     use awaken_agent_contract::agent::message::{Id as MessageId, Message};
-    use awaken_runtime_contract::live_inbox::MessageOrigin;
+    use awaken_runtime_contract::live_inbox::{MessageOrigin, Offer};
 
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
-
-    // Queue a steer before the run is driven; the worker drains the *same* inbox.
-    let _ = ingress.live_inbox().offer_as(
-        MessageOrigin::External,
-        Message::text(MessageId("client-id".into()), Role::User, "steer me"),
-    );
-
-    let state = ingress
-        .submit_background(activation("run-1"))
-        .await
-        .expect("durable submit");
-    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-
-    let messages = commit.committed().messages;
-    let steer = messages
-        .iter()
-        .find(|m| m.id.0 == "run-1-inbox-0")
-        .expect("steer drained + re-identified into the durable transcript");
-    assert_eq!(steer.text_content(), "steer me");
-    // The caller-supplied id never reaches the committed transcript.
-    assert!(messages.iter().all(|m| m.id.0 != "client-id"));
-}
-
-#[tokio::test]
-async fn direct_ingress_fails_durable_submit_closed_while_durable_does_not() {
-    // G5: the durable-only operation (submit_background) fails closed on direct
-    // ingress and succeeds on durable ingress.
-    let runtime = text_runtime();
-    let direct = DirectRunIngress::new(runtime.clone());
-    let err = direct
-        .submit_background(activation("run-1"))
-        .await
-        .expect_err("direct has no durable submit");
-    assert!(matches!(
-        err,
-        awaken_runtime_contract::execution::Error::Execution(_)
+    let ingress = Arc::new(DispatchTestHarness::new(
+        runtime.clone(),
+        store,
+        commit.clone(),
     ));
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    ingress.install_attempt_executor(Arc::new(LiveBoundaryAttemptExecutor {
+        entered: entered_tx,
+        release: release.clone(),
+    }));
 
-    let store = Arc::new(MemoryDispatchStore::new());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
-    let durable = DurableRunIngress::new(runtime, store, commit);
-    assert_eq!(durable.capabilities(), RunIngressCapabilities::DURABLE);
-    assert!(durable.submit_background(activation("run-1")).await.is_ok());
-}
-
-#[tokio::test]
-async fn durable_inline_start_and_resume_fail_closed_before_executor_entry() {
-    // Cause/effect decision table: I1 Direct start/resume -> process-local
-    // Thread gate then executor; I2 Durable background -> enqueue/claim/attempt
-    // slot then executor; I3 Durable inline start/resume -> explicit error and
-    // zero executor calls. Existing Direct and background tests own I1/I2; this
-    // case owns I3 and prevents the public RunService surface from bypassing the
-    // durable Thread claim or physical-attempt slot.
-    let (runtime, model_calls) = counting_text_runtime();
-    let durable = DurableRunIngress::new(
-        runtime,
-        Arc::new(MemoryDispatchStore::new()),
-        Arc::new(MemoryCommitCoordinator::new()),
-    );
-    let start_error = durable
-        .start(activation("inline-start"), RuntimeRunContext::new())
-        .await
-        .expect_err("I3 durable start is not an execution path");
     assert!(
-        start_error
-            .to_string()
-            .contains("claimed background dispatch")
+        runtime
+            .active_attempt_live_inbox(&ThreadId(THREAD.into()))
+            .await
+            .is_none(),
+        "L1/E1"
     );
 
-    let resume = ResumeCommand {
-        correlation_id: TICKET.into(),
-        run_id: RunId("inline-resume".into()),
-        thread_id: ThreadId(THREAD.into()),
-        snapshot_id: awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId(SNAP.into()),
-        catalog_fingerprint: awaken_runtime_contract::resolved::CatalogFingerprint(FP.into()),
-        result: ResumeResult::allow(),
-        operation_id: None,
-        context_messages: Vec::new(),
-        now_ms: 0,
-    };
-    let resume_error = durable
-        .resume(
-            activation("inline-resume"),
-            resume,
-            RuntimeRunContext::new(),
-        )
+    let first_ingress = ingress.clone();
+    let first = tokio::spawn(async move {
+        first_ingress
+            .submit_background(activation("live-first"))
+            .await
+    });
+    let first_inbox = entered_rx.recv().await.expect("L2 executor entered");
+    let discovered = runtime
+        .active_attempt_live_inbox(&ThreadId(THREAD.into()))
         .await
-        .expect_err("I3 durable resume is not an execution path");
-    assert!(resume_error.to_string().contains("claimed durable input"));
-    assert_eq!(model_calls.load(Ordering::SeqCst), 0, "I3 no model entry");
+        .expect("L2/E2 exact local inbox");
+    assert!(matches!(
+        discovered.offer_as(
+            MessageOrigin::External,
+            Message::text(MessageId("external-live".into()), Role::User, "steer")
+        ),
+        Offer::Accepted(_)
+    ));
+    assert_eq!(first_inbox.list().len(), 1, "L2/E2 same inbox identity");
+    release.add_permits(1);
+    assert_eq!(
+        first.await.expect("L2 join").expect("L2 drive"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert!(
+        matches!(
+            first_inbox.offer(Message::text(
+                MessageId("late-live".into()),
+                Role::User,
+                "late"
+            )),
+            Offer::Closed
+        ),
+        "L3/E4"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|message| message.id.0 == "live-first-inbox-0"),
+        "L2/E3"
+    );
+
+    let second_ingress = ingress.clone();
+    let second = tokio::spawn(async move {
+        second_ingress
+            .submit_background(activation("live-second"))
+            .await
+    });
+    let second_inbox = entered_rx.recv().await.expect("L4 executor entered");
+    assert!(second_inbox.list().is_empty(), "L4/E5 no carry-over");
+    assert!(
+        matches!(
+            second_inbox.offer(Message::text(
+                MessageId("second-live".into()),
+                Role::User,
+                "fresh"
+            )),
+            Offer::Accepted(_)
+        ),
+        "L4/E5 replacement inbox is fresh and open"
+    );
+    release.add_permits(1);
+    second.await.expect("L4 join").expect("L4 drive");
 }
 
 #[tokio::test]
@@ -1118,7 +1186,7 @@ async fn durable_submit_is_idempotent_per_run() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
 
     ingress
         .submit_background(activation("run-1"))
@@ -1147,7 +1215,7 @@ async fn awaiting_run_resumes_through_delivered_input() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // A durable submit awaits on the gate.
     let state = ingress
@@ -1206,7 +1274,7 @@ async fn installed_attempt_executor_drives_the_durable_resume_path() {
     let (runtime, _) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit);
+    let ingress = DispatchTestHarness::new(runtime, store, commit);
 
     assert_eq!(
         ingress
@@ -1305,7 +1373,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Simulate a worker that claimed a run, then crashed before executing it:
     // enqueue and claim directly, leaving a held lease and no committed run.
@@ -1417,7 +1485,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime.clone(), store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
 
     // Await, then deliver input WITHOUT driving (just append).
     assert_eq!(
@@ -1491,7 +1559,7 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime.clone(), store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
 
     // R1 is deliberately first so it cannot consume the one-repair budget.
     let mut control = activation("run-control");
@@ -1587,7 +1655,7 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
     assert_eq!(
         ingress
@@ -1657,7 +1725,7 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     assert_eq!(
         ingress
@@ -1727,7 +1795,7 @@ async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     assert_eq!(
         ingress
@@ -1766,11 +1834,11 @@ async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
 }
 
 #[tokio::test]
-async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
+async fn dispatch_harness_cancel_is_durable_for_a_queued_run() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Enqueue without driving, then cancel: a terminal Cancelled is committed
     // even though the run never executed.
@@ -1778,7 +1846,8 @@ async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    RunService::cancel(&ingress, &RunId("run-1".to_string()))
+    ingress
+        .cancel(&RunId("run-1".to_string()))
         .await
         .expect("unified cancel");
     let record =
@@ -1792,7 +1861,7 @@ async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
 
     // Cancelling again fails closed as no longer active/queued.
     assert_eq!(
-        RunService::cancel(&ingress, &RunId("run-1".to_string())).await,
+        ingress.cancel(&RunId("run-1".to_string())).await,
         Err(awaken_runtime_contract::control::Error::NotActive)
     );
 }
@@ -1807,7 +1876,7 @@ async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     let selected = Arc::new(RecordingAttemptExecutor::default());
     ingress.install_attempt_executor(selected.clone());
     store
@@ -1815,7 +1884,8 @@ async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
         .await
         .unwrap();
 
-    RunService::cancel(&ingress, &RunId("run-1".to_string()))
+    ingress
+        .cancel(&RunId("run-1".to_string()))
         .await
         .expect("durable cancellation");
 
@@ -1870,7 +1940,7 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     );
     assert_eq!(store.dispatch_count(), 1, "crash left intent for recovery");
 
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     assert_eq!(
         ingress
             .recover(harness::clock(1_001))
@@ -1899,7 +1969,7 @@ async fn cancellation_does_not_materialize_the_model_or_credentials() {
             seen.fetch_add(1, Ordering::SeqCst);
             Ok(None)
         });
-    let ingress = DurableRunIngress::with_owner_and_resolver(
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
         text_runtime(),
         store.clone(),
         commit.clone(),
@@ -1960,11 +2030,11 @@ async fn local_wake_signal_delivers_a_held_hint() {
 }
 
 #[tokio::test]
-async fn ingress_dead_letter_and_purge_ops() {
+async fn dispatch_harness_dead_letter_and_purge_ops() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
     // A crashed run explicitly quarantined through the ingress API.
     store
@@ -2015,7 +2085,7 @@ async fn daemon_performs_a_scheduled_action_to_completion() {
     let (runtime, ran) = schedule_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
     let state = ingress
         .submit_background(activation("run-1"))
@@ -2238,7 +2308,7 @@ async fn submit_superseding_abandons_prior_thread_work() {
     let (runtime, _ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // An older run awaits on the thread.
     assert_eq!(
@@ -2306,12 +2376,12 @@ async fn wake_suppressed_while_thread_running_store_spec() {
 }
 
 #[tokio::test]
-async fn ingress_lists_dispatches_and_purges_aged_dead_letters() {
-    // Covers the DurableRunIngress query + time-windowed GC wrappers.
+async fn dispatch_harness_lists_dispatches_and_purges_aged_dead_letters() {
+    // Covers the DispatchTestHarness query + time-windowed GC wrappers.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit);
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
     store
         .enqueue(RunDispatch::new(activation("run-1")))

@@ -22,12 +22,11 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DispatchWorker, DurableRunIngress,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DispatchTestHarness, DispatchWorker,
     GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, PostgresStreamCheckpointStore,
     RunClaim, RunDispatch, SubmitOptions,
 };
 use awaken_run_ingress_testkit::{AuthoritativeWallClock, ConformanceClock};
-use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor as _;
@@ -287,7 +286,7 @@ async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
             .await
             .expect("dispatch"),
     );
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Durable submit awaits on the gate; the tool has not run.
     let state = ingress
@@ -426,7 +425,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
             .await
             .expect("dispatch"),
     );
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     assert_eq!(
         ingress

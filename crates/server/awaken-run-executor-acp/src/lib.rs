@@ -443,6 +443,7 @@ impl RunExecutor for AcpRunExecutor {
         ExecutorCapabilities {
             cancellation: Cancellation::RemoteAbort,
             wait: Wait::Auth,
+            live_input: awaken_runtime_contract::execution::LiveInput::SafeBoundary,
         }
     }
 

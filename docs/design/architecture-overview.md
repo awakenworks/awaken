@@ -217,7 +217,7 @@ crate name.
 | Runtime-facing contract | immutable values and services used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
-| Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
+| Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DispatchQueue`, `DispatchWorker`, input buffer, recovery replay |
 | Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` solely owns the exact Anthropic-compatible surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
 | Concrete stores | backend implementations of multiple repository contracts | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
@@ -313,25 +313,26 @@ cluster lifecycle or manifest layout.
 
 ## 4. Dispatch Boundary
 
-Server run ingress has one public entrypoint with two implementations:
+Server execution has two intentionally different entry shapes:
 
 ```text
-RunIngress
-  |- DirectRunIngress   -> direct runtime submission/control
-  `- DurableRunIngress  -> durable buffered submission/control
+direct request  -> DirectAttemptDriver -> RunExecutor
+durable request -> RunDispatch -> DispatchQueue -> DispatchWorker -> RunExecutor
 ```
 
-`DirectRunIngress` is intentionally weak: it projects runtime execution and live
-control through `RunExecutor` and `LiveRunControl`. It has no durable queue,
-replay, recovery, supersede, or scheduled-wake guarantees.
+`DirectAttemptDriver` is intentionally narrow: it executes one queue-less
+attempt and exposes live control through `RunExecutor` and `LiveRunControl`. It
+has no durable queue, replay, recovery, supersede, or scheduled-wake operation.
 
-`DurableRunIngress` is stronger: input first enters the durable input buffer, which
-claims dispatches, freezes pending messages, materializes resolved config data,
-recovers wake hints, and then activates runtime execution through the narrow
-runtime roles.
+The durable path is data and workers rather than a stronger implementation of
+the same interface. Input first becomes `RunDispatch`; `DispatchQueue` owns its
+claim/lease state and `DispatchWorker` freezes pending messages, materializes
+resolved config data, recovers wake hints, and activates runtime execution
+through the narrow runtime roles.
 
-Routes choose behavior from `RunIngressCapabilities` and fail closed when a
-durable-only operation is requested through the weak ingress.
+The host stores this choice once as a private sum value. There are no parallel
+direct/durable fields and no capability query whose answer can disagree with
+the selected path.
 
 Runtime behavior that needs durable wakeup, such as scheduled actions,
 reminders, deferred tools, awaiting runs, or cancellation from an external client,

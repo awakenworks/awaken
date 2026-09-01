@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
+use awaken_runtime_contract::execution::LiveInput;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
@@ -53,17 +54,36 @@ struct AttemptControlRegistration {
     generation: u64,
 }
 
-/// RAII ownership of one process-local attempt-control registration.
+/// RAII ownership of one process-local physical attempt and its control bundle.
 ///
-/// Every execution topology uses this same lifetime boundary, so cancellation,
-/// pause, wake, and live-inbox handles disappear on every executor return path.
-pub struct ActiveAttemptTracking<'a> {
+/// Every execution topology uses this same lifetime boundary. A live inbox is
+/// created here, never inherited from a Session or Worker, and closes before the
+/// exact generation is deregistered. Queued leftovers are intentionally discarded:
+/// reliable input belongs to durable Session ingress, not this process-local scope.
+pub struct ActiveAttemptScope<'a> {
     runtime: &'a Runtime,
     registration: AttemptControlRegistration,
+    context: RuntimeRunContext,
 }
 
-impl Drop for ActiveAttemptTracking<'_> {
+impl ActiveAttemptScope<'_> {
+    /// The one context registered for this physical attempt.
+    pub fn context(&self) -> &RuntimeRunContext {
+        &self.context
+    }
+}
+
+impl Drop for ActiveAttemptScope<'_> {
     fn drop(&mut self) {
+        if let Some(inbox) = &self.context.live_inbox {
+            let discarded = inbox.close().len();
+            if discarded > 0 {
+                tracing::debug!(
+                    awaken.live_inbox.discarded = discarded,
+                    "discarding unconsumed best-effort input when attempt closed"
+                );
+            }
+        }
         self.runtime
             .active_attempt_controls
             .lock()
@@ -530,26 +550,33 @@ impl Runtime {
         self.run_delegation.as_ref()
     }
 
-    /// Register every neutral live handle for one executing attempt.
+    /// Open and register every neutral live handle for one physical attempt.
     ///
-    /// Native execution and the durable Worker share this boundary, so cancel,
-    /// pause, wake and live-inbox discovery cannot drift into separate registries.
-    /// The returned generation must be supplied to deregistration; an older claim
-    /// is then unable to erase a replacement claim's handles for the same Run.
+    /// Native/direct execution and the durable Worker share this boundary, so
+    /// cancellation, pause, wake and live-input discovery cannot drift into
+    /// separate lifecycle owners. The executor capability controls whether a fresh
+    /// inbox is installed; any inherited inbox is removed to prevent cross-attempt
+    /// reuse. An older scope cannot erase a replacement generation.
     #[must_use]
-    pub fn track_active_attempt(
+    pub fn begin_active_attempt(
         &self,
         run_id: &RunId,
         thread_id: &ThreadId,
-        context: &RuntimeRunContext,
-    ) -> ActiveAttemptTracking<'_> {
+        mut context: RuntimeRunContext,
+        live_input: LiveInput,
+    ) -> ActiveAttemptScope<'_> {
+        context.live_inbox = match live_input {
+            LiveInput::None => None,
+            LiveInput::SafeBoundary => Some(LiveInbox::new()),
+        };
         let registration = self
             .active_attempt_controls
             .lock()
-            .register(run_id, thread_id, context);
-        ActiveAttemptTracking {
+            .register(run_id, thread_id, &context);
+        ActiveAttemptScope {
             runtime: self,
             registration,
+            context,
         }
     }
 

@@ -3,7 +3,7 @@
 Single `server` owns SQLite, workers are stateless and converge (not relay), the
 ACP stream never crosses the network, and Kubernetes scales workers. One **cell**
 is self-contained; scale by replicating cells keyed on `thread_id`. Everything
-lands on awaken's existing seams (`RunExecutor`, `RunIngress`/`DispatchQueue`,
+lands on awaken's existing seams (`RunExecutor`, `DispatchQueue`,
 `AgentEvent`, `SharedHost`, `awaken-run-executor-acp`).
 
 - Status: Accepted for Phase 1; Phase 2 remains deliberately deferred
@@ -168,7 +168,7 @@ fan-in collapse (tens of thousands of connections instead of tens of millions).
 - **Ingress** — client submit + SSE subscribe.
 
 Mostly buildable on what awaken has: the neutral `RunExecutor`, `AcpRunExecutor`,
-the `DispatchQueue`/`RunIngress` port, self-contained `RunDispatch`, the
+the `DispatchQueue` port, self-contained `RunDispatch`, the
 co-located pool, and `durable_ops_router`. A single cell reaches tens of
 thousands of concurrent runs because only facts cross the hub.
 
@@ -262,7 +262,7 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | State | Task | awaken landing |
 |---|---|---|
 | have | neutral execution port + AcpRunExecutor | `awaken-run-executor-acp` (`AgentChannelSource` opens the channel) |
-| have | dispatch queue port + self-contained activation | `RunIngress` / `DispatchQueue` / `RunDispatch` |
+| have | dispatch queue port + self-contained activation | `DispatchQueue` / `RunDispatch` |
 | have | co-located pool + HTTP ops surface | `SharedHost::ensure_dispatch_pool`, `durable_ops_router` |
 | have | single-writer commit, ACP subprocess launch | commit coordinator, `subprocess.rs` (env_clear + passthrough) |
 | **done · read side** | **server→client live streaming across all three frontends** — RuntimeHost's per-Thread `ThreadEventHub` is the one neutral live fan-out; Managed projects its subscription into `event_start`/`event_delta`, while the Session broadcast carries committed SSE truth only | `awaken-runtime-host` (`hub.rs`), `awaken-session-contract` (`SessionThreadLiveSubscription`), `awaken-protocol-managed` (`preview.rs`, live SSE) |

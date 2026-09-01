@@ -56,27 +56,41 @@ pub(crate) struct ChildExecutionSubstrate {
     pub(crate) attempt_context: awaken_runtime_contract::RuntimeRunContext,
 }
 
+/// The one foreground-delivery choice for a materialized Thread.
+///
+/// This replaces the former trait object, boolean, and optional concrete durable
+/// ingress that all encoded the same decision. Durable execution is admitted by
+/// `RunDispatch`; direct execution alone carries an inline attempt driver.
+pub(crate) enum ForegroundRunDelivery {
+    Direct(Arc<DirectAttemptDriver>),
+    Durable,
+}
+
+impl ForegroundRunDelivery {
+    pub(crate) fn is_durable(&self) -> bool {
+        matches!(self, Self::Durable)
+    }
+
+    pub(crate) fn direct(&self) -> Option<&Arc<DirectAttemptDriver>> {
+        match self {
+            Self::Direct(driver) => Some(driver),
+            Self::Durable => None,
+        }
+    }
+}
+
 /// One thread's live state: an isolated runtime, its config, its commit
 /// coordinator (the source of committed truth), its sandbox root, and its
 /// process-local coordination locks.
 pub(crate) struct SessionCtx {
     pub(crate) runtime: Arc<Runtime>,
-    /// The delivery seam a Run's execution goes through (slice C): `DirectRunIngress`
-    /// by default; a `DurableRunIngress` when durable dispatch is enabled (slice D).
-    /// Both drive the same `runtime`/`commit`; only the delivery guarantees differ.
-    pub(crate) ingress: Arc<dyn RunIngress>,
-    /// True when `ingress` is durable: a Run is submitted through the dispatch
-    /// queue (`submit_background`) rather than executed inline (slice D).
-    pub(crate) durable: bool,
-    /// The concrete durable ingress, present iff `durable`. Kept alongside the
-    /// boxed `ingress` so the ADR-0009 operational verbs (recover / manual
-    /// quarantine + GC / superseding submit — slice E) stay reachable; the boxed
-    /// trait object erases them.
-    pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
+    /// One authoritative foreground delivery choice; no parallel boolean or
+    /// erased/concrete pair is retained.
+    pub(crate) delivery: ForegroundRunDelivery,
     /// The one fully configured Worker that executes a claim already accepted by
     /// this process's dispatch authority. Foreground delivery durability is an
     /// independent choice: durable contexts share this exact `Arc` with their
-    /// `DurableRunIngress`, while direct contexts retain it only for pool-routed
+    /// durable coordinator, while direct contexts retain it only for pool-routed
     /// work such as asynchronous Session continuations.
     pub(crate) claimed_worker: Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>,
     pub(crate) runtime_publication_identity: Option<RuntimePublicationIdentity>,
@@ -111,10 +125,6 @@ pub(crate) struct SessionCtx {
     /// execution uses `cancel`; durable execution uses this id to persist a
     /// cancellation intent for whichever pool worker owns the claim.
     pub(crate) active_run: std::sync::Mutex<Option<RunId>>,
-    /// The in-flight run's live inbox plus the previous attempt's unconsumed
-    /// leftovers. Same locking discipline as `cancel`; lifecycle and lookup
-    /// live in [`crate::live_inbox`].
-    pub(crate) live_inbox: std::sync::Mutex<crate::live_inbox::LiveInboxSlot>,
     /// Serializes publication of committed step projections to the process-local
     /// protocol hub. It contains no execution position: awaiting truth is read
     /// exclusively from the committed Thread view.

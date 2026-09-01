@@ -22,6 +22,7 @@ impl RunExecutor for A2aRunExecutor {
         ExecutorCapabilities {
             cancellation: Cancellation::RemoteAbort,
             wait: Wait::Both,
+            live_input: awaken_runtime_contract::execution::LiveInput::None,
         }
     }
 

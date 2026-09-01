@@ -336,7 +336,7 @@ impl SharedHost {
             resident.as_ref(),
             resident
                 .as_ref()
-                .and_then(|ctx| ctx.durable_ingress.as_ref()),
+                .and_then(|ctx| ctx.delivery.is_durable().then_some(&ctx.claimed_worker)),
             active_run.as_ref(),
         ) {
             if self.dispatch_pool.get().is_some() {
@@ -349,8 +349,8 @@ impl SharedHost {
                 // A standalone Host has no autonomous pool. Preserve its direct
                 // ingress behavior for tests/embedders while served deployments
                 // always take the non-blocking process-pool branch above.
-                ingress
-                    .cancel(run_id)
+                awaken_run_ingress::LiveRunControlService::new((*ingress).clone())
+                    .cancel(&run_id.0)
                     .await
                     .map_err(|error| HostError::internal(error.to_string()))?;
             }
@@ -569,7 +569,7 @@ impl SharedHost {
         {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
         }
-        if supersede && ctx.durable_ingress.is_none() {
+        if supersede && !ctx.delivery.is_durable() {
             return Err(HostError::bad_request(
                 "supersede requires durable ingress (set typed durable ingress)",
             ));
@@ -655,7 +655,7 @@ impl SharedHost {
     ) -> Result<RunState, HostError> {
         let run_id = activation.run_id.clone();
         *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
-        if ctx.durable {
+        if ctx.delivery.is_durable() {
             let result = self.resume_durable_foreground(ctx, command).await;
             if result.is_err() {
                 Self::clear_active_run(ctx, &run_id);
@@ -666,26 +666,32 @@ impl SharedHost {
         // grant when brokered). Durable execution returned above and resumes only
         // through the dispatch worker's claimed path.
         let context = self.native_attempt_context(ctx, &activation).await?;
-        let result = ctx.ingress.resume(activation, command, context).await;
+        let result = ctx
+            .delivery
+            .direct()
+            .ok_or_else(|| HostError::internal("direct delivery driver is unavailable"))?
+            .resume(activation, command, context)
+            .await;
         if result.is_err() {
             Self::clear_active_run(ctx, &run_id);
         }
         result.map_err(|error| HostError::internal(error.to_string()))
     }
 
-    /// The durable ingress for `thread`, building the session if needed. Errors
-    /// unless the server runs in durable mode (`typed durable ingress`). This is
-    /// the operational entry for the ADR-0009 follow-on verbs (slice E): recover
-    /// (ADR-0011), manual quarantine / GC (ADR-0015), and superseding submit
-    /// (ADR-0022).
-    pub(crate) async fn durable_ingress(
+    /// The exact Worker composition for a durable Thread. The Worker and its
+    /// Dispatch store are the authority; no parallel durable-ingress façade is
+    /// retained in Session state.
+    pub(crate) async fn durable_worker(
         &self,
         thread: &str,
-    ) -> Result<Arc<DurableRunIngress<AnyDispatchStore>>, HostError> {
+    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
-        ctx.durable_ingress.clone().ok_or_else(|| {
-            HostError::bad_request("durable ingress not enabled (set typed durable ingress)")
-        })
+        ctx.delivery
+            .is_durable()
+            .then(|| ctx.claimed_worker.clone())
+            .ok_or_else(|| {
+                HostError::bad_request("durable delivery not enabled (set typed durable ingress)")
+            })
     }
 
     /// Read this Thread's committed dispatch rows from the one process dispatch
@@ -715,12 +721,18 @@ impl SharedHost {
     /// Reconcile `thread`'s dispatch queue (ADR-0011, slice E): reclaim and re-run
     /// any dispatch left runnable by a crash. Returns the recovered run ids.
     pub async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
-        let processed = self
-            .durable_ingress(thread)
-            .await?
-            .recover(Arc::new(awaken_run_ingress::SystemClock))
+        let worker = self.durable_worker(thread).await?;
+        let clock: Arc<dyn awaken_run_ingress::Clock> = Arc::new(awaken_run_ingress::SystemClock);
+        let mut processed = worker
+            .reconcile_committed_terminals(clock.clone(), 256)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
+        processed.extend(
+            worker
+                .run_until_idle(clock)
+                .await
+                .map_err(|e| HostError::internal(e.to_string()))?,
+        );
         Ok(processed.into_iter().map(|(id, _)| id.0).collect())
     }
 
@@ -733,8 +745,9 @@ impl SharedHost {
         max_attempts: u64,
         now_ms: u64,
     ) -> Result<usize, HostError> {
-        self.durable_ingress(thread)
+        self.durable_worker(thread)
             .await?
+            .store()
             .quarantine_retry_exhausted(max_attempts, now_ms)
             .await
             .map_err(|e| HostError::internal(e.to_string()))
@@ -753,8 +766,9 @@ impl SharedHost {
     /// Return one dead-lettered run to the durable queue with a fresh retry
     /// budget after the operator has repaired the external failure.
     pub async fn requeue_dead_letter(&self, thread: &str, run_id: &str) -> Result<bool, HostError> {
-        let ingress = self.durable_ingress(thread).await?;
-        let belongs_to_thread = ingress
+        let worker = self.durable_worker(thread).await?;
+        let belongs_to_thread = worker
+            .store()
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -767,7 +781,8 @@ impl SharedHost {
         if !belongs_to_thread {
             return Ok(false);
         }
-        ingress
+        worker
+            .store()
             .requeue(&RunId(run_id.to_owned()))
             .await
             .map_err(|error| HostError::internal(error.to_string()))
@@ -776,8 +791,9 @@ impl SharedHost {
     /// Operator GC: purge every dead-lettered dispatch on `thread` (ADR-0015,
     /// slice E). Returns how many were removed.
     pub async fn purge_dead_letters(&self, thread: &str) -> Result<usize, HostError> {
-        self.durable_ingress(thread)
+        self.durable_worker(thread)
             .await?
+            .store()
             .purge_dead_letters()
             .await
             .map_err(|e| HostError::internal(e.to_string()))

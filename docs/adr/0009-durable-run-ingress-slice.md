@@ -2,6 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-06-30
+- Amended: 2026-09-01 — the common `RunIngress` port and capability report were
+  removed after the two implementations accumulated different legal operations.
+  Direct delivery is now the concrete `DirectAttemptDriver`; durable delivery is
+  `RunDispatch` plus `DispatchPool`/`DispatchWorker`. The historical decision below
+  records the incremental slice that introduced those durable authorities.
 - Depends on: ADR-0006, ADR-0008
 
 ## Context

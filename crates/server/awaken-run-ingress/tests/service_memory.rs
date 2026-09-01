@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
-    DispatchQueue, DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore,
+    DispatchQueue, DispatchServiceConfig, DispatchTestHarness, ManualClock, MemoryDispatchStore,
     PendingInput, RunDispatch, SystemClock,
 };
 use awaken_runtime_contract::resume::ResumeResult;
@@ -48,7 +48,7 @@ async fn service_drains_submitted_runs_and_shuts_down() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
 
     // Submit and let the daemon pick it up — the test never drives the worker.
@@ -71,7 +71,7 @@ async fn service_resumes_an_awaiting_run_on_delivery() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
 
     // The daemon runs the submission until it awaits on the gate.
@@ -104,7 +104,7 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Simulate a crashed worker: a claimed run with a held lease, nothing run.
     store
@@ -147,7 +147,7 @@ async fn shutdown_is_clean_with_no_work() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit);
+    let ingress = DispatchTestHarness::new(runtime, store, commit);
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
     // No work submitted: shutdown still returns promptly.
     service.shutdown().await;
@@ -166,7 +166,7 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let clock = Arc::new(ManualClock::new(0));
     let service = ingress.spawn_service(
         clock.clone(),
@@ -223,7 +223,7 @@ async fn service_relays_a_cross_thread_send() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(Arc::new(SystemClock), DispatchServiceConfig::default());
 
     service.submit(activation("run-1")).await.expect("submit");
@@ -256,7 +256,7 @@ async fn service_commits_retry_exhaustion_and_settles_done() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Drive two crash-recoveries by hand so attempt_count reaches the budget.
     store
@@ -314,7 +314,7 @@ async fn daemon_runs_with_worker_owned_renewal_and_ttl_gc_enabled() {
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let ingress = DurableRunIngress::new(runtime, store, commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(
         Arc::new(SystemClock),
         DispatchServiceConfig {

@@ -8,6 +8,7 @@ mod input_projection;
 
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
+use crate::host::session_ctx::ForegroundRunDelivery;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 use input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers, pre_authorized_tool_ids,
@@ -323,9 +324,9 @@ impl SharedHost {
     }
 
     /// Build the one claimed Worker for this Thread, then select its independent
-    /// foreground-delivery policy. Durable foreground delivery exposes the
-    /// `DurableRunIngress` that owns that same Worker; direct foreground delivery
-    /// keeps `DirectRunIngress` while retaining the Worker for pool-routed claims.
+    /// foreground-delivery policy. Durable foreground delivery retains the
+    /// durable coordinator that owns that same Worker; direct foreground delivery
+    /// keeps one concrete attempt driver while retaining the Worker for pool-routed claims.
     /// Runtime, commit, executor, observers, credentials, and recovery wiring are
     /// therefore configured once regardless of delivery durability.
     async fn build_ingress(
@@ -337,8 +338,7 @@ impl SharedHost {
         run_context: awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<
         (
-            Arc<dyn RunIngress>,
-            Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
+            ForegroundRunDelivery,
             Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>,
         ),
         HostError,
@@ -363,51 +363,53 @@ impl SharedHost {
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let mut ingress = DurableRunIngress::with_owner_and_resolver(
+        let mut worker = awaken_run_ingress::DispatchWorker::new(
             runtime.clone(),
             store,
             commit,
             self.deployment.dispatch_owner.clone(),
-            stream_checkpoint,
-            inference_materializer,
-        )
-        .with_context(run_context);
-        if let Some(observer) = settlement_observer {
-            ingress = ingress.with_settlement_observer(observer);
+        );
+        if let Some(checkpoint) = stream_checkpoint {
+            worker = worker.with_stream_checkpoint(checkpoint);
         }
-        ingress = match &self.worker_stream_publisher {
-            Some(publisher) => ingress.with_claimed_stream_publisher(publisher.clone()),
-            None => ingress.with_stream_sink(self.completion.clone()),
+        if let Some(materializer) = inference_materializer {
+            worker = worker.with_inference_materializer(materializer);
+        }
+        worker = worker.with_context(run_context);
+        if let Some(observer) = settlement_observer {
+            worker = worker.with_settlement_observer(observer);
+        }
+        worker = match &self.worker_stream_publisher {
+            Some(publisher) => worker.with_claimed_stream_publisher(publisher.clone()),
+            None => worker.with_stream_sink(self.completion.clone()),
         };
         if let Some(capabilities) = local_credential_capabilities {
-            ingress = ingress.with_local_credential_capabilities(capabilities);
+            worker = worker.with_local_credential_capabilities(capabilities);
         }
         if let Some(resolver) = &self.worker_credential_resolver {
-            ingress = ingress.with_worker_credential_resolver(resolver.clone());
+            worker = worker.with_worker_credential_resolver(resolver.clone());
         }
-        ingress.install_attempt_executor(attempt_executor.clone());
         if let Some(upstream) = &self.upstream {
-            ingress =
-                ingress.with_claimed_commit(crate::commit_ingest::remote_claimed_commit(upstream)?);
+            worker =
+                worker.with_claimed_commit(crate::commit_ingest::remote_claimed_commit(upstream)?);
         }
         if let Some(projection) = recovery_projection {
-            ingress = ingress.with_recovery_projection(projection);
+            worker = worker.with_recovery_projection(projection);
         }
-        let ingress = Arc::new(ingress);
-        let claimed_worker = ingress.worker_handle();
+        let claimed_worker = Arc::new(worker);
+        claimed_worker.install_attempt_executor(attempt_executor.clone());
         // No per-session recovery sweep here: this session's worker shares one queue
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
         // routes it to the session (this one included) that owns its thread.
         if self.deployment.durable {
-            let boxed: Arc<dyn RunIngress> = ingress.clone();
-            Ok((boxed, Some(ingress), claimed_worker))
+            Ok((ForegroundRunDelivery::Durable, claimed_worker))
         } else {
-            let direct: Arc<dyn RunIngress> = Arc::new(DirectRunIngress::with_attempt_executor(
+            let direct = Arc::new(DirectAttemptDriver::with_attempt_executor(
                 runtime,
                 attempt_executor,
             ));
-            Ok((direct, None, claimed_worker))
+            Ok((ForegroundRunDelivery::Direct(direct), claimed_worker))
         }
     }
 
@@ -1721,7 +1723,7 @@ impl SharedHost {
             });
         // Privacy attribution is an attempt concern, not a delivery-topology
         // concern. This one decorator therefore wraps the final executor used by
-        // both DirectRunIngress and DurableRunIngress (including recovered runs).
+        // both direct and claimed durable attempts (including recovered runs).
         let capture_sink = self
             .capture_sink
             .read()
@@ -1735,7 +1737,7 @@ impl SharedHost {
                 self.data_subject_consent.clone(),
             ));
         // This is the one post-attempt output edge. Because it wraps the final
-        // executor shared by DirectRunIngress and DurableRunIngress, claimed
+        // executor shared by direct delivery and the durable Worker, claimed
         // recovery cannot bypass artifact publication.
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::run_exec::ArtifactHarvestAttemptExecutor::new(
@@ -1743,7 +1745,7 @@ impl SharedHost {
                 self.artifact_harvester(),
             ));
         // The foreground delivery seam (slice C/D): a Run's execution goes through
-        // `RunIngress` rather than calling `runtime.start_run` directly. Direct
+        // the selected delivery path rather than calling the Runtime loop directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
         // A database-less Worker sends its terminal commit to the Coordinator.
@@ -1870,7 +1872,7 @@ impl SharedHost {
             run_context,
             awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
         );
-        let (ingress, durable_ingress, claimed_worker) = self
+        let (delivery, claimed_worker) = self
             .build_ingress(
                 runtime.clone(),
                 attempt_executor,
@@ -1879,7 +1881,6 @@ impl SharedHost {
                 run_context.clone(),
             )
             .await?;
-        let durable = durable_ingress.is_some();
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
         // once by `mount`) is the sole claimer of the shared queue and drives this
         // session's runs by routing claimed work back to its worker (O2).
@@ -1899,9 +1900,7 @@ impl SharedHost {
             });
         let ctx = Arc::new(SessionCtx {
             runtime,
-            ingress,
-            durable,
-            durable_ingress,
+            delivery,
             claimed_worker,
             runtime_publication_identity,
             config,
@@ -1915,7 +1914,6 @@ impl SharedHost {
             skill_registry,
             cancel: Arc::new(std::sync::Mutex::new(None)),
             active_run: std::sync::Mutex::new(None),
-            live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             projection: tokio::sync::Mutex::new(()),
             outcome: tokio::sync::Mutex::new(()),
             command: tokio::sync::Mutex::new(()),
@@ -1934,7 +1932,7 @@ impl SharedHost {
         // durable Runtime must leave this delivery to its guarded Worker/HTTP
         // settlement owner, including ordinary cold contexts opened without a
         // claimed identity.
-        if !ctx.durable
+        if !ctx.delivery.is_durable()
             && let Some(run) = ctx
                 .commit
                 .authoritative_latest_run(&ctx.thread_id)

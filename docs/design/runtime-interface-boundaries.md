@@ -79,7 +79,7 @@ authority map in
 | Executable Agent registration | Control and Coordinator contracts | `ExecutableAgentRegistrar` transfers one immutable published snapshot into the Coordinator-owned executable catalog; runtime is not the registration owner |
 | Snapshot execution and inspection | runtime contract/spec | `ExecutableAgentSnapshot`, `RunWithSnapshotCommand`, `AgentSnapshotResolver`, `AgentSnapshotCatalog`, `RuntimeCapabilitySource`, and `PluginManifest` (with `validate_section`) are internal runtime-facing contracts; they expose executable snapshot and capability data, not config CRUD |
 | Live execution | runtime implementation | `RunExecutor`, `LiveRunControl`, `RunResolver`, plugins, providers, and retry logic are implementation roles over agent vocabulary |
-| Durable delivery | run-ingress contract/implementation | `RunIngress`, input buffering, dispatch records, claims, leases, wake hints, and recovery do not become runtime loop vocabulary |
+| Durable delivery | run-ingress contract/implementation | `RunDispatch`, `DispatchQueue`, `DispatchWorker`, input buffering, claims, leases, wake hints, and recovery do not become runtime loop vocabulary |
 | Protocol projection | outside this runtime slice | protocol replay rows and public names are derived from committed facts when a protocol slice is added |
 | Store implementation | concrete stores | one backend may implement both agent-truth and run-ingress ports without merging the contracts |
 
@@ -99,9 +99,9 @@ owns the role catalog; the flow document owns ordering and handoff rules.
 | Product adapter -> run ingress | Product adapter and Dispatch / Server | neutral submit/control command, public ids already translated | public DTOs, product status names, auth grants | unsupported ingress operations return typed unsupported errors |
 | Control publication -> Coordinator executable catalog | Control plus Coordinator boundary adapters | Workspace, Agent, source revision, fingerprint, and `ExecutableAgentSnapshot` | config CRUD workflow, admin DTOs, plaintext, live runtime handles | conflicting registration does not change the current executable snapshot |
 | Configuration surface -> snapshot execution contract | Config surface / Server plus Runtime Core adapter | inline `ExecutableAgentSnapshot`, `ExecutableAgentSnapshotId`, agent snapshot query, runtime capability catalog, plugin config validation request | config CRUD workflow, admin publication workflow, public DTOs, live registry handles | unknown, stale, mismatched, or unauthorized executable snapshot ids fail before activation |
-| Server route -> `RunIngress` | Dispatch / Server | `SubmitCommand`, cancellation, decision delivery, dispatch query | durable ingress internals or runtime internals | `RunIngressCapabilities` decides durable-only behavior |
-| Direct ingress -> runtime roles | Runtime Core adapter | `RunExecutor` and `LiveRunControl` | durable queue, recovery, replay, scheduled wake | direct ingress rejects durable-only operations |
-| Durable ingress -> durable delivery internals | Dispatch / Server | `DurableRunIngress`, input buffer store, runtime store, lifecycle config | product status and protocol replay as runtime truth | durable delivery still commits through the runtime commit boundary |
+| Server route -> delivery choice | Dispatch / Server | neutral direct-attempt command or durable `RunDispatch`, cancellation, decision delivery, dispatch query | durable internals or runtime internals | the private sum value makes direct and durable behavior mutually exclusive |
+| Direct attempt -> runtime roles | Runtime Core adapter | `DirectAttemptDriver`, `RunExecutor`, and `LiveRunControl` | durable queue, recovery, replay, scheduled wake | the direct type exposes no durable-only operation |
+| Durable dispatch -> delivery internals | Dispatch / Server | `RunDispatch`, `DispatchQueue`, `DispatchWorker`, input buffer store, runtime store, lifecycle config | product status and protocol replay as runtime truth | durable delivery still commits through the runtime commit boundary |
 | Durable buffer -> execution | Dispatch / Server plus Runtime Core roles | `RunDispatch` data and `WorkerContext` handles | live registry, resolver, commit coordinator, inbox, cancellation handles inside the dispatch data | data-only dispatch; live wiring travels separately in worker context |
 | Resolution | Runtime Core plus Config edge | `ResolvedSpec`, `CatalogFingerprint`, `ResolvedRun`, `RunResolver` | live registry objects, pins, tenant scopes, factories across the config edge | fingerprint/catalog mismatch fails before execution |
 | Execution | Runtime Core | `AgentRuntime`, `RunActivation`, optional pre-resolved plan, `StreamSink` | HTTP route state and public protocol names | backend requirements are checked before execution |
@@ -129,12 +129,15 @@ seam is smaller when split by authority:
 | `PluginManifest` | declare plugin id, config sections, and `CapabilityBound`, and validate config through the single `validate_section` | runtime handles, plugin behavior, a parallel validator |
 | `RunTerminalObserver` | react to an already-committed terminal Run through a stable extension intent | Run control, terminal commit authority, product projection |
 | `CommitCoordinatorSource` | expose the runtime commit coordinator for durable ingress construction | execution semantics |
-| `RunIngress` | server-facing delivery semantics and capability reporting | runtime internals or durable ingress internals |
+| `DirectAttemptDriver` | execute and steer one queue-less attempt | durable queueing, recovery, replay, or capability negotiation |
+| `RunDispatch` / `DispatchQueue` / `DispatchWorker` | durable delivery data, claim authority, and physical-attempt orchestration | committed Thread truth or runtime loop semantics |
+| `ActiveAttemptScope` | own one process-local physical attempt registration and its optional fresh `LiveInbox` | Session cache, remote mailbox, or cross-attempt input carry-over |
 
-`DirectRunIngress` is the queue-less projection of `RunExecutor` plus
-`LiveRunControl`. `DurableRunIngress` is the durable-buffer-backed
-implementation that adds buffering, recovery, replay, scheduled wake, and
-lifecycle wiring without turning delivery policy into public route vocabulary.
+The direct and durable shapes intentionally do not implement a common ingress
+port. `DirectAttemptDriver` projects `RunExecutor` plus `LiveRunControl` for one
+attempt. The durable path composes `RunDispatch`, `DispatchQueue`, and
+`DispatchWorker`; this makes persistence and recovery structural rather than a
+runtime capability bit.
 
 ## Role Catalog
 
@@ -144,16 +147,18 @@ design documents. API signatures and parameter details stay in Rustdoc.
 
 | Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
 |---|---|---|---|---|---|---|
-| `RunIngress` | server-facing boundary port | run delivery semantics and capability reporting | direct or durable ingress implementation | runtime internals, durable ingress internals, product DTOs | unsupported delivery operation hidden until runtime | G5; `RunIngressCapabilities` tests |
-| `DirectRunIngress` | queue-less ingress implementation | direct submit/control over live runtime roles | `RunExecutor`, `LiveRunControl` | durable queue, recovery, replay, scheduled wake | caller assumes durability that does not exist | G5; direct rejects durable-only operations |
-| `DurableRunIngress` | durable ingress implementation | durable submit/control semantics and buffering/recovery entrypoint | input buffer, dispatch coordinator, recovery/replay, runtime roles | product status, runtime loop internals, side commits | lost input, duplicate dispatch, stale recovery | G1, G5, G6, G13; durable ingress tests |
+| `DirectAttemptDriver` | queue-less attempt adapter | direct start/resume/cancel over live runtime roles | `RunExecutor`, `LiveRunControl`, `ActiveAttemptScope` | durable queue, recovery, replay, scheduled wake | caller assumes durability that does not exist | G5, G6; direct-attempt and active-scope tests |
+| `RunDispatch` | durable delivery value | immutable activation and delivery identity | Session/Thread ids, activation, reservation | live handles, queue state, committed Thread truth | dispatch data becomes a second mutable aggregate | G1, G5; dispatch value tests |
+| `DispatchQueue` | durable claim port | pending/leased/settled delivery transitions and lease fencing | `RunDispatch`, claim epoch, store clock | runtime loop state, active inbox, committed Thread truth | duplicate or stale physical attempts mutate delivery state | G1, G5, G13; backend conformance and formal model |
+| `DispatchWorker` | durable orchestration service | claim, materialize, open one physical attempt, execute, settle, and recover | `DispatchQueue`, `RunExecutor`, committed Thread view | a second Run/Thread state machine | lost input, duplicate execution, stale recovery | G1, G5, G6, G13; worker recovery tests |
+| `ActiveAttemptScope` | process-local lifetime guard | exact active registration, attempt context, fresh optional `LiveInbox`, generation-safe removal | runtime active registry, executor live-input capability | Session state, durable mailbox, cross-attempt carry-over | stale control reaches a replacement attempt | G5, G6; lifecycle decision-table tests |
 | `RunExecutor` | runtime execution role | execute a prepared activation or replayable plan | `AgentRuntime`, activation data, event sink | live steering, resolution policy, commit ownership | execution role gains unrelated control authority | G2, G14; public API surface tests |
 | `RuntimeRunContext` | live execution context | per-attempt wiring such as cancellation token, input receiver, stream sink, commit coordinator source, thread context cache, pinned resolver scope, and persistence mode | `RunExecutor`, ingress/runtime execution construction | public protocol payloads, immutable activation fields, config records, publication services | data-only activation and live handles become indistinguishable | G2, G3, G5, G13; activation/context split tests |
 | `LiveRunControl` | live steering role | cancel, deliver decision, wake pending boundary | active run registry or runtime handle | durable queueing, replay, registry materialization | live control mistaken for durable delivery | G5; live-control route tests |
 | `RunResolver` | resolution role | resolve live or pinned execution plan | `ResolvedSpec`, catalog fingerprint, runtime catalog | running loops, live control, commit writes | execution starts from mismatched catalog | G3, G4; fingerprint mismatch tests |
 | `ExecutableAgentSnapshot` | value object | complete resolved configuration for one run/thread execution scope | root agent id, resolved spec, catalog fingerprint, snapshot id | live registry handles, config authoring workflow, public DTOs | same agent id is mistaken for same executable configuration | G3, G4, G28; snapshot serde and fingerprint tests |
 | `RunWithSnapshotCommand` | value object | run request that names either inline executable snapshot data or an executable snapshot id | run input, options, trace, agent snapshot input | config CRUD payloads, public protocol DTOs, route state | caller bypasses snapshot validation or smuggles config mutation into runtime | G2, G10, G28; command surface tests |
-| `RunWithSnapshotExecutor` | runtime-facing boundary port | execute a run from `RunWithSnapshotCommand` after snapshot validation | `AgentSnapshotResolver`, `RunExecutor`, `RunIngress` where delivery is needed | executable snapshot storage, config publication, admin workflow | runtime accepts agent id as complete config identity | G2, G18, G28; inline/by-id execution tests |
+| `RunWithSnapshotExecutor` | runtime-facing boundary port | execute a run from `RunWithSnapshotCommand` after snapshot validation | `AgentSnapshotResolver`, `RunExecutor`; caller chooses direct attempt or durable dispatch before execution | executable snapshot storage, config publication, admin workflow | runtime accepts agent id as complete config identity | G2, G18, G28; inline/by-id execution tests |
 | `AgentSnapshotResolver` | lookup port | resolve one `ExecutableAgentSnapshotId` into `ExecutableAgentSnapshot` | executable snapshot store or config service adapter | config CRUD, list policy, runtime loop execution | stale or unauthorized snapshot data enters execution | G3, G4, G28; by-id resolution tests |
 | `AgentSnapshotCatalog` | query port | list current executable snapshots for configuration surfaces | snapshot index and capability filters | run execution, config mutation, admin publication | UI reimplements runtime snapshot visibility or assumes agent id uniqueness | G14, G28; catalog query tests |
 | `RuntimeCapabilitySource` | query port | expose installed runtime capabilities such as plugins, tool descriptors, model capability profiles, and schema keys | runtime registry, resolved plugin manifests, model capability profiles | authorization grants, config writes, execution | configuration surface shows capabilities unrelated to the active runtime | G8, G21, G28; capability snapshot tests |
@@ -172,10 +177,11 @@ design documents. API signatures and parameter details stay in Rustdoc.
 merges plugin contributions; it is immutable and reuses the activation/context
 split (see key-design-decisions D21), so per-run handles never bind into it.
 
-`RunIngress` / `DurableRunIngress` are the server-facing run delivery boundary.
-`CommitCoordinatorSource` is only the narrower commit wiring role used by durable
-ingress construction. It exposes the runtime's commit coordinator and optional
-staged commit coordinator; it does not own input buffering.
+`DirectAttemptDriver` and the durable Dispatch composition are the two
+server-facing delivery shapes. `CommitCoordinatorSource` is only the narrower
+commit wiring role used by `DispatchWorker` construction. It exposes the
+runtime's commit coordinator and optional staged commit coordinator; it does
+not own input buffering.
 
 ## Publication Roles Outside Runtime
 
@@ -296,7 +302,7 @@ The interaction model is:
 inline snapshot run
   -> validate snapshot data and fingerprint
   -> materialize runtime execution objects
-  -> execute through RunExecutor / RunIngress
+  -> execute through RunExecutor, directly or after durable dispatch
 
 snapshot id run
   -> AgentSnapshotResolver.get_snapshot(id)
@@ -321,7 +327,7 @@ answer different authority questions for every run:
 | Primary axis | Question answered | Owning boundary | Main ports |
 |---|---|---|---|
 | Configuration publication | What behavior is available to run? | Control publishes; Coordinator registers; Runtime validates and consumes the exact snapshot | external: `StoredPublication`, `ExecutableAgentRegistrar`, `ExecutableAgentCatalog`; runtime: `RunResolver` |
-| Live control | How may an active run be steered now? | Caller/ingress requests; active run observes at safe boundaries | `RunIngress`, `LiveRunControl`, `RuntimeInputHandle` |
+| Live control | How may an active run be steered now? | Caller requests; the exact process-local attempt observes at safe boundaries | `LiveRunControl`, `ActiveAttemptScope`, `RuntimeInputHandle` |
 | Execution | How is the resolved plan performed? | Runtime Core orchestrates; model/tool ports invoke work in-process | `RunExecutor`, `LlmExecutor`, `ToolExecutor` |
 
 Do not collapse these axes into one runtime controller. Configuration publication
@@ -386,7 +392,7 @@ enters, where it changes hands, and which port is allowed to make the next value
 | Configuration publication | config revision -> compile -> `StoredPublication` -> `ExecutableAgentRegistrar` -> Coordinator executable catalog -> Session resolution | Control owns authoring and compilation; Coordinator owns registration; runtime validates only the selected immutable snapshot | admin DTOs, private admin tools, live registries, compiler caches, and route state do not cross as runtime input |
 | Snapshot execution | inline snapshot or `ExecutableAgentSnapshotId` -> `ExecutableAgentSnapshot` -> fingerprint/capability validation -> activation/resolution | caller or configuration surface selects the executable snapshot; resolver supplies data; runtime validates and executes | agent id is not treated as complete configuration identity; config CRUD and admin workflow do not cross the snapshot contract |
 | Activation | neutral submit/resume command -> `RunActivation` with intent, input, options, trace, control, persistence hints, and inherited resolver data -> optional `RuntimeRunContext` with commit coordinator, pinned registry set, thread context, and resolved plan -> `RunExecutor` | ingress or caller prepares data; runtime executes the owned activation | adapter DTOs and live registry handles do not enter `RunActivation`; per-run wiring stays in `RuntimeRunContext` |
-| Live control | cancel/decision/message/wake command -> `LiveRunControl` -> active run input channel or cancellation token -> loop consumes at a safe boundary | caller/ingress requests steering; active run decides when it can observe it | live delivery is best-effort; durable fallback belongs to `RunIngress` |
+| Live control | cancel/decision/message/wake command -> `LiveRunControl` -> exact `ActiveAttemptScope` -> active run input channel or cancellation token -> loop consumes at a safe boundary | caller requests steering; the current attempt decides when it can observe it | live delivery is best-effort; durable intent must first become committed Thread/dispatch input |
 | Resolution | config/catalog data -> `ResolvedSpec` and fingerprint -> `RunResolver` validates live or pinned scope -> `ResolvedRun` and `ResolvedExecutionEnv` | config domain owns publication; runtime owns validation and materialization | runtime does not search for an arbitrary provider after activation starts |
 | Execution | resolved plan -> model capability check -> in-process loop -> LLM/tool calls -> stream output, state commands, event drafts, commit plan, final result | runtime owns loop orchestration; tool/model ports own invocation mechanics | execution ports do not grant authorization and do not own protocol projection |
 | State | registered keys -> seed/import persisted state -> hooks/tools return `StateCommand` -> `MutationBatch` -> live `StateStore` -> export `PersistedState` into commit | runtime owns live revisioned state; commit owns durability | product/shared state stays behind approved resource or product ports |
@@ -517,7 +523,7 @@ Naming rules for future runtime changes:
 
 1. Put context in the module path, not in long type prefixes.
 2. Use `Stream*` for live, best-effort output and `Event*` aliases for committed neutral records; concrete durable storage types remain `DurableEvent*`.
-3. Use `RunIngress` for the server-facing delivery boundary; keep delivery routing and input buffering as internal durable-ingress responsibilities unless they become externally testable contracts.
+3. Keep direct attempts and durable dispatch as distinct server-facing shapes; do not add a common capability-reporting ingress port or parallel Host fields.
 4. Use `Store` only for durable persistence and `Channel` for in-process ephemeral delivery.
 5. Use `Context` only for per-attempt live wiring; use `Activation` for immutable
    run input and `Snapshot` for immutable executable configuration.
@@ -684,7 +690,7 @@ enforcer:
 - serde and fingerprint tests prove `ResolvedSpec` is data-only and stable;
 - inline/by-id snapshot tests prove `ExecutableAgentSnapshot` is the executable
   configuration identity and `AgentId` is not treated as enough to run;
-- `RunIngressCapabilities` tests prove direct ingress rejects durable-only work;
+- public-surface tests prove the direct driver has no durable-only operation, while dispatch conformance tests prove the durable path;
 - commit tests prove durable writes go through one coordinator;
 - hook/filter/no-bypass tests prove plugin contributions cannot skip permission
   or commit staging.

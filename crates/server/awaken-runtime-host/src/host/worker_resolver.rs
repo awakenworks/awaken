@@ -124,7 +124,7 @@ mod tests {
             .ctx_for(&parent.0, None)
             .await
             .expect("E1 direct parent context");
-        assert!(parent_ctx.durable_ingress.is_none(), "E1 precondition");
+        assert!(!parent_ctx.delivery.is_durable(), "E1 precondition");
         let store = host.dispatch_store().expect("ephemeral dispatch authority");
         store
             .enqueue(
@@ -181,8 +181,7 @@ mod tests {
             .ctx_for(session_id, None)
             .await
             .expect("R1 direct context");
-        assert!(!direct.durable, "R1/E1");
-        assert!(direct.durable_ingress.is_none(), "R1/E1");
+        assert!(!direct.delivery.is_durable(), "R1/E1");
 
         let child_run = RunId("reported-child-run".into());
         let report_id = MessageId::agent_thread_report(&child_run);
@@ -251,18 +250,7 @@ mod tests {
             .ctx_for(&durable_thread.0, None)
             .await
             .expect("R2 durable context");
-        let durable_ingress = durable_ctx
-            .durable_ingress
-            .as_ref()
-            .expect("R2 durable foreground ingress");
-        assert!(durable_ctx.durable, "R2 precondition");
-        assert!(
-            Arc::ptr_eq(
-                &durable_ctx.claimed_worker,
-                &durable_ingress.worker_handle()
-            ),
-            "R2/E3 durable ingress owns the canonical claimed Worker"
-        );
+        assert!(durable_ctx.delivery.is_durable(), "R2 precondition");
         let durable_resolver = HostWorkerResolver {
             host: Arc::downgrade(&durable),
         };
@@ -272,7 +260,7 @@ mod tests {
             .expect("R2 resolve resident durable worker");
         assert!(
             Arc::ptr_eq(&resolved, &durable_ctx.claimed_worker),
-            "R2/E3 resolver reuses the same Worker Arc"
+            "R2/E3 resolver reuses the one canonical Worker Arc"
         );
 
         let coordinator_store = Arc::new(

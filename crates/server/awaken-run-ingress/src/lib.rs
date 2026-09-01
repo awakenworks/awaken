@@ -1,27 +1,29 @@
-//! Durable run ingress: the dispatch/server host above the runtime core.
+//! Durable run dispatch: the dispatch/server host above the runtime core.
 //!
-//! `RunIngress` has exactly two delivery semantics (G5): direct, shipped by the
-//! runtime as `DirectRunIngress`, and durable, shipped here as
-//! [`DurableRunIngress`]. This crate owns the durable half — the dispatch queue,
-//! pending input, claim/lease/recovery, and the worker that turns a durable
-//! dispatch into a runtime attempt. It sits *above* the runtime (it depends on
-//! the kernel; the kernel never depends on it) and adds durability over runtime
-//! control without owning the loop, agent truth, or a second commit mechanism
-//! (G6). Committed facts remain the single authority (G1/G13).
+//! Direct attempts and durable delivery are intentionally different shapes
+//! (G5). The runtime ships `DirectAttemptDriver`; this crate owns `RunDispatch`,
+//! `DispatchQueue`, pending input, claim/lease/recovery, and `DispatchWorker`.
+//! It sits *above* the runtime (it depends on the kernel; the kernel never
+//! depends on it) and adds durability without owning the loop, agent truth, or
+//! a second commit mechanism (G6). Committed facts remain the single authority
+//! (G1/G13).
 //!
-//! The aggregates follow the run-ingress design's DDD split: [`DispatchQueue`] owns
+//! The aggregates follow the dispatch design's DDD split: [`DispatchQueue`] owns
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
 
 mod any;
 mod application;
-mod capability;
 mod claimed_stream;
 mod clock;
 mod commit_fence;
 mod dispatch;
 mod dispatch_schema;
+// Synchronous composition convenience for conformance and embedded fixtures.
+// Production Hosts compose DispatchWorker/DispatchPool directly and therefore
+// cannot depend on the former parallel ingress façade.
+#[cfg(feature = "test-support")]
 mod durable;
 mod fenced_checkpoint;
 mod live_control;
@@ -73,7 +75,6 @@ pub use awaken_run_ingress_contract::{
     RegisterWorkerRequest, RelinquishRequest, RenewRequest, SessionRunReservationResolutionRequest,
     SettleRequest, StreamEventRequest, StreamObservationRequest, WorkerIdentityRequest,
 };
-pub use capability::RunIngressCapabilities;
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
@@ -86,7 +87,8 @@ pub use dispatch::{
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
-pub use durable::DurableRunIngress;
+#[cfg(feature = "test-support")]
+pub use durable::DispatchTestHarness;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 #[cfg(any(test, feature = "test-support"))]

@@ -213,7 +213,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 |---|---|---|
 | Runtime protocol/license | Current repository | Protocol/specification, SDK-facing schemas, examples, and conformance tests use Apache-2.0; code packages may carry their own package/file license metadata |
 | Runtime core | Current repository | Keep runtime-owned crates/package open and neutral; consume immutable `ExecutableAgentSnapshot`/`RunActivation` data and commit state/effect facts without owning configuration publication or executable registration |
-| Dispatch/server | `awaken-run-ingress` (host crate) + adjacent server/config package | Use `RunIngress` with direct `DirectRunIngress` (runtime) and durable `DurableRunIngress` (`awaken-run-ingress`, [ADR-0009](adr/0009-durable-run-ingress-slice.md)); the host depends on runtime and the store adapter, never the reverse |
+| Dispatch/server | `awaken-run-ingress` (host crate) + adjacent server/config package | Application admission selects a private direct/durable value. Direct uses `DirectAttemptDriver`; durable uses `RunDispatch` plus `DispatchPool`/`DispatchWorker` directly. Runtime `ActiveAttemptScope` alone owns current-attempt controls and a fresh optional LiveInbox. The host depends on runtime and store adapters, never the reverse |
 | Config publication and executable availability | Control and Coordinator | Control persists `StoredPublication` and registers its immutable snapshot through `ExecutableAgentRegistrar`; `ExecutableAgentCatalog` is the single Coordinator execution projection. One Control registration supervisor recovers Agent and Environment facts with readiness/backoff/lag reporting. Active-active PostgreSQL projections advance by durable high-water and fall back to full replay. AllInOne uses local adapters, split roles use authenticated adapters, and Worker receives neither tokens nor authority databases |
 | Environment definition and executable availability | Control and Coordinator | `awaken-environment-contract` and `EnvRegistry` own static definitions, revisions, and exact sandbox-policy references in Control. `EnvironmentApplication` is the sole authoring command/recovery path; `EnvironmentExecutionApplication` is the sole Coordinator snapshot/work/convergence path over `ExecutableEnvironmentCatalog` and `WorkQueue`. Archive retains Control history and withdraws current execution availability; Managed owns only HTTP mapping. |
 | Resource application and lifecycle | Resources, currently co-deployed by Coordinator | One `ResourceAuthorities` value selects the catalog and File/Memory/Skill/lifecycle authorities; one `ResourcesApplication` derives `FileApplicationService` and purge scheduling; one router exposes File/Memory/Skill management. Runtime artifact harvesting and public File APIs call the same application service; Worker materialization remains per-kind and claim-fenced. No standalone role is exposed until independent scaling or credential isolation also supplies authenticated claim/reference transports |
@@ -231,17 +231,17 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 The following should not be implemented as broad subsystems from these docs alone:
 
 - a product-first managed crate family as the core architecture;
-- a universal execution abstraction that replaces `RunIngress` or durable ingress
-  internals before a concrete server slice requires it. The shipped surface is
-  `DirectRunIngress` plus durable `DurableRunIngress` (`awaken-run-ingress`,
-  [ADR-0009](adr/0009-durable-run-ingress-slice.md)): a durable submit persists an
+- a universal execution abstraction that merges application admission, direct
+  attempts, durable Dispatch, or live input. The shipped surface is the concrete
+  `DirectAttemptDriver` plus `RunDispatch`/`DispatchPool`/`DispatchWorker`
+  ([ADR-0009](adr/0009-durable-run-ingress-slice.md)): a durable submit persists an
   accepted run, a worker claims and runs it under a single-owner lease, an expired
   lease is recovered, and an awaiting run resumes through delivered input — all over
   the durable `CommitCoordinator` backend ([ADR-0008](adr/0008-durable-postgres-commit-backend.md)).
   The originally minimal ADR-0009 slice has since gained scheduled wake, lease
   renewal, cross-thread outbox, query/maintenance, supersession, dead-letter, and
   durable completion tombstones through ADR-0011–0027 and ADR-0060. Extend those
-  existing ports and backend-conformance suites; do not create a parallel delivery
+  existing authorities and backend-conformance suites; do not create a parallel delivery
   subsystem. The commit contract any backend must satisfy remains fixed by
   [ADR-0006](adr/0006-fact-authority-run-record-is-cache.md);
 - product-specific vaults, sessions, and outcome fields inside runtime crates.
