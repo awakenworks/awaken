@@ -4,7 +4,6 @@
 //!
 //! | Scenario id | Test |
 //! |---|---|
-//! | RS-ING-001  | direct_ingress_durable_path_fails_closed |
 //! | RS-EVT-001  | live_stream_is_not_replay_truth |
 //! | RS-CTRL-001 | cancel_commits_terminal_outcome (cancel→terminal-commit slice) |
 //!
@@ -18,9 +17,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Fact};
-use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
+use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::execution::{Error, RunExecutor};
+use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -92,17 +91,6 @@ fn activation() -> RunActivation {
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
-}
-
-/// RS-ING-001: Given direct ingress, When a durable-only submission is
-/// requested, Then it fails closed with a typed error before execution.
-#[tokio::test]
-async fn direct_ingress_durable_path_fails_closed() {
-    let ingress = DirectRunIngress::new(runtime());
-    assert!(matches!(
-        ingress.submit_background(activation()).await,
-        Err(Error::Execution(_))
-    ));
 }
 
 /// RS-EVT-001: Given a run that streams live events and commits, When replay

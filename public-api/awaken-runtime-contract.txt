@@ -456,6 +456,9 @@ pub awaken_runtime_contract::execution::Error::Commit(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::Execution(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::Resolution(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::StateConflict
+pub enum awaken_runtime_contract::execution::LiveInput
+pub awaken_runtime_contract::execution::LiveInput::None
+pub awaken_runtime_contract::execution::LiveInput::SafeBoundary
 pub enum awaken_runtime_contract::execution::Wait
 pub awaken_runtime_contract::execution::Wait::Auth
 pub awaken_runtime_contract::execution::Wait::Both
@@ -476,6 +479,7 @@ pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime_contract::execution::ExecutorCapabilities
 pub awaken_runtime_contract::execution::ExecutorCapabilities::cancellation: awaken_runtime_contract::execution::Cancellation
+pub awaken_runtime_contract::execution::ExecutorCapabilities::live_input: awaken_runtime_contract::execution::LiveInput
 pub awaken_runtime_contract::execution::ExecutorCapabilities::wait: awaken_runtime_contract::execution::Wait
 impl awaken_runtime_contract::execution::ExecutorCapabilities
 pub const awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE: Self
@@ -2141,6 +2145,7 @@ pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::tool
 pub struct awaken_runtime_contract::ExecutableAgentSnapshotId(pub alloc::string::String)
 pub struct awaken_runtime_contract::ExecutorCapabilities
 pub awaken_runtime_contract::ExecutorCapabilities::cancellation: awaken_runtime_contract::execution::Cancellation
+pub awaken_runtime_contract::ExecutorCapabilities::live_input: awaken_runtime_contract::execution::LiveInput
 pub awaken_runtime_contract::ExecutorCapabilities::wait: awaken_runtime_contract::execution::Wait
 impl awaken_runtime_contract::execution::ExecutorCapabilities
 pub const awaken_runtime_contract::execution::ExecutorCapabilities::NATIVE: Self

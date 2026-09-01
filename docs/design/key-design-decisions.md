@@ -70,13 +70,16 @@ understand.
 **Problem.** Durable ingress semantics can become entangled with basic runtime
 execution, making simple runtime use pay for buffering and dispatch machinery.
 
-**Decision.** Use one `RunIngress` port with two implementations:
-`DirectRunIngress` for direct queue-less runtime control, and
-`DurableRunIngress` for durable buffering, recovery, pending input, and replay.
+**Decision.** Keep the two delivery shapes explicit instead of forcing them
+through one capability-reporting port. `DirectAttemptDriver` performs one
+queue-less attempt through `RunExecutor` and `LiveRunControl`. Durable delivery
+is the `RunDispatch` + `DispatchQueue` + `DispatchWorker` path, which owns
+buffering, claims, recovery, pending input, and replay.
 
-**Consequence.** Runtime control works without durable ingress internals.
-Durable-only operations fail closed on the weak ingress. Durable ingress behavior
-is additive, not a parallel runtime.
+**Consequence.** Runtime control works without durable ingress internals, and a
+caller cannot accidentally request durable behavior from the direct driver.
+Durable delivery remains additive, not a parallel runtime or a second state
+authority.
 
 ---
 
@@ -500,7 +503,7 @@ separate primary runtime-facing axes:
 | Axis | Authority | Boundary |
 |---|---|---|
 | Configuration publication | publish and version behavior data | Control -> `StoredPublication` -> `ExecutableAgentRegistrar` -> Coordinator executable catalog |
-| Live control | steer one active run at safe boundaries | `RunIngress` / `LiveRunControl` / `RuntimeInputHandle` |
+| Live control | steer one exact active attempt at safe boundaries | `LiveRunControl` / `ActiveAttemptScope` / `RuntimeInputHandle` |
 | Execution | run the resolved loop and stage runtime truth | `RunExecutor`, backend/model/tool ports, `CommitCoordinator` |
 
 Activation, resolution, state, event, wait/resume, commit, and

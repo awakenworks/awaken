@@ -418,17 +418,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self
     }
 
-    /// Provide the per-session live inbox so this worker's runs drain mid-run
-    /// steer at their safe loop boundaries (ADR-0054 P2).
-    #[must_use]
-    pub fn with_live_inbox(
-        mut self,
-        inbox: awaken_runtime_contract::live_inbox::LiveInbox,
-    ) -> Self {
-        self.exec = self.exec.with_live_inbox(inbox);
-        self
-    }
-
     /// Install the model→executor resolver (R1), so a worker-driven run resolves its
     /// effective model ref to the configured executor without a config service.
     #[must_use]
@@ -882,17 +871,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             );
             let cancel_executor = attempt_executor.clone();
             let cancel_activation = activation.clone();
-            let cancel_context = context.clone();
             if let Err(error) = self
                 .run_physical_attempt(
                     &claim,
                     claimed.request.thread_id(),
                     &context,
+                    awaken_runtime_contract::execution::LiveInput::None,
                     clock.clone(),
                     &attempt_cancellation,
-                    move || async move {
+                    move |attempt_context| async move {
                         cancel_executor
-                            .cancel(cancel_activation, cancel_context)
+                            .cancel(cancel_activation, attempt_context)
                             .await
                     },
                 )
@@ -1046,15 +1035,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // deferred action, not waits for external input. This also covers a
             // crash recovery of a scheduled await (no pending input is expected).
             Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
-                let scheduled_context = execution_context.clone();
                 match self
                     .run_physical_attempt(
                         &claim,
                         claimed.request.thread_id(),
                         &execution_context,
+                        awaken_runtime_contract::execution::LiveInput::None,
                         clock.clone(),
                         &attempt_cancellation,
-                        || self.perform_scheduled(&claim, now_ms, scheduled_context),
+                        |attempt_context| self.perform_scheduled(&claim, now_ms, attempt_context),
                     )
                     .await?
                 {
@@ -1084,17 +1073,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             .with_context_messages(input.context_messages);
                         let resume_executor = attempt_executor.clone();
                         let resume_activation = activation.clone();
-                        let resume_context = execution_context.clone();
                         match self
                             .run_physical_attempt(
                                 &claim,
                                 claimed.request.thread_id(),
                                 &execution_context,
+                                attempt_executor.capabilities().live_input,
                                 clock.clone(),
                                 &attempt_cancellation,
-                                move || async move {
+                                move |attempt_context| async move {
                                     resume_executor
-                                        .resume(resume_activation, command, resume_context)
+                                        .resume(resume_activation, command, attempt_context)
                                         .await
                                 },
                             )
@@ -1181,16 +1170,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     let execute_executor = attempt_executor.clone();
-                    let execute_context = execution_context.clone();
                     match self
                         .run_physical_attempt(
                             &claim,
                             claimed.request.thread_id(),
                             &execution_context,
+                            attempt_executor.capabilities().live_input,
                             clock.clone(),
                             &attempt_cancellation,
-                            move || async move {
-                                execute_executor.execute(activation, execute_context).await
+                            move |attempt_context| async move {
+                                execute_executor.execute(activation, attempt_context).await
                             },
                         )
                         .await?
@@ -1212,15 +1201,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         while state == RunState::Awaiting {
             match self.reader.resume_ticket(&run_id) {
                 Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
-                    let scheduled_context = execution_context.clone();
                     state = match self
                         .run_physical_attempt(
                             &claim,
                             claimed.request.thread_id(),
                             &execution_context,
+                            awaken_runtime_contract::execution::LiveInput::None,
                             clock.clone(),
                             &attempt_cancellation,
-                            || self.perform_scheduled(&claim, now_ms, scheduled_context),
+                            |attempt_context| {
+                                self.perform_scheduled(&claim, now_ms, attempt_context)
+                            },
                         )
                         .await?
                     {

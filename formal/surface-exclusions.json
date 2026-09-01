@@ -278,12 +278,6 @@
       "evidence": ["crates/server/awaken-dispatch-testkit/src/lib.rs"]
     },
     {
-      "path": "crates/server/awaken-dispatch/src/capability.rs",
-      "boundary": "capability_dto",
-      "reason": "Immutable capability report and two constant presets only; delivery-mode routing and durable behavior live in the ingress implementations.",
-      "evidence": ["crates/server/awaken-dispatch/src/capability.rs"]
-    },
-    {
       "path": "crates/server/awaken-session-executor/src/host/worker_resolver/test_support.rs",
       "boundary": "test_only",
       "reason": "Claimed-dispatch fixtures and fake model compiled only through the test-gated worker_resolver module.",

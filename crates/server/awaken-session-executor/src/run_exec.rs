@@ -558,7 +558,7 @@ impl SharedHost {
                 options.associate_prepared_session,
             )
             .await
-        } else if ctx.durable {
+        } else if ctx.delivery.is_durable() {
             // Durable: enqueue and await the pool driving it to a settled state. The
             // session's own worker must not claim (it would grab foreign threads'
             // runs on the shared queue); the pool is the sole claimer.
@@ -571,14 +571,9 @@ impl SharedHost {
             )
             .await
         } else {
-            // Native direct Run: the only path whose engine drains a live
-            // inbox in-process, so it is the only path that opens one. The
-            // inbox closes when the attempt returns — success or error — and
-            // unconsumed messages carry over to the thread's next attempt.
-            let mut context = self
-                .native_attempt_context(ctx, &activation)
-                .await?
-                .with_live_inbox(ctx.open_live_inbox());
+            // The direct attempt driver opens the exact attempt scope and creates
+            // a fresh LiveInbox only when the selected executor consumes one.
+            let mut context = self.native_attempt_context(ctx, &activation).await?;
             if let (Some(mirror), Some(token)) = (
                 options.cancellation_mirror.as_ref(),
                 context.cancellation.clone(),
@@ -589,11 +584,12 @@ impl SharedHost {
                 context = context.with_stream_sink(sink);
             }
             let result = ctx
-                .ingress
+                .delivery
+                .direct()
+                .ok_or_else(|| HostError::internal("direct delivery driver is unavailable"))?
                 .start(activation, context)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()));
-            ctx.close_live_inbox();
             result
         }
     }

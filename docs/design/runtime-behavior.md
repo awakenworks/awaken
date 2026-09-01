@@ -340,7 +340,7 @@ Use this split:
 
 | Area | Core mechanism | Behavior contribution owner | Rule |
 |---|---|---|---|
-| Multi-agent delegation | tool-call, permission, child-run correlation, `RunIngress` / backend handoff | `agent_run` descriptor/tool, delegate roster config, local/remote execution adapter | core enables delegation safely; installed tools and target choices change agent behavior |
+| Multi-agent delegation | tool-call, permission, child-run correlation, direct attempt / durable dispatch / backend handoff | `agent_run` descriptor/tool, delegate roster config, local/remote execution adapter | core enables delegation safely; installed tools and target choices change agent behavior |
 | Message delivery | committed tool request, deterministic activation input, message write intent, append fence | internal `send_message` tool; separately, external message adapter and pending queue | internal Agent messages create a fresh target Run; only external ingress uses pending input |
 | Scheduled/background work | `ScheduledAction`, `ResumeTicket`, correlation/idempotency key, resume validation | action kinds, timers, concrete task tools, result adapters | no core `BackgroundTask` umbrella; ADR-0076 owns only detached ordinary-tool execution |
 | Plugin mechanism | `Plugin` factory, `PluginManifest`, `CapabilityBound`, resolved `Contributions` (hook slots, tool gates, transform slots, key registry, output validation) | plugin packages, first-party extension bundles, product-selected active plugin scope | core resolves and bound-checks contributions; plugins decide behavior |
@@ -417,12 +417,13 @@ resolved root agent
   -> delegate roster in resolved spec
   -> model-visible `agent_run` descriptor with allowed target metadata
   -> tool gate validates tool id, `agent_id`, permission, and capability
-  -> execution chooses local run, remote backend, or durable ingress path
+  -> execution chooses local attempt, remote backend, or durable dispatch path
   -> child result returns as normal tool output or committed facts/events
 ```
 
 The parent and child runs remain ordinary runs. If child execution needs durable
-delivery, it goes through `RunIngress`. If it is remote, the remote link must
+delivery, it becomes `RunDispatch` and is claimed by `DispatchWorker`. If it is
+remote, the remote link must
 still preserve activation, live context, stream, and commit semantics. The
 delegate roster and descriptor fingerprint make replay able to prove which
 agents were visible to the model.
@@ -496,7 +497,7 @@ configuration publication
   -> commit makes tool requests/facts, awaiting state, or scheduled requests
      durable; external adapters may separately commit pending outbox entries
   -> dispatch/server observes committed requests and wakes or resumes through
-     RunIngress
+     durable dispatch control
   -> runtime validates correlation, idempotency, snapshot, and descriptor
      fingerprint before consuming any resumed result
 ```
@@ -506,7 +507,7 @@ registers one descriptor with an `agent_id` argument. Resolution hides the tool
 when the current agent has no delegate roster. Invocation fails closed if the
 target agent is not in the resolved roster or if permission/capability checks do
 not pass. After validation, execution may be a local child run or a durable
-`RunIngress` submit; the child result returns as a normal tool output or
+`RunDispatch` submission; the child result returns as a normal tool output or
 committed fact. Parent and child runs remain ordinary runs.
 
 `send_message` is the internal Managed Agent message path. The source
@@ -639,7 +640,7 @@ hook/tool output
   -> ThreadCommit stages the request and any ResumeTicket atomically
   -> CommitCoordinator commits; work is visible only after commit succeeds
   -> durable ingress observes the committed request and schedules the wake
-  -> server resumes runtime through RunIngress / LiveRunControl
+  -> server resumes runtime through durable dispatch control / LiveRunControl
   -> runtime validates correlation, run/thread/snapshot, and fingerprint
   -> runtime consumes the result at a safe boundary and commits the outcome
 ```

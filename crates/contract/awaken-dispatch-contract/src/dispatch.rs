@@ -531,7 +531,7 @@ pub enum CasOutcome {
 /// Durable pending-input intake and the thread-message operations over it.
 ///
 /// `append` is the delivery path; `list`/`retract`/`edit` are the thread-message
-/// operations surface (run-ingress design: these are NOT `RunIngress` routes).
+/// operations surface; these are not direct-attempt or product routes.
 /// Edit and retract are optimistic: they check the record's `revision` and fail
 /// closed on a mismatch, so a concurrent change is never silently overwritten.
 /// Records are mutable only before the worker consumes them.
