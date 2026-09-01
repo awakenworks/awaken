@@ -578,20 +578,6 @@ impl ManagedState {
         // pages from reviving the child; on cold rebuild it closes the same
         // created/running/message/idle history with one terminal event.
         self.append_child_disposition_projection(record, dispositions);
-        record
-            .checkpoint
-            .progress
-            .child_latest_run_ids
-            .retain(|thread_id, _| seen.contains(thread_id));
-        for link in links {
-            if let Some(latest_run_id) = &link.latest_run_id {
-                record
-                    .checkpoint
-                    .progress
-                    .child_latest_run_ids
-                    .insert(link.thread_id.0.clone(), latest_run_id.clone());
-            }
-        }
         Ok(())
     }
 }

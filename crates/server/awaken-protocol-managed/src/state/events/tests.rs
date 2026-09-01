@@ -5494,6 +5494,10 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
     // | R2 | T | T | T | warm | E1,E2,E3,E4 |
     // | R3 | T | T | T | repeat warm | E4 |
     // | R4 | T | T | T | cold | E1-E4 |
+    // Test-design note: the durable relationship link and lifecycle feed already
+    // supply every cause above. A write-only latest-Run checkpoint cannot select
+    // another effect, so R1-R4 are also the smallest systematic proof that live,
+    // repeated warm, and cold projection converge without a parallel Run cache.
     let runtime = RehydrateFake::default();
     runtime
         .delegate_ids

@@ -52,7 +52,6 @@ pub(super) struct ManagedProjectionProgress {
     /// Runtime message identities consumed by the one prefix reducer. This is
     /// incremental reducer progress, never a durable source coordinate.
     pub(super) thread_message_ids: HashSet<(String, String)>,
-    pub(super) child_latest_run_ids: HashMap<String, awaken_agent_contract::agent::run::Id>,
     pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
 }
 
