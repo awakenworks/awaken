@@ -158,8 +158,8 @@ fn map_run_error(error: awaken_session_contract::RunError) -> ApplicationError {
     }
 }
 
-/// Cancel a run by id via the durable live-control seam (ADR-0018): live channel
-/// first, then a durable cancel of a queued/awaiting dispatch. `{ run_id }`.
+/// Cancel a run by id via the durable live-control seam (ADR-0016): persist the
+/// dispatch intent first, then nudge an already-owned local attempt. `{ run_id }`.
 async fn cancel(
     State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
@@ -217,7 +217,7 @@ async fn resume(
     )
 }
 
-/// Wake a live run by id via the durable live-control seam (ADR-0018). Live-only
+/// Wake a live run by id via the durable live-control seam (ADR-0054). Live-only
 /// and fail-closed: no live subscriber → 400. `{ run_id }`.
 async fn wake(
     State(application): State<Arc<dyn DurableRunOperations>>,

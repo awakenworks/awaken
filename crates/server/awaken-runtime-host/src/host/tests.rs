@@ -2691,6 +2691,89 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
 }
 
 #[tokio::test]
+async fn live_only_durable_control_never_materializes_a_cold_session() {
+    use awaken_run_ingress::DispatchQueue as _;
+
+    // Cause/effect table for the Host boundary: C1 typed durable capability is
+    // enabled; C2 a process-resident Session context exists; C3 the Runtime owns
+    // the exact active attempt. Effects: E1 reject with the capability error;
+    // E2 reject as NoSubscriber; E3 deliver through the existing live-control
+    // service; E4 create no Session/Environment/dispatch fact.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | W0 | F | any | any | E1 + E4 |
+    // | W1 | T | F | F | E2 + E4 |
+    // | W2 | T | T | F | E2 (LiveRunControlService test) |
+    // | W3 | T | T | T | E3 (Runtime active-attempt test) |
+    //
+    // This test owns W0/W1, where the regression previously called `ctx_for`
+    // and surfaced an unrelated Environment failure. The cited lower-owner
+    // tests retain W2/W3, so this Host test adds no parallel attempt registry.
+    let cold_thread = "cold-live-only-control";
+    let run_id = "cold-live-only-run";
+    let direct = SharedHost::new(Arc::new(OkModel), "stub");
+    let unsupported = direct
+        .wake_durable(cold_thread, run_id)
+        .await
+        .expect_err("W0 direct ingress rejects durable control");
+    assert_eq!(unsupported.kind, HostErrorKind::BadRequest, "W0/E1");
+    assert!(
+        unsupported.message.contains("durable ingress not enabled"),
+        "W0/E1: {}",
+        unsupported.message
+    );
+    assert!(
+        direct.session_slots.read(cold_thread, |_| ()).is_none(),
+        "W0/E4 direct control must not create a Session slot"
+    );
+
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("live-control dispatch store"),
+    );
+    let durable = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    let wake = durable
+        .wake_durable(cold_thread, run_id)
+        .await
+        .expect_err("W1 cold wake has no subscriber");
+    assert_eq!(wake.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(
+        wake.message,
+        format!("no live subscriber for run: {run_id}"),
+        "W1/E2"
+    );
+
+    let explicit_pause = durable
+        .pause_durable(cold_thread, Some(run_id))
+        .await
+        .expect_err("W1 cold explicit pause has no subscriber");
+    assert_eq!(explicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(explicit_pause.message, wake.message, "W1/E2");
+    let implicit_pause = durable
+        .pause_durable(cold_thread, None)
+        .await
+        .expect_err("W1 cold implicit pause has no active attempt");
+    assert_eq!(implicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(
+        implicit_pause.message, "thread has no locally owned active run",
+        "W1/E2"
+    );
+    assert!(
+        durable.session_slots.read(cold_thread, |_| ()).is_none(),
+        "W1/E4 live-only control must not materialize a Session or Environment"
+    );
+    assert!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("W1 inspect dispatch authority")
+            .is_empty(),
+        "W1/E4 live-only control must not create a dispatch fact"
+    );
+}
+
+#[tokio::test]
 async fn managed_user_run_reservation_precedes_physical_environment_realization() {
     use awaken_run_ingress::DispatchQueue as _;
 

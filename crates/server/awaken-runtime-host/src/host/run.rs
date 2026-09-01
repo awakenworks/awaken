@@ -700,7 +700,7 @@ impl SharedHost {
     /// capability before it can materialize a Session or query the dispatch
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
-    fn require_durable_delivery(&self) -> Result<(), HostError> {
+    pub(super) fn require_durable_delivery(&self) -> Result<(), HostError> {
         if self.deployment.durable {
             Ok(())
         } else {

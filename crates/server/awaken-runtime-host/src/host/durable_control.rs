@@ -2,13 +2,32 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_run_ingress::LiveRunControlError;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 use awaken_runtime_contract::resume::ResumeResult;
 
-use super::{HostError, SharedHost};
+use super::{HostError, SessionCtx, SharedHost};
+
+fn map_live_control_error(error: LiveRunControlError) -> HostError {
+    match error {
+        LiveRunControlError::NotFound(_) | LiveRunControlError::NoSubscriber(_) => {
+            HostError::bad_request(error.to_string())
+        }
+        LiveRunControlError::Dispatch(_) => HostError::internal(error.to_string()),
+    }
+}
 
 impl SharedHost {
+    /// Read the one process-resident Runtime projection without opening or
+    /// repairing a Session. Control callers retain their own durable/topology
+    /// admission ordering; this helper owns only the shared pure lookup.
+    fn resident_context(&self, thread: &str) -> Option<std::sync::Arc<SessionCtx>> {
+        self.session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()
+    }
+
     /// Persist one exact cancellation through the dispatch authority, then nudge
     /// the already-registered local attempt, if this Host owns it.
     ///
@@ -65,7 +84,7 @@ impl SharedHost {
             .await
     }
 
-    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
+    /// Cancel a run by id through the durable live-control seam (ADR-0016, slice E
     /// follow-up): records the durable intent first, then nudges an in-flight local
     /// attempt while the pool commits the terminal `Cancelled` fact. Fail-closed:
     /// an unknown run id errors rather than silently succeeding.
@@ -74,10 +93,7 @@ impl SharedHost {
         // Resolve only an already-resident runtime. Cancellation must never open
         // a Session, resolve current config, or touch its sandbox merely to stop
         // the exact durable attempt.
-        let resident = self
-            .session_slots
-            .read(thread, |slot| slot.runtime.clone())
-            .flatten();
+        let resident = self.resident_context(thread);
 
         // This operational surface retains its existing local-pool requirement;
         // the shared helper below owns only ordering, not topology expansion.
@@ -97,13 +113,24 @@ impl SharedHost {
         Ok(())
     }
 
-    /// Wake a live run by id through the durable live-control seam (ADR-0018): a
+    /// Wake a live run by id through the durable live-control seam (ADR-0054): a
     /// live-only nudge. Fail-closed — no live subscriber is a hard error (G5).
     pub async fn wake_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        awaken_run_ingress::LiveRunControlService::new(self.durable_worker(thread).await?)
+        self.require_durable_delivery()?;
+        let ctx = self.resident_context(thread).ok_or_else(|| {
+            map_live_control_error(LiveRunControlError::NoSubscriber(run_id.to_owned()))
+        })?;
+        let worker = ctx
+            .delivery
+            .is_durable()
+            .then(|| ctx.claimed_worker.clone())
+            .ok_or_else(|| {
+                map_live_control_error(LiveRunControlError::NoSubscriber(run_id.to_owned()))
+            })?;
+        awaken_run_ingress::LiveRunControlService::new(worker)
             .wake(run_id)
             .await
-            .map_err(|e| HostError::bad_request(e.to_string()))
+            .map_err(map_live_control_error)
     }
 
     /// Pause an active run at its next safe boundary. Acceptance is live-only;
@@ -113,7 +140,15 @@ impl SharedHost {
         thread: &str,
         requested_run_id: Option<&str>,
     ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
+        self.require_durable_delivery()?;
+        let ctx = self.resident_context(thread).ok_or_else(|| {
+            requested_run_id.map_or_else(
+                || HostError::bad_request("thread has no locally owned active run"),
+                |run_id| {
+                    map_live_control_error(LiveRunControlError::NoSubscriber(run_id.to_owned()))
+                },
+            )
+        })?;
         // An omitted Run id addresses the one exact claim this Runtime currently
         // owns. Foreground request lifetime is not execution ownership: queued,
         // remote, idle and stale attempts therefore all fail closed here.
@@ -134,7 +169,7 @@ impl SharedHost {
         awaken_run_ingress::LiveRunControlService::new(worker)
             .pause(&run_id)
             .await
-            .map_err(|e| HostError::bad_request(e.to_string()))?;
+            .map_err(map_live_control_error)?;
         Ok(run_id)
     }
 
