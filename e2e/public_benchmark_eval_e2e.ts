@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 const repo = path.resolve(import.meta.dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-public-benchmark-'));
 let covered = 0;
-const designed = 20;
+const designed = 30;
 
 function checkpoint(condition: unknown, message: string): asserts condition {
   assert.ok(condition, message);
@@ -112,6 +112,58 @@ try {
   const memoryReport = run(['memory-score', memoryDataset, write('memory-observations.json', memoryObservations)]);
   checkpoint(memoryReport.selection_exact === 1, 'production selector parser scores imported evidence');
   checkpoint(memoryReport.selection_schema_valid === 1, 'selector wire schema is preserved');
+
+  // MemoryAgentBench is stateful QA, not a selector fixture. The importer keeps
+  // its context/questions/answers intact and assigns category-specific metrics;
+  // the runner mode (same Session, durable Memory, or Files) remains explicit in
+  // the observation producer and never changes the scorer contract.
+  const memoryAgentBenchSource = write('memory-agent-bench-pages.json', { rows: [
+    { row: {
+      context: 'The account moved from OLD-CITY to NEW-CITY.',
+      questions: ['Where is the account now?', 'Give the exact label'],
+      answers: [['NEW-CITY', 'new city'], '43'],
+      metadata: { source: 'factconsolidation_sh_6k', qa_pair_ids: ['mab-cr-1', 'mab-cr-2'] },
+    } },
+  ] });
+  const conflictDataset = path.join(tmp, 'memory-agent-bench-conflict.json');
+  run([
+    'benchmark-import-memory-agent-bench',
+    'Conflict_Resolution',
+    memoryAgentBenchSource,
+    conflictDataset,
+    '1',
+  ]);
+  const conflict = JSON.parse(fs.readFileSync(conflictDataset, 'utf8'));
+  checkpoint(conflict.cases.length === 1, 'MemoryAgentBench page imports one conflict case');
+  checkpoint(conflict.cases[0].context.includes('OLD-CITY'), 'incremental context is retained');
+  checkpoint(conflict.cases[0].questions.length === 2, 'aligned questions survive import');
+  checkpoint(conflict.cases[0].questions[0].ground_truths.length === 2, 'alternative gold answers survive import');
+  checkpoint(conflict.cases[0].questions[0].metric === 'substring_any', 'Conflict Resolution uses substring metric');
+  const conflictObservations = write('memory-agent-bench-conflict-observations.json', [
+    { question_id: 'mab-cr-1', output: 'The answer is new city.', latency_ms: 4 },
+    { question_id: 'mab-cr-2', output: 'label: 43', latency_ms: 5 },
+  ]);
+  const conflictReport = run([
+    'benchmark-score-memory-agent-bench', conflictDataset, conflictObservations,
+  ]);
+  checkpoint(conflictReport.observed === 2, 'both stateful questions are observed');
+  checkpoint(conflictReport.accuracy.correct === 2, 'Conflict Resolution normalized substring scores both');
+
+  const ttlDataset = path.join(tmp, 'memory-agent-bench-ttl.json');
+  run([
+    'benchmark-import-memory-agent-bench',
+    'Test_Time_Learning',
+    memoryAgentBenchSource,
+    ttlDataset,
+    '1',
+  ]);
+  const ttl = JSON.parse(fs.readFileSync(ttlDataset, 'utf8'));
+  checkpoint(ttl.cases[0].questions[0].metric === 'exact_match', 'Test-Time Learning uses strict exact labels');
+  const ttlReport = run([
+    'benchmark-score-memory-agent-bench', ttlDataset, conflictObservations,
+  ]);
+  checkpoint(ttlReport.accuracy.correct === 0, 'prose-wrapped labels fail strict Test-Time Learning scoring');
+  checkpoint(ttlReport.by_category.test_time_learning.total === 2, 'TTL is reported separately from temporal reasoning');
 
   checkpoint(covered === designed - 1, 'all designed behavioral checkpoints executed');
   const ratio = covered / designed;

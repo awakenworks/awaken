@@ -366,9 +366,20 @@ export const BEHAVIORS = {
     const sys = systemLines(parsed);
     if (sys.includes('memory extraction Agent')) {
       if (toolResults(parsed).length > 0) return text('memory saved');
-      const tag = allUserText(parsed).split(/\s+/).find((w) => w.startsWith('fact-'));
-      const [name, content] = tag ? [tag, `remember ${tag}`] : ['sky-color', 'the sky is green today'];
+      const users = allUserText(parsed);
+      const rules = [...users.matchAll(/memory-rule-([a-z0-9_-]+)=([a-z0-9_-]+)/gi)];
+      const latestRule = rules.at(-1);
+      const tag = users.split(/\s+/).find((w) => w.startsWith('fact-'));
+      const [name, content] = latestRule
+        ? [`rule-${latestRule[1].toLowerCase()}`, latestRule[0]]
+        : tag
+          ? [tag, `remember ${tag}`]
+          : ['sky-color', 'the sky is green today'];
       return tool('memwrite-1', 'write_memory', { name, kind: 'project', content });
+    }
+    if (lastUserText(parsed) === 'apply-memory-rule') {
+      const rules = [...sys.matchAll(/memory-rule-format=([a-z0-9_-]+)/gi)];
+      return text(`behavior:${rules.at(-1)?.[1]?.toUpperCase() ?? 'MISSING'}`);
     }
     return text(`recall:[${sys}] echo:${lastUserText(parsed)}`);
   },

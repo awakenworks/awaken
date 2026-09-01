@@ -69,6 +69,12 @@ async fn main() -> ExitCode {
     if args.first().map(String::as_str) == Some("benchmark-import-locomo-memory") {
         return import_locomo_memory(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("benchmark-import-memory-agent-bench") {
+        return import_memory_agent_bench(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("benchmark-score-memory-agent-bench") {
+        return score_memory_agent_bench(&args[1..]);
+    }
     let Some(path) = args.first() else {
         eprintln!(
             "usage: awaken-eval <dataset.json> | \
@@ -790,6 +796,97 @@ fn import_locomo_memory(args: &[String]) -> ExitCode {
         dataset.selection_cases.len()
     );
     ExitCode::SUCCESS
+}
+
+fn import_memory_agent_bench(args: &[String]) -> ExitCode {
+    let [category, input_path, output_path, rest @ ..] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-import-memory-agent-bench <category> <rows.json> <dataset.json> [limit]"
+        );
+        return ExitCode::from(2);
+    };
+    if rest.len() > 1 {
+        eprintln!("benchmark-import-memory-agent-bench accepts at most one limit");
+        return ExitCode::from(2);
+    }
+    let category = match awaken_eval::memory_agent_bench::MemoryAgentBenchCategory::parse(category)
+    {
+        Ok(category) => category,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let limit = match parse_limit(rest.first()) {
+        Ok(limit) => limit,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let value = match load_json(input_path) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    let dataset = match awaken_eval::memory_agent_bench::import_rows(&value, category, limit) {
+        Ok(dataset) => dataset,
+        Err(error) => {
+            eprintln!("failed to import MemoryAgentBench: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = save_json(output_path, &dataset) {
+        eprintln!("failed to save MemoryAgentBench dataset: {error}");
+        return ExitCode::from(2);
+    }
+    eprintln!(
+        "imported {} MemoryAgentBench cases / {} questions",
+        dataset.cases.len(),
+        dataset.question_count()
+    );
+    ExitCode::SUCCESS
+}
+
+fn score_memory_agent_bench(args: &[String]) -> ExitCode {
+    let [dataset_path, artifact_path] = args else {
+        eprintln!(
+            "usage: awaken-eval benchmark-score-memory-agent-bench <dataset.json> <observations.json>"
+        );
+        return ExitCode::from(2);
+    };
+    let dataset: awaken_eval::memory_agent_bench::MemoryAgentBenchDataset =
+        match load_json(dataset_path) {
+            Ok(dataset) => dataset,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    if let Err(error) = dataset.validate() {
+        eprintln!("invalid MemoryAgentBench dataset: {error}");
+        return ExitCode::from(2);
+    }
+    let observations: Vec<awaken_eval::memory_agent_bench::MemoryAgentBenchObservation> =
+        match load_json(artifact_path) {
+            Ok(observations) => observations,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    let report = awaken_eval::memory_agent_bench::score(&dataset, &observations);
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if report.observed == report.total
+        && report.duplicate_observation_ids.is_empty()
+        && report.unexpected_observation_ids.is_empty()
+    {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 fn import_claude(args: &[String]) -> ExitCode {
