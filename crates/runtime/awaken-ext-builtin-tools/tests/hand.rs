@@ -606,6 +606,66 @@ async fn bash_strips_ansi_and_keeps_only_the_last_100_kib() {
 }
 
 #[tokio::test]
+async fn concurrent_huge_bash_outputs_stay_bounded_and_sessions_remain_usable() {
+    // Cause/effect graph: C1 eight independent Bash sessions emit 2 MiB each;
+    // C2 outputs complete concurrently; C3 each session receives a small
+    // follow-up command. Effects: E1 every ToolOutput is capped at the existing
+    // 100 KiB authority with an explicit truncation marker; E2 no task stalls;
+    // E3 truncation does not poison persistent shell state. Decision table:
+    // R1=C1&&!C2=>deadline failure; R2=C1+C2=>E1+E2;
+    // R3=C1+C2+C3=>E1+E2+E3. The Bash tool's existing output limiter remains
+    // the sole budget owner; this adds pressure, not a second limiter.
+    let tasks = (0..8)
+        .map(|worker| {
+            tokio::spawn(async move {
+                let bash = tool("bash");
+                let output = bash
+                    .invoke(call(
+                        "bash",
+                        serde_json::json!({
+                            "command": "printf '%*s' 2097152 '' | tr ' ' x"
+                        }),
+                    ))
+                    .await
+                    .expect("large command completes")
+                    .text();
+                (worker, bash, output)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let results = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("Bash stress task joins"));
+        }
+        results
+    })
+    .await
+    .expect("R2/E2 concurrent output budget");
+
+    for (worker, bash, output) in results {
+        assert!(
+            output.starts_with("[output truncated]\n"),
+            "R2/E1 worker {worker}"
+        );
+        assert!(
+            output.len() <= 100 * 1024 + "[output truncated]\n".len(),
+            "R2/E1 worker {worker} returned {} bytes",
+            output.len()
+        );
+        let follow_up = bash
+            .invoke(call(
+                "bash",
+                serde_json::json!({ "command": format!("printf worker-{worker}") }),
+            ))
+            .await
+            .expect("follow-up command completes");
+        assert_eq!(follow_up.text(), format!("worker-{worker}"), "R3/E3");
+    }
+}
+
+#[tokio::test]
 async fn file_tools_reject_parent_absolute_and_symlink_escapes() {
     // Causal graph for the shared file-authority boundary:
     // C1 lexical parent escape -> reject before filesystem mutation.

@@ -74,10 +74,13 @@ struct DelegateThenText {
 
 struct ParallelDelegatesThenText {
     calls: AtomicUsize,
+    children: usize,
 }
 
 struct MixedCallsThenText {
     calls: AtomicUsize,
+    delegations: usize,
+    regular_calls: usize,
 }
 
 #[async_trait::async_trait]
@@ -87,18 +90,18 @@ impl LlmExecutor for ParallelDelegatesThenText {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let output = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            AssistantOutput::from_tool_calls(vec![
-                ToolCall {
-                    call_id: "parallel-1".into(),
-                    tool_id: DELEGATE_TOOL.into(),
-                    arguments: serde_json::json!({"agent_id": "researcher", "input": "a"}),
-                },
-                ToolCall {
-                    call_id: "parallel-2".into(),
-                    tool_id: DELEGATE_TOOL.into(),
-                    arguments: serde_json::json!({"agent_id": "writer", "input": "b"}),
-                },
-            ])
+            AssistantOutput::from_tool_calls(
+                (0..self.children)
+                    .map(|index| ToolCall {
+                        call_id: format!("parallel-{index}"),
+                        tool_id: DELEGATE_TOOL.into(),
+                        arguments: serde_json::json!({
+                            "agent_id": format!("worker-{index}"),
+                            "input": format!("task-{index}")
+                        }),
+                    })
+                    .collect(),
+            )
         } else {
             AssistantOutput::text("parent done")
         };
@@ -117,18 +120,22 @@ impl LlmExecutor for MixedCallsThenText {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let output = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            AssistantOutput::from_tool_calls(vec![
-                ToolCall {
-                    call_id: "mixed-delegation".into(),
+            let mut calls = (0..self.delegations)
+                .map(|index| ToolCall {
+                    call_id: format!("mixed-delegation-{index}"),
                     tool_id: DELEGATE_TOOL.into(),
-                    arguments: serde_json::json!({"agent_id": "researcher", "input": "a"}),
-                },
-                ToolCall {
-                    call_id: "mixed-regular".into(),
-                    tool_id: "external_tool".into(),
-                    arguments: serde_json::json!({}),
-                },
-            ])
+                    arguments: serde_json::json!({
+                        "agent_id": format!("researcher-{index}"),
+                        "input": format!("delegated-{index}")
+                    }),
+                })
+                .collect::<Vec<_>>();
+            calls.extend((0..self.regular_calls).map(|index| ToolCall {
+                call_id: format!("mixed-regular-{index}"),
+                tool_id: "external_tool".into(),
+                arguments: serde_json::json!({}),
+            }));
+            AssistantOutput::from_tool_calls(calls)
         } else {
             AssistantOutput::text("parent done")
         };
@@ -278,6 +285,7 @@ struct ObservationRunDelegationService {
 struct ObservedRawTool {
     probe: Arc<ConcurrencyProbe>,
     concurrency: ToolConcurrency,
+    output_bytes: usize,
 }
 
 struct LateResultRunDelegationService {
@@ -455,7 +463,14 @@ impl RawTool for ObservedRawTool {
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.probe.observe().await;
-        Ok(ToolOutput::ok(call.call_id, "external tool done"))
+        Ok(ToolOutput::ok(
+            call.call_id,
+            if self.output_bytes == 0 {
+                "external tool done".into()
+            } else {
+                "x".repeat(self.output_bytes)
+            },
+        ))
     }
 }
 
@@ -732,10 +747,16 @@ async fn delegation_start_requires_live_parent_attempt_authority() {
 
 #[tokio::test]
 async fn multiple_terminal_child_agents_execute_concurrently_with_distinct_run_identity() {
-    let executor = Arc::new(ConcurrentRunDelegationService::new(2));
+    // Cause/effect decision table: C1 eight child calls consume the configured
+    // max_parallel=8 boundary; C2 the executor opts into terminal parallelism.
+    // R1=C1+C2=>all eight overlap, complete, and retain distinct child Run ids;
+    // R2=C1&&!C2=>serial execution (owned by the next test). This saturates the
+    // existing shared scheduler and delegation budget without adding a pool.
+    let executor = Arc::new(ConcurrentRunDelegationService::new(8));
     let runtime =
         configured_runtime(executor.clone()).with_llm(Arc::new(ParallelDelegatesThenText {
             calls: AtomicUsize::new(0),
+            children: 8,
         }));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let outcome = tokio::time::timeout(
@@ -748,23 +769,27 @@ async fn multiple_terminal_child_agents_execute_concurrently_with_distinct_run_i
         ),
     )
     .await
-    .expect("two child futures reach the barrier concurrently")
+    .expect("eight child futures reach the barrier concurrently")
     .expect("parallel delegation completes");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
-    assert_eq!(executor.maximum_active.load(Ordering::SeqCst), 2);
+    assert_eq!(executor.maximum_active.load(Ordering::SeqCst), 8);
 
     let store = Store::rebuild(&commit.committed().state);
     let registry = RunDelegations::load(&store)
         .expect("valid relationships")
         .expect("parallel relationship registry");
     let children: Vec<_> = registry.delegations().collect();
-    assert_eq!(children.len(), 2);
+    assert_eq!(children.len(), 8);
     assert!(
         children
             .iter()
             .all(|child| child.status == DelegationStatus::Completed)
     );
-    assert_ne!(children[0].child_run_id, children[1].child_run_id);
+    let distinct_ids = children
+        .iter()
+        .map(|child| &child.child_run_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(distinct_ids.len(), 8);
 }
 
 /// Decision table:
@@ -784,6 +809,7 @@ async fn terminal_child_agents_without_parallel_capability_execute_serially() {
     let runtime =
         configured_runtime(executor.clone()).with_llm(Arc::new(ParallelDelegatesThenText {
             calls: AtomicUsize::new(0),
+            children: 2,
         }));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let outcome = runtime
@@ -812,10 +838,13 @@ async fn mixed_delegation_and_regular_tool_batch_executes_serially() {
     let runtime = configured_runtime(executor)
         .with_llm(Arc::new(MixedCallsThenText {
             calls: AtomicUsize::new(0),
+            delegations: 1,
+            regular_calls: 1,
         }))
         .with_tool(Arc::new(ObservedRawTool {
             probe: probe.clone(),
             concurrency: ToolConcurrency::Serial,
+            output_bytes: 0,
         }));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let outcome = runtime
@@ -850,10 +879,13 @@ async fn mixed_delegation_and_parallel_regular_tool_execute_concurrently() {
     let runtime = configured_runtime(executor)
         .with_llm(Arc::new(MixedCallsThenText {
             calls: AtomicUsize::new(0),
+            delegations: 1,
+            regular_calls: 1,
         }))
         .with_tool(Arc::new(ObservedRawTool {
             probe: probe.clone(),
             concurrency: ToolConcurrency::Parallel,
+            output_bytes: 0,
         }));
     let outcome = runtime
         .execute(activation_with_regular_tool(), RuntimeRunContext::new())
@@ -864,6 +896,73 @@ async fn mixed_delegation_and_parallel_regular_tool_execute_concurrently() {
     assert_eq!(probe.maximum_active.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn large_tool_results_and_parallel_children_share_one_bounded_execution_wave() {
+    // Cause/effect graph: C1 four delegation calls and four regular tools enter
+    // one Step; C2 every regular result is 100 KiB (the Bash tool's established
+    // per-output ceiling); C3 both tool families opt into parallel execution;
+    // C4 RuntimeRunContext caps the shared wave at eight. Effects: E1 all eight
+    // futures overlap without a second scheduler; E2 all child relationships
+    // complete; E3 the four large results commit and the parent terminates.
+    // Decision table: R1=C1+C2+C3+C4=>E1+E2+E3; a serial regular tool selects
+    // the preceding test's one-at-a-time rule.
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let executor = Arc::new(ObservationRunDelegationService {
+        probe: probe.clone(),
+        supports_parallel: true,
+    });
+    let runtime = configured_runtime(executor)
+        .with_llm(Arc::new(MixedCallsThenText {
+            calls: AtomicUsize::new(0),
+            delegations: 4,
+            regular_calls: 4,
+        }))
+        .with_tool(Arc::new(ObservedRawTool {
+            probe: probe.clone(),
+            concurrency: ToolConcurrency::Parallel,
+            output_bytes: 100 * 1024,
+        }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.execute(
+            activation_with_regular_tool(),
+            RuntimeRunContext::new()
+                .with_tool_concurrency_limit(std::num::NonZeroUsize::new(8).unwrap())
+                .with_commit(commit.clone())
+                .with_reader(commit.clone()),
+        ),
+    )
+    .await
+    .expect("R1 execution wave stays within its deadline")
+    .expect("R1 mixed pressure Run completes");
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd), "R1/E3");
+    assert_eq!(probe.maximum_active.load(Ordering::SeqCst), 8, "R1/E1");
+
+    let committed = commit.committed();
+    let relationships = RunDelegations::load(&Store::rebuild(&committed.state))
+        .expect("valid delegation state")
+        .expect("delegation relationships");
+    assert_eq!(relationships.delegations().count(), 4, "R1/E2");
+    assert!(
+        relationships
+            .delegations()
+            .all(|child| child.status == DelegationStatus::Completed),
+        "R1/E2"
+    );
+    assert_eq!(
+        committed
+            .messages
+            .iter()
+            .filter(|message| {
+                message.role == Role::Tool && message.text_content().len() == 100 * 1024
+            })
+            .count(),
+        4,
+        "R1/E3 all bounded large results are committed"
+    );
+}
+
 /// Cause/effect rule: if any call requires a durable permission wait, no future
 /// from an otherwise parallel-eligible batch may enter the delegation executor.
 #[tokio::test]
@@ -872,6 +971,7 @@ async fn permission_wait_prevents_parallel_delegation_start() {
     let runtime = configured_runtime(executor.clone())
         .with_llm(Arc::new(ParallelDelegatesThenText {
             calls: AtomicUsize::new(0),
+            children: 2,
         }))
         .with_gate(Arc::new(SuspendGate));
     let commit = Arc::new(MemoryCommitCoordinator::new());
