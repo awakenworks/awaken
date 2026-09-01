@@ -5,24 +5,16 @@
 //! or policy. The same ports support the in-process local composition and a
 //! replaceable durable adapter.
 
-#[cfg(feature = "sqlite")]
-use parking_lot::Mutex;
-
 use std::collections::BTreeSet;
 
-#[cfg(feature = "sqlite")]
-use async_trait::async_trait;
-#[cfg(feature = "sqlite")]
-use awaken_resource_contract::{
-    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourcePurgeRepository,
-    ResourceReclamationFence, ResourceReference, ResourceReferenceIndex,
-};
 use awaken_resource_contract::{
     ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourceReferenceKind,
     ResourceReferenceRecord, ResourceTarget,
 };
 #[cfg(feature = "sqlite")]
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use awaken_sqlite_runtime::SharedSqliteConnection;
+#[cfg(feature = "sqlite")]
+use rusqlite::Connection;
 
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -30,6 +22,8 @@ mod postgres;
 mod postgres_registry;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod schema;
+#[cfg(feature = "sqlite")]
+mod sqlite_lifecycle;
 #[cfg(feature = "sqlite")]
 mod sqlite_registry;
 
@@ -39,7 +33,7 @@ pub use postgres::PostgresResourceStore;
 /// SQLite adapter used by the durable single-machine composition.
 #[cfg(feature = "sqlite")]
 pub struct SqliteResourceStore {
-    connection: Mutex<Connection>,
+    connection: SharedSqliteConnection,
 }
 
 #[cfg(feature = "sqlite")]
@@ -58,7 +52,7 @@ impl SqliteResourceStore {
             .open()
             .map_err(|error| storage(error.to_string()))?;
         let store = Self {
-            connection: Mutex::new(connection),
+            connection: SharedSqliteConnection::new(connection),
         };
         store.ensure_schema()?;
         Ok(store)
@@ -68,7 +62,9 @@ impl SqliteResourceStore {
     /// independent ledgers because neither aggregate depends on the other's
     /// tables.
     pub fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
-        let connection = self.connection();
+        let connection = self
+            .connection()
+            .map_err(|_| storage("resource SQLite connection was poisoned"))?;
         let lifecycle =
             schema::resource_reclamation_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::NS)
@@ -84,401 +80,22 @@ impl SqliteResourceStore {
             .map_err(|error| storage(error.to_string()))
     }
 
-    fn connection(&self) -> parking_lot::MutexGuard<'_, Connection> {
+    fn connection(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Connection>> {
         self.connection.lock()
     }
-}
 
-#[async_trait]
-#[cfg(feature = "sqlite")]
-impl ResourceReclamationFence for SqliteResourceStore {
-    async fn acquire_reclamation(
-        &self,
-        intent_id: &str,
-        target: &ResourceTarget,
-    ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
-        validate_fence_request(intent_id, target)?;
-        let mut connection = self.connection();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| storage(error.to_string()))?;
-        let existing = transaction
-            .query_row(
-                "SELECT intent_id FROM resource_lifecycle_reclamation_fences
-                 WHERE resource_kind = ?1 AND resource_id = ?2",
-                params![kind_name(target.kind), target.resource_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| storage(error.to_string()))?;
-        if let Some(owner) = existing {
-            return Ok(if owner == intent_id {
-                AcquireResourceReclamationOutcome::AlreadyOwned
-            } else {
-                AcquireResourceReclamationOutcome::Contended
-            });
-        }
-        let blockers =
-            sqlite_references_for_identity(&transaction, target.kind, &target.resource_id)?;
-        if !blockers.is_empty() {
-            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
-        }
-        transaction
-            .execute(
-                "INSERT INTO resource_lifecycle_reclamation_fences
-                 (resource_kind, resource_id, intent_id) VALUES (?1, ?2, ?3)",
-                params![kind_name(target.kind), target.resource_id, intent_id],
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        // A trigger, migration hook, or corrupted same-transaction writer can
-        // add a reference after the pre-insert scan. Ordinary concurrent writers
-        // are already serialized by the transaction/fence, but this second read
-        // closes the storage-local interval without recreating an application
-        // guard. Commit the late reference while removing only our fence.
-        let blockers =
-            sqlite_references_for_identity(&transaction, target.kind, &target.resource_id)?;
-        if !blockers.is_empty() {
-            transaction
-                .execute(
-                    "DELETE FROM resource_lifecycle_reclamation_fences
-                     WHERE resource_kind = ?1 AND resource_id = ?2 AND intent_id = ?3",
-                    params![kind_name(target.kind), target.resource_id, intent_id],
-                )
-                .map_err(|error| storage(error.to_string()))?;
-            transaction
-                .commit()
-                .map_err(|error| storage(error.to_string()))?;
-            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
-        }
-        transaction
-            .commit()
-            .map_err(|error| storage(error.to_string()))?;
-        Ok(AcquireResourceReclamationOutcome::Acquired)
-    }
-
-    async fn release_reclamation(
-        &self,
-        intent_id: &str,
-        target: &ResourceTarget,
-    ) -> Result<bool, ResourcePurgeError> {
-        validate_fence_request(intent_id, target)?;
-        let mut connection = self.connection();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| storage(error.to_string()))?;
-        let existing = transaction
-            .query_row(
-                "SELECT intent_id FROM resource_lifecycle_reclamation_fences
-                 WHERE resource_kind = ?1 AND resource_id = ?2",
-                params![kind_name(target.kind), target.resource_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| storage(error.to_string()))?;
-        let changed = match existing {
-            Some(owner) if owner == intent_id => {
-                transaction
-                    .execute(
-                        "DELETE FROM resource_lifecycle_reclamation_fences
-                     WHERE resource_kind = ?1 AND resource_id = ?2 AND intent_id = ?3",
-                        params![kind_name(target.kind), target.resource_id, intent_id],
-                    )
-                    .map_err(|error| storage(error.to_string()))?
-                    == 1
-            }
-            Some(_) => return Err(ResourcePurgeError::StaleReclamationFence),
-            None => false,
-        };
-        transaction
-            .commit()
-            .map_err(|error| storage(error.to_string()))?;
-        Ok(changed)
+    async fn with_connection<T, F>(&self, operation: F) -> Result<T, ResourcePurgeError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, ResourcePurgeError> + Send + 'static,
+    {
+        awaken_sqlite_runtime::with_connection(self.connection.clone(), operation)
+            .await
+            .map_err(storage)?
     }
 }
 
-#[async_trait]
-#[cfg(feature = "sqlite")]
-impl ResourcePurgeRepository for SqliteResourceStore {
-    async fn put(
-        &self,
-        intent: ResourcePurgeIntent,
-    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
-        intent.validate()?;
-        let mut connection = self.connection();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| storage(error.to_string()))?;
-        let existing = transaction
-            .query_row(
-                "SELECT data FROM resource_lifecycle_purge_intents
-                 WHERE intent_id = ?1 OR idempotency_key = ?2 LIMIT 1",
-                params![intent.intent_id, intent.idempotency_key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| storage(error.to_string()))?;
-        if let Some(data) = existing {
-            let existing = decode_intent(&data)?;
-            return if existing.same_request(&intent) {
-                Ok(PutResourcePurgeOutcome::Existing)
-            } else {
-                Err(ResourcePurgeError::IdempotencyConflict(
-                    intent.idempotency_key,
-                ))
-            };
-        }
-        let data = encode_intent(&intent)?;
-        transaction
-            .execute(
-                "INSERT INTO resource_lifecycle_purge_intents
-                 (intent_id, idempotency_key, revision, status, requested_at_unix_ms,
-                  not_before_unix_ms, lease_expires_at_unix_ms, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    intent.intent_id,
-                    intent.idempotency_key,
-                    to_i64(intent.revision)?,
-                    status_name(intent.status),
-                    to_i64(intent.requested_at_unix_ms)?,
-                    to_i64(intent.not_before_unix_ms)?,
-                    intent.lease_expires_at_unix_ms.map(to_i64).transpose()?,
-                    data,
-                ],
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        transaction
-            .commit()
-            .map_err(|error| storage(error.to_string()))?;
-        Ok(PutResourcePurgeOutcome::Inserted)
-    }
-
-    async fn get(
-        &self,
-        intent_id: &str,
-    ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
-        self.connection()
-            .query_row(
-                "SELECT data FROM resource_lifecycle_purge_intents WHERE intent_id = ?1",
-                params![intent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| storage(error.to_string()))?
-            .map(|data| decode_intent(&data))
-            .transpose()
-    }
-
-    async fn recoverable(
-        &self,
-        now_unix_ms: u64,
-        limit: usize,
-    ) -> Result<Vec<ResourcePurgeIntent>, ResourcePurgeError> {
-        let connection = self.connection();
-        let mut statement = connection
-            .prepare(
-                "SELECT data FROM resource_lifecycle_purge_intents
-                 WHERE status NOT IN ('completed', 'terminal_failed')
-                   AND not_before_unix_ms <= ?1
-                   AND (lease_expires_at_unix_ms IS NULL OR lease_expires_at_unix_ms <= ?1)
-                 ORDER BY requested_at_unix_ms, intent_id LIMIT ?2",
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        let rows = statement
-            .query_map(
-                params![to_i64(now_unix_ms)?, to_i64(limit as u64)?],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        rows.map(|row| {
-            let data = row.map_err(|error| storage(error.to_string()))?;
-            decode_intent(&data)
-        })
-        .collect()
-    }
-
-    async fn save(
-        &self,
-        expected_revision: u64,
-        intent: ResourcePurgeIntent,
-    ) -> Result<(), ResourcePurgeError> {
-        intent.validate()?;
-        let data = encode_intent(&intent)?;
-        let changed = self
-            .connection()
-            .execute(
-                "UPDATE resource_lifecycle_purge_intents
-                 SET revision = ?3, status = ?4, lease_expires_at_unix_ms = ?5, data = ?6
-                 WHERE intent_id = ?1 AND revision = ?2",
-                params![
-                    intent.intent_id,
-                    to_i64(expected_revision)?,
-                    to_i64(intent.revision)?,
-                    status_name(intent.status),
-                    intent.lease_expires_at_unix_ms.map(to_i64).transpose()?,
-                    data,
-                ],
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        if changed == 1 {
-            Ok(())
-        } else if self.get(&intent.intent_id).await?.is_some() {
-            Err(ResourcePurgeError::RevisionConflict(intent.intent_id))
-        } else {
-            Err(ResourcePurgeError::NotFound(intent.intent_id))
-        }
-    }
-}
-
-#[async_trait]
-#[cfg(feature = "sqlite")]
-impl ResourceReferenceIndex for SqliteResourceStore {
-    async fn add_reference(
-        &self,
-        record: ResourceReferenceRecord,
-    ) -> Result<bool, ResourcePurgeError> {
-        validate_reference(&record)?;
-        let mut connection = self.connection();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| storage(error.to_string()))?;
-        sqlite_ensure_unfenced(&transaction, &record.target)?;
-        let changed = transaction
-            .execute(
-                "INSERT OR IGNORE INTO resource_lifecycle_references
-                 (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                reference_params(&record),
-            )
-            .map_err(|error| storage(error.to_string()))?
-            == 1;
-        transaction
-            .commit()
-            .map_err(|error| storage(error.to_string()))?;
-        Ok(changed)
-    }
-
-    async fn remove_reference(
-        &self,
-        record: &ResourceReferenceRecord,
-    ) -> Result<bool, ResourcePurgeError> {
-        validate_reference(record)?;
-        Ok(self
-            .connection()
-            .execute(
-                "DELETE FROM resource_lifecycle_references
-                 WHERE workspace_id = ?1 AND resource_kind = ?2 AND resource_id = ?3
-                   AND reference_kind = ?4 AND reference_id = ?5",
-                reference_params(record),
-            )
-            .map_err(|error| storage(error.to_string()))?
-            == 1)
-    }
-
-    async fn replace_references(
-        &self,
-        kind: ResourceReferenceKind,
-        reference_id: &str,
-        records: Vec<ResourceReferenceRecord>,
-    ) -> Result<(), ResourcePurgeError> {
-        let records = prepare_replacement(kind, reference_id, records)?;
-        let mut connection = self.connection();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| storage(error.to_string()))?;
-        for record in &records {
-            sqlite_ensure_unfenced(&transaction, &record.target)?;
-        }
-        transaction
-            .execute(
-                "DELETE FROM resource_lifecycle_references WHERE reference_kind = ?1 AND reference_id = ?2",
-                params![reference_kind_name(kind), reference_id],
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        for record in records {
-            transaction
-                .execute(
-                    "INSERT INTO resource_lifecycle_references
-                     (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    reference_params(&record),
-                )
-                .map_err(|error| storage(error.to_string()))?;
-        }
-        transaction
-            .commit()
-            .map_err(|error| storage(error.to_string()))
-    }
-
-    async fn references(
-        &self,
-        target: &ResourceTarget,
-    ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
-        let connection = self.connection();
-        let mut statement = connection
-            .prepare(
-                "SELECT reference_kind, reference_id FROM resource_lifecycle_references
-                 WHERE workspace_id = ?1 AND resource_kind = ?2 AND resource_id = ?3
-                 ORDER BY reference_kind, reference_id",
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        let rows = statement
-            .query_map(
-                params![
-                    target.workspace_id,
-                    kind_name(target.kind),
-                    target.resource_id
-                ],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        rows.map(|row| {
-            let (kind, reference_id) = row.map_err(|error| storage(error.to_string()))?;
-            Ok(ResourceReference {
-                kind: parse_reference_kind(&kind)?,
-                reference_id,
-            })
-        })
-        .collect()
-    }
-
-    async fn references_for_resource(
-        &self,
-        kind: ResourceKind,
-        resource_id: &str,
-    ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
-        let connection = self.connection();
-        let mut statement = connection
-            .prepare(
-                "SELECT workspace_id, reference_kind, reference_id FROM resource_lifecycle_references
-                 WHERE resource_kind = ?1 AND resource_id = ?2
-                 ORDER BY workspace_id, reference_kind, reference_id",
-            )
-            .map_err(|error| storage(error.to_string()))?;
-        let rows = statement
-            .query_map(params![kind_name(kind), resource_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|error| storage(error.to_string()))?;
-        rows.map(|row| {
-            let (workspace_id, reference_kind, reference_id) =
-                row.map_err(|error| storage(error.to_string()))?;
-            Ok(ResourceReferenceRecord {
-                target: ResourceTarget::new(workspace_id, kind, resource_id),
-                reference: ResourceReference {
-                    kind: parse_reference_kind(&reference_kind)?,
-                    reference_id,
-                },
-            })
-        })
-        .collect()
-    }
-}
-
-fn validate_fence_request(
+pub(crate) fn validate_fence_request(
     intent_id: &str,
     target: &ResourceTarget,
 ) -> Result<(), ResourcePurgeError> {
@@ -492,67 +109,6 @@ fn validate_fence_request(
     } else {
         Ok(())
     }
-}
-
-#[cfg(feature = "sqlite")]
-fn sqlite_ensure_unfenced(
-    connection: &Connection,
-    target: &ResourceTarget,
-) -> Result<(), ResourcePurgeError> {
-    let exists = connection
-        .query_row(
-            "SELECT 1 FROM resource_lifecycle_reclamation_fences
-             WHERE resource_kind = ?1 AND resource_id = ?2",
-            params![kind_name(target.kind), target.resource_id],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(|error| storage(error.to_string()))?
-        .is_some();
-    if exists {
-        Err(ResourcePurgeError::ReclamationFenced {
-            kind: target.kind,
-            resource_id: target.resource_id.clone(),
-        })
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "sqlite")]
-fn sqlite_references_for_identity(
-    connection: &Connection,
-    kind: ResourceKind,
-    resource_id: &str,
-) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT workspace_id, reference_kind, reference_id FROM resource_lifecycle_references
-             WHERE resource_kind = ?1 AND resource_id = ?2
-             ORDER BY workspace_id, reference_kind, reference_id",
-        )
-        .map_err(|error| storage(error.to_string()))?;
-    let rows = statement
-        .query_map(params![kind_name(kind), resource_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| storage(error.to_string()))?;
-    rows.map(|row| {
-        let (workspace_id, reference_kind, reference_id) =
-            row.map_err(|error| storage(error.to_string()))?;
-        Ok(ResourceReferenceRecord {
-            target: ResourceTarget::new(workspace_id, kind, resource_id),
-            reference: ResourceReference {
-                kind: parse_reference_kind(&reference_kind)?,
-                reference_id,
-            },
-        })
-    })
-    .collect()
 }
 
 pub(crate) fn validate_reference(
@@ -690,10 +246,13 @@ fn reference_params(record: &ResourceReferenceRecord) -> [String; 5] {
 
 #[cfg(test)]
 mod tests {
-    use awaken_resource_contract::{ResourcePurgeStatus, ResourceReferenceKind};
-    use proptest::prelude::*;
-
     use super::*;
+    use awaken_resource_contract::{
+        AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourcePurgeRepository,
+        ResourcePurgeStatus, ResourceReclamationFence, ResourceReference, ResourceReferenceIndex,
+        ResourceReferenceKind,
+    };
+    use proptest::prelude::*;
 
     fn intent(id: &str) -> ResourcePurgeIntent {
         ResourcePurgeIntent::new(
@@ -864,6 +423,40 @@ mod tests {
         repository_spec(&SqliteResourceStore::in_memory().unwrap()).await;
     }
 
+    /// Async-adapter cause/effect graph: C1 the SQLite connection is occupied;
+    /// C2 two lifecycle calls queue on a two-worker runtime; C3 an authority
+    /// timer becomes ready before the connection is released. Effects: E1 the
+    /// timer fires within its deadline; E2 both queued operations finish after
+    /// release; E3 no async method waits on a raw connection mutex.
+    /// Decision rule Q1=C1+C2+C3=>E1+E2+E3.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sqlite_lifecycle_contention_does_not_starve_authority_timers() {
+        let store = std::sync::Arc::new(SqliteResourceStore::in_memory().unwrap());
+        let held = store.connection.clone();
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().expect("Q1 connection lock");
+            held_tx.send(()).expect("Q1 announce connection owner");
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+        held_rx.recv().expect("Q1 connection held");
+
+        let left_store = std::sync::Arc::clone(&store);
+        let left = tokio::spawn(async move { left_store.get("missing-left").await });
+        let right_store = std::sync::Arc::clone(&store);
+        let right = tokio::spawn(async move { right_store.get("missing-right").await });
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            tokio::time::sleep(std::time::Duration::from_millis(10)),
+        )
+        .await
+        .expect("Q1/E1 authority timer remains schedulable");
+
+        holder.join().expect("Q1 release connection");
+        assert_eq!(left.await.expect("Q1 left task").expect("Q1/E2"), None);
+        assert_eq!(right.await.expect("Q1 right task").expect("Q1/E2"), None);
+    }
+
     /// Storage-local fence FMECA and cause/effect decision table. C1 the first
     /// reference scan is empty; C2 inserting the fence fires a storage-local
     /// hook that adds a reference; C3 the late row is valid or corrupt. Effects
@@ -880,6 +473,7 @@ mod tests {
         let target = ResourceTarget::new("workspace-a", ResourceKind::File, "late-hash");
         store
             .connection()
+            .unwrap()
             .execute_batch(
                 "CREATE TRIGGER inject_late_reference
                  AFTER INSERT ON resource_lifecycle_reclamation_fences
@@ -909,6 +503,7 @@ mod tests {
         );
         let fence_count: i64 = store
             .connection()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM resource_lifecycle_reclamation_fences
                  WHERE resource_kind = 'file' AND resource_id = 'late-hash'",
@@ -921,6 +516,7 @@ mod tests {
         let corrupt_target = ResourceTarget::new("workspace-a", ResourceKind::File, "corrupt-hash");
         store
             .connection()
+            .unwrap()
             .execute_batch(
                 "CREATE TRIGGER inject_corrupt_late_reference
                  AFTER INSERT ON resource_lifecycle_reclamation_fences
@@ -944,6 +540,7 @@ mod tests {
         );
         let (fence_count, reference_count): (i64, i64) = store
             .connection()
+            .unwrap()
             .query_row(
                 "SELECT
                    (SELECT count(*) FROM resource_lifecycle_reclamation_fences
@@ -1010,6 +607,7 @@ mod tests {
         let store = SqliteResourceStore::in_memory().unwrap();
         let applied = store
             .connection()
+            .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM resource_lifecycle_schema_migrations
                  WHERE bundle_id = 'awaken.resource_lifecycle' AND version = 1",

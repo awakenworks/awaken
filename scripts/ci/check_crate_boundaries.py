@@ -19,6 +19,7 @@ import _runtime_secret_boundary
 import _session_effect_fitness
 import _session_state_ownership_fitness
 import _service_data_ownership_fitness
+import _sqlite_scheduler_fitness
 import _crate_boundary_workspace
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
 
@@ -171,6 +172,7 @@ def main() -> int:
     _session_effect_fitness.selftest()
     _session_state_ownership_fitness.selftest()
     _service_data_ownership_fitness.selftest()
+    _sqlite_scheduler_fitness.selftest()
     _execution_ownership_fitness.selftest()
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
@@ -189,6 +191,7 @@ def main() -> int:
         + _session_effect_fitness.check_all(REPO_ROOT)
         + _session_state_ownership_fitness.check_all(REPO_ROOT)
         + _service_data_ownership_fitness.check_all(REPO_ROOT)
+        + _sqlite_scheduler_fitness.check_all(REPO_ROOT)
         + _execution_ownership_fitness.check_all(REPO_ROOT)
         + _managed_protocol_boundary.check_managed_route_inventory(REPO_ROOT)
         + _managed_protocol_boundary.check_managed_application_boundary(REPO_ROOT)

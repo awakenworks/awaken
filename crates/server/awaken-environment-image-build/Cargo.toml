@@ -6,7 +6,7 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "coordinator"
-layer = "application"
+layer = "infrastructure"
 authority = "environment-image"
 
 [dependencies]
@@ -15,6 +15,7 @@ awaken-environment-contract.workspace = true
 awaken-environment-realization-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-sqlite-runtime.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 rusqlite.workspace = true
