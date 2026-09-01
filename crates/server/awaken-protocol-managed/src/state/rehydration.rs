@@ -111,9 +111,16 @@ impl ManagedState {
         let agent_id = persisted
             .agent_id()
             .map_or_else(|| "assistant".to_string(), str::to_string);
+        let session_revision = persisted.revision;
         let resource_state = persisted.resources.clone();
         let session = self.rehydrated_session(id, &owner_scope, persisted)?;
-        let record = SessionRecord::new(agent_id, session, resource_state, Vec::new());
+        let record = SessionRecord::new(
+            agent_id,
+            session,
+            session_revision,
+            resource_state,
+            Vec::new(),
+        );
         self.sessions
             .lock()
             .unwrap()

@@ -2937,6 +2937,68 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
 }
 
 #[tokio::test]
+async fn stale_session_root_cannot_roll_back_the_managed_cache() {
+    // Cause/effect graph: C1 cache contains Session revision N; C2 a delayed
+    // reader supplies revision N-1; C3 the exact revision N is replayed.
+    // Effects: E1 C1+C2 preserves both DTO and cache CAS revision; E2 C1+C3 is
+    // also a no-op. Decision rules R1=(older)->E1 and R2=(equal)->E2 cover every
+    // non-newer root snapshot. A genuinely newer root is covered by the adjacent
+    // running-projection test. Constraint: only monotonically newer Session root
+    // truth may mutate the disposable cache.
+    let state = ManagedState::new(LifecycleRuntime::default());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let stale = state.application.session(&session.id).await.unwrap();
+    let current = state
+        .application
+        .begin_activity(&session.id)
+        .await
+        .expect("commit newer root");
+    state.refresh_cached_projection(&current).unwrap();
+    let before = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (
+            record.cache_revision,
+            record.checkpoint.session_revision,
+            record.session.status,
+        )
+    };
+
+    state.refresh_cached_projection(&stale).unwrap();
+    let after_older = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (
+            record.cache_revision,
+            record.checkpoint.session_revision,
+            record.session.status,
+        )
+    };
+    assert_eq!(after_older, before, "R1/E1 older root is ignored");
+
+    state.refresh_cached_projection(&current).unwrap();
+    let after_equal = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (
+            record.cache_revision,
+            record.checkpoint.session_revision,
+            record.session.status,
+        )
+    };
+    assert_eq!(after_equal, before, "R2/E2 exact replay is ignored");
+}
+
+#[tokio::test]
 async fn failed_committed_projection_does_not_poison_warm_recovery() {
     // Cause/effect graph: C1 one stable committed prefix contains a valid
     // assistant Message followed by a ToolResult whose ToolUse has not yet
@@ -6781,7 +6843,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
 
 #[tokio::test]
 async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
-    // Cause/effect graph: C1 a root send_to_agent ToolUse is listable at
+    // Cause/effect graph: C1 a root send_message ToolUse is listable at
     // cursor 10 with no accepted link; C2 an accepted ToolResult and its
     // Runtime-owned link become visible at cursor 30; C3 a cold peer reads the
     // final facts. E1 C1 remains an immutable prefix; E2 thread-created and
@@ -6823,7 +6885,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         Role::Assistant,
         vec![ContentBlock::tool_use(
             call_id,
-            SEND_TO_AGENT,
+            SEND_MESSAGE,
             serde_json::json!({
                 "agent_id":"researcher",
                 "message":"investigate"
@@ -7104,7 +7166,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
             Role::Assistant,
             vec![ContentBlock::tool_use(
                 parent_call_id,
-                SEND_TO_AGENT,
+                SEND_MESSAGE,
                 serde_json::json!({
                     "agent_id":"researcher",
                     "message":"research durable identity"
@@ -8506,12 +8568,12 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
                 vec![
                     ContentBlock::ToolUse {
                         id: "terminal-skew".into(),
-                        name: SEND_TO_AGENT.into(),
+                        name: SEND_MESSAGE.into(),
                         input: serde_json::json!({"agent_id":"researcher"}),
                     },
                     ContentBlock::ToolUse {
                         id: "terminal-skew-b".into(),
-                        name: SEND_TO_AGENT.into(),
+                        name: SEND_MESSAGE.into(),
                         input: serde_json::json!({"agent_id":"researcher"}),
                     },
                 ],

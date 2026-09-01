@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::state::StateKey as _;
 use awaken_session_contract::{ManagedSessionRepository, PersistedSession, ToolPermissionDecision};
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -133,7 +134,7 @@ pub(crate) struct RehydrateFake {
 }
 
 impl RehydrateFake {
-    /// Install the one Runtime-owned accepted `send_to_agent` prefix that
+    /// Install the one Runtime-owned accepted `send_message` prefix that
     /// authorizes an ordinary coordinated link. Tests must not fabricate a
     /// Managed-only link anchor: the root ToolUse/ToolResult messages, their
     /// exact commit coordinate, the root Run, and the relationship are one
@@ -196,7 +197,7 @@ impl RehydrateFake {
                 awaken_agent_contract::agent::message::Role::Assistant,
                 vec![ContentBlock::tool_use(
                     call_id,
-                    awaken_ext_builtin_tools::SEND_TO_AGENT,
+                    awaken_ext_builtin_tools::SEND_MESSAGE,
                     serde_json::json!({
                         "agent_id": agent_id,
                         "message": "fixture coordination"
@@ -519,6 +520,38 @@ impl SessionRuntime for RehydrateFake {
             .get(thread_id)
             .cloned()
             .unwrap_or_default();
+        if let Some(usage) = self.usage_by_thread.lock().unwrap().get(thread_id).cloned() {
+            // Production derives accounting from this exact committed state
+            // prefix. Keep the shared fake structurally faithful instead of
+            // maintaining a test-only second usage read path.
+            let mut attributed = awaken_runtime_contract::llm::ThreadUsage::default();
+            if usage.by_model.is_empty() {
+                attributed.record(
+                    "test-fixture",
+                    awaken_runtime_contract::llm::TokenUsage {
+                        prompt_tokens: usage.input_tokens,
+                        completion_tokens: usage.output_tokens,
+                        cache_read_tokens: usage.cache_read_tokens,
+                        cache_creation_tokens: usage.cache_creation_tokens,
+                    },
+                );
+            } else {
+                for (model, model_usage) in usage.by_model {
+                    attributed.record(
+                        &model,
+                        awaken_runtime_contract::llm::TokenUsage {
+                            prompt_tokens: model_usage.input_tokens,
+                            completion_tokens: model_usage.output_tokens,
+                            cache_read_tokens: model_usage.cache_read_tokens,
+                            cache_creation_tokens: model_usage.cache_creation_tokens,
+                        },
+                    );
+                }
+            }
+            state.push(awaken_runtime_contract::llm::ThreadUsageKey::write(
+                &attributed,
+            ));
+        }
         if self
             .disposition_by_thread
             .lock()

@@ -1039,7 +1039,7 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     )
     .await;
 
-    // Cause/effect rule: list_agents resolves the frozen roster, send_to_agent
+    // Cause/effect rule: list_agents resolves the frozen roster, send_message
     // returns only an admission receipt, the child executes on its own Thread,
     // and its terminal report admits exactly one later root report Run.
     let msgs: Vec<&str> = list["data"]
@@ -1099,7 +1099,7 @@ async fn delegation_fails_closed_on_unpublished_target() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect rule: `ghost` is absent from the frozen Session roster, so
-    // send_to_agent fails before a child Thread or Run can be admitted.
+    // send_message fails before a child Thread or Run can be admitted.
     let app = build_delegation_router();
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "use the ghost agent").await;

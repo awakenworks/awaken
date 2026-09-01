@@ -5,7 +5,7 @@ use super::*;
 use crate::types::{EvaluatedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_ext_builtin_tools::SEND_TO_AGENT;
+use awaken_ext_builtin_tools::SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 #[cfg(test)]
 use awaken_session_contract::SessionThreadToolReply;

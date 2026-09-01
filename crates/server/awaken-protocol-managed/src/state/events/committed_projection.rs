@@ -7,6 +7,8 @@ mod historical_pending;
 mod interval_aggregate_projection;
 mod refresh_entrypoint;
 mod run_observation_projection;
+mod usage_projection;
+pub(super) use canonical_order::message_projection_ordinal_bound;
 use canonical_order::*;
 #[cfg(test)]
 pub(super) use canonical_order::{budget_reach_close_cursor, budget_reach_projection_close_cursor};
@@ -20,18 +22,6 @@ struct CanonicalizationEvidence<'a> {
     delegation: DelegationProjectionEvidence<'a>,
     root_pending: Option<&'a Pending>,
     child_pending: &'a std::collections::HashMap<String, Pending>,
-}
-
-/// Maximum number of wire events that the canonical one-Message encoder can
-/// emit. An Assistant message contributes at most one thinking marker, one
-/// visible message, and one tool event per content block; every other role
-/// contributes no more than one event per block. Keeping this bound beside the
-/// canonicalizer prevents recovery from probing every Session event ordinal
-/// for every source message.
-pub(super) fn message_projection_ordinal_bound(
-    message: &awaken_agent_contract::agent::message::Message,
-) -> usize {
-    message.content.len().saturating_add(2)
 }
 
 impl ManagedState {
@@ -555,7 +545,7 @@ impl ManagedState {
             for source in record.events.iter().filter(|event| {
                 matches!(
                     &event.kind,
-                    OutboundKind::AgentToolUse { name, .. } if name == SEND_TO_AGENT
+                    OutboundKind::AgentToolUse { name, .. } if name == SEND_MESSAGE
                 )
             }) {
                 let Some(source_order) =
@@ -904,6 +894,9 @@ impl ManagedState {
             let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
             let start = record.events.len();
             merge_durable_inbound_projections(record, projections);
+            if record.events.len() != start {
+                record.advance_cache_revision()?;
+            }
             self.broadcast_committed_from(session_id, record, start);
             return Ok(true);
         }
@@ -940,14 +933,19 @@ impl ManagedState {
                 ))
             })
             .collect::<Result<Vec<_>, StateError>>()?;
-        let initial_cursor = self
+        // Snapshot the complete warm projection and its process-local CAS token
+        // before asynchronous source reads. The reducer builds only from this
+        // private value; a concurrent root/overlay/committed update invalidates
+        // the final publish instead of being overwritten by a stale clone.
+        let base_record = self
             .sessions
             .lock()
             .unwrap()
             .get(session_id)
-            .ok_or(StateError::NotFound)?
-            .checkpoint
-            .lifecycle_cursor;
+            .cloned()
+            .ok_or(StateError::NotFound)?;
+        let base_cache_revision = base_record.cache_revision;
+        let initial_cursor = base_record.checkpoint.lifecycle_cursor;
         // Read Outcome observation before the root recovery fence. A terminal
         // Outcome projection is derived from that same Thread aggregate and its
         // evaluation/state command is the immutable public-order anchor. Reading
@@ -1048,23 +1046,16 @@ impl ManagedState {
             .session_usage(session_id)
             .await
             .map_err(StateError::Run)?;
-        let primary_thread_usage = self
-            .application
-            .session_thread_usage(session_id, session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let primary_thread_usage =
-            session_thread_usage_value(primary_thread_usage, price_snapshot.as_ref())
-                .map_err(StateError::Run)?;
+        let primary_thread_usage = usage_projection::project_committed_thread_usage(
+            root_snapshot.as_ref(),
+            price_snapshot.as_ref(),
+        )?;
         let mut child_thread_usage = std::collections::HashMap::new();
         for link in &links {
-            let usage = self
-                .application
-                .session_thread_usage(session_id, &link.thread_id.0)
-                .await
-                .map_err(StateError::Run)?;
-            let usage = session_thread_usage_value(usage, price_snapshot.as_ref())
-                .map_err(StateError::Run)?;
+            let usage = usage_projection::project_committed_thread_usage(
+                child_snapshots.get(&link.thread_id.0),
+                price_snapshot.as_ref(),
+            )?;
             child_thread_usage.insert(link.thread_id.0.clone(), usage);
         }
 
@@ -1182,17 +1173,13 @@ impl ManagedState {
             return Ok(false);
         }
 
-        let mut sessions = self.sessions.lock().unwrap();
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
         // and any later validation/canonicalization error must not retain the
         // earlier mutations (message-consumption marks, cursors, or Events) in
         // this process. Durable Session/Runtime facts remain the sole recovery
         // authority; only a fully valid projection replaces the warm cache.
-        let mut staged_record = sessions
-            .get(session_id)
-            .cloned()
-            .ok_or(StateError::NotFound)?;
+        let mut staged_record = base_record;
         let previous_event_ids = staged_record
             .events
             .iter()
@@ -1978,7 +1965,28 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
+        staged_record.checkpoint.session_revision = persisted.revision;
+        staged_record.checkpoint.root_thread_version = root_snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.thread_version);
+        staged_record.checkpoint.child_thread_versions = child_snapshots
+            .iter()
+            .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.thread_version))
+            .collect();
+
+        let mut sessions = self.sessions.lock().unwrap();
         let committed_record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        match decide_projection_publish(
+            base_cache_revision,
+            committed_record.cache_revision,
+            &committed_record.checkpoint,
+            &staged_record.checkpoint,
+        ) {
+            ProjectionPublishDecision::Apply => {}
+            ProjectionPublishDecision::RetryStaleCache
+            | ProjectionPublishDecision::RejectSourceRegression => return Ok(false),
+        }
+        staged_record.advance_cache_revision()?;
         *committed_record = staged_record;
         self.broadcast_new_event_ids(session_id, committed_record, &previous_event_ids);
         Ok(true)

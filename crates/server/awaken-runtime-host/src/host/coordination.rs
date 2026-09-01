@@ -2,7 +2,7 @@
 //!
 //! A child remains an ordinary `RunDispatch` whose logical Thread is stored in
 //! the parent Session's commit partition. Relationships are reconstructed from
-//! the parent's committed `send_to_agent` tool pairs; this module owns no
+//! the parent's committed `send_message` tool pairs; this module owns no
 //! registry, receipt map, mailbox, or background executor.
 
 use super::*;
@@ -10,7 +10,7 @@ use super::*;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::delegation::{DelegationId, DelegationOrigin};
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
-use awaken_ext_builtin_tools::{AgentMessageReceipt, MessageSendRequest, SendToAgentArgs};
+use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_run_ingress::Outbox as _;
 use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_contract::{
@@ -19,6 +19,28 @@ use awaken_session_contract::{
 };
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
+
+fn coordinated_activation_input(
+    session_id: &str,
+    thread_id: &ThreadId,
+    run_id: &RunId,
+    operation_id: &str,
+    message: String,
+) -> Vec<Message> {
+    vec![Message::text(
+        MessageId(format!(
+            "coord-input-{}",
+            awaken_session_contract::stable_fingerprint(&(
+                session_id,
+                thread_id.0.as_str(),
+                run_id.0.as_str(),
+                operation_id,
+            ))
+        )),
+        Role::User,
+        message,
+    )]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionReplyReceipt {
@@ -80,7 +102,7 @@ struct PendingCoordinationCall {
     run_id: RunId,
     step: usize,
     call_id: String,
-    args: SendToAgentArgs,
+    args: SendMessageArgs,
 }
 
 fn assistant_coordinates(
@@ -117,12 +139,12 @@ fn project_committed_coordination_links(
             };
             for block in &message.content {
                 if let ContentBlock::ToolUse { id, name, input } = block
-                    && name == awaken_ext_builtin_tools::SEND_TO_AGENT
+                    && name == awaken_ext_builtin_tools::SEND_MESSAGE
                 {
-                    let args = serde_json::from_value::<SendToAgentArgs>(input.clone()).map_err(
+                    let args = serde_json::from_value::<SendMessageArgs>(input.clone()).map_err(
                         |error| {
                             HostError::internal(format!(
-                                "committed send_to_agent arguments are invalid: {error}"
+                                "committed send_message arguments are invalid: {error}"
                             ))
                         },
                     )?;
@@ -245,12 +267,12 @@ fn apply_coordination_result(
     let receipt: AgentMessageReceipt =
         serde_json::from_str(&extract_text(content)).map_err(|e| {
             HostError::internal(format!(
-                "committed send_to_agent result has an invalid receipt: {e}"
+                "committed send_message result has an invalid receipt: {e}"
             ))
         })?;
     if !receipt.accepted || receipt.session_thread_id.trim().is_empty() {
         return Err(HostError::internal(
-            "committed send_to_agent result is not an accepted Thread receipt",
+            "committed send_message result is not an accepted Thread receipt",
         ));
     }
     let thread_id = ThreadId(receipt.session_thread_id);
@@ -305,7 +327,7 @@ fn apply_coordination_result(
         }
         _ => {
             return Err(HostError::internal(
-                "committed send_to_agent arguments have an invalid target",
+                "committed send_message arguments have an invalid target",
             ));
         }
     }
@@ -327,7 +349,7 @@ fn apply_active_batch_coordination_results(
         }
         let Some(entry) = batch.calls().iter().find(|entry| {
             entry.call.call_id == call.call_id
-                && entry.call.tool_id == awaken_ext_builtin_tools::SEND_TO_AGENT
+                && entry.call.tool_id == awaken_ext_builtin_tools::SEND_MESSAGE
         }) else {
             continue;
         };
@@ -773,22 +795,13 @@ impl SharedHost {
             HostError::internal(format!("fingerprint coordinated child snapshot: {error}"))
         })?;
 
-        let activation_input = match intent {
-            CoordinatedRunIntent::Spawn => vec![Message::text(
-                MessageId(format!(
-                    "coord-input-{}",
-                    awaken_session_contract::stable_fingerprint(&(
-                        session_id.as_str(),
-                        thread_id.0.as_str(),
-                        run_id.0.as_str(),
-                        operation_id.as_str(),
-                    ))
-                )),
-                Role::User,
-                message.clone(),
-            )],
-            CoordinatedRunIntent::FollowUp => Vec::new(),
-        };
+        // `send_message` is an Agent/Thread command, not server message
+        // ingress.  The source Thread's ActiveToolBatch is the durable request
+        // authority; the target's deterministic fresh Run owns the accepted
+        // message as frozen activation input.  Dispatch carries that complete
+        // Run activation and never stages a parallel PendingInput/outbox fact.
+        let activation_input =
+            coordinated_activation_input(&session_id, &thread_id, &run_id, &operation_id, message);
         let origin = DelegationOrigin {
             delegation_id: DelegationId(format!(
                 "coordination:{}",
@@ -817,30 +830,10 @@ impl SharedHost {
             .await?;
         let store = self.dispatch_store()?;
 
-        match intent {
-            CoordinatedRunIntent::Spawn => store
-                .enqueue_session_child(request, admission)
-                .await
-                .map_err(|error| HostError::bad_request(error.to_string()))?,
-            CoordinatedRunIntent::FollowUp => {
-                let reader: Arc<dyn CommittedThreadView> =
-                    self.commit_for_read(&session_id).await?;
-                awaken_run_ingress::OutboxMessageSender::new(store.clone(), reader)
-                    .send_fresh_continuation(
-                        MessageSendRequest {
-                            target_thread: thread_id.0.clone(),
-                            content: message,
-                            idempotency_key: None,
-                            source_run_id: parent_run_id.0,
-                            operation_id,
-                        },
-                        request,
-                        awaken_run_ingress::ContinuationAdmission::SessionChild(admission),
-                    )
-                    .await
-                    .map_err(|error| HostError::bad_request(error.to_string()))?;
-            }
-        }
+        store
+            .enqueue_session_child(request, admission)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
         // Thread disposition, Run commits, and dispatch admission may use
         // different durable adapters. Re-read both existing admission fences
         // after enqueue: whichever side won records cancellation on this exact
@@ -1064,34 +1057,12 @@ impl SharedHost {
         thread_id: &ThreadId,
     ) -> Result<awaken_session_contract::SessionUsage, HostError> {
         let commit = self.commit_for_read(session_id).await?;
-        let attributed = awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
-            &commit.committed_state(thread_id),
-        );
-        let total = attributed.total();
-        Ok(awaken_session_contract::SessionUsage {
-            input_tokens: total.prompt_tokens,
-            output_tokens: total.completion_tokens,
-            cache_read_tokens: total.cache_read_tokens,
-            cache_creation_tokens: total.cache_creation_tokens,
-            by_model: attributed
-                .by_model
-                .into_iter()
-                .map(|(model, usage)| {
-                    (
-                        model,
-                        awaken_session_contract::SessionModelUsage {
-                            input_tokens: usage.prompt_tokens,
-                            output_tokens: usage.completion_tokens,
-                            cache_read_tokens: usage.cache_read_tokens,
-                            cache_creation_tokens: usage.cache_creation_tokens,
-                        },
-                    )
-                })
-                .collect(),
-            active_seconds: 0,
-            web_fetch_requests: 0,
-            web_search_requests: 0,
-        })
+        Ok(
+            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
+                &commit.committed_state(thread_id),
+            )
+            .into(),
+        )
     }
 
     pub(crate) async fn session_thread_disposition(
@@ -1299,6 +1270,38 @@ mod tests {
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_runtime_contract::tool::{ToolOutput, ToolRecoveryPolicy};
     use awaken_session_contract::SessionRuntime as _;
+
+    #[test]
+    fn coordinated_message_has_one_target_thread_owner_for_spawn_and_follow_up() {
+        // Cause/effect graph: C1 a coordinated command starts a Thread; C2 it
+        // follows up an existing Thread; C3 the exact durable operation is
+        // replayed; C4 a different Run/operation is admitted. Effects: E1 C1
+        // and C2 both freeze exactly one user message in the target Run
+        // activation; E2 C3 reproduces the same message identity; E3 C4 gets a
+        // distinct identity. Decision rules M1=(C1,C3)->E1+E2,
+        // M2=(C2,C3)->E1+E2, M3=(*,C4)->E3. Spawn/follow-up is intentionally
+        // absent from the identity function: both use the same Thread-owned
+        // transition and neither creates PendingInput or an outbox row.
+        let thread = ThreadId("agent-thread".into());
+        let run = RunId("agent-run".into());
+        let spawn =
+            coordinated_activation_input("session", &thread, &run, "operation", "first".into());
+        let follow_up_replay =
+            coordinated_activation_input("session", &thread, &run, "operation", "first".into());
+        let next = coordinated_activation_input(
+            "session",
+            &thread,
+            &RunId("next-run".into()),
+            "next-operation",
+            "second".into(),
+        );
+
+        assert_eq!(spawn.len(), 1, "M1/E1");
+        assert_eq!(spawn[0].role, Role::User, "M1/E1");
+        assert_eq!(spawn[0].text_content(), "first", "M1/E1");
+        assert_eq!(spawn, follow_up_replay, "M1+M2/E2");
+        assert_ne!(spawn[0].id, next[0].id, "M3/E3");
+    }
 
     #[test]
     fn advisor_call_identity_is_one_thread_per_consultation_and_idempotent_per_replay() {
@@ -1647,12 +1650,12 @@ mod tests {
             vec![
                 ContentBlock::tool_use(
                     published_call,
-                    awaken_ext_builtin_tools::SEND_TO_AGENT,
+                    awaken_ext_builtin_tools::SEND_MESSAGE,
                     serde_json::json!({"agent_id": "researcher", "message": "investigate"}),
                 ),
                 ContentBlock::tool_use(
                     gap_call,
-                    awaken_ext_builtin_tools::SEND_TO_AGENT,
+                    awaken_ext_builtin_tools::SEND_MESSAGE,
                     serde_json::json!({"agent_id": "reviewer", "message": "review"}),
                 ),
                 ContentBlock::tool_use(
@@ -1677,7 +1680,7 @@ mod tests {
             [(
                 ToolCall {
                     call_id: gap_call.into(),
-                    tool_id: awaken_ext_builtin_tools::SEND_TO_AGENT.into(),
+                    tool_id: awaken_ext_builtin_tools::SEND_MESSAGE.into(),
                     arguments: serde_json::json!({}),
                 },
                 ToolRecoveryPolicy::default(),

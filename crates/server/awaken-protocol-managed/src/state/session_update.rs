@@ -120,6 +120,7 @@ impl ManagedState {
         } else {
             record.events.push(event);
         }
+        record.advance_cache_revision()?;
         Ok(())
     }
 

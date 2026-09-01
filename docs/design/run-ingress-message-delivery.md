@@ -59,19 +59,20 @@ External callers use run ingress indirectly through product/server adapters.
 Those adapters translate public payloads into neutral commands and keep public
 ids, statuses, auth grants, and protocol naming outside the run-ingress contract.
 
-Internal multi-agent messages and external inbound messages share the same
-bottom mechanism: idempotent append to the target thread's pending input, later
-freeze at a safe run boundary, then durable visibility through `ThreadCommit`.
-They differ only at the edge. Internal messaging enters through the
-`send_message` tool/effect or delegation adapter; external messaging enters
-through a product/protocol anti-corruption adapter that translates public ids,
-auth, and DTOs before it appends pending input.
+External inbound messages use pending input because an application may accept
+them before it owns a concrete Run. Internal Agent coordination does not share
+that acceptance mechanism merely because its payload is text: source Thread
+state owns the committed tool request, and the deterministic target Run owns its
+frozen activation input (ADR-0017). Both become target-Thread transcript truth
+through `ThreadCommit`, but they enter that boundary through different domain
+commands.
 
 | External operation | Public owner | Internal target | Boundary rule |
 |---|---|---|---|
 | start or continue a run | Product adapter / Server | `RunIngress.submit` | payload becomes neutral activation or message submit data |
 | cancel, decide, wake, or resume | Product adapter / Server | `RunIngress.control` or `LiveRunControl` | control is observed at safe runtime boundaries; durable fallback stays ingress-owned |
-| send a message | internal `send_message` tool/effect or external message adapter | target-thread pending append | both internal and external messages use the same pending/freeze/commit lifecycle |
+| send external input | Product message adapter | target-thread pending append | accepted-before-Run input uses the pending/freeze/commit lifecycle |
+| coordinate another Agent | internal `send_message` command | source `ActiveToolBatch` plus deterministic target activation | no PendingInput or Dispatch outbox duplicates the Thread-owned request |
 | edit, retract, or reorder pending input | Thread-message API | pending input store with revision checks | not a run-ingress route or dispatch mutation |
 | inspect queued/recoverable work | Operations surface | dispatch projection/query | no message payload truth or public session status |
 | receive stream or replay | Protocol adapter | committed events/facts plus live stream when connected | replay derives after commit; live stream is best-effort |
@@ -166,9 +167,9 @@ The active drainer owns this special-first scheduling; coordinator-only
 maintenance preserves the row while no remote Worker is available.
 A queued or awaiting run is cancelled durably — the dispatch is removed and a
 terminal `Cancelled` fact is committed through the one finish boundary
-([ADR-0016](../adr/0016-durable-cancel.md)). The `send_message` builtin tool is
-backed by the outbox through a host adapter, addressed by thread
-([ADR-0017](../adr/0017-send-message-over-outbox.md)). Fresh work is claimed by
+([ADR-0016](../adr/0016-durable-cancel.md)). Internal Agent messaging is owned by
+source Thread state and a deterministic target activation, not this layer's
+outbox ([ADR-0017](../adr/0017-send-message-over-outbox.md)). Fresh work is claimed by
 priority, an `enqueue_with` dedupe key dedups concurrent submissions, and
 `purge_dead_letters` is an operator GC over dead-lettered rows
 ([ADR-0018](../adr/0018-priority-dedupe-gc.md)). Multi-node dispatch works on
@@ -274,10 +275,11 @@ can be superseded, retried, or repaired independently from the thread log.
 
 ## Message Input Lifecycle
 
-Message receipt and message consumption are intentionally different commits:
+External message receipt and message consumption are intentionally different
+commits:
 
 ```text
-receive input or SendMessage result
+receive externally accepted input
   -> append target-thread pending message idempotently
   -> bump pending queue revision
   -> emit advisory wake / ensure activation opportunity
@@ -293,15 +295,15 @@ the pending record revision or queue revision. Once a pending record is frozen
 into a run input snapshot, later user-visible changes must become new pending
 input or ordinary committed facts; they must not mutate the frozen activation.
 
-Same-thread `send_message` may append target pending input in the sender's
-checkpoint transaction only when the implementation can prove both writes share
-one commit source. Cross-thread `send_message` uses a sender outbox plus
-idempotent target pending append. It must not require two-phase commit:
+This pending-input outbox belongs to cross-service ingress, scheduling, and
+delivery—not internal Agent coordination. Independently accepted external input
+that must cross stores uses a sender outbox plus idempotent target pending append
+without two-phase commit:
 
 ```text
-sender ThreadCommit
-  -> append sender facts/messages
-  -> enqueue SendMessageOutbox(message_id, target_thread_id, payload)
+accepting service transaction
+  -> commit acceptance fact
+  -> enqueue PendingInputOutbox(message_id, target_thread_id, payload)
 
 relay/recovery
   -> append target pending by message_id

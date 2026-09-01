@@ -46,9 +46,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   the observed committed prefix, while a failed refresh stutters. Browser tests
   cover the production TypeScript
   projection and the list status mapping fails closed for unknown states. The
-  model proves that a retained reply no longer needs user action while remaining
-  recoverable; it does not prove database snapshot isolation, cold reconstruction
-  of pre-anchor legacy history, browser delivery, or lifecycle-supervisor fairness.
+  separate `ManagedProjectionPublish.tla` model checks two reverse-completing
+  refresh writers over independent Session, root/child Thread, lifecycle, and
+  budget source coordinates. It proves result/checkpoint pairing, local cache
+  CAS, source non-invention, visible non-regression, and failure/rejection
+  stuttering. The Rust decision-table tests exercise the same publication
+  branches. Together, the models prove that a retained reply no longer needs
+  user action while remaining recoverable and that a stale refresher cannot
+  roll the visible projection backwards. They do not prove database snapshot
+  isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
+  or lifecycle-supervisor fairness.
 - Tool permission defaults and exact overrides share the neutral
   `ToolExecutionPolicy`. `ToolPermissionPolicy.tla` exhaustively checks Agent
   default-allow, MCP default-ask, exact allow/ask/disabled configuration, and

@@ -597,6 +597,9 @@ impl ManagedState {
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         let start = record.events.len();
         merge_durable_inbound_projections(record, receipt_projections);
+        if record.events.len() != start {
+            record.advance_cache_revision()?;
+        }
         self.broadcast_committed_from(session_id, record, start);
         Ok(SendEventsResponse { data: receipts })
     }

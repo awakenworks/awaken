@@ -127,7 +127,7 @@ async fn custom_factory_exposes_the_client_executed_submit_answer_tool() {
 async fn delegation_factory_wires_the_fixed_managed_coordination_surface() {
     // Causes: C1 the factory installs a frozen researcher roster and C2 Managed
     // projection replaces authored delegation with the fixed coordination tools.
-    // Effects: E1 list_agents precedes E2 send_to_agent and E3 the coordinator
+    // Effects: E1 list_agents precedes E2 send_message and E3 the coordinator
     // ends on an admission receipt, never the child payload. Decision table:
     // R1(C1+C2)->E1+E2+E3; missing roster/tool wiring cannot produce all three.
     // Child settlement is asynchronous and belongs to the real-process Managed
@@ -136,7 +136,7 @@ async fn delegation_factory_wires_the_fixed_managed_coordination_surface() {
     // the only topology inputs; this factory must not turn admission into a
     // synchronous child-result path.
     let frames = drive_run(build_delegation_router(), "go research this").await;
-    assert_eq!(tool_names(&frames), ["list_agents", "send_to_agent"]);
+    assert_eq!(tool_names(&frames), ["list_agents", "send_message"]);
     let reply = assistant_text(&frames);
     assert!(reply.starts_with("coordination accepted: "), "{reply}");
     assert!(!reply.contains("researched: 42"), "{reply}");

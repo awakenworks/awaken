@@ -427,12 +427,12 @@ agents were visible to the model.
 
 ### Message Delivery Extension
 
-Internal multi-agent messaging and external inbound messages share the same
-underlying lifecycle. Both enter as target-thread pending input, freeze at a safe
-run boundary, and become durable truth only through `ThreadCommit`. The durable
-pending queue belongs to dispatch/server and the target thread's message
-lifecycle. Runtime sees either committed history from `ThreadResumeSnapshot` or
-frozen input inside `RunActivation`:
+External inbound messages enter as target-thread pending input, freeze at a safe
+run boundary, and become durable truth only through `ThreadCommit`. Internal
+Agent coordination is different: the source `ActiveToolBatch` owns the durable
+request and a deterministic target `RunActivation` owns the accepted message.
+Runtime sees either committed history from `ThreadResumeSnapshot` or frozen
+input inside `RunActivation`:
 
 ```text
 pending input outside runtime
@@ -443,12 +443,11 @@ pending input outside runtime
   -> committed message log
 ```
 
-This keeps live control, durable pending delivery, and committed message truth
-separate. `send_message` is the internal multi-agent tool/effect over this
-message lifecycle; an external public message endpoint is an anti-corruption
-adapter into the same lifecycle. Same-thread delivery may share the current
-checkpoint when the same commit source is guaranteed; cross-thread delivery uses
-an outbox plus idempotent target pending append.
+This keeps live control, external pending delivery, Agent coordination, and
+committed message truth separate. An external public message endpoint is an
+anti-corruption adapter into pending input. `send_message` is a Thread-owned
+tool command whose deterministic target Run is delivered by Dispatch; it does
+not create a second message queue.
 
 ### Scheduled And Background Extension
 
@@ -507,13 +506,13 @@ not pass. After validation, execution may be a local child run or a durable
 `RunIngress` submit; the child result returns as a normal tool output or
 committed fact. Parent and child runs remain ordinary runs.
 
-`send_message` is the internal multi-agent message path. It uses the same
-bottom lifecycle as external inbound messages: append target-thread pending
-input idempotently, freeze eligible pending input at a safe boundary, execute a
-run activation, then make the message durable through `ThreadCommit`. Same-thread
-delivery may share the sender checkpoint only when one commit source is proven.
-Cross-thread delivery uses a sender outbox plus idempotent target pending append;
-it must not require two-phase commit.
+`send_message` is the internal Managed Agent message path. The source
+Thread's `ActiveToolBatch` commits the request and recovery state. The
+deterministic target Run freezes the user message in `RunActivation.input`, and
+backend Run-id idempotency admits the exact payload once. Dispatch only delivers
+that Run; the target transcript becomes durable through `ThreadCommit`. A future
+generic `send_message` must use the same Thread-scoped StateCommand/reducer shape
+instead of a server read-then-outbox adapter.
 
 Scheduled/background-like work that must resume the current run uses the
 deferred-work path. A selected plugin or tool stages a `ScheduledAction` with a

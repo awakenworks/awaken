@@ -16,6 +16,15 @@ pub(super) struct ProjectedToolIndex {
 
 #[derive(Clone, Default)]
 pub(super) struct ManagedProjectionCheckpoint {
+    /// Exact Session root revision paired with the rendered projection. Root
+    /// mutations and Runtime Thread commits have independent clocks, so neither
+    /// coordinate may stand in for the other.
+    pub(super) session_revision: awaken_session_contract::SessionRevision,
+    /// Per-Thread optimistic-concurrency coordinates of the committed prefixes
+    /// consumed by the reducer. The backend-wide store cursor is deliberately
+    /// absent: unrelated Threads must not conflict this Session projection.
+    pub(super) root_thread_version: u64,
+    pub(super) child_thread_versions: HashMap<String, u64>,
     /// Runtime message identities consumed by the one prefix reducer. Together
     /// with the lifecycle/budget coordinates below, this is the only state that
     /// selects the unconsumed committed suffix on the next refresh.
@@ -24,6 +33,49 @@ pub(super) struct ManagedProjectionCheckpoint {
     pub(super) lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
     pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
     pub(super) budget_reach_generation: u64,
+}
+
+impl ManagedProjectionCheckpoint {
+    /// Component-wise ordering for the independent Session/Thread/lifecycle
+    /// authorities consumed by one projection. A removed or older child prefix
+    /// is not comparable and must be rebuilt rather than guessed forward.
+    fn dominates(&self, previous: &Self) -> bool {
+        self.session_revision >= previous.session_revision
+            && self.root_thread_version >= previous.root_thread_version
+            && self.lifecycle_cursor >= previous.lifecycle_cursor
+            && self.budget_reach_generation >= previous.budget_reach_generation
+            && previous
+                .child_thread_versions
+                .iter()
+                .all(|(thread_id, version)| {
+                    self.child_thread_versions.get(thread_id) >= Some(version)
+                })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProjectionPublishDecision {
+    Apply,
+    RetryStaleCache,
+    RejectSourceRegression,
+}
+
+/// Pure publication kernel shared by production and its exhaustive decision
+/// table. Cache CAS is checked first because a concurrent writer may already
+/// have published a strictly newer source than this candidate observed.
+pub(super) fn decide_projection_publish(
+    expected_cache_revision: u64,
+    current_cache_revision: u64,
+    current: &ManagedProjectionCheckpoint,
+    candidate: &ManagedProjectionCheckpoint,
+) -> ProjectionPublishDecision {
+    if expected_cache_revision != current_cache_revision {
+        ProjectionPublishDecision::RetryStaleCache
+    } else if !candidate.dominates(current) {
+        ProjectionPublishDecision::RejectSourceRegression
+    } else {
+        ProjectionPublishDecision::Apply
+    }
 }
 
 #[derive(Clone, Default)]
@@ -37,6 +89,9 @@ pub(super) struct ManagedLiveOverlay {
 
 #[derive(Clone)]
 pub(super) struct SessionRecord {
+    /// Process-local compare-and-swap coordinate. It is advanced by every
+    /// visible cache mutation and is never persisted or treated as domain truth.
+    pub(super) cache_revision: u64,
     pub(super) agent_id: String,
     pub(super) session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
@@ -72,6 +127,15 @@ pub(super) struct SessionRecord {
 }
 
 impl SessionRecord {
+    pub(super) fn advance_cache_revision(&mut self) -> Result<(), StateError> {
+        self.cache_revision = self.cache_revision.checked_add(1).ok_or_else(|| {
+            StateError::Run(RunError::internal(
+                "Managed projection cache revision exhausted",
+            ))
+        })?;
+        Ok(())
+    }
+
     /// Derive the exact tool-use Events named by a primary-visible
     /// `requires_action` boundary. The append-only Event vector remains the
     /// only projection truth; this set exists only for one list/live filtering
@@ -155,15 +219,21 @@ impl SessionRecord {
     pub(super) fn new(
         agent_id: String,
         session: Session,
+        session_revision: awaken_session_contract::SessionRevision,
         resource_state: awaken_session_contract::SessionResourceState,
         events: Vec<Event>,
     ) -> Self {
+        let checkpoint = ManagedProjectionCheckpoint {
+            session_revision,
+            ..Default::default()
+        };
         Self {
+            cache_revision: 0,
             agent_id,
             session,
             resource_state,
             events,
-            checkpoint: Default::default(),
+            checkpoint,
             overlay: Default::default(),
             deferred_session_stop_reason: None,
             event_thread_owners: Default::default(),
@@ -184,5 +254,85 @@ impl SessionRecord {
             .map(|input| resolved_resource_dto(&session.id, input))
             .collect();
         session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checkpoint(
+        session_revision: u64,
+        root_thread_version: u64,
+        child_thread_version: Option<u64>,
+    ) -> ManagedProjectionCheckpoint {
+        let mut checkpoint = ManagedProjectionCheckpoint {
+            session_revision: awaken_session_contract::SessionRevision(session_revision),
+            root_thread_version,
+            ..Default::default()
+        };
+        if let Some(version) = child_thread_version {
+            checkpoint
+                .child_thread_versions
+                .insert("child".to_string(), version);
+        }
+        checkpoint
+    }
+
+    /// Cause/effect graph: C1 the cache revision still equals the writer's base;
+    /// C2 every Session/Thread source component is monotonic. E1 C1+C2 applies;
+    /// E2 !C1 retries without mutation; E3 C1+!C2 rejects regression. Decision
+    /// rows R1=(T,T)->E1, R2=(F,*)->E2, R3=(T,F)->E3. Child disappearance is a
+    /// regression because relationship topology cannot be guessed by the cache.
+    #[test]
+    fn projection_publish_decision_covers_cache_and_source_fences() {
+        let current = checkpoint(4, 7, Some(2));
+        let newer = checkpoint(5, 8, Some(3));
+        let older_root = checkpoint(5, 6, Some(3));
+        let missing_child = checkpoint(5, 8, None);
+
+        assert_eq!(
+            decide_projection_publish(11, 11, &current, &newer),
+            ProjectionPublishDecision::Apply,
+            "R1/E1"
+        );
+        assert_eq!(
+            decide_projection_publish(10, 11, &current, &newer),
+            ProjectionPublishDecision::RetryStaleCache,
+            "R2/E2"
+        );
+        assert_eq!(
+            decide_projection_publish(11, 11, &current, &older_root),
+            ProjectionPublishDecision::RejectSourceRegression,
+            "R3/E3 root"
+        );
+        assert_eq!(
+            decide_projection_publish(11, 11, &current, &missing_child),
+            ProjectionPublishDecision::RejectSourceRegression,
+            "R3/E3 topology"
+        );
+    }
+
+    /// Cause/effect sequence: writers A and B observe cache revision 0; A builds
+    /// source V1 while B builds V2; B publishes first and advances the cache to
+    /// revision 1. Effect: A's later publish is rejected solely by the base CAS,
+    /// so the visible V2 source cannot roll back to V1. This is the minimal
+    /// reverse-completion schedule missing from the earlier projection model.
+    #[test]
+    fn older_projection_writer_cannot_publish_after_newer_writer() {
+        let initial = checkpoint(1, 0, None);
+        let writer_a = checkpoint(1, 1, None);
+        let writer_b = checkpoint(1, 2, None);
+
+        assert_eq!(
+            decide_projection_publish(0, 0, &initial, &writer_b),
+            ProjectionPublishDecision::Apply,
+            "B publishes V2"
+        );
+        assert_eq!(
+            decide_projection_publish(0, 1, &writer_b, &writer_a),
+            ProjectionPublishDecision::RetryStaleCache,
+            "A cannot overwrite V2 with V1"
+        );
     }
 }

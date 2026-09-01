@@ -1816,34 +1816,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
-        // Map the runtime's per-model tally onto the managed wire's session-level total
-        // (the host is the context boundary; the managed crate never sees TokenUsage).
-        let attributed = self.host.thread_usage(thread).await;
-        let total = attributed.total();
-        Ok(awaken_session_contract::SessionUsage {
-            input_tokens: total.prompt_tokens,
-            output_tokens: total.completion_tokens,
-            cache_read_tokens: total.cache_read_tokens,
-            cache_creation_tokens: total.cache_creation_tokens,
-            by_model: attributed
-                .by_model
-                .into_iter()
-                .map(|(model, usage)| {
-                    (
-                        model,
-                        awaken_session_contract::SessionModelUsage {
-                            input_tokens: usage.prompt_tokens,
-                            output_tokens: usage.completion_tokens,
-                            cache_read_tokens: usage.cache_read_tokens,
-                            cache_creation_tokens: usage.cache_creation_tokens,
-                        },
-                    )
-                })
-                .collect(),
-            active_seconds: 0,
-            web_fetch_requests: 0,
-            web_search_requests: 0,
-        })
+        Ok(self.host.thread_usage(thread).await.into())
     }
 
     async fn session_thread_recovery_snapshot(

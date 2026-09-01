@@ -64,7 +64,7 @@ The slice ships idempotent enqueue, claim with a single-owner lease,
 `FOR UPDATE SKIP LOCKED` concurrency, lease-expiry recovery, and durable resume
 through delivered input. Explicitly deferred (named here so the gap is visible,
 not silently absent): scheduled wake, lease renewal/heartbeat, cross-thread
-`send_message` outbox, dispatch query/maintenance/GC, supersession, dead-letter,
+cross-service pending-input outbox, dispatch query/maintenance/GC, supersession, dead-letter,
 and exactly-once pending consumption across a crash strictly between commit and
 settle. `RunIngressCapabilities` reports `scheduled_wake = false` accordingly.
 

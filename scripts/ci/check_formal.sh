@@ -447,6 +447,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/SessionRuntimeProjection.cfg \
     formal/tla/SessionRuntimeProjection.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/managed-projection-publish" \
+    -config formal/tla/ManagedProjectionPublish.cfg \
+    formal/tla/ManagedProjectionPublish.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-permission-policy" \
     -config formal/tla/ToolPermissionPolicy.cfg \
     formal/tla/ToolPermissionPolicy.tla

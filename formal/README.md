@@ -238,9 +238,10 @@ production logic.
   `RunDelegations`. Its binary `NextState(s, t)` relation is also the checker for
   executable Rust traces.
 - `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, `AggregateCAS.tla`,
-  and `DeploymentCAS.tla` cover durable operation identity, atomic ownership,
-  generation-fenced permits, optimistic concurrency, transactionally bounded
-  scheduled capacity, and revision-fenced scheduled-occurrence claims.
+  `ManagedProjectionPublish.tla`, and `DeploymentCAS.tla` cover durable operation
+  identity, atomic ownership, generation-fenced permits, optimistic concurrency,
+  reverse-completing projection publication, transactionally bounded scheduled
+  capacity, and revision-fenced scheduled-occurrence claims.
 - `RemoteAttempt.tla` covers the A2A root-attempt boundary: stable replay message
   identity across the external-send/local-commit crash window, durable task and
   endpoint pinning, reattachment without resend after the reference commit,
@@ -478,6 +479,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | SessionDeletion | 67 | 27 | 8 |
 | WorkspacePathProjection | 300 | 70 | 8 |
 | SessionRuntimeProjection | 337 | 33 | 5 |
+| ManagedProjectionPublish | 4,942,714 | 1,362,233 | 19 |
 | ToolPermissionPolicy | 4,097 | 256 | 5 |
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |

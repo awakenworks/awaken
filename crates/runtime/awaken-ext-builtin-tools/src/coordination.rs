@@ -18,7 +18,7 @@ use crate::erase;
 
 /// Stable model-facing identities owned with their concrete coordination tools.
 pub const LIST_AGENTS: &str = "list_agents";
-pub const SEND_TO_AGENT: &str = "send_to_agent";
+pub const SEND_MESSAGE: &str = "send_message";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRosterEntry {
@@ -63,7 +63,7 @@ pub trait AgentCoordinator: Send + Sync {
         request: AgentListRequest,
     ) -> Result<Vec<AgentRosterEntry>, ToolError>;
 
-    async fn send_to_agent(
+    async fn send_message(
         &self,
         request: AgentMessageRequest,
     ) -> Result<AgentMessageReceipt, ToolError>;
@@ -107,9 +107,9 @@ impl Tool for ListAgentsTool {
     }
 }
 
-pub struct SendToAgentTool(Arc<dyn AgentCoordinator>);
+pub struct SendMessageTool(Arc<dyn AgentCoordinator>);
 
-impl SendToAgentTool {
+impl SendMessageTool {
     pub fn new(coordinator: Arc<dyn AgentCoordinator>) -> Self {
         Self(coordinator)
     }
@@ -117,7 +117,7 @@ impl SendToAgentTool {
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SendToAgentArgs {
+pub struct SendMessageArgs {
     /// Roster Agent id; starts a new persistent Agent thread.
     #[serde(default)]
     pub agent_id: Option<String>,
@@ -135,10 +135,10 @@ fn non_empty(value: Option<String>) -> Option<String> {
 }
 
 #[async_trait]
-impl Tool for SendToAgentTool {
-    type Args = SendToAgentArgs;
+impl Tool for SendMessageTool {
+    type Args = SendMessageArgs;
     type Output = AgentMessageReceipt;
-    const ID: &'static str = SEND_TO_AGENT;
+    const ID: &'static str = SEND_MESSAGE;
     const DESCRIPTION: &'static str =
         "Start an Agent thread or send a follow-up to an existing Agent thread";
 
@@ -165,22 +165,22 @@ impl Tool for SendToAgentTool {
         }
         let context = current_tool_operation_context().ok_or_else(|| {
             ToolError::Execution(
-                "send_to_agent requires runtime-owned operation context".to_string(),
+                "send_message requires runtime-owned operation context".to_string(),
             )
         })?;
         let source_run_id = context.run_id.ok_or_else(|| {
-            ToolError::Execution("send_to_agent requires a runtime-owned source run".to_string())
+            ToolError::Execution("send_message requires a runtime-owned source run".to_string())
         })?;
         let source_thread_id = context.thread_id.ok_or_else(|| {
-            ToolError::Execution("send_to_agent requires a runtime-owned source thread".to_string())
+            ToolError::Execution("send_message requires a runtime-owned source thread".to_string())
         })?;
         let source_call_id = context.call_id.ok_or_else(|| {
             ToolError::Execution(
-                "send_to_agent requires a runtime-owned tool call identity".to_string(),
+                "send_message requires a runtime-owned tool call identity".to_string(),
             )
         })?;
         self.0
-            .send_to_agent(AgentMessageRequest {
+            .send_message(AgentMessageRequest {
                 target,
                 message: args.message,
                 source_run_id: source_run_id.0,
@@ -195,6 +195,6 @@ impl Tool for SendToAgentTool {
 pub fn coordination_tools(coordinator: Arc<dyn AgentCoordinator>) -> Vec<Arc<dyn RawTool>> {
     vec![
         erase(ListAgentsTool::new(coordinator.clone())),
-        erase(SendToAgentTool::new(coordinator)),
+        erase(SendMessageTool::new(coordinator)),
     ]
 }

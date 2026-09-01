@@ -30,11 +30,7 @@ fn is_replaced_managed_coordination_descriptor(
     descriptor.kind == awaken_runtime_contract::resolved::ToolKind::AgentDelegation
         || descriptor.id == awaken_ext_builtin_tools::AGENT_RUN
         || descriptor.id == awaken_ext_builtin_tools::LIST_AGENTS
-        || descriptor.id == awaken_ext_builtin_tools::SEND_TO_AGENT
-        // `send_message` is the generic Task-tool surface. Managed Agents has
-        // one public cross-Thread command, `send_to_agent`; exposing both would
-        // create competing model-visible routes for one intent.
-        || descriptor.id == awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID
+        || descriptor.id == awaken_ext_builtin_tools::SEND_MESSAGE
 }
 
 /// Project the one-level Managed coordination surface on a per-Session clone.

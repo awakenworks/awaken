@@ -570,7 +570,7 @@ impl SessionAgentCoordination for SessionApplication {
                     })
                     .ok_or_else(|| {
                         RunError::bad_request(
-                            "only ordinary Agent Threads accept send_to_agent follow-ups",
+                            "only ordinary Agent Threads accept send_message follow-ups",
                         )
                     })?;
                 if let Some(snapshot) = self

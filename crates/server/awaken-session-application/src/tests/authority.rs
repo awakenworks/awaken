@@ -2961,7 +2961,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
     // report; C2 the crash-frozen claimed dispatch identifies an Agent that is
     // in the Session's exact roster, unknown, the Advisor sentinel, or blank;
     // C3 the process stopped after child enqueue but before the parent
-    // send_to_agent result committed, so the rebuildable relationship query is
+    // send_message result committed, so the rebuildable relationship query is
     // empty. Effects: E1 C1+C2(roster)+C3 admits one deterministic primary
     // report and retains the exact activity until that Run settles; E2 every
     // non-roster identity fails closed, admits no report, and retains its

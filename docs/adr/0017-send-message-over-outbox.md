@@ -1,77 +1,79 @@
-# ADR-0017: send_message Backed by the Outbox, Addressed by Thread
+# ADR-0017: Agent Messaging Is Owned by Thread State, Not the Dispatch Outbox
 
 - Status: Accepted
 - Date: 2026-06-30
-- Depends on: ADR-0007, ADR-0013
+- Revised: 2026-09-01
+- Depends on: ADR-0007, ADR-0013, ADR-0021
 
 ## Context
 
-The `send_message` builtin tool (ADR-0007) lets an agent message another part of
-the multi-agent system, over a neutral `MessageSender` port the host injects. The
-durable substrate for cross-thread delivery — the outbox and relay — landed in
-ADR-0013. What was missing was the host adapter joining the two, and the right
-addressing unit.
+The former generic `send_message` host adapter read a target Thread's current
+`ResumeTicket` and then staged a separately durable `PendingInput` in the
+Dispatch outbox. Managed coordination also reused that infrastructure for an
+Agent follow-up even though it already owned a deterministic fresh Run.
+
+Those two operations do not share an aggregate or transaction. The Thread may
+resume, end, or advance to another Run between the read and the stage. A later
+Worker correctly refuses the stale ticket, but the already-bound message can be
+stranded instead of becoming input for the Thread's next Run. Dispatch cannot
+repair this by deciding which Run is awaiting: Run and ticket truth belongs to
+the committed Thread.
+
+Static composition review found no production installation of the generic
+adapter. Managed coordination exposes the single `send_message` command. Its
+source Thread already persists the call, execution state, recovery policy, and
+result in `ActiveToolBatch` through `ThreadCommit.state`; adding a Dispatch
+outbox record duplicates that durable request authority.
 
 ## Decision
 
-### D1: Address a thread, not a run
+### D1: The source Thread owns the Agent-message request
 
-A message targets a **thread id**, not a run id. A run is one ephemeral execution
-attempt; it is not a stable address. A thread is the durable, addressable unit and
-the consistency/shard key of the whole delivery design (`thread_id` is "the shard
-and consistency key"). The tool argument is `target_thread`; the adapter resolves
-the run currently awaiting on that thread.
+`send_message` remains an ordinary durable tool operation. Its committed
+`ActiveToolBatch` is the request/recovery authority and its committed tool result
+is the acceptance receipt. Replay uses the existing deterministic operation and
+child-Run identities. There is no Agent-message table, relationship registry,
+or Dispatch outbox intent.
 
-### D2: A host adapter bridges the tool port to the outbox
+The unsupported `OutboxMessageSender` read-then-stage adapter is removed.
+Dispatch exposes no `awaiting_run` query and never selects a target Run from a
+Thread status cache.
 
-`OutboxMessageSender` implements the extension's `MessageSender`. On `send`, it
-asks `CommittedThreadView` for the latest Run and its active ticket in one
-internally consistent Thread snapshot (`open_wait_for_thread(thread_id)`), then
-stages a `PendingInput` (the message as `ResumeResult::Input`) into the outbox.
-The daemon relays it to the run's pending input. Dispatch state is delivery
-state only: it neither decides that a Thread is awaiting nor identifies which
-Run may resume. A missing or incompatible ticket becomes unbound idle-Thread
-input under D3.
+### D2: The target fresh Run owns the accepted message
 
-### D3: Idle-thread delivery is the same outbox path
+Both spawn and follow-up freeze exactly one user message in the target
+`RunActivation.input`. The deterministic `RunDispatch` carries that complete
+activation through `enqueue_session_child`; backend Run-id idempotency rejects a
+same-id/different-payload collision. When the Worker commits, the message becomes
+ordinary target-Thread transcript truth through `ThreadCommit.messages`.
 
-ADR-0021 completed the formerly deferred idle case without adding a parallel
-delivery mechanism. The adapter stages a ticket-bound input when a run is
-awaiting, otherwise an unbound input addressed only by thread; both use the same
-outbox, relay, pending store, and settle-on-commit lifecycle.
+Dispatch therefore owns only delivery, claim, lease, retry, and settlement of
+the already-frozen Run. It does not own Agent-message acceptance and does not
+write a parallel `PendingInput`.
 
-### D4: The caller key is optional; durable identity is never optional
+### D3: Keep external pending input separate
 
-`idempotency_key` is an optional tool argument. When supplied, it identifies one
-logical message within the sending Run, so distinct tool operations may
-intentionally converge. When omitted (or blank), the runtime-owned durable tool
-`operation_id` identifies the message. In both cases the source Run scopes the
-identity; the same caller key in two Runs is not the same message.
-
-The adapter fingerprints that identity into `message_id`. It deliberately does
-not fingerprint content: an exact retry is a no-op, while reuse of one identity
-with changed target, correlation, schedule, or content is rejected by the
-outbox/pending store as an idempotency conflict. `send_message` declares durable
-request recovery and fails closed outside runtime-owned operation context; it
-never invents a process-local counter.
+ADR-0021's unbound pending-input representation remains an ingress primitive for
+input already accepted by an external application before a Run exists. It is
+not the internal Agent messaging mechanism. A future generic model-visible
+`send_message` implementation must be a Thread-scoped `StateCommand`/reducer
+with commit-coupled recovery, following the same ownership shape as
+`ActiveToolBatch`; it must not recreate the removed server adapter.
 
 ## Consequences
 
-- An agent's `send_message target_thread` durably delivers input to the run
-  waiting on that thread, resuming it — the multi-agent handoff works end to end.
-- The extension owns the model-visible tool; the host owns the adapter and the
-  outbox; the boundary (ADR-0007) holds.
-- Awaiting ownership is read atomically from committed Thread truth; Dispatch
-  exposes no parallel `awaiting_run` query.
-- Addressing is correct (thread, not run), including durable idle-thread input.
-- Callers may omit `idempotency_key`; retries remain stable across process
-  replacement through runtime-owned Run/operation identity.
-- One identity cannot silently accept another payload.
+- Internal Agent messaging has one durable request owner: source Thread state.
+- The target message has one content owner: the deterministic fresh activation,
+  then the target Thread transcript after commit.
+- Spawn and follow-up use one admission path and one idempotency boundary.
+- Dispatch cannot resume an unrelated Awaiting Run or strand input on a stale
+  ticket because it never performs that classification.
+- External pending input and internal Agent coordination remain distinct
+  concepts instead of sharing storage merely because both contain text.
 
 ## References
 
-- [INVARIANTS.md](../INVARIANTS.md) — G1/G13 (committed truth; single source).
-- ADR-0007 — the builtin-tool boundary and injected service ports.
-- ADR-0013 — the outbox and relay this delivers over.
-- [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.md) —
-  `thread_id` as the shard and consistency key.
+- [INVARIANTS.md](../INVARIANTS.md) — G1/G13 committed truth and one authority.
+- ADR-0007 — builtin-tool extension ports.
+- ADR-0013 — outbox and pending-input delivery.
+- ADR-0021 — unbound Thread inbox semantics.

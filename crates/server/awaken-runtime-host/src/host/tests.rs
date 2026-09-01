@@ -16086,7 +16086,7 @@ fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
     // surface; C2 generated/inherited vs immutable publication selects whether
     // Session toolsets enter the executable clone; C3 an explicit Session client
     // descriptor replaces published client ownership. Effects: E1 only a primary
-    // exposes fixed list/send; E2 every child loses nested delegation/advisor;
+    // exposes exactly one fixed list/send pair; E2 every child loses nested delegation/advisor;
     // E3 generated/self-child embeds Session toolsets; E4 published/non-self
     // retains its publication toolsets; E5 explicit client tools exact-replace.
     //
@@ -16141,8 +16141,7 @@ fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
         crate::config::session_client_tool_descriptor(&published_client),
         builtin(awaken_ext_builtin_tools::AGENT_RUN),
         builtin(awaken_ext_builtin_tools::LIST_AGENTS),
-        builtin(awaken_ext_builtin_tools::SEND_TO_AGENT),
-        builtin(awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID),
+        builtin(awaken_ext_builtin_tools::SEND_MESSAGE),
         ToolDescriptor::pinned(
             "test",
             ADVISOR_TOOL_ID,
@@ -16182,15 +16181,21 @@ fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
             "{rule}/E1"
         );
         assert!(
-            ids.contains(awaken_ext_builtin_tools::SEND_TO_AGENT),
+            ids.contains(awaken_ext_builtin_tools::SEND_MESSAGE),
             "{rule}/E1"
+        );
+        assert_eq!(
+            snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .filter(|descriptor| descriptor.id == awaken_ext_builtin_tools::SEND_MESSAGE)
+                .count(),
+            1,
+            "{rule}/E1 one Agent-message implementation"
         );
         assert!(
             !ids.contains(awaken_ext_builtin_tools::AGENT_RUN),
-            "{rule}/E1"
-        );
-        assert!(
-            !ids.contains(awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID),
             "{rule}/E1"
         );
         assert!(
@@ -16203,8 +16208,7 @@ fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
         for forbidden in [
             awaken_ext_builtin_tools::AGENT_RUN,
             awaken_ext_builtin_tools::LIST_AGENTS,
-            awaken_ext_builtin_tools::SEND_TO_AGENT,
-            awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID,
+            awaken_ext_builtin_tools::SEND_MESSAGE,
             ADVISOR_TOOL_ID,
         ] {
             assert!(!ids.contains(forbidden), "{rule}/E2 forbids {forbidden}");

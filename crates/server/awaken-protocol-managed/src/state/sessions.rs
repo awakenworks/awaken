@@ -165,6 +165,12 @@ impl ManagedState {
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
             return Ok(());
         };
+        // A Runtime projection and a root command may finish their reads in the
+        // opposite order. Never let an older root snapshot roll the disposable
+        // DTO backwards; equal revisions are immutable replays and need no write.
+        if persisted.revision <= record.checkpoint.session_revision {
+            return Ok(());
+        }
         record.session.status = Self::wire_session_status(persisted.execution);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
@@ -177,6 +183,8 @@ impl ManagedState {
             .max_list_cost_minor()
             .map(crate::types::BudgetLimit::from_minor);
         record.resource_state = persisted.resources.clone();
+        record.checkpoint.session_revision = persisted.revision;
+        record.advance_cache_revision()?;
         Ok(())
     }
 
@@ -963,7 +971,13 @@ impl ManagedState {
             session.agent.tools = project::resolved_tools(tools);
         }
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
-        let record = SessionRecord::new(agent_id, session, persisted.resources, Vec::new());
+        let record = SessionRecord::new(
+            agent_id,
+            session,
+            persisted.revision,
+            persisted.resources,
+            Vec::new(),
+        );
         let session = record.session_projection();
         self.sessions.lock().unwrap().insert(id.clone(), record);
         Ok(session)
@@ -1190,6 +1204,7 @@ impl ManagedState {
                 persisted.clone(),
                 RehydrationPurpose::FrozenControl,
             )?,
+            persisted.revision,
             persisted.resources,
             Vec::new(),
         );

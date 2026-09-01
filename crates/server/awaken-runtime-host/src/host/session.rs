@@ -989,7 +989,7 @@ impl SharedHost {
         if managed_coordination {
             admin_ids.extend([
                 awaken_ext_builtin_tools::LIST_AGENTS.to_string(),
-                awaken_ext_builtin_tools::SEND_TO_AGENT.to_string(),
+                awaken_ext_builtin_tools::SEND_MESSAGE.to_string(),
             ]);
         }
         let has_explicit_tool_policy = config_permission_ruleset(published_configuration.plugins())
