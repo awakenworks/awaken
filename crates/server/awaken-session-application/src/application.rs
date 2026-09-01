@@ -107,7 +107,7 @@ pub struct SessionApplication {
     runtime: Arc<dyn SessionRuntime>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
-    repository_credential_ingress: Option<Arc<dyn RepositoryCredentialIngress>>,
+    credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
     environments: Arc<dyn SessionEnvironmentSource>,
     config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver:
@@ -183,7 +183,7 @@ impl SessionApplication {
             runtime,
             mcp_realizer,
             credential_source: None,
-            repository_credential_ingress: None,
+            credential_material_ingress: None,
             environments,
             config_source: None,
             model_publication_resolver: None,
@@ -255,8 +255,8 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub(crate) fn repository_credential_ingress(&self) -> Option<&dyn RepositoryCredentialIngress> {
-        self.repository_credential_ingress.as_deref()
+    pub(crate) fn credential_material_ingress(&self) -> Option<&dyn CredentialMaterialIngress> {
+        self.credential_material_ingress.as_deref()
     }
 
     #[must_use]
@@ -487,11 +487,8 @@ impl SessionApplication {
         self.credential_source = Some(source);
     }
 
-    pub fn set_repository_credential_ingress(
-        &mut self,
-        ingress: Arc<dyn RepositoryCredentialIngress>,
-    ) {
-        self.repository_credential_ingress = Some(ingress);
+    pub fn set_credential_material_ingress(&mut self, ingress: Arc<dyn CredentialMaterialIngress>) {
+        self.credential_material_ingress = Some(ingress);
     }
 
     pub fn set_config_source(

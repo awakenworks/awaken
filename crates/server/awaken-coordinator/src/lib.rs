@@ -477,7 +477,7 @@ fn local_managed_state_over(
         },
     );
     application.set_credential_source(vaults.clone());
-    application.set_repository_credential_ingress(vaults);
+    application.set_credential_material_ingress(vaults);
     application.set_resource_registry(catalog);
     if let Some(source) = agent_source {
         application.set_config_source(source);

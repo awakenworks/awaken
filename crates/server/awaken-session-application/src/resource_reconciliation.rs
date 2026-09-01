@@ -15,7 +15,8 @@ use awaken_session_contract::{
 };
 
 use super::{
-    ConfiguredSessionRepository, SessionApplication, SessionMutationError,
+    ConfiguredSessionRepository, CredentialMaterialInput, CredentialMaterialRetirementCommand,
+    CredentialMaterialRotationCommand, SessionApplication, SessionMutationError,
     SessionParticipantProvenance, SessionPreparationError, SessionReconciliation,
     SessionReconciliationFailure, SessionRecoveryCandidates, SessionRepositoryOwner,
     mutation::repository_failure,
@@ -908,7 +909,7 @@ impl SessionApplication {
         session_id: &str,
         owner_scope: &str,
         binding_id: &awaken_resource_contract::BindingId,
-        token: awaken_agent_contract::RedactedString,
+        material: CredentialMaterialInput,
     ) -> Result<PersistedSession, SessionPreparationError> {
         let mut persisted = self
             .session_repository()
@@ -924,7 +925,7 @@ impl SessionApplication {
                 "profiled Session Repository credentials are immutable",
             )));
         }
-        let ingress = self.repository_credential_ingress().ok_or_else(|| {
+        let ingress = self.credential_material_ingress().ok_or_else(|| {
             SessionPreparationError::Rejected(RunError::bad_request(
                 "repository authorization requires a configured credential Vault",
             ))
@@ -961,13 +962,14 @@ impl SessionApplication {
                 |error| SessionPreparationError::Rejected(RunError::bad_request(error.to_string())),
             )?;
         let completed_credential_revision = ingress
-            .rotate_repository_token(
-                &awaken_credential_contract::CredentialSourceId(credential_source),
-                credential_revision,
-                owner_scope,
-                credential_target,
-                token,
-            )
+            .rotate_material(CredentialMaterialRotationCommand {
+                source_id: awaken_credential_contract::CredentialSourceId(credential_source),
+                expected_revision: credential_revision,
+                workspace_id: owner_scope.to_owned(),
+                target: credential_target,
+                usage: awaken_session_contract::repository_transport_credential_usage(),
+                material,
+            })
             .await
             .map_err(|error| {
                 SessionPreparationError::Rejected(RunError::bad_request(format!(
@@ -1668,11 +1670,14 @@ impl SessionApplication {
         owner_scope: &str,
         credential: &awaken_credential_contract::CredentialRef,
     ) -> bool {
-        let Some(ingress) = self.repository_credential_ingress() else {
+        let Some(ingress) = self.credential_material_ingress() else {
             return false;
         };
         ingress
-            .retire_repository_token(credential, owner_scope)
+            .retire_material(CredentialMaterialRetirementCommand {
+                credential: credential.clone(),
+                workspace_id: owner_scope.to_owned(),
+            })
             .await
             .is_ok()
     }

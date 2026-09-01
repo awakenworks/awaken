@@ -119,7 +119,7 @@ fn repository_input(name: &str, remote_url: &str) -> SessionRepositoryResourceIn
         name: name.into(),
         description: "Session source".into(),
         remote_url: remote_url.into(),
-        authorization_token: None,
+        credential_material: None,
         credential: None,
         mount_path: "/workspace/source".into(),
         initial_branch: Some("main".into()),
@@ -130,7 +130,13 @@ fn repository_input(name: &str, remote_url: &str) -> SessionRepositoryResourceIn
 fn token_repository_input(session_id: &str, name: &str) -> SessionRepositoryResourceInput {
     let mut input = repository_input(name, "https://github.com/awaken/example.git");
     input.id = managed_repository_id(session_id);
-    input.authorization_token = Some(awaken_agent_contract::RedactedString::new("x"));
+    input.credential_material = Some(CredentialMaterialInput::structured(
+        "github",
+        awaken_credential_contract::http_basic_material(
+            awaken_agent_contract::RedactedString::new("x-access-token"),
+            awaken_agent_contract::RedactedString::new("x"),
+        ),
+    ));
     input
 }
 
@@ -508,7 +514,7 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for FaultInjectingRes
 /// retirement observations for the cause/effect rules; production Vault state
 /// and replay remain owned by the composed credential implementation.
 #[derive(Default)]
-struct FaultInjectingRepositoryCredentialIngress {
+struct FaultInjectingCredentialMaterialIngress {
     calls: AtomicUsize,
     failures: AtomicUsize,
     retirement_failures: AtomicUsize,
@@ -516,7 +522,7 @@ struct FaultInjectingRepositoryCredentialIngress {
     retirements: Mutex<Vec<awaken_credential_contract::CredentialRef>>,
 }
 
-impl FaultInjectingRepositoryCredentialIngress {
+impl FaultInjectingCredentialMaterialIngress {
     fn fail_next(&self) {
         self.failures.store(1, Ordering::SeqCst);
     }
@@ -538,14 +544,12 @@ impl FaultInjectingRepositoryCredentialIngress {
 }
 
 #[async_trait::async_trait]
-impl RepositoryCredentialIngress for FaultInjectingRepositoryCredentialIngress {
-    async fn enter_repository_token(
+impl CredentialMaterialIngress for FaultInjectingCredentialMaterialIngress {
+    async fn enter_material(
         &self,
-        source_id: awaken_credential_contract::CredentialSourceId,
-        _workspace_id: &str,
-        _target: awaken_credential_contract::CredentialTarget,
-        _token: awaken_agent_contract::RedactedString,
-    ) -> Result<RepositoryCredentialEntry, String> {
+        command: CredentialMaterialIngressCommand,
+    ) -> Result<CredentialMaterialIngressReceipt, String> {
+        let source_id = command.source_id;
         self.calls.fetch_add(1, Ordering::SeqCst);
         if FaultInjectingResourceRegistry::consume_failure(&self.failures) {
             Err("injected credential ingress failure".into())
@@ -560,7 +564,7 @@ impl RepositoryCredentialIngress for FaultInjectingRepositoryCredentialIngress {
             } else {
                 SessionParticipantProvenance::Replayed
             };
-            Ok(RepositoryCredentialEntry {
+            Ok(CredentialMaterialIngressReceipt {
                 credential: awaken_credential_contract::CredentialRef {
                     id: source_id.0,
                     revision: 1,
@@ -570,33 +574,28 @@ impl RepositoryCredentialIngress for FaultInjectingRepositoryCredentialIngress {
         }
     }
 
-    async fn retire_repository_token(
+    async fn rotate_material(
         &self,
-        credential: &awaken_credential_contract::CredentialRef,
-        _workspace_id: &str,
+        _command: CredentialMaterialRotationCommand,
+    ) -> Result<u64, String> {
+        Err("rotation is outside this registration test".into())
+    }
+
+    async fn retire_material(
+        &self,
+        command: CredentialMaterialRetirementCommand,
     ) -> Result<(), String> {
         if FaultInjectingResourceRegistry::consume_failure(&self.retirement_failures) {
             return Err("injected credential retirement failure".into());
         }
-        self.retirements.lock().unwrap().push(credential.clone());
+        self.retirements.lock().unwrap().push(command.credential);
         Ok(())
-    }
-
-    async fn rotate_repository_token(
-        &self,
-        _source_id: &awaken_credential_contract::CredentialSourceId,
-        _expected_revision: u64,
-        _workspace_id: &str,
-        _target: awaken_credential_contract::CredentialTarget,
-        _token: awaken_agent_contract::RedactedString,
-    ) -> Result<u64, String> {
-        Err("rotation is outside this registration test".into())
     }
 }
 
 fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    ingress: Arc<dyn RepositoryCredentialIngress>,
+    ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
     let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -604,18 +603,18 @@ fn repository_saga_application(
     );
     let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
     app.set_resource_registry(registry);
-    app.set_repository_credential_ingress(ingress);
+    app.set_credential_material_ingress(ingress);
     app
 }
 
 fn repository_retirement_application(
     sessions: Arc<dyn ManagedSessionRepository>,
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    ingress: Arc<dyn RepositoryCredentialIngress>,
+    ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
     let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
     app.set_resource_registry(registry);
-    app.set_repository_credential_ingress(ingress);
+    app.set_credential_material_ingress(ingress);
     app
 }
 
@@ -760,7 +759,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let inner = resources.authorities().resource_registry();
     let registry = Arc::new(FaultInjectingResourceRegistry::new(inner.clone()));
-    let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
+    let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let app = repository_saga_application(registry.clone(), ingress.clone());
     let repository_state = |session_id: &str| {
         let repository_id = managed_repository_id(session_id);
@@ -1077,7 +1076,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     // | A2 | absent | n/a | forged | yes | E3 + E4, no Vault effect |
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
-    let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
+    let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
@@ -1173,7 +1172,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     let resources_authority =
         awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources_authority.authorities().resource_registry();
-    let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
+    let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let session_id = "retirement-restart";
     let credential = awaken_credential_contract::CredentialRef {
         id: format!("{}:credential", managed_repository_id(session_id)),

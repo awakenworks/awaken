@@ -79,7 +79,7 @@ use crate::types::vault::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
-mod repository_credentials;
+mod credential_material_ingress;
 
 /// Deterministic timestamp stamped on every vault/credential object, matching the
 /// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so

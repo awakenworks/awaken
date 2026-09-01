@@ -1244,7 +1244,7 @@ pub async fn create_profiled_session(
                     name: format!("Profiled Session repository {index}"),
                     description: "Product-authored profiled Session input".into(),
                     remote_url: repository.remote_url,
-                    authorization_token: None,
+                    credential_material: None,
                     credential: repository.credential,
                     mount_path: repository.mount_path,
                     initial_branch: repository.initial_branch,

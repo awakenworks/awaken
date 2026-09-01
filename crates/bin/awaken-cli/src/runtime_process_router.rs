@@ -638,7 +638,7 @@ pub(super) async fn prepare_runtime_routers(
         // same authority.  Merely installing it as a read source makes the
         // protocol advertise authorization_token while rejecting every legal
         // create/update request at the product router.
-        session_application.set_repository_credential_ingress(vault_state.clone());
+        session_application.set_credential_material_ingress(vault_state.clone());
     }
     session_application.set_resource_registry(resource_registry.clone());
     session_application.set_resource_purge_scheduler(resource_application.purge_scheduler());

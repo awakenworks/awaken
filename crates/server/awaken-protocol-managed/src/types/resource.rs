@@ -12,8 +12,16 @@ pub struct RepositoryAuthorizationToken(awaken_agent_contract::RedactedString);
 
 impl RepositoryAuthorizationToken {
     #[must_use]
-    pub(crate) fn into_redacted(self) -> awaken_agent_contract::RedactedString {
-        self.0
+    pub(crate) fn into_credential_material(
+        self,
+    ) -> awaken_session_application::CredentialMaterialInput {
+        awaken_session_application::CredentialMaterialInput::structured(
+            "github",
+            awaken_credential_contract::http_basic_material(
+                awaken_agent_contract::RedactedString::new("x-access-token"),
+                self.0,
+            ),
+        )
     }
 }
 
@@ -273,5 +281,40 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ResourceInput>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn github_token_translation_owns_only_provider_and_typed_material() {
+        // Cause/effect graph: C1 the Managed wire supplies one GitHub token;
+        // C2 the protocol adapter, not Session or Vault, owns GitHub's Basic
+        // username convention. E1 translation yields provider `github`; E2 it
+        // yields the canonical HTTP Basic structured shape; E3 the password is
+        // retained only as redacted write-only material. Target/usage are absent
+        // from this input and are added later by the Repository consumer.
+        // Decision rule G1: C1+C2 => E1+E2+E3.
+        let token: RepositoryAuthorizationToken =
+            serde_json::from_value(json!("github-token")).expect("G1 token");
+        let material = token.into_credential_material();
+        assert_eq!(material.provider, "github", "G1/E1");
+        let awaken_session_application::CredentialPlaintext::Structured(material) =
+            material.plaintext
+        else {
+            panic!("G1/E2 expected structured material")
+        };
+        assert_eq!(
+            material.type_id,
+            awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "G1/E2"
+        );
+        assert_eq!(
+            material.fields["username"].expose_secret(),
+            "x-access-token",
+            "G1/E2"
+        );
+        assert_eq!(
+            material.fields["password"].expose_secret(),
+            "github-token",
+            "G1/E3"
+        );
     }
 }

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_session_application::SessionApplication;
 #[cfg(any(test, feature = "test-support"))]
-use awaken_session_application::{RepositoryCredentialIngress, SessionCredentialSource};
+use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSource};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_contract::LifecycleFactNotifier;
 #[cfg(any(test, feature = "test-support"))]
@@ -226,20 +226,20 @@ impl ManagedState {
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
         self.application_mut().set_credential_source(vaults.clone());
         self.application_mut()
-            .set_repository_credential_ingress(vaults);
+            .set_credential_material_ingress(vaults);
         self
     }
 
-    /// Wire a split-service implementation of the write-only Repository token
-    /// ingress independently from secret-free credential selection.
+    /// Wire a split-service implementation of generic write-only Credential
+    /// material ingress independently from secret-free credential selection.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_repository_credential_ingress(
+    pub fn with_credential_material_ingress(
         mut self,
-        ingress: Arc<dyn RepositoryCredentialIngress>,
+        ingress: Arc<dyn CredentialMaterialIngress>,
     ) -> Self {
         self.application_mut()
-            .set_repository_credential_ingress(ingress);
+            .set_credential_material_ingress(ingress);
         self
     }
 
