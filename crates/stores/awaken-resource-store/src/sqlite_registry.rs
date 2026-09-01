@@ -29,6 +29,7 @@ impl SqliteResourceStore {
     ) -> Result<Option<Stored<T>>, RegistryRepositoryError> {
         let row: Option<(i64, String)> = self
             .connection()
+            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?
             .query_row(
                 &format!(
                     "SELECT revision, data FROM {REGISTRY_NS}_entry WHERE kind = ?1 AND id = ?2"
@@ -58,7 +59,10 @@ impl SqliteResourceStore {
         aggregate: &T,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
-        match self.connection().execute(
+        match self
+            .connection()
+            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?
+            .execute(
             &format!(
                 "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) VALUES (?1, ?2, 1, ?3)"
             ),
@@ -89,6 +93,7 @@ impl SqliteResourceStore {
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
         let changed = self
             .connection()
+            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?
             .execute(
                 &format!(
                     "UPDATE {REGISTRY_NS}_entry SET revision = ?4, data = ?5 \
@@ -113,7 +118,9 @@ impl SqliteResourceStore {
     fn list_memory_registry_records(
         &self,
     ) -> Result<Vec<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
-        let connection = self.connection();
+        let connection = self
+            .connection()
+            .map_err(|_| unavailable("resource SQLite connection was poisoned"))?;
         let mut statement = connection
             .prepare(&format!(
                 "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
@@ -323,6 +330,7 @@ mod tests {
         assert_eq!(stored.aggregate, aggregate);
         let applied = upgraded
             .connection()
+            .expect("resource SQLite connection")
             .query_row(
                 "SELECT COUNT(*) FROM resource_catalog_schema_migrations \
                  WHERE bundle_id = 'awaken.resource_catalog' AND version = 2",
@@ -342,6 +350,7 @@ mod tests {
         let aggregate = memory();
         store
             .connection()
+            .expect("resource SQLite connection")
             .execute(
                 "INSERT INTO resource_catalog_entry (kind, id, revision, data) \
                  VALUES (?1, ?2, 1, ?3)",

@@ -25,7 +25,7 @@ awaken-scoped-migration-sqlite = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 proptest.workspace = true
 
 [features]
