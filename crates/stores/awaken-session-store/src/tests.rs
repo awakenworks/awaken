@@ -12,6 +12,61 @@ use awaken_session_contract::{
 use super::*;
 use std::time::Duration;
 
+/// Session-recovery scheduler-isolation cause/effect graph: C1 one synchronous
+/// SQLite owner holds the canonical Session connection; C2 forty recovery scans
+/// become runnable on a two-worker Tokio runtime, matching the observed hosted
+/// backlog. Effects: E1 connection waiters consume blocking-pool capacity only;
+/// E2 an authority/lease timer fires before the owner releases at 250 ms; E3 all
+/// forty scans complete after release without losing or inventing Session rows.
+/// Decision rule S1=C1+C2=>E1+E2+E3. The 40-way fan-out is deliberate: the
+/// generic two-waiter boundary test proves mechanism, while this rule freezes
+/// the production-shaped recovery pressure that starved Control and heartbeat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_backlog_cannot_starve_session_authority_timers() {
+    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let held = repository.conn.clone();
+    let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+    let holder = std::thread::spawn(move || {
+        let _guard = held.lock().expect("S1 connection lock");
+        held_tx.send(()).expect("S1 announce held connection");
+        std::thread::sleep(Duration::from_millis(250));
+    });
+    held_rx.recv().expect("S1 connection held");
+
+    let started = std::time::Instant::now();
+    let timer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        started.elapsed()
+    });
+    let scans = (0..40)
+        .map(|_| {
+            let repository = Arc::clone(&repository);
+            tokio::spawn(async move { repository.reconcilable_sessions().await })
+        })
+        .collect::<Vec<_>>();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let elapsed = tokio::time::timeout(Duration::from_millis(100), timer)
+        .await
+        .expect("S1/E1-E2 authority timer remains schedulable")
+        .expect("S1 timer task");
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "S1/E2 timer fired after {elapsed:?}; Session scans blocked runtime workers"
+    );
+
+    holder.join().expect("S1 release connection");
+    for scan in scans {
+        let result = scan.await.expect("S1 recovery task").expect("S1/E3 scan");
+        assert!(result.sessions.is_empty(), "S1/E3 no invented Sessions");
+        assert!(
+            result.quarantined.is_empty(),
+            "S1/E3 no invented quarantine"
+        );
+    }
+}
+
 #[test]
 fn lifecycle_decoder_rejects_missing_authoritative_fields_but_accepts_legacy_object_id() {
     assert!(decode_lifecycle("{}").is_err());

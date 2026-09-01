@@ -130,6 +130,7 @@ pub struct SessionApplication {
     lifecycle_notifier: OnceLock<Arc<dyn LifecycleFactNotifier>>,
     local_realization_owner: String,
     runtime_incarnation: String,
+    mutation_sequence: AtomicU64,
     lifecycle_supervisor_started: AtomicBool,
     lifecycle_wakeup: tokio::sync::Notify,
     event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
@@ -201,6 +202,7 @@ impl SessionApplication {
                 std::process::id(),
                 APPLICATION_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
             ),
+            mutation_sequence: AtomicU64::new(0),
             lifecycle_supervisor_started: AtomicBool::new(false),
             lifecycle_wakeup: tokio::sync::Notify::new(),
             event_batch_cutover_validation: Arc::new(

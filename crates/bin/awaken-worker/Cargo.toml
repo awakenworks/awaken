@@ -41,6 +41,7 @@ awaken-session-executor = { workspace = true, default-features = false }
 awaken-resource-worker-http.workspace = true
 awaken-sandbox-memoryd.workspace = true
 awaken-coordinator-client.workspace = true
+awaken-service-lifecycle.workspace = true
 awaken-runtime-contract = { workspace = true }
 awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true

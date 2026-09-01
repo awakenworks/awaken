@@ -1,15 +1,16 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("awaken-worker: {error}");
-            ExitCode::FAILURE
+fn main() -> ExitCode {
+    awaken_service_lifecycle::block_on_service(async {
+        match run().await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("awaken-worker: {error}");
+                ExitCode::FAILURE
+            }
         }
-    }
+    })
 }
 
 async fn run() -> Result<(), String> {

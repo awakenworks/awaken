@@ -619,6 +619,41 @@ impl SessionApplication {
             .await
             .map_err(repository_failure)
             .map_err(SessionUpdateError::mutation)?;
+        // Close the receipt/read race. A concurrent exact command may commit
+        // after the public fast-path check but before this snapshot; in that
+        // case the durable receipt is authoritative and no second payload is
+        // compiled under the same command key.
+        if let Some(record) = &command_record
+            && let Some(receipt) = self
+                .session_repository()
+                .idempotency_receipt(session_id, &record.key)
+                .await
+                .map_err(repository_failure)
+                .map_err(SessionUpdateError::mutation)?
+        {
+            if receipt.payload_hash != record.payload_hash {
+                return Err(SessionUpdateError::IdempotencyMismatch);
+            }
+            if command.mcp_update.is_some() {
+                session = self.retry_failed_mcp_update_realization(session_id).await?;
+            } else {
+                // The snapshot above may have raced the exact command commit.
+                // Reload after observing its receipt so runtime reconciliation
+                // never decides from pre-command budget/tools/metadata truth.
+                session = self
+                    .session_repository()
+                    .get(session_id)
+                    .await
+                    .map_err(repository_failure)
+                    .map_err(SessionUpdateError::mutation)?;
+            }
+            return Ok(SessionUpdateOutcome {
+                session,
+                command_revision: receipt.committed_revision,
+                command_applied: false,
+                changes: SessionUpdateChanges::default(),
+            });
+        }
         if session.execution != SessionExecutionState::Idle {
             return Err(SessionUpdateError::NotIdle);
         }

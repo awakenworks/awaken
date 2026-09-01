@@ -4263,8 +4263,12 @@ async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
     let resource_revision = repo.get(&id).await.unwrap().resources.revision;
     repo.metadata_change_on_next(1, "realization-lease", "renewed");
 
-    let result = state
-        .replace_resource_manifest(
+    // The HTTP adapter owns this same Box boundary because the complete
+    // application future is intentionally too large to embed in an Axum or
+    // Tokio caller future. Keep the direct integration test faithful to that
+    // production boundary while exercising the root-CAS rules above.
+    let result = Box::pin(
+        state.replace_resource_manifest(
             &id,
             serde_json::from_value(json!({
                 "resources": [{
@@ -4277,9 +4281,10 @@ async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
             Some("manifest-root-rebase".into()),
             Some(resource_revision),
             "manifest-root-rebase-request".into(),
-        )
-        .await
-        .expect("W2 unrelated root mutation is a retryable implementation race");
+        ),
+    )
+    .await
+    .expect("W2 unrelated root mutation is a retryable implementation race");
 
     assert_eq!(result.desired_revision, resource_revision + 1, "W2/E3");
     let durable = repo.get(&id).await.unwrap();
