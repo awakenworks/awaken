@@ -1490,8 +1490,9 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     // Cause/effect graph: C1 placement is Worker-owned; C2 cleanup has an
     // immutable Requested command; C3 the realization lease is absent, expired,
     // live under the same logical owner's predecessor incarnation, live under
-    // this incarnation, or live under another owner; C4 the root CAS response is
-    // lost after commit. Effects: E1 allocate epoch N+1 and return only the
+    // this incarnation with equal or strictly older expiry, or live under
+    // another owner; C4 the root CAS response is lost after commit. Effects: E1
+    // allocate epoch N+1 and return only the
     // frozen projection/lease; E2 skip ineligible/Fenced/nonterminal/local rows;
     // E3 skip an already-current assignment so a failed candidate cannot starve
     // the scan; E4 replay this invocation's exact committed assignment after an
@@ -1501,10 +1502,11 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     // | C1 | yes | same owner, predecessor incarnation | E1 |
     // | C2 | yes | absent | E1 after C1 is current/skipped |
     // | C3 | yes | expired foreign | E1 after C2 is current/skipped |
-    // | C4 | yes | exact current incarnation | E3 |
-    // | C5 | yes | live foreign owner | E2 |
-    // | C6 | no / Fenced | any | E2 |
-    // | C7 | yes + ambiguous committed CAS | exact attempted | E4 |
+    // | C4 | yes | exact incarnation, strictly older expiry | E1 once per heartbeat |
+    // | C5 | yes | exact incarnation, equal expiry | E3 |
+    // | C6 | yes | live foreign owner | E2 |
+    // | C7 | no / Fenced | any | E2 |
+    // | C8 | yes + ambiguous committed CAS | exact attempted | E4 |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("cold cleanup Session repository"),
@@ -1553,6 +1555,14 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     create(
         repo.as_ref(),
         requested(
+            "claim-b0-current-renewable",
+            Some(lease("worker-a", "worker-a:2:boot-new", 4, u64::MAX - 1)),
+        ),
+    )
+    .await;
+    create(
+        repo.as_ref(),
+        requested(
             "claim-c-predecessor",
             Some(lease("worker-a", "worker-a:1:boot-old", 7, u64::MAX)),
         ),
@@ -1592,6 +1602,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         },
     );
     for (rule, expected_id, expected_epoch) in [
+        ("C4", "claim-b0-current-renewable", 5),
         ("C1", "claim-c-predecessor", 8),
         ("C2", "claim-d-absent", 1),
         ("C3", "claim-e-expired", 10),
@@ -1617,9 +1628,9 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         application
             .claim_next_terminal_cleanup(target.clone())
             .await
-            .expect("C4-C6")
+            .expect("C5-C7")
             .is_none(),
-        "C4-C6/E2+E3"
+        "C5-C7/E2+E3"
     );
     let invalid = application
         .claim_next_terminal_cleanup(awaken_session_contract::SessionRealizationTarget {
@@ -1653,10 +1664,10 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     let replayed = application
         .claim_next_terminal_cleanup(target)
         .await
-        .expect("C7 ambiguous CAS replay")
-        .expect("C7 assignment");
-    assert_eq!(replayed.session_id, "claim-conflict", "C7/E4");
-    assert_eq!(replayed.lease.epoch, 1, "C7/E4 does not allocate twice");
+        .expect("C8 ambiguous CAS replay")
+        .expect("C8 assignment");
+    assert_eq!(replayed.session_id, "claim-conflict", "C8/E4");
+    assert_eq!(replayed.lease.epoch, 1, "C8/E4 does not allocate twice");
 }
 
 #[tokio::test]

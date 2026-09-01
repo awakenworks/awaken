@@ -485,13 +485,12 @@ pub(crate) fn spawn_heartbeat(
     })
 }
 
-/// Reconcile resident Session realization leases independently from the Worker
-/// registry heartbeat. Terminal cleanup is a latency-sensitive edge: coupling
-/// it to the ten-second liveness cadence makes a completed Run unnecessarily
-/// block its caller and every dependent Workflow transition. The Host performs
-/// a local empty check before consulting Control, so an idle Worker creates no
-/// high-frequency remote scan load. Cold/orphan recovery remains heartbeat-
-/// paced in [`spawn_heartbeat`].
+/// Reconcile due resident Session realization leases independently from the
+/// Worker registry heartbeat. This lane performs no terminal discovery: the
+/// heartbeat-paced global claim-next command is the sole cleanup selector, so
+/// an idle fleet creates no per-Session Control traffic. Ordinary terminal
+/// settlement remains on the initiating command path; this supervisor owns only
+/// recovery of cold/orphaned cleanup assignments.
 pub(crate) fn spawn_session_realization_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
@@ -502,19 +501,19 @@ pub(crate) fn spawn_session_realization_reconciliation(
         loop {
             interval.tick().await;
             let now = wall_clock_ms();
-            // Cause/effect decision table: C1 this sweep owns only Session
-            // realization work; C2 the Host bounds independent Session calls;
-            // C3 the Worker heartbeat is a separate task and authority lane;
-            // C4 one Control call is slow. Effects: E1 await the bounded sweep
-            // without starting an overlapping sweep; E2 never cancel every
-            // other Session at one arbitrary batch deadline; E3 heartbeat proof
-            // remains independently schedulable. The transport and durable
-            // Session fences own individual-call failure and recovery.
+            // Cause/effect decision table: C1 this sweep owns only due Session
+            // lease renewals; C2 the Host bounds independent calls; C3 the
+            // Worker heartbeat/terminal claim is a separate task and authority
+            // lane; C4 one Control renewal is slow. Effects: E1 await the
+            // bounded sweep without starting an overlapping sweep; E2 never
+            // cancel every other Session at one arbitrary batch deadline; E3
+            // heartbeat proof remains independently schedulable; E4 non-due
+            // Sessions make no Control call. Durable fences own failure/recovery.
             //
             // | Rule | bounded Host | slow call | Effect |
             // |---|---|---|---|
-            // | R1 | yes | no | E1 + E3 |
-            // | R2 | yes | yes | E1 + E2 + E3 |
+            // | R1 | yes | no | E1 + E3 + E4 |
+            // | R2 | yes | yes | E1 + E2 + E3 + E4 |
             match lifecycle
                 .host
                 .renew_due_session_realizations(now, timing)

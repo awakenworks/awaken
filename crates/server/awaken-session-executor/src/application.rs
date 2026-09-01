@@ -16,16 +16,10 @@ use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use futures_util::stream::{self, StreamExt};
 
-pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS: usize = 8;
 /// Independent Session lease renewals are fast root CAS operations. Bound them
 /// per Worker so cloud replica count scales total capacity without removing
 /// local backpressure or allowing one Worker to overload Control.
 pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize = 8;
-/// Warm terminal discovery is deliberately slower than lease supervision.
-/// Durable Session state remains authoritative, while this cadence prevents
-/// every resident Session from generating a loopback Control request on every
-/// one-second renewal tick.
-pub(crate) const TERMINAL_CLEANUP_POLL_INTERVAL_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenewalFailureDisposition {
@@ -882,15 +876,7 @@ impl crate::SharedHost {
         lease: awaken_session_contract::SessionRealizationLease,
     ) {
         let changed = self.session_slots.update(session_id, |slot| {
-            let authority_changed = slot.realization_lease.as_ref().is_some_and(|current| {
-                current.owner != lease.owner
-                    || current.runtime_incarnation != lease.runtime_incarnation
-                    || current.epoch != lease.epoch
-            });
             slot.realization_lease = Some(lease);
-            if authority_changed {
-                slot.next_terminal_cleanup_poll_at_unix_ms = 0;
-            }
             slot.realization_changed.clone()
         });
         changed.notify_waiters();
@@ -930,7 +916,7 @@ impl crate::SharedHost {
     /// realization. `true` means the terminal fence owns this slot (including a
     /// completed/not-found retirement); `false` resumes ordinary lease renewal.
     /// Warm slots and cold recovery assignments both enter this exact helper.
-    async fn reconcile_terminal_cleanup_for_lease(
+    pub(crate) async fn reconcile_terminal_cleanup_for_lease(
         &self,
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: &str,
@@ -1121,8 +1107,10 @@ impl crate::SharedHost {
 
     /// Claim and install every currently discoverable cold terminal assignment,
     /// then enter the same cleanup helper as resident projections. The bound
-    /// prevents one heartbeat from monopolizing the Worker; repeated calls are
-    /// safe because Control skips assignments already owned by this incarnation.
+    /// prevents one heartbeat from monopolizing the Worker. Within one heartbeat
+    /// Control skips an exact assignment; a later heartbeat carries a newer
+    /// expiry and may fence/retry that same incarnation without waiting for the
+    /// old proof to expire.
     pub async fn recover_terminal_cleanup_assignments(
         &self,
         target: awaken_session_contract::SessionRealizationTarget,
@@ -1195,63 +1183,26 @@ impl crate::SharedHost {
         }
     }
 
-    async fn reconcile_one_session_realization(
+    async fn renew_one_session_realization(
         &self,
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: String,
         lease: awaken_session_contract::SessionRealizationLease,
-        now_unix_ms: u64,
-        renew_before_unix_ms: u64,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
-        // Cause/effect decision table: C1 lease is due, C2 the process-local
-        // cleanup cadence is due, C3 cleanup is terminal, C4 Control explicitly
-        // rejects this owner, C5 Control/effect is temporarily unavailable, and
-        // C6 the old lease remains live. Effects: E1 renew before cleanup
-        // polling; E2 poll once and execute/finalize cleanup; E3 skip remote
-        // cleanup work until its cadence; E4 interrupt and revoke immediately;
-        // E5 retain and retry; E6 interrupt and revoke at expiry. No Worker-local
-        // queue or receipt registry participates.
+        // Cause/effect decision table: C1 this lease is due; C2 Control renews,
+        // explicitly rejects this owner, or is temporarily unavailable; C3 the
+        // old proof is still live. Effects: E1 extend only the same durable
+        // owner/incarnation/epoch; E2 interrupt and revoke on explicit loss; E3
+        // retain a still-live proof for retry; E4 revoke once proof expires.
+        // Terminal discovery is deliberately absent: the existing global
+        // claim-next recovery path is its sole authority.
         //
-        // | Rule | lease due | cleanup due | Control/effect | old lease | Effect |
-        // | R1 | yes | any | renewal succeeds | any | E1 |
-        // | R2 | no | yes | terminal cleanup | any | E2 |
-        // | R3 | no | no | not called | any | E3 |
-        // | R4 | any | any | explicit loss | any | E4 |
-        // | R5 | any | yes | temporary failure | live | E5 |
-        // | R6 | any | yes | temporary failure | expired | E6 |
-        let due = lease.expires_at_unix_ms <= renew_before_unix_ms;
-        if !due {
-            if !self.session_slots.claim_terminal_cleanup_poll(
-                &session_id,
-                &lease,
-                now_unix_ms,
-                TERMINAL_CLEANUP_POLL_INTERVAL_MS,
-            ) {
-                return Ok(false);
-            }
-            match self
-                .reconcile_terminal_cleanup_for_lease(control, &session_id, &lease)
-                .await
-            {
-                Ok(true) => return Ok(false),
-                Ok(false) => return Ok(false),
-                Err(error)
-                    if awaken_session_contract::realization_lease_is_live_at(
-                        lease.expires_at_unix_ms,
-                        crate::terminal_repository_publication::runtime_unix_now_ms(),
-                    ) =>
-                {
-                    return Err(error);
-                }
-                Err(_) => {
-                    let _ = self.interrupt(&session_id).await;
-                    self.revoke_session_realization(&session_id).await?;
-                    return Ok(false);
-                }
-            }
-        }
-
+        // | Rule | Control | old proof | Effect |
+        // | R1 | renewed | any | E1 |
+        // | R2 | explicit loss | any | E2 |
+        // | R3 | unavailable | live | E3 |
+        // | R4 | unavailable | expired | E4 |
         let renewal: Result<bool, (crate::HostError, bool)> = async {
             let control_failure = |error| {
                 let revoke = realization_renewal_failure_disposition(&error)
@@ -1302,26 +1253,23 @@ impl crate::SharedHost {
         }
     }
 
-    /// Renew every due Session before polling terminal cleanup for non-due
-    /// projections. Renewal uses the lease-only root CAS; cleanup remains an
-    /// independently bounded read-side reconciliation.
+    /// Renew every due Session through the lease-only root CAS.
     /// Environment-only Sessions participate because image/package realization
     /// can outlive the initial lease even when no MCP attachment exists.
     /// A conclusive ownership loss or expired proof revokes only that Session;
     /// a transient failure retains a still-live lease for the next sweep.
     ///
     /// Each Session keeps its one realization lock and phase driver. Independent
-    /// Sessions are reconciled with a fixed upper bound to protect Control;
-    /// authority-derived per-request deadlines release every occupied slot and
-    /// earliest-due ordering keeps cleanup traffic behind renewal traffic. If
+    /// renewals use a fixed upper bound to protect Control; authority-derived
+    /// per-request deadlines release every occupied slot. Terminal cleanup is
+    /// discovered only by the existing global claim-next recovery path instead
+    /// of issuing one Control poll per resident Session. If
     /// Control still cannot answer before an individual durable expiry, that
     /// Session fails closed instead of inventing local grace.
     async fn reconcile_session_realization_batch(
         &self,
         control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
         realizations: Vec<(String, awaken_session_contract::SessionRealizationLease)>,
-        now_unix_ms: u64,
-        renew_before_unix_ms: u64,
         requested_expiry_unix_ms: u64,
         concurrency: usize,
     ) -> Vec<Result<bool, crate::HostError>> {
@@ -1329,12 +1277,10 @@ impl crate::SharedHost {
             .map(|(session_id, lease)| {
                 let control = Arc::clone(&control);
                 async move {
-                    self.reconcile_one_session_realization(
+                    self.renew_one_session_realization(
                         control.as_ref(),
                         session_id,
                         lease,
-                        now_unix_ms,
-                        renew_before_unix_ms,
                         requested_expiry_unix_ms,
                     )
                     .await
@@ -1350,8 +1296,15 @@ impl crate::SharedHost {
         now_unix_ms: u64,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
-        let realizations = self.session_slots.realization_leases();
-        if realizations.is_empty() {
+        let renew_before_unix_ms = now_unix_ms
+            .saturating_add(u64::try_from(timing.proof_window().as_millis()).unwrap_or(u64::MAX));
+        let mut due = self
+            .session_slots
+            .realization_leases()
+            .into_iter()
+            .filter(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms)
+            .collect::<Vec<_>>();
+        if due.is_empty() {
             return Ok(0);
         }
         let control = self.session_control.as_ref().ok_or_else(|| {
@@ -1359,8 +1312,6 @@ impl crate::SharedHost {
                 "active Worker Session projection has no Control renewal client",
             )
         })?;
-        let renew_before_unix_ms = now_unix_ms
-            .saturating_add(u64::try_from(timing.proof_window().as_millis()).unwrap_or(u64::MAX));
         let requested_expiry_unix_ms = now_unix_ms
             .saturating_add(u64::try_from(timing.lease_ttl().as_millis()).unwrap_or(u64::MAX));
         let control: Arc<dyn awaken_session_contract::SessionRealizationControl> =
@@ -1368,12 +1319,6 @@ impl crate::SharedHost {
                 inner: Arc::clone(control),
                 request_timeout: timing.request_timeout(),
             });
-        // Split write-authority renewals from read-heavy terminal discovery.
-        // Both are bounded independently; earliest-deadline renewals enter the
-        // first bounded wave before cleanup discovery is admitted.
-        let (mut due, mut cleanup): (Vec<_>, Vec<_>) = realizations
-            .into_iter()
-            .partition(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms);
         let order =
             |left: &(String, awaken_session_contract::SessionRealizationLease),
              right: &(String, awaken_session_contract::SessionRealizationLease)| {
@@ -1383,28 +1328,14 @@ impl crate::SharedHost {
                     .then_with(|| left.0.cmp(&right.0))
             };
         due.sort_by(order);
-        cleanup.sort_by(order);
-        let mut outcomes = self
+        let outcomes = self
             .reconcile_session_realization_batch(
-                Arc::clone(&control),
+                control,
                 due,
-                now_unix_ms,
-                renew_before_unix_ms,
                 requested_expiry_unix_ms,
                 MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
             )
             .await;
-        outcomes.extend(
-            self.reconcile_session_realization_batch(
-                control,
-                cleanup,
-                now_unix_ms,
-                renew_before_unix_ms,
-                requested_expiry_unix_ms,
-                MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
-            )
-            .await,
-        );
         let mut renewed = 0;
         let mut first_error = None;
         for outcome in outcomes {

@@ -227,6 +227,12 @@ production logic.
 - `ToolBatch.tla` covers parallel model-emitted calls, approval and supplied
   results, executor-entry ordering, replay-safe and fail-closed recovery,
   cancellation, and the whole-batch publication barrier.
+- `SessionThreadToolComposition.tla` composes the canonical
+  `RustCommitSystem` relation across a root Thread and two child Runs sharing a
+  child Thread. Each Run owns two calls; TLC checks all interleavings of the
+  per-Thread physical-attempt fence, an external wait, crash recovery through
+  `NeverReplay -> Indeterminate`, and replay-safe retry to completion. It adds
+  no second tool transition model.
 - `RuntimeSystem.tla` composes dispatch, tool batch, approval, delegation,
   messages, cancellation, and terminal commit under shared variables.
 - `RuntimeImplementation.tla` splits every durable abstract transition into a
@@ -467,6 +473,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | RunIngress | 3,124 | 115 | 9 |
 | ThreadState | 15,001 | 3,031 | 5 |
 | SessionRunProtocol | 473,826,797 | 88,910,945 | 38 |
+| SessionThreadToolComposition | 2,098 | 924 | 34 |
 | WorkQueue | 26,521 | 4,206 | 15 |
 | SessionActivity | 436 | 79 | 7 |
 | SessionRoot | 58,273 | 8,073 | 13 |
