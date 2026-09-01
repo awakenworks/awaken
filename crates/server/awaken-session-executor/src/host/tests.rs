@@ -2690,7 +2690,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
         .await
         .expect("L1 resident Session");
     assert!(
-        ctx.durable_ingress.is_none()
+        !ctx.delivery.is_durable()
             && ctx.active_run.lock().unwrap().is_none()
             && ctx.cancel.lock().unwrap().is_none(),
         "L1/C3 Managed Event execution has no foreground control hint"
@@ -3348,7 +3348,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     let authority = Arc::new(crate::EphemeralRuntimeAuthority::new());
 
     // Cause/effect graph: C1 committed terminal truth exists; C2 its extraction
-    // intent is absent; C3 the replacement Host uses DirectRunIngress. Effects:
+    // intent is absent; C3 the replacement Host uses DirectAttemptDriver. Effects:
     // E1 cold context construction redelivers the terminal exactly once; E2 the
     // completed extraction survives Host replacement. Constraint K1: only Direct
     // ingress owns this cold self-heal; durable ingress is covered at the guarded
@@ -3374,7 +3374,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .ctx_for(thread, None)
         .await
         .expect("rehydrate thread");
-    assert!(!ctx.durable, "D1/C3 must use DirectRunIngress");
+    assert!(!ctx.delivery.is_durable(), "D1/C3 must use direct delivery");
     let run = ctx
         .commit
         .latest_run(&ctx.thread_id)
@@ -16964,57 +16964,59 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
 
 #[tokio::test]
 async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() {
-    // FMECA cause/effect graph: C1 the resident Session uses direct foreground
-    // ingress; C2 a direct Runtime attempt or pool-owned Session Event attempt has
-    // registered its exact local inbox; C3 the direct lifecycle slot is open;
-    // C4 the exact registration has settled/been removed; C5 a durable local or
-    // Coordinator-only context exists. Effects: E1 C2 exposes the registry's
-    // process-local inbox regardless of C1/C5 topology; E2 no registration remains
-    // inactive even when C3 or a foreground Run id remains; E3 settled and remote
-    // attempts fail closed so callers use committed Session events.
+    // FMECA cause/effect graph: C1 a direct or durable-local physical attempt has
+    // opened its exact scope; C2 the scope supports safe-boundary live input; C3
+    // the exact scope has settled; C4 a Coordinator-only context exists. Effects:
+    // E1 C1+C2 exposes that scope's process-local inbox; E2 no current scope stays
+    // inactive; E3 settled and remote attempts fail closed.
     // Constraint: Runtime's generation/ownership-fenced active-attempt registry is
-    // the sole discovery authority. The SessionCtx slot owns only direct lifecycle
-    // and carry-over; `active_attempt_registry_is_exact_generation_owned_and_thread_addressed`
-    // owns the deeper replacement/lost/unavailable matrix.
+    // the sole discovery and lifecycle authority; no Session/ingress queue exists.
     //
-    // | Rule | ingress/topology | direct slot | registry | effect |
-    // |---|---|---|---|---|
-    // | L1 | direct foreground | closed | absent | E2 inactive |
-    // | L2 | direct Runtime | open | current | E1 exact inbox |
-    // | L3 | direct settled | still open | removed | E2+E3 inactive |
-    // | L4 | direct + pool-owned Event | closed | current | E1 exact inbox |
-    // | L5 | Event settled | closed | removed | E3 inactive |
-    // | L6 | durable local Worker | n/a | current | E1 exact inbox |
-    // | L7 | Coordinator-only | n/a | absent | E3 inactive |
+    // | Rule | topology | attempt scope | effect |
+    // |---|---|---|---|
+    // | L1 | direct idle | absent | E2 inactive |
+    // | L2 | direct Runtime | current | E1 exact inbox |
+    // | L3 | direct settled | removed/closed | E2+E3 inactive |
+    // | L4 | pool-owned Event | current | E1 exact inbox |
+    // | L5 | Event settled | removed/closed | E3 inactive |
+    // | L6 | durable local Worker | current | E1 exact inbox |
+    // | L7 | Coordinator-only | absent | E3 inactive |
     // Decision rule: execute L1-L7; only a current registry entry may produce E1.
     let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let direct_ctx = direct
         .ctx_for("direct-live", None)
         .await
         .expect("L1 direct context");
-    assert!(!direct_ctx.durable, "L1 direct foreground precondition");
+    assert!(
+        !direct_ctx.delivery.is_durable(),
+        "L1 direct foreground precondition"
+    );
     assert!(direct.live_inbox("direct-live").await.is_none(), "L1/E2");
 
-    let direct_inbox = direct_ctx.open_live_inbox();
-    let direct_tracking = direct_ctx.runtime.track_active_attempt(
+    let direct_tracking = direct_ctx.runtime.begin_active_attempt(
         &RunId("run-direct".into()),
         &direct_ctx.thread_id,
-        &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(direct_inbox.clone()),
+        awaken_runtime_contract::RuntimeRunContext::new(),
+        awaken_runtime_contract::execution::LiveInput::SafeBoundary,
     );
     assert!(direct.live_inbox("direct-live").await.is_some(), "L2/E1");
     drop(direct_tracking);
     assert!(
         direct.live_inbox("direct-live").await.is_none(),
-        "L3/E2+E3 an open lifecycle slot is not a fallback authority"
+        "L3/E2+E3 a settled scope is not a fallback authority"
     );
-    direct_ctx.close_live_inbox();
 
-    let event_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
-    let event_tracking = direct_ctx.runtime.track_active_attempt(
+    let event_tracking = direct_ctx.runtime.begin_active_attempt(
         &RunId("run-session-event".into()),
         &direct_ctx.thread_id,
-        &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(event_inbox.clone()),
+        awaken_runtime_contract::RuntimeRunContext::new(),
+        awaken_runtime_contract::execution::LiveInput::SafeBoundary,
     );
+    let event_inbox = event_tracking
+        .context()
+        .live_inbox
+        .clone()
+        .expect("L4 event attempt inbox");
     let discovered = direct
         .live_inbox("direct-live")
         .await
@@ -17037,17 +17039,11 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     ));
     let local_ctx = local.ctx_for("local-live", None).await.expect("L6 context");
     *local_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-local".into()));
-    let tracking = local_ctx.runtime.track_active_attempt(
+    let tracking = local_ctx.runtime.begin_active_attempt(
         &RunId("run-local".into()),
         &local_ctx.thread_id,
-        &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(
-            local_ctx
-                .durable_ingress
-                .as_ref()
-                .expect("durable ingress")
-                .live_inbox()
-                .clone(),
-        ),
+        awaken_runtime_contract::RuntimeRunContext::new(),
+        awaken_runtime_contract::execution::LiveInput::SafeBoundary,
     );
     assert!(local.live_inbox("local-live").await.is_some(), "L6/E1");
     drop(tracking);

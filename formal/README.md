@@ -255,7 +255,11 @@ production logic.
   atomic exact-permutation reorder, replace, remove, drain, close, and the
   pause-before-input-before-idle safe-boundary decision), and crash-safe
   streaming watermark/checkpoint behavior. `LiveInbox` deliberately models the
-  process-local fold as best-effort rather than duplicating durable ingress.
+  process-local fold as best-effort rather than duplicating durable ingress. It
+  also checks the physical-attempt composition: an inbox exists only for a
+  local, current-owner executor that declares a safe live-input boundary;
+  attempt close or ownership loss empties it, and a replacement attempt starts
+  with a fresh empty inbox rather than inheriting Session state.
   `LiveInboxProof.tla`
   proves that reorder has no partially applied outcome and every invalid
   request is a stuttering transition.
@@ -487,7 +491,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |
-| LiveInbox | 3,025 | 81 | 7 |
+| LiveInbox | 70,196 | 2,080 | 12 |
 | ServiceLifecycle | 226 | 131 | 9 |
 | ObservationReconcile | 10,055 | 2,835 | 16 |
 | ExecutableProjectionRefresh | 111,151 | 39,600 | 37 |

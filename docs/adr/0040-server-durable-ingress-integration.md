@@ -3,6 +3,10 @@
 - Status: Accepted
 - Date: 2026-07-03
 - Amended: 2026-08-29 — Managed Session roots use only Session-owned Run reservations
+- Amended: 2026-09-01 — `SessionCtx` no longer stores an erased ingress, a
+  durability boolean, and a concrete durable wrapper. One private delivery value
+  selects direct or durable; the Host composes its single `DispatchWorker` directly.
+  The D1/D2 text below remains the history of the original integration.
 - Depends on: ADR-0009, ADR-0011, ADR-0015, ADR-0020, ADR-0022, ADR-0039
 
 ## Context

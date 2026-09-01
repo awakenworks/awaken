@@ -33,7 +33,7 @@ recovery evidence.
 
 | Public surface | Adapter status | Shared runtime substrate | Must stay separate |
 |---|---|---|---|
-| `managed-agents-runtime-protocol` | runtime/session/custom-tool compatibility | `RunActivation`, `RunIngress`, committed facts, wait/resume | Managed Agents management endpoints, config CRUD, admin tools |
+| `managed-agents-runtime-protocol` | runtime/session/custom-tool compatibility | `RunActivation`, explicit direct-attempt or durable-dispatch delivery, committed facts, wait/resume | Managed Agents management endpoints, config CRUD, admin tools |
 | AG-UI | UI-oriented run/event protocol | `RunActivation`, committed event projection, client-executed tools | Managed Agents DTOs, beta headers, event names |
 | AI SDK / CopilotKit-style HTTP | model/run client compatibility | submit/cancel/stream through runtime ports | provider selection or runtime-internal errors |
 | A2A | remote Agent Card, message/task, status, and artifact compatibility | remote attempt over ordinary `Run`/`Thread` truth | A2A task snapshots and JSON-RPC errors |
@@ -50,8 +50,8 @@ Every public adapter must name the following mapping before implementation:
 | Mapping area | Adapter owns | Runtime-facing result |
 |---|---|---|
 | Request decode | public DTOs, headers, beta flags, route auth | rejected request or neutral command |
-| Run submit | public run/session/thread ids and input shape | `RunActivation` plus optional `RunIngress` delivery mode |
-| Resume/control | public cancel, interrupt, decision, custom-tool result | `RunIngress` or `LiveRunControl` command |
+| Run submit | public run/session/thread ids and input shape | `RunActivation`, then either `DirectAttemptDriver` or durable `RunDispatch` selected by the host |
+| Resume/control | public cancel, interrupt, decision, custom-tool result | `LiveRunControl` for the exact local attempt, or a durable dispatch/input command |
 | Client-executed tools | public descriptor/result shape | per-run client tool descriptors or tool result |
 | Stream output | public SSE/event framing | projection from live stream or committed records |
 | Replay/history | public replay cursor and idempotency contract | committed facts/events plus protocol replay rows |
@@ -68,7 +68,7 @@ and public error types must not enter runtime core.
 public request
   -> adapter auth and DTO validation
   -> neutral submit/control/resume command
-  -> RunIngress / LiveRunControl
+  -> DirectAttemptDriver or RunDispatch / LiveRunControl
   -> runtime execution and commit
   -> committed facts/events
   -> adapter projection
@@ -149,7 +149,7 @@ For a new adapter, implement only this first slice:
 
 1. one submit endpoint that produces `RunActivation`;
 2. one stream projection from committed events;
-3. cancellation through `RunIngress` or `LiveRunControl`;
+3. cancellation through `LiveRunControl` for a local active attempt or the durable dispatch control service;
 4. one wait/resume fixture if the protocol supports client tools;
 5. conformance snapshots for request, event, replay, and error mapping.
 

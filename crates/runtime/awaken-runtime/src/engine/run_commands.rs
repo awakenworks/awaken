@@ -16,10 +16,10 @@ impl RunExecutor for Runtime {
         // dispatch. Retain the exact immutable snapshot before the run can await so
         // an in-process resume resolves the same value by id.
         self.register_snapshot(activation.snapshot.clone());
-        // Register the complete attempt-control bundle atomically and always
-        // deregister this exact generation on the way out.
-        let run_id = activation.run_id.clone();
-        let _attempt_tracking = self.track_active_attempt(&run_id, &activation.thread_id, &context);
+        // Physical-attempt ownership is established by the direct driver or the
+        // claimed Worker before entering this executor. Keeping the registration
+        // outside the native loop prevents nested generations and gives ACP/A2A
+        // the same lifecycle boundary.
         run_agent_loop(self, activation, context).await
     }
 }

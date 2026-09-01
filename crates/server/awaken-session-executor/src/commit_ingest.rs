@@ -404,7 +404,7 @@ mod tests {
     async fn cold_durable_context_defers_terminal_delivery_to_guarded_settlement() {
         // Cause/effect graph: C1 terminal truth is committed before a Runtime is
         // resident; C2 the exact dispatch carries a writable Memory binding; C3
-        // the cold context selects DurableRunIngress; C4 guarded settlement is
+        // the cold context selects durable delivery; C4 guarded settlement is
         // fresh/replayed. Effects: E1 cold context construction creates no Memory
         // intent; E2 settlement creates and completes exactly one intent/version;
         // E3 replay remains idempotent. Constraint K1: DispatchWorker/HTTP
@@ -486,7 +486,7 @@ mod tests {
             .read(thread, |slot| slot.runtime.clone())
             .flatten()
             .expect("D1 durable context resident");
-        assert!(ctx.durable, "D1/C3 must use DurableRunIngress");
+        assert!(ctx.delivery.is_durable(), "D1/C3 must use durable delivery");
         let intent_id = format!("memory-extraction:{thread}:{}", run.0);
         assert!(
             host.memory

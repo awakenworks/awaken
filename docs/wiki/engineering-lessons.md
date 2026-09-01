@@ -26,13 +26,13 @@ Lessons are retrieval hooks. The linked owner remains authoritative.
 - Links: guardrails G3 and G4
 - Verification: serde roundtrip and catalog mismatch tests.
 
-## FACT-LESSON-003: Add durability around runtime control
+## FACT-LESSON-003: Keep durable dispatch outside runtime control
 
 - Status: active
-- Owner: [Run ingress](../design/run-ingress-message-delivery.md#run-ingress)
-- Fact: direct runtime control stays simple; durable buffering, routing, claims, and replay are server concerns layered around it.
+- Owner: [Delivery boundary](../design/run-ingress-message-delivery.md#delivery-boundary)
+- Fact: direct attempt control stays simple; durable buffering, routing, claims, and replay are explicit server Dispatch concerns rather than a stronger implementation of one shared interface.
 - Links: guardrails G5 and G6
-- Verification: ingress capability and route tests.
+- Verification: direct-attempt, dispatch conformance, and route tests.
 
 ## FACT-LESSON-004: Compatibility signals are not grants
 

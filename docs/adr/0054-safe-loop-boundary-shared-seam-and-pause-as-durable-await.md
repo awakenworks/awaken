@@ -8,6 +8,11 @@
   tool permission commit ordinary resume tickets and re-enter through durable
   ingress. Unit, worker-recovery, and served-process E2E scenarios cover the
   fresh, pause, permission, resume, replacement, and stale-ticket paths.
+- Amended: 2026-09-01 — Runtime `ActiveAttemptScope` is the sole LiveInbox
+  lifecycle owner. It creates one fresh inbox only for an executor declaring
+  `LiveInput::SafeBoundary`, registers it with the exact attempt generation, and
+  closes it on return. Session and Worker contexts no longer retain or carry inbox
+  entries across attempts; unconsumed live input is explicitly best-effort.
 - Builds on: [ADR-0040](0040-server-durable-ingress-integration.md) (durable
   dispatch / lease-recovery: await = persisted, resumable); the live-inbox
   "drain-at-boundary → commit" discipline (`awaken-runtime-contract::live_inbox`);

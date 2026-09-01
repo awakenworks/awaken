@@ -11,7 +11,6 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -73,11 +72,12 @@ impl WorkerContext {
     #[must_use]
     pub(crate) fn with_context(mut self, mut context: RuntimeRunContext) -> Self {
         let stream_checkpoint = self.context.stream_checkpoint.take();
-        let live_inbox = self.context.live_inbox.take();
         context.commit = None;
         context.reader = None;
         context.stream_checkpoint = stream_checkpoint;
-        context.live_inbox = live_inbox;
+        // A LiveInbox belongs to one physical attempt. Never inherit either the
+        // parent context's inbox or a prior worker attempt's inbox here.
+        context.live_inbox = None;
         context.ownership = None;
         self.context = context;
         self
@@ -106,15 +106,6 @@ impl WorkerContext {
                 activation.effective_model_ref()
             ))
         })
-    }
-
-    /// Provide the per-session live inbox so worker-driven runs drain mid-run
-    /// steer at their boundaries (ADR-0054 P2). The same neutral inbox the offer
-    /// side reaches, so steer/redirect works on the durable path.
-    #[must_use]
-    pub(crate) fn with_live_inbox(mut self, inbox: LiveInbox) -> Self {
-        self.context = self.context.with_live_inbox(inbox);
-        self
     }
 
     /// Provide the committed-history read port so a fresh run continues the
@@ -189,13 +180,12 @@ mod resolve_seam_tests {
     //! (host default) executor, so a single-model deployment is unaffected.
     use std::sync::Arc;
 
-    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-    use awaken_runtime_contract::live_inbox::{LiveInbox, Offer};
+    use awaken_runtime_contract::live_inbox::LiveInbox;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
     use awaken_runtime_contract::runtime_context::{
         AttemptOwnershipError, AttemptOwnershipVerifier,
@@ -289,17 +279,15 @@ mod resolve_seam_tests {
         // checkpoint/commit/read/ownership/live-inbox B. Effects: E1 the built
         // attempt keeps checkpoint A when present and otherwise has no inner
         // checkpoint; E2 commit/read are reinstalled from Worker A; E3 no parent
-        // ownership handle crosses into the child attempt; E4 the Worker-owned
-        // live inbox survives upper-context composition, while a parent inbox
-        // never crosses into a Worker that owns none. Constraint:
-        // `DispatchWorker` later installs the child's outer claim-fenced
-        // checkpoint and ownership adapters; its one inbox is the durable
-        // ingress offer/drain identity.
+        // ownership handle crosses into the child attempt; E4 neither Worker nor
+        // parent context supplies a live inbox. Constraint: `DispatchWorker`
+        // later installs the child's outer claim-fenced checkpoint and ownership;
+        // Runtime's physical-attempt scope alone may create a fresh inbox.
         //
         // | Rule | Worker authority | inherited authority | built attempt |
         // |---|---|---|---|
-        // | R1 | A | absent | A checkpoint/inbox (ordinary root) |
-        // | R2 | A | B | A checkpoint/inbox only (configured root) |
+        // | R1 | A | absent | A checkpoint, no inbox |
+        // | R2 | A | B | A checkpoint, no inbox |
         // | R3 | absent | B | no inner checkpoint/inbox (delegated child) |
         // Decision rule: R1-R3 exhaust worker authority present/absent and
         // inherited authority present/absent without allowing parent replacement.
@@ -308,7 +296,6 @@ mod resolve_seam_tests {
         let worker_reader_port: Arc<dyn CommittedThreadView> = worker_commit.clone();
         let worker_checkpoint: Arc<dyn StreamCheckpointStore> =
             Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
-        let worker_inbox = LiveInbox::new();
         let parent_commit = Arc::new(MemoryCommitCoordinator::new());
         let parent_checkpoint: Arc<dyn StreamCheckpointStore> =
             Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
@@ -324,8 +311,7 @@ mod resolve_seam_tests {
 
         let worker = WorkerContext::new(worker_commit_port.clone())
             .with_reader(worker_reader_port.clone())
-            .with_stream_checkpoint(worker_checkpoint.clone())
-            .with_live_inbox(worker_inbox.clone());
+            .with_stream_checkpoint(worker_checkpoint.clone());
 
         for (rule, inherited) in [("R1", RuntimeRunContext::new()), ("R2", parent_context())] {
             let attempt = worker
@@ -355,20 +341,9 @@ mod resolve_seam_tests {
                 "{rule}/E1"
             );
             assert!(attempt.ownership.is_none(), "{rule}/E3");
-            assert!(matches!(
-                attempt
-                    .live_inbox
-                    .expect("E4 Worker inbox")
-                    .offer(Message::text(
-                        MessageId(format!("{rule}-message")),
-                        Role::User,
-                        rule,
-                    )),
-                Offer::Accepted(_)
-            ));
+            assert!(attempt.live_inbox.is_none(), "{rule}/E4");
             assert!(parent_inbox.list().is_empty(), "{rule}/E4");
         }
-        assert_eq!(worker_inbox.list().len(), 2, "R1+R2/E4");
 
         let child_attempt = WorkerContext::new(worker_commit_port.clone())
             .with_reader(worker_reader_port.clone())

@@ -16,7 +16,7 @@ Owner: [runtime-interface-boundaries.md](../design/runtime-interface-boundaries.
 - Owner: [Role split](../design/runtime-interface-boundaries.md#role-split)
 - Fact: runtime execution, live control, resolution, commit exposure, and delivery are separate roles with distinct authority.
 - Links: guardrails G2, G5, and G14
-- Verification: public API surface tests, `RunIngressCapabilities` tests, and docs review checklist.
+- Verification: public API surface tests, direct-attempt tests, dispatch worker tests, and docs review checklist.
 
 ## FACT-BOUNDARY-002: Durable execution requests are data-only
 
