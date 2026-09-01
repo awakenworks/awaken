@@ -735,3 +735,17 @@
 - Reused the Session cleanup sidecar, root CAS, registered-Worker realization
   control, and ordinary root cleanup; added no Git writer, queue, store, or phase
   machine.
+
+## 2026-09-01 — Converge Managed search and Repository credential custody
+
+- Replaced the Repository-only material ingress name with one provider-neutral
+  Credential material port over the existing Vault WAL/CAS and SecretStore.
+- Kept GitHub token translation in the Managed wire leaf and reused the existing
+  direct/Gateway Repository transports without adding a Git configuration
+  service, credential store, or proxy.
+- Bound Glob and Grep to one capability-relative walker, separated their
+  Anthropic directory policies, and froze logical path rendering at capability
+  resolution so ambient path swaps cannot redirect or disclose output.
+- Integrated the existing CAS-safe terminal Repository publication authority
+  into the same candidate release line; no second publication state machine was
+  introduced.

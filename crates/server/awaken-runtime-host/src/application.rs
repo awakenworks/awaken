@@ -167,6 +167,20 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
         .await
     }
 
+    async fn record_terminal_repository_publication_rejection(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.call(
+            "record_terminal_repository_publication_rejection",
+            self.inner
+                .record_terminal_repository_publication_rejection(session_id, lease, rejection),
+        )
+        .await
+    }
+
     async fn record_terminal_cleanup_completion(
         &self,
         lease: &awaken_session_contract::SessionRealizationLease,

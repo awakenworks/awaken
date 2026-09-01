@@ -396,8 +396,8 @@ async fn grep_caps_output_and_marks_truncation_without_host_tools() {
         .await
         .unwrap()
         .text();
-    assert!(output.contains("[output truncated at 102400 bytes]"));
-    assert!(output.len() <= 102400 + "\n[output truncated at 102400 bytes]".len());
+    assert!(output.ends_with("[output truncated]"));
+    assert!(output.len() <= 102400 + "\n[output truncated]".len());
 }
 
 #[tokio::test]
@@ -455,13 +455,9 @@ async fn glob_invalid_pattern_is_a_typed_error() {
 }
 
 #[tokio::test]
-async fn glob_prunes_noise_caps_results_and_denies_symlink_escape() {
+async fn glob_caps_results_and_denies_symlink_escape() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join(".git")).unwrap();
-    std::fs::create_dir(root.path().join("node_modules")).unwrap();
-    std::fs::write(root.path().join(".git/ignored.rs"), "").unwrap();
-    std::fs::write(root.path().join("node_modules/ignored.rs"), "").unwrap();
     for index in 0..205 {
         std::fs::write(root.path().join(format!("file-{index:03}.rs")), "").unwrap();
     }
@@ -475,9 +471,46 @@ async fn glob_prunes_noise_caps_results_and_denies_symlink_escape() {
         .unwrap()
         .text();
     assert_eq!(output.lines().count(), 200);
-    assert!(!output.contains("node_modules"));
-    assert!(!output.contains("/.git/"));
     assert!(!output.contains("secret.rs"));
+}
+
+#[tokio::test]
+async fn search_purpose_keeps_glob_complete_and_grep_noise_filtered() {
+    // Anthropic conformance cause/effect graph: C1 candidate is below `.git`,
+    // `node_modules`, or an ordinary directory; C2 purpose is Glob/Grep.
+    // E1 Glob returns every matching real entry; E2 Grep searches only the
+    // ordinary entry. The shared walker owns traversal, while `WalkPurpose`
+    // alone owns the documented policy difference.
+    //
+    // | Rule | Candidate | Purpose | Effect |
+    // |---|---|---|---|
+    // | C1 | `.git` | Glob | E1 include |
+    // | C2 | `node_modules` | Glob | E1 include |
+    // | C3 | either noise directory | Grep | E2 prune |
+    // | C4 | ordinary file | Glob/Grep | include/search |
+    let root = tempfile::tempdir().expect("root");
+    std::fs::create_dir(root.path().join(".git")).expect(".git");
+    std::fs::create_dir(root.path().join("node_modules")).expect("node_modules");
+    for relative in [".git/inside.rs", "node_modules/inside.rs", "visible.rs"] {
+        std::fs::write(root.path().join(relative), "needle\n").expect("fixture");
+    }
+
+    let glob = tool_at("glob", root.path())
+        .invoke(call("glob", serde_json::json!({ "pattern": "**/*.rs" })))
+        .await
+        .expect("Glob conformance")
+        .text();
+    assert!(glob.contains("/.git/inside.rs"), "C1/E1: {glob}");
+    assert!(glob.contains("/node_modules/inside.rs"), "C2/E1: {glob}");
+    assert!(glob.contains("/visible.rs"), "C4: {glob}");
+
+    let grep = tool_at("grep", root.path())
+        .invoke(call("grep", serde_json::json!({ "pattern": "needle" })))
+        .await
+        .expect("Grep conformance")
+        .text();
+    assert_eq!(grep.lines().count(), 1, "C3/E2: {grep}");
+    assert!(grep.contains("/visible.rs:1:needle"), "C4: {grep}");
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ pub(super) struct ProjectedToolIndex {
     pub(super) sources: HashSet<(String, String)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct ManagedProjectionCheckpoint {
     /// Runtime message identities consumed by the one prefix reducer. Together
     /// with the lifecycle/budget coordinates below, this is the only state that
@@ -24,18 +24,6 @@ pub(super) struct ManagedProjectionCheckpoint {
     pub(super) lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
     pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
     pub(super) budget_reach_generation: u64,
-}
-
-impl Default for ManagedProjectionCheckpoint {
-    fn default() -> Self {
-        Self {
-            thread_message_ids: Default::default(),
-            child_latest_run_ids: Default::default(),
-            lifecycle_cursor: Default::default(),
-            terminal_cursors: Default::default(),
-            budget_reach_generation: 0,
-        }
-    }
 }
 
 #[derive(Clone, Default)]

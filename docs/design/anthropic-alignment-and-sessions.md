@@ -145,6 +145,25 @@ The versioned `agent_toolset_20260401` has exactly eight built-in names: `bash`,
 credential, egress, usage, and Billing seams; the Managed adapter only selects
 it through the official toolset policy.
 
+`glob` and `grep` share one capability-relative walker rooted in the
+`ConfinedPath` directory handle. The compatibility floor follows the published
+Go toolset: Glob applies `*`, `?`, character classes, and segment-level `**` to
+all real files and directories, including entries below `.git` and
+`node_modules`, visits at most 50,000 entries, returns at most 200 matches, and
+orders newest first. Grep alone prunes `.git`, `node_modules`, hidden and ignored
+paths, skips symlinks, binary inputs, and files above 8 MiB, and caps output at
+100 KiB with the exact `[output truncated]` notice. Its deterministic in-process
+path intentionally implements the ordinary ripgrep-visible behavior without
+making compatibility depend on an executable found on host `PATH`.
+
+Trusted absolute patterns below the Workdir or a configured logical projection,
+brace alternatives, and `@(...)` alternatives are Awaken-compatible extensions;
+they cannot broaden the opened capability and are tested separately from the
+required compatibility rules. The logical output base is frozen when the
+directory capability is opened. Traversal and rendering never canonicalize an
+ambient pathname again, so a later projection-path swap can neither redirect
+bytes nor disclose the provider's physical host path.
+
 Multiagent authoring and execution continue through the one `AgentConfig` roster
 and Session thread/event authority. The Managed roster admits only Agent
 references and the official self reference. Internal advisor targets remain a
