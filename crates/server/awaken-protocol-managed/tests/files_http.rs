@@ -45,14 +45,24 @@ fn multipart_file(filename: &str, content: &[u8]) -> Vec<u8> {
 }
 
 async fn upload(router: &Router, filename: &str, content: &[u8]) -> (StatusCode, Value) {
+    upload_with_key(router, filename, content, None).await
+}
+
+async fn upload_with_key(
+    router: &Router,
+    filename: &str,
+    content: &[u8],
+    idempotency_key: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder().method("POST").uri("/v1/files").header(
+        "content-type",
+        format!("multipart/form-data; boundary={BOUNDARY}"),
+    );
+    if let Some(key) = idempotency_key {
+        request = request.header("idempotency-key", key);
+    }
     let req = in_test_workspace(
-        Request::builder()
-            .method("POST")
-            .uri("/v1/files")
-            .header(
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            )
+        request
             .body(Body::from(multipart_file(filename, content)))
             .unwrap(),
     );
@@ -235,6 +245,88 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
         StatusCode::OK,
         "two logical Files sharing one blob have independent delete intents"
     );
+}
+
+// Test design: idempotent_upload_replays_one_effect_and_rejects_key_drift
+// Cause/effect graph: C1 one valid key + exact multipart effect -> one logical File;
+// C2 the same key + exact effect -> the same public receipt without a second File;
+// C3 the same key + changed bytes or filename -> 409 before a second catalog effect;
+// C4 no key -> the existing independent-upload behavior remains unchanged.
+// Decision table: C1=insert, C2=replay, C3=conflict, C4=distinct logical Files.
+#[tokio::test]
+async fn idempotent_upload_replays_one_effect_and_rejects_key_drift() {
+    let router = router();
+    let key = "workspace-agents:resource-upload:command-1";
+
+    let (status, first) = upload_with_key(&router, "brief.txt", b"brief", Some(key)).await;
+    assert_eq!(status, StatusCode::OK, "C1 {first}");
+    let (status, replay) = upload_with_key(&router, "brief.txt", b"brief", Some(key)).await;
+    assert_eq!(status, StatusCode::OK, "C2 {replay}");
+    assert_eq!(replay["id"], first["id"], "C2");
+
+    for (filename, bytes) in [
+        ("brief.txt", b"changed".as_slice()),
+        ("other.txt", b"brief"),
+    ] {
+        let (status, conflict) = upload_with_key(&router, filename, bytes, Some(key)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "C3 {conflict}");
+        assert_eq!(conflict["type"], "error", "C3");
+        assert_eq!(
+            conflict["error"]["message"],
+            "Idempotency-Key was already used for a different File upload",
+            "C3 must not echo the operation key"
+        );
+    }
+
+    let (status, page) = get(&router, "/v1/files").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: Value = serde_json::from_slice(&page).unwrap();
+    assert_eq!(page["data"].as_array().unwrap().len(), 1, "C2/C3");
+}
+
+// Test design: upload_idempotency_header_is_bounded_and_expiry_is_unambiguous
+// Cause/effect graph: invalid/oversized keys are rejected before persistence; relative expiry plus
+// a replay key is rejected because its wall-clock-derived `expires_at` is not a stable request
+// fingerprint. This keeps every accepted key bound to exactly one reproducible File effect.
+#[tokio::test]
+async fn upload_idempotency_header_is_bounded_and_expiry_is_unambiguous() {
+    let router = router();
+    assert_eq!(
+        upload_with_key(&router, "bad.txt", b"bad", Some(&"x".repeat(256)))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    let mut body = multipart_file("expiry.txt", b"expiry");
+    let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
+    body.truncate(body.len() - closing.len());
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"expires_in_seconds\"\r\n\r\n3600\r\n",
+    );
+    body.extend_from_slice(&closing);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/files?beta=true")
+        .header("idempotency-key", "expiry-command")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    assert_eq!(
+        router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    let (status, page) = get(&router, "/v1/files").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: Value = serde_json::from_slice(&page).unwrap();
+    assert!(page["data"].as_array().unwrap().is_empty());
 }
 
 // Test design: ga_files_projection_and_query_only_selector_match_official_sdk

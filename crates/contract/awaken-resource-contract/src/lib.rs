@@ -187,8 +187,10 @@ pub struct FileRecord {
     pub scope_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logical_path: Option<String>,
-    /// Stable internal idempotency key for Sandbox-output harvest. Uploads have
-    /// no key because every upload creates an independent logical File.
+    /// Stable internal idempotency key for one logical File creation command.
+    /// Public uploads may supply the standard `Idempotency-Key` header while
+    /// Runtime harvest derives a content-addressed key. The value is never
+    /// projected by a public Files response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harvest_key: Option<String>,
     /// Optional terminal-cleanup operation which durably incorporated this
@@ -314,6 +316,16 @@ pub trait FileApplicationService: Send + Sync {
         ))
     }
 
+    async fn create_uploaded_file_with_expiry_and_idempotency(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        expires_at: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> Result<FileRecord, ResourcePurgeError>;
+
     async fn create_uploaded_file_with_expiry(
         &self,
         workspace_id: &str,
@@ -321,7 +333,17 @@ pub trait FileApplicationService: Send + Sync {
         mime_type: String,
         bytes: &[u8],
         expires_at: Option<String>,
-    ) -> Result<FileRecord, ResourcePurgeError>;
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        self.create_uploaded_file_with_expiry_and_idempotency(
+            workspace_id,
+            filename,
+            mime_type,
+            bytes,
+            expires_at,
+            None,
+        )
+        .await
+    }
 
     async fn create_uploaded_file(
         &self,

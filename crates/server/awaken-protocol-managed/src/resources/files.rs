@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::common::headers::ManagedCapability;
+use crate::common::headers::{ManagedCapability, parse_idempotency_key_header};
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
@@ -254,6 +254,10 @@ async fn upload_file(
         Ok(surface) => surface,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
+    let idempotency_key = match parse_idempotency_key_header(&headers) {
+        Ok(key) => key,
+        Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
     let mut upload: Option<(String, String, Vec<u8>)> = None;
     let mut expiry_seconds = None;
     while let Some(field) = match multipart.0.next_field().await {
@@ -315,8 +319,21 @@ async fn upload_file(
         (chrono::Utc::now() + chrono::Duration::seconds(expiry.get() as i64))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     });
+    if idempotency_key.is_some() && expires_at.is_some() {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Idempotency-Key cannot be combined with expires_in_seconds",
+        );
+    }
     match files
-        .create_uploaded_file_with_expiry(&workspace, filename, mime_type, &bytes, expires_at)
+        .create_uploaded_file_with_expiry_and_idempotency(
+            &workspace,
+            filename,
+            mime_type,
+            &bytes,
+            expires_at,
+            idempotency_key,
+        )
         .await
     {
         Ok(record) => match surface {
@@ -331,6 +348,10 @@ async fn upload_file(
             }
         },
         Err(ResourcePurgeError::Invalid(message)) => error(StatusCode::BAD_REQUEST, message),
+        Err(ResourcePurgeError::IdempotencyConflict(_)) => error(
+            StatusCode::CONFLICT,
+            "Idempotency-Key was already used for a different File upload",
+        ),
         Err(error_value) => error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string()),
     }
 }
