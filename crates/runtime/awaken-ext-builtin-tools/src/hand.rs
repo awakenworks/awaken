@@ -26,6 +26,7 @@ const BASH_OUTPUT_LIMIT: usize = 100 * 1024;
 const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const GREP_OUTPUT_LIMIT: usize = 100 * 1024;
 const GREP_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const GREP_TRUNCATION_NOTICE: &str = "[output truncated]";
 const GLOB_RESULT_LIMIT: usize = 200;
 const GLOB_EXPANSION_LIMIT: usize = 256;
 const WALK_MAX_DEPTH: usize = 40;
@@ -163,8 +164,10 @@ impl FileContext {
             .to_path_buf();
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())
             .map_err(|error| file_error("path", input, &error))?;
+        let logical_absolute = self.logical_path_at_resolution(&resolved);
         Ok(ConfinedPath {
             absolute: resolved,
+            logical_absolute,
             relative,
             directory: Arc::new(directory),
         })
@@ -224,7 +227,7 @@ impl FileContext {
     /// Reverse only a trusted provider projection for model-facing output.
     /// Namespace/container mappings are normally identity mappings; Seatbelt
     /// and local adapters must not leak their physical host path through glob.
-    fn logical_path(&self, physical: &Path) -> PathBuf {
+    fn logical_path_at_resolution(&self, physical: &Path) -> PathBuf {
         self.0
             .path_projections
             .iter()
@@ -249,11 +252,18 @@ impl FileContext {
 #[derive(Clone)]
 struct ConfinedPath {
     absolute: PathBuf,
+    /// Model-visible root frozen at the same authorization boundary as the
+    /// directory handle. Rendering never canonicalizes an ambient path again.
+    logical_absolute: PathBuf,
     relative: PathBuf,
     directory: Arc<cap_std::fs::Dir>,
 }
 
 impl ConfinedPath {
+    fn logical_path(&self, search_relative: &Path) -> PathBuf {
+        lexical_normalize(&self.logical_absolute.join(search_relative))
+    }
+
     fn metadata(&self) -> std::io::Result<cap_std::fs::Metadata> {
         self.directory.metadata(&self.relative)
     }
@@ -548,10 +558,11 @@ impl Tool for GlobTool {
                     .any(|pattern| pattern.matches(&entry.search_relative))
             })
             .map(|entry| {
-                let physical = root.absolute.join(&entry.search_relative);
                 (
                     entry.modified,
-                    self.0.logical_path(&physical).display().to_string(),
+                    root.logical_path(&entry.search_relative)
+                        .display()
+                        .to_string(),
                 )
             })
             .collect::<Vec<_>>();
@@ -603,7 +614,9 @@ fn collect_confined_entries(
     let metadata = root
         .directory
         .symlink_metadata(capability_root)
-        .map_err(|error| file_error("walk", &root.absolute.display().to_string(), &error))?;
+        .map_err(|error| {
+            file_error("walk", &root.logical_absolute.display().to_string(), &error)
+        })?;
     if metadata.file_type().is_symlink() {
         return Ok(Vec::new());
     }
@@ -662,7 +675,7 @@ fn collect_confined_directory(
             ignore_stack.truncate(inherited_ignore_count);
             return Err(file_error(
                 "walk",
-                &root.absolute.join(search_directory).display().to_string(),
+                &root.logical_path(search_directory).display().to_string(),
                 &error,
             ));
         }
@@ -675,7 +688,7 @@ fn collect_confined_directory(
         }
         *remaining -= 1;
         let name = entry.file_name();
-        if matches!(name.to_str(), Some(".git" | "node_modules")) {
+        if purpose == WalkPurpose::Grep && matches!(name.to_str(), Some(".git" | "node_modules")) {
             continue;
         }
         if purpose == WalkPurpose::Grep && name.to_str().is_some_and(|name| name.starts_with('.')) {
@@ -984,8 +997,7 @@ impl Tool for GrepTool {
             {
                 continue;
             }
-            let path = root.absolute.join(&file.search_relative);
-            let logical_path = self.0.logical_path(&path);
+            let logical_path = root.logical_path(&file.search_relative);
             for (index, line) in content.split('\n').enumerate() {
                 if re.is_match(line) {
                     let hit = if root_is_file {
@@ -994,7 +1006,7 @@ impl Tool for GrepTool {
                         format!("{}:{}:{}", logical_path.display(), index + 1, line)
                     };
                     if output_bytes + hit.len() + 1 > GREP_OUTPUT_LIMIT {
-                        hits.push(format!("[output truncated at {GREP_OUTPUT_LIMIT} bytes]"));
+                        hits.push(GREP_TRUNCATION_NOTICE.to_owned());
                         return Ok(hits.join("\n"));
                     }
                     output_bytes += hit.len() + 1;
@@ -1899,6 +1911,38 @@ mod write_tests {
                 "{rule}/E1+E2"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_rendering_keeps_the_authorized_logical_projection_after_path_swap() {
+        use std::os::unix::fs::symlink;
+
+        // Rendering cause/effect graph: C1 `/managed` is mapped to one trusted
+        // physical root; C2 resolution captures its capability and logical
+        // base; C3 the ambient physical path is replaced by an escaping
+        // symlink. E1 traversal still reads the captured tree; E2 model-visible
+        // output remains `/managed/...`; E3 no physical host path is exposed.
+        // Decision rule P1=C1+C2+C3 => E1+E2+E3.
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let physical = parent.path().join("physical");
+        let held = parent.path().join("held");
+        std::fs::create_dir(&physical).unwrap();
+        std::fs::write(physical.join("inside.txt"), "inside").unwrap();
+        std::fs::write(outside.path().join("outside.txt"), "outside").unwrap();
+        let context = HandToolContext::new(parent.path().join("workdir"))
+            .with_path_projection("/managed", &physical);
+        let confined = FileContext::new(&context).resolve("/managed").unwrap();
+
+        std::fs::rename(&physical, &held).unwrap();
+        symlink(outside.path(), &physical).unwrap();
+        let entries = collect_confined_entries(&confined, WalkPurpose::Glob).unwrap();
+        assert_eq!(entries.len(), 1, "P1/E1");
+        let visible = confined.logical_path(&entries[0].search_relative);
+        assert_eq!(visible, Path::new("/managed/inside.txt"), "P1/E2");
+        assert!(!visible.starts_with(parent.path()), "P1/E3");
+        assert!(!visible.starts_with(outside.path()), "P1/E3");
     }
 
     #[tokio::test]
