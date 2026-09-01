@@ -6,6 +6,7 @@ export { Drawer, } from "./overlays/drawer.js";
 export { AlertDialog, } from "./overlays/alert-dialog.js";
 export { ConfirmProvider, useConfirm, } from "./overlays/confirm-provider.js";
 export { MenuPopover, Popover, } from "./overlays/popover.js";
+export { SuiteSwitcher, } from "./navigation/suite-switcher.js";
 export { ToastProvider, useToast, } from "./feedback/toast.js";
 export { Avatar, AvatarGroup, initialsOf, } from "./identity/avatar.js";
 export { Identity, IdentityCard, } from "./identity/identity.js";

@@ -27,6 +27,17 @@ describe("theme browser integration", () => {
     expect(html).toMatch(/href="\/favicon\.svg"/);
   });
 
+  it("delegates suite interaction to the one shared component", () => {
+    // Duplication boundary: the product supplies copy, icons and exact
+    // Cloud-projected URLs, while @awaken/ui owns menu DOM and keyboard/focus
+    // behavior. A local `.suite-menu` recipe would reintroduce a second owner.
+    expect(chrome).toMatch(/import \{[^}]*SuiteSwitcher[^}]*\} from "@awaken\/ui"/s);
+    expect(chrome).toContain("/usage-billing");
+    expect(chrome).toContain("/settings");
+    expect(chrome).toContain("/logout");
+    expect(base).not.toMatch(/\.suite-menu/);
+  });
+
   it("keeps browser-provided controls in sync with the explicit theme", () => {
     expect(css).toMatch(/:root,\s*\[data-theme="light"\]\s*\{[^}]*color-scheme:\s*light/s);
     expect(css).toMatch(/\[data-theme="dark"\]\s*\{[^}]*color-scheme:\s*dark/s);

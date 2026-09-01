@@ -1,6 +1,6 @@
-import { MenuPopover } from "@awaken/ui";
+import { MenuPopover, SuiteSwitcher } from "@awaken/ui";
 import { useApp } from "../../lib/app-state";
-import { suiteHubUrl, useSuiteNavigation } from "../../lib/suite-navigation";
+import { suiteCloudUrl, suiteHubUrl, suiteProductEntryUrl, useSuiteNavigation } from "../../lib/suite-navigation";
 
 export function openPalette() {
   window.dispatchEvent(new CustomEvent("awaken:open-palette"));
@@ -32,32 +32,28 @@ export default function TopChrome() {
   return (
     <header className="topbar">
       {hubUrl ? (
-        <MenuPopover
+        <SuiteSwitcher
           aria-label={app.t("Awaken products", "Awaken 产品")}
-          content={(
-            <div className="suite-menu">
-              <div className="suite-menu__current">
-                <span className="suite-menu__mark"><AwakenMark /></span>
-                <span><small>{app.t("Current product", "当前产品")}</small><strong>Awaken Agents</strong></span>
-              </div>
-              <a href={hubUrl} role="menuitem">
-                <span className="suite-grid-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></svg></span>
-                <span><strong>{app.t("All products", "所有产品")}</strong><small>{app.t("Switch products, manage usage and billing", "切换产品、管理用量与账单")}</small></span>
-                <span aria-hidden="true">→</span>
-              </a>
-            </div>
-          )}
+          currentLabel={app.t("Current product and Workspace", "当前产品与工作区")}
+          destinations={[
+            { id: "products", label: app.t("All products and Workspaces", "所有产品与工作区"), href: suiteCloudUrl(hubUrl, "/products") },
+            { id: "billing", label: app.t("Usage & Billing", "用量与账单"), href: suiteCloudUrl(hubUrl, "/usage-billing") },
+            { id: "settings", label: app.t("Cloud settings", "Cloud 设置"), href: suiteCloudUrl(hubUrl, "/settings") },
+          ]}
           placement="bottom-start"
-        >
-          <button className="brand-anchor brand-anchor--switcher" type="button">
+          products={[
+            { id: "awaken", label: "Awaken Agents", description: app.workspaceName, icon: <AwakenMark />, isCurrent: true },
+            { id: "flow", label: "Awaken Flow", description: app.t("Plan work and coordinate outcomes", "规划工作并协同成果"), href: suiteProductEntryUrl(hubUrl, "flow"), icon: <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h6v6H5zM13 4h6v6h-6zM5 12h6v8H5zM13 12h6v8h-6z" /></svg> },
+          ]}
+          trigger={<button className="brand-anchor brand-anchor--switcher" type="button">
             <AwakenMark />
             <span className="brand-copy">
               <strong>Awaken</strong>
               <small>Agents</small>
             </span>
             <span className="brand-chevron" aria-hidden="true">⌄</span>
-          </button>
-        </MenuPopover>
+          </button>}
+        />
       ) : (
         <div className="brand-anchor" aria-label="Awaken Agents">
           <AwakenMark />
@@ -93,6 +89,7 @@ export default function TopChrome() {
             <strong>{app.userName}</strong>
             <span>{app.organizationName}</span>
             <span className="mono mut" title={app.workspaceId}>{app.workspaceName}</span>
+            {hubUrl ? <a href={suiteCloudUrl(hubUrl, "/logout")} role="menuitem">{app.t("Sign out of Awaken Cloud", "退出 Awaken Cloud")}</a> : null}
           </div>}
           placement="bottom-end"
         >
