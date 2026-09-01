@@ -134,7 +134,7 @@ mod tests {
         let changed = git_bytes(Some(&agent), &["bundle", "create", "-", "--all"]).unwrap();
         let plan = pc::RepositoryRealizationPlan {
             repository_id: "repo-1".into(),
-            mount_path: "repo".into(),
+            mount_path: "/workspace/repo".into(),
             source_remote_url: remote.to_string_lossy().into_owned(),
             transport_url: remote.to_string_lossy().into_owned(),
             initial_branch: None,
