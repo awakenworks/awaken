@@ -275,6 +275,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
             "managed Session aggregate revision does not match its index",
         )));
     }
+    aggregate.resources.compact_settled_activations();
     aggregate.revision = revision;
     verify_aggregate(&aggregate)?;
     Ok(aggregate)
@@ -283,6 +284,10 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
 #[cfg(test)]
 mod tests {
     use awaken_session_contract::ManagedSessionRepository as _;
+    use awaken_session_contract::resource_plane::{
+        BindingId, FileId, InputResourceId, ResourceAccess,
+    };
+    use awaken_session_contract::{ActivationState, SessionResourceActivation};
     use rusqlite::params;
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
@@ -374,6 +379,56 @@ mod tests {
             )
             .unwrap();
         assert!(repo.get("drifted-row").await.is_err(), "C2");
+    }
+
+    /// Persisted normalization cause/effect table: C1 a valid historical row
+    /// contains many superseded terminal Resource activations; C2 its root/index
+    /// revision still match. Effects: E1 decode retains only the latest terminal
+    /// diagnostic generation; E2 normalization emits a canonical replacement;
+    /// E3 a second normalization is a no-op. Rule N1=C1+C2=>E1+E2+E3.
+    #[test]
+    fn historical_terminal_activation_growth_normalizes_once_on_read() {
+        let mut session = sample("resource-history-normalization");
+        session.resources.revision = 128;
+        session.resources.activations = (1..=128)
+            .map(|revision| SessionResourceActivation {
+                activation_id: format!("activation-{revision}"),
+                session_id: session.session_id.clone(),
+                revision,
+                binding_id: BindingId::from(format!("binding-{revision}")),
+                resource_id: InputResourceId::File(FileId::from(format!("file-{revision}"))),
+                access: ResourceAccess::ReadOnly,
+                state: ActivationState::Released,
+                attempts: 1,
+                lease_expires_at_unix_ms: None,
+                last_error: None,
+            })
+            .collect();
+        let raw = super::encode(&session).expect("N1 historical row");
+        let normalized = super::normalize_published_row(
+            &session.session_id,
+            Some(raw),
+            i64::try_from(session.revision.0).unwrap(),
+        )
+        .expect("N1 normalize")
+        .expect("N1/E2 replacement");
+        let decoded = super::decode(super::EncodedSessionRow {
+            aggregate_json: normalized.clone(),
+            revision: i64::try_from(session.revision.0).unwrap(),
+        })
+        .expect("N1/E1 decode");
+        assert_eq!(decoded.resources.activations.len(), 1, "N1/E1");
+        assert_eq!(decoded.resources.activations[0].revision, 128, "N1/E1");
+        assert!(
+            super::normalize_published_row(
+                &session.session_id,
+                Some(normalized),
+                i64::try_from(session.revision.0).unwrap(),
+            )
+            .expect("N1 renormalize")
+            .is_none(),
+            "N1/E3"
+        );
     }
 
     #[test]

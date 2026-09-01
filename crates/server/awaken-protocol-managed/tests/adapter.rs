@@ -2405,9 +2405,10 @@ async fn hitl_await_confirm_resume() {
     // The retained confirmation and staged reply share one atomic source
     // coordinate; the canonical phase order keeps the inbound receipt before
     // the Run's Resumed edge and output.
-    // This narrow adapter fixture intentionally has no Host settlement observer,
-    // so H6 asserts Thread terminal truth only; the official SDK E2E and Host
-    // decision table own aggregate Session activity/usage settlement.
+    // This narrow adapter fixture intentionally has no Host settlement observer.
+    // The Session application nevertheless owns the durable aggregate activity
+    // interval, so the resumed terminal Thread closes with the canonical usage
+    // and Session-idle suffix exactly once.
     // Transport-retry extension of H6: C1 two HTTP callers race with one new
     // key/body while the exact tool ticket is pending => E1 append once and
     // return the same receipt to both; C2 the same
@@ -2466,7 +2467,9 @@ async fn hitl_await_confirm_resume() {
             "session.thread_status_running",
             "agent.tool_result",
             "agent.message",
-            "session.thread_status_idle"
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle"
         ]
     );
     let last_idle = list["data"]

@@ -548,6 +548,19 @@ pub trait SessionRuntime: Send + Sync {
         ))
     }
 
+    /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
+    /// an already-installed realization fence. This is the only lease-only
+    /// Runtime mutation; it deliberately carries no projection or phase action.
+    async fn renew_session_realization_lease(
+        &self,
+        _thread: &str,
+        _lease: crate::SessionRealizationLease,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "runtime does not implement Session realization lease renewal",
+        ))
+    }
+
     /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(&self, _sink: Arc<dyn SessionEnvironmentBindingSink>) {}
 

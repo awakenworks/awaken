@@ -26,18 +26,15 @@ pub(crate) fn session_token_sha256(token: &RedactedString) -> String {
 
 impl SqliteWorkQueue {
     pub(super) fn claim_inner(
-        &self,
+        conn: &mut Connection,
         env_id: &str,
         lease_owner: &str,
-        poller_id: &str,
         now_ms: u64,
         age_ms: Option<u64>,
         mint_session_access: bool,
     ) -> Result<Option<ClaimedWork>, WorkQueueError> {
-        self.book.record_poll(env_id, poller_id, now_ms);
         if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
-            let mut guard = self.conn.lock().map_err(storage)?;
-            let tx = guard
+            let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
             let cutoff = db_millis(now_ms - age);
@@ -49,11 +46,10 @@ impl SqliteWorkQueue {
             .map_err(storage)?;
             tx.commit().map_err(storage)?;
         }
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
+        let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        self.reclaim_lapsed(&tx, env_id, now_ms)?;
+        Self::reclaim_lapsed(&tx, env_id, now_ms)?;
         let active: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
@@ -124,14 +120,13 @@ impl SqliteWorkQueue {
     }
 
     pub(super) fn ack_inner(
-        &self,
+        conn: &mut Connection,
         env_id: &str,
         wid: &str,
         worker_id: &str,
         expected_epoch: Option<u64>,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
+        let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         let Some(current) = Self::owned(&tx, env_id, wid)? else {
@@ -154,7 +149,7 @@ impl SqliteWorkQueue {
     }
 
     pub(super) fn heartbeat_inner(
-        &self,
+        conn: &mut Connection,
         env_id: &str,
         wid: &str,
         worker_id: &str,
@@ -162,8 +157,7 @@ impl SqliteWorkQueue {
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
+        let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         let Some(current) = Self::owned(&tx, env_id, wid)? else {
@@ -206,14 +200,13 @@ impl SqliteWorkQueue {
     }
 
     pub(super) fn stop_inner(
-        &self,
+        conn: &mut Connection,
         env_id: &str,
         wid: &str,
         worker_id: &str,
         expected_epoch: Option<u64>,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
+        let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         if Self::owned(&tx, env_id, wid)?.is_none() {

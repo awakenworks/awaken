@@ -492,16 +492,25 @@ impl WorkerControlClient {
             .await
     }
 
-    pub async fn begin_session_realization(
+    pub async fn renew_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_session_contract::BeginSessionRealization,
+        command: awaken_session_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationLease,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
-        self.realization_phase("/v1/worker/session/realization/begin", identity, command)
-            .await
+        let body = self
+            .realization_response(
+                "/v1/worker/session/realization/renew",
+                json!({ "identity": identity, "command": command }),
+            )
+            .await?;
+        serde_json::from_value(body.get("lease").cloned().unwrap_or(Value::Null)).map_err(|error| {
+            awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                "Session realization lease decode: {error}"
+            ))
+        })
     }
 
     pub async fn acknowledge_session_realization(

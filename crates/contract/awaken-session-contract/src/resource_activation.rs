@@ -54,6 +54,10 @@ pub struct SessionResourceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<ResolvedSessionResources>,
     #[serde(default)]
+    /// Unsettled physical-effect authority plus the latest diagnostic generation
+    /// for each terminal outcome. Older Released/Failed generations are not an
+    /// audit log: root cleanup receipts own terminal proof, so retaining every
+    /// replacement here would duplicate history and make recovery cost unbounded.
     pub activations: Vec<SessionResourceActivation>,
     /// Exact removed Repository inputs whose Session-owned Registry/Vault
     /// participants still require retirement. The intent is created atomically
@@ -98,6 +102,38 @@ pub enum ResourceActivationError {
 }
 
 impl SessionResourceState {
+    /// Remove superseded terminal diagnostics without touching any activation
+    /// that can still authorize or require a physical effect.
+    ///
+    /// The latest Released and latest Failed generations remain independently
+    /// visible. Keeping them by state preserves the most recent success and
+    /// failure diagnostics while bounding settled history to at most two
+    /// manifest generations.
+    pub fn compact_settled_activations(&mut self) -> bool {
+        let latest_released = self
+            .activations
+            .iter()
+            .filter(|activation| activation.state == ActivationState::Released)
+            .map(|activation| activation.revision)
+            .max();
+        let latest_failed = self
+            .activations
+            .iter()
+            .filter(|activation| activation.state == ActivationState::Failed)
+            .map(|activation| activation.revision)
+            .max();
+        let before = self.activations.len();
+        self.activations
+            .retain(|activation| match activation.state {
+                ActivationState::Prepared
+                | ActivationState::Active
+                | ActivationState::Releasing => true,
+                ActivationState::Released => Some(activation.revision) == latest_released,
+                ActivationState::Failed => Some(activation.revision) == latest_failed,
+            });
+        self.activations.len() != before
+    }
+
     /// The manifest requested by the Session. While a replacement is pending,
     /// `active` remains the installed Runtime generation and `pending` is the
     /// sole desired generation accepted by subsequent pre-attempt commands.
@@ -256,6 +292,7 @@ impl SessionResourceState {
             }
         }
         self.active = desired;
+        self.compact_settled_activations();
         Ok(())
     }
 
@@ -322,6 +359,7 @@ impl SessionResourceState {
                 _ => {}
             }
         }
+        self.compact_settled_activations();
         Ok(())
     }
 
@@ -360,6 +398,7 @@ impl SessionResourceState {
                 activation.state = ActivationState::Released;
             }
         }
+        self.compact_settled_activations();
     }
 
     /// A terminal Session was torn down while a replacement was pending. The
@@ -382,6 +421,7 @@ impl SessionResourceState {
                 ActivationState::Released | ActivationState::Failed => {}
             }
         }
+        self.compact_settled_activations();
     }
 
     #[must_use]
@@ -863,5 +903,67 @@ mod tests {
             "T2/E1"
         );
         assert_eq!(state.activations[1].state, ActivationState::Failed, "T2/E2");
+    }
+
+    /// Settled-history cause/effect graph: C1 hundreds of successful manifest
+    /// replacements create superseded Released generations; C2 a later rollback
+    /// creates Failed diagnostics; C3 Active/Prepared/Releasing records still
+    /// own effects. Effects: E1 all C3 records survive; E2 only the latest
+    /// Released generation survives; E3 only the latest Failed generation
+    /// survives; E4 revision, active manifest, and retention references are
+    /// unchanged; E5 applying compaction again is an exact no-op.
+    ///
+    /// | Rule | Nonterminal | Released history | Failed history | Effect |
+    /// |---|---|---|---|---|
+    /// | H1 | active | 400 generations | none | E1 + E2 + E4 |
+    /// | H2 | active | retained latest | new failure | E1 + E2 + E3 + E4 |
+    /// | H3 | unchanged | compacted | compacted | E5 |
+    #[test]
+    fn settled_activation_history_is_bounded_without_weakening_authority() {
+        let mut state = SessionResourceState::default();
+        for revision in 0..400 {
+            state
+                .prepare("session-history", manifest(&format!("success-{revision}")))
+                .unwrap();
+            state.start_attempt().unwrap();
+            state.commit().unwrap();
+        }
+        assert_eq!(state.revision, 400, "H1/E4");
+        assert_eq!(state.activations.len(), 2, "H1/E1-E2");
+        assert_eq!(
+            state
+                .activations
+                .iter()
+                .filter(|activation| activation.state == ActivationState::Released)
+                .map(|activation| activation.revision)
+                .collect::<Vec<_>>(),
+            [399],
+            "H1/E2"
+        );
+        assert_eq!(state.active, manifest("success-399"), "H1/E4");
+        assert_eq!(
+            state.resource_references().inputs(),
+            manifest("success-399").inputs(),
+            "H1/E4"
+        );
+
+        state
+            .prepare("session-history", manifest("failed-400"))
+            .unwrap();
+        state.start_attempt().unwrap();
+        state.rollback("injected failure").unwrap();
+        assert_eq!(state.revision, 401, "H2/E4");
+        assert_eq!(state.activations.len(), 3, "H2/E1-E3");
+        assert!(
+            state.activations.iter().any(|activation| {
+                activation.state == ActivationState::Failed
+                    && activation.revision == 401
+                    && activation.last_error.as_deref() == Some("injected failure")
+            }),
+            "H2/E3"
+        );
+        let compacted = state.clone();
+        assert!(!state.compact_settled_activations(), "H3/E5");
+        assert_eq!(state, compacted, "H3/E5");
     }
 }

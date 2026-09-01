@@ -1034,6 +1034,36 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
+    async fn renew_session_realization_lease(
+        &self,
+        thread: &str,
+        lease: awaken_session_contract::SessionRealizationLease,
+    ) -> Result<(), RunError> {
+        let current = self
+            .host
+            .session_slots
+            .read(thread, |slot| slot.realization_lease.clone())
+            .flatten()
+            .ok_or_else(|| {
+                RunError::classified(
+                    "session_realization_lease_missing",
+                    "cannot renew a Session realization lease that is not installed",
+                )
+            })?;
+        if current.owner != lease.owner
+            || current.runtime_incarnation != lease.runtime_incarnation
+            || current.epoch != lease.epoch
+            || lease.expires_at_unix_ms < current.expires_at_unix_ms
+        {
+            return Err(RunError::classified(
+                "session_realization_lease_conflict",
+                "Session realization renewal is not a monotonic successor of the installed fence",
+            ));
+        }
+        self.host.install_session_realization_lease(thread, lease);
+        Ok(())
+    }
+
     fn install_environment_binding_sink(
         &self,
         sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,

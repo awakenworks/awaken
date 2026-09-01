@@ -122,8 +122,11 @@ pub(crate) struct SessionCtx {
     /// Serializes Outcome commands without holding ordinary Session position
     /// state across Worker/Judge IO. `interrupt` never takes this lock.
     pub(crate) outcome: tokio::sync::Mutex<()>,
-    /// One externally executing Run at a time on the Worker Thread.
-    pub(crate) execution: tokio::sync::Mutex<()>,
+    /// Orders same-process Host commands that perform multi-read admission
+    /// checks before entering Direct or durable Run ingress. It is not physical
+    /// execution authority: Direct ingress owns its per-Thread gate and durable
+    /// ingress owns the persisted physical-attempt slot across replicas.
+    pub(crate) command: tokio::sync::Mutex<()>,
 }
 
 impl SessionCtx {
@@ -146,9 +149,9 @@ impl SessionCtx {
     }
 
     /// A run context carrying a fresh cancellation token, registered on this ctx so
-    /// a concurrent `interrupt` can cancel the run it drives. Only one run is in
-    /// flight per thread at a time (the `execution` lock serializes them), so the slot
-    /// always holds the current run's token.
+    /// a concurrent `interrupt` can cancel the run it drives. The ingress owns
+    /// per-Thread execution exclusivity; `command` only keeps Host admission and
+    /// this process-local control slot ordered around that ingress boundary.
     pub(crate) fn context(&self) -> RuntimeRunContext {
         let token = CancellationToken::new();
         *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());

@@ -4,6 +4,7 @@
 //! service host remains the sole owner of cancellation, readiness, and bounded join.
 
 use std::future::Future;
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,6 +12,25 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
+
+/// Run a service future on the canonical Awaken process runtime.
+///
+/// Managed execution crosses durable ingress, materialization, connector, and
+/// child-Run stacks in one poll. Tokio's default 2 MiB Worker stack is below the
+/// verified debug/recovery requirement, so every service launcher shares this
+/// one explicit process-level budget rather than an environment workaround.
+pub fn block_on_service<F: Future>(future: F) -> F::Output {
+    const SERVICE_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
+    const { assert!(SERVICE_WORKER_STACK_BYTES >= 4 * 1024 * 1024) };
+    const { assert!(SERVICE_WORKER_STACK_BYTES.is_multiple_of(mem::size_of::<usize>())) };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("awaken-runtime")
+        .thread_stack_size(SERVICE_WORKER_STACK_BYTES)
+        .build()
+        .expect("build Awaken service runtime")
+        .block_on(future)
+}
 
 /// The three product service assemblies that share this lifecycle owner.
 ///
@@ -310,6 +330,21 @@ impl ServiceLifecycle {
         } else {
             Err(ShutdownError { timed_out })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_on_service;
+
+    #[test]
+    fn canonical_service_runtime_polls_the_launcher_future() {
+        // Cause/effect graph: C1=the launcher supplies a Future; C2=the single
+        // service-lifecycle owner builds the process Runtime with its fixed stack
+        // contract. Effects: E1=the Future is polled; E2=its exact output is
+        // returned. Rule R1(C1+C2)->E1+E2. Runtime construction failure is
+        // terminal, so no launcher-local fallback or parallel builder exists.
+        assert_eq!(block_on_service(async { "service-ready" }), "service-ready");
     }
 }
 

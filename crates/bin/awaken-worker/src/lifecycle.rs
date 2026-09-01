@@ -394,7 +394,6 @@ pub(crate) fn spawn_heartbeat(
                         runtime_incarnation: lifecycle.identity.lease_owner(),
                         lease_expires_at_unix_ms: now
                             .saturating_add(SESSION_REALIZATION_LEASE_TTL_MS),
-                        renew_existing_lease: false,
                         reassign_existing_lease: false,
                     };
                     match tokio::time::timeout(

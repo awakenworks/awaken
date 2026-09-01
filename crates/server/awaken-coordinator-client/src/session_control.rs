@@ -100,8 +100,26 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlSession
         awaken_session_contract::SessionRealizationDirective,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
+        let _ = command;
+        // Initial assignment/reassignment is returned by the claim-guarded
+        // Session resume endpoint. A Worker may drive that directive and renew
+        // its exact fence, but cannot open a second unguarded assignment path.
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "Worker Session realization begin requires a claimed resume assignment".into(),
+            ),
+        )
+    }
+
+    async fn renew_session_realization(
+        &self,
+        command: awaken_session_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
         self.control
-            .begin_session_realization(&self.identity, command)
+            .renew_session_realization(&self.identity, command)
             .await
     }
 

@@ -484,8 +484,8 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(session_agent_settle),
         )
         .route(
-            "/v1/worker/session/realization/begin",
-            post(begin_session_realization),
+            "/v1/worker/session/realization/renew",
+            post(renew_session_realization),
         )
         .route(
             "/v1/worker/session/realization/activate",
@@ -622,8 +622,7 @@ async fn session_cleanup_claim_next(
                 ))
             })?
             .expires_at_ms;
-        if request.target.renew_existing_lease
-            || request.target.reassign_existing_lease
+        if request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
             || request.target.runtime_incarnation != request.identity.lease_owner()
             || !awaken_session_contract::realization_lease_is_live_at(
@@ -775,7 +774,6 @@ async fn session_resume(
                     owner: request.identity.worker_id.clone(),
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
-                    renew_existing_lease: false,
                     // The exact live dispatch guard above proves this Worker is
                     // the sole executor for the Session thread. It may therefore
                     // fence a predecessor Worker's longer-lived projection lease
@@ -893,10 +891,10 @@ fn session_control(
         .ok_or_else(|| HostError::internal("Session control is not configured"))
 }
 
-async fn begin_session_realization(
+async fn renew_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<SessionRealizationReq<awaken_session_contract::BeginSessionRealization>>,
+    Json(request): Json<SessionRealizationReq<awaken_session_contract::RenewSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         verify_worker_identity(&worker, &request.identity)
@@ -911,13 +909,15 @@ async fn begin_session_realization(
             .map(|snapshot| snapshot.expires_at_ms)
             .unwrap_or(u64::MAX);
         let mut command = request.command;
-        let target = &command.target;
-        if !target.renew_existing_lease
-            || target.reassign_existing_lease
-            || target.owner != request.identity.worker_id
-            || target.runtime_incarnation != request.identity.lease_owner()
+        let asserted = &command.asserted_lease;
+        if asserted.owner != request.identity.worker_id
+            || asserted.runtime_incarnation != request.identity.lease_owner()
             || !awaken_session_contract::realization_lease_is_live_at(
-                target.lease_expires_at_unix_ms,
+                asserted.expires_at_unix_ms,
+                authority.now_ms,
+            )
+            || !awaken_session_contract::realization_lease_is_live_at(
+                command.requested_expires_at_unix_ms,
                 authority.now_ms,
             )
         {
@@ -929,8 +929,13 @@ async fn begin_session_realization(
         // desired retention window. Network/SQLite delay between an independent
         // heartbeat and renewal must not turn a live Worker into a false loss of
         // authority. Preserve shorter requests and cap only their upper bound.
-        command.target.lease_expires_at_unix_ms =
-            command.target.lease_expires_at_unix_ms.min(registry_expiry);
+        command.requested_expires_at_unix_ms =
+            command.requested_expires_at_unix_ms.min(registry_expiry);
+        if command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms {
+            return Err(RealizationHttpError::from(HostError::bad_request(
+                "Worker registry authority cannot extend the asserted Session realization lease",
+            )));
+        }
         use awaken_session_contract::work_queue::SessionWorkOwnership;
         match session_work_ownership(
             &service,
@@ -961,12 +966,12 @@ async fn begin_session_realization(
                 ));
             }
         }
-        let realization = session_control(&service)
+        let lease = session_control(&service)
             .map_err(RealizationHttpError::from)?
-            .begin_session_realization(command)
+            .renew_session_realization(command)
             .await
             .map_err(RealizationHttpError::from)?;
-        Ok(json!({ "realization": realization }))
+        Ok(json!({ "lease": lease }))
     }
     .await;
     respond_realization(result)

@@ -49,6 +49,33 @@ The scoped persistence envelope carries Workspace ownership beside the
 aggregate. Protocol DTOs derive from durable state and do not become another
 authority.
 
+## 2026-09-01 amendment: lease-only renewal
+
+Initial assignment and desired-state progression continue to use the one
+`begin -> stage -> activate -> publish -> acknowledge` realization driver.
+Steady-state ownership proof does not. `RenewSessionRealization` asserts the
+exact current `(owner, runtime incarnation, epoch, expiry)` and requests only a
+monotonic later expiry. `SessionApplication` reads the Session without
+executable refresh or credential migration, extends the aggregate lease and
+same-epoch active MCP claim expiries, and commits one root CAS. Active MCP keeps
+its realization id, Stage idempotency key, and publication acknowledgement.
+
+```text
+Worker heartbeat
+  -> authenticated Session Work + Worker authority check
+  -> RenewSessionRealization(exact lease, later expiry)
+  -> Session root CAS
+  -> Runtime renew_session_realization_lease
+  -> continue the existing model/tool/Sandbox attempt
+```
+
+There is no `renew_existing_lease` branch in `begin`, no Worker-callable begin
+route, and no renewal-driven FrozenSessionProjection rebuild or second phase
+driver. A response-loss replay returns the same or a monotonic successor lease;
+stale owner/incarnation/epoch fails closed. Independent Sessions are scheduled
+earliest-expiry first with a fixed per-Worker concurrency bound. More cloud
+Workers multiply capacity, but never remove this local backpressure.
+
 ## 2026-08-12 amendment
 
 Session creation no longer waits for Worker-authored input. The complete

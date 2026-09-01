@@ -558,7 +558,7 @@ impl SharedHost {
             ));
         }
         let ctx = self.ctx_for(thread, agent).await?;
-        let _execution = ctx.execution.lock().await;
+        let _command = ctx.command.lock().await;
         if ctx
             .commit
             .open_wait_for_thread(&ctx.thread_id)
@@ -1094,7 +1094,7 @@ impl SharedHost {
         resume: HostResume,
     ) -> Result<CommittedStepReceipt, HostError> {
         let ctx = self.ctx_for_resume(thread).await?;
-        let _execution = ctx.execution.lock().await;
+        let _command = ctx.command.lock().await;
         let (run_id, ticket) = ctx
             .commit
             .open_wait_for_thread(&ctx.thread_id)

@@ -6141,17 +6141,16 @@ fn environment_binding_readback_rejects_terminal_or_ungenerated_authority() {
 /// In-flight renewal cause/effect graph: C1 one MCP generation is Realizing
 /// under an admitted lease; C2 the same owner/incarnation/epoch is durably
 /// extended before its Stage receipt returns. E1 accepts the old exact
-/// receipt under the monotonic lease fence; E2 activates the durable
-/// generation but returns one renewal Stage; E3 the renewal receipt leads
-/// to Publish with the extended generation. Different owner/epoch is A2 in
-/// the contract table; conflicting receipt bindings remain rejected by the
-/// canonical receipt verification gate.
+/// receipt under the stable realization binding; E2 activates and publishes
+/// that same generation under the extended lease without a second Stage.
+/// Different owner/epoch is A2 in the contract table; conflicting receipt
+/// bindings remain rejected by the canonical receipt verification gate.
 ///
-/// | Rule | C1 | C2 | First effect | Next effect |
-/// |---|---|---|---|---|
-/// | F1 | yes | yes | E1 + E2, no publish | E3 |
+/// | Rule | C1 | C2 | Effect |
+/// |---|---|---|---|
+/// | F1 | yes | yes | E1 + E2; one Publish, zero restage |
 #[tokio::test]
-async fn activation_restages_a_generation_renewed_while_its_stage_was_in_flight() {
+async fn activation_publishes_a_generation_renewed_while_its_stage_was_in_flight() {
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
@@ -6231,49 +6230,34 @@ async fn activation_restages_a_generation_renewed_while_its_stage_was_in_flight(
         )
         .await
         .expect("F1/E1");
-    let awaken_session_contract::SessionRealizationAction::Stage {
-        prepare_session,
-        mut mcp_stages,
-    } = directive.action
-    else {
-        panic!("F1/E2 must restage the extended exact fence before publish")
-    };
-    assert!(!prepare_session, "F1/E2 does not recreate the Environment");
-    let renewed_request = mcp_stages.remove(0);
-    assert_eq!(
-        renewed_request.renewal_binding_fingerprint(),
-        admitted_request.renewal_binding_fingerprint(),
-        "F1/E2"
-    );
-    assert_eq!(
-        renewed_request.generation.lease_expires_at_unix_ms, renewed_expiry,
-        "F1/E2"
-    );
-    let renewed_receipt = awaken_session_contract::McpRealizationReceipt {
-        receipt_fingerprint: renewed_request.fingerprint(),
-        generation: renewed_request.generation.clone(),
-        realization_id: renewed_request.realization_id,
-        selected_plaintext_holder: renewed_request.selected_plaintext_holder,
-        actual_realization_kind: None,
-    };
-    let directive =
-        awaken_session_contract::SessionRealizationControl::activate_session_realization(
-            &app,
-            awaken_session_contract::ActivateSessionRealization {
-                session_id: "in-flight-renewal".into(),
-                lease: current_lease,
-                prepared_resource_revision: None,
-                mcp_receipts: vec![renewed_receipt],
-            },
-        )
-        .await
-        .expect("F1/E3");
-    let awaken_session_contract::SessionRealizationAction::Publish { publish, .. } =
+    let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
         directive.action
     else {
-        panic!("F1/E3 must publish after exact renewal restage")
+        panic!("F1/E2 must publish without replaying Stage")
     };
-    assert_eq!(publish, vec![renewed_request.generation], "F1/E3");
+    assert!(drain.is_empty(), "F1/E2 does not invent an obsolete drain");
+    assert_eq!(publish.len(), 1, "F1/E2 publishes the one admitted claim");
+    let renewed_generation = &publish[0];
+    assert_eq!(
+        renewed_generation.attachment_id, admitted_request.generation.attachment_id,
+        "F1/E2 preserves the admitted attachment"
+    );
+    assert_eq!(
+        renewed_generation.generation, admitted_request.generation.generation,
+        "F1/E2 preserves the admitted generation"
+    );
+    assert_eq!(
+        renewed_generation.runtime_incarnation, admitted_request.generation.runtime_incarnation,
+        "F1/E2 preserves the admitted runtime incarnation"
+    );
+    assert_eq!(
+        renewed_generation.lease_epoch, admitted_request.generation.lease_epoch,
+        "F1/E2 preserves the admitted lease epoch"
+    );
+    assert_eq!(
+        renewed_generation.lease_expires_at_unix_ms, renewed_expiry,
+        "F1/E2 publishes the extended lease"
+    );
 }
 
 #[test]

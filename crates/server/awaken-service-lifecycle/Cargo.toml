@@ -10,7 +10,7 @@ layer = "infrastructure"
 authority = "service-lifecycle"
 
 [dependencies]
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 
 [lints]
