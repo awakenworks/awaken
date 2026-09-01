@@ -876,9 +876,6 @@ impl DispatchQueue for HttpDispatchQueue {
     async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         Self::server_local("cancel")
     }
-    async fn awaiting_run(&self, _thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        Self::server_local("awaiting_run")
-    }
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         Self::server_local("purge_dead_letters")
     }

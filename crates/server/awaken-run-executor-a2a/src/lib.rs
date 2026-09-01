@@ -280,6 +280,16 @@ mod tests {
                 .and_then(|commit| commit.run.resume_ticket().cloned())
         }
 
+        fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+            let commits = self.0.lock().ok()?;
+            let latest = commits
+                .iter()
+                .rev()
+                .find(|commit| &commit.thread_id == thread_id)?;
+            let ticket = latest.run.resume_ticket()?.clone();
+            (ticket.thread_id == *thread_id).then(|| (latest.run.run_id().clone(), ticket))
+        }
+
         fn run(&self, run_id: &RunId) -> Option<RunRecord> {
             self.0
                 .lock()

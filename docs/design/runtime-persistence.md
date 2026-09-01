@@ -77,6 +77,7 @@ trait CommittedThreadView {
     fn run(&self, run: &RunId) -> Option<RunRecord>;
     fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
     fn resume_ticket(&self, run: &RunId) -> Option<ResumeTicket>;
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
 }
 
 // durable read repository: extends that same view only with committed events.
@@ -95,7 +96,7 @@ the host crate (G2). The traits are the current ones, renamed and grouped:
 
 ```rust
 trait DispatchQueue { /* enqueue, claim, claim_retry_exhausted, settle, manual quarantine, cancel,
-                         awaiting_run, dead_letters, requeue, superseded, list */ }
+                         dead_letters, requeue, superseded, list */ }
 trait Inbox         { /* append, list, edit, retract (pending input) */ }
 trait Outbox        { /* stage, relay (cross-thread delivery) */ }
 trait Dispatch: DispatchQueue + Inbox + Outbox {}

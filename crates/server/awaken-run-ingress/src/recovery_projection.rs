@@ -241,6 +241,26 @@ impl CommittedThreadView for RecoveryProjection {
         })
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.snapshot.read().ok().and_then(|snapshot| {
+            let snapshot = snapshot
+                .as_ref()
+                .filter(|snapshot| &snapshot.thread_id == thread_id)?;
+            let latest_run_id = snapshot.latest_run_id.as_ref()?;
+            let latest = snapshot.runs.iter().find(|run| &run.id == latest_run_id)?;
+            let ticket = snapshot
+                .resume_tickets
+                .iter()
+                .find(|entry| &entry.run_id == latest_run_id)
+                .map(|entry| &entry.ticket);
+            awaken_agent_contract::thread::read::committed_thread_view::select_open_wait(
+                thread_id,
+                Some(latest),
+                ticket,
+            )
+        })
+    }
+
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
         self.snapshot.read().ok().and_then(|snapshot| {
             snapshot

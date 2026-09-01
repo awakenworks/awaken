@@ -71,6 +71,10 @@ where
         self.store.as_ref().resume_ticket(run_id)
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        CommittedThreadView::open_wait_for_thread(self.store.as_ref(), thread_id)
+    }
+
     fn committed_state(
         &self,
         thread_id: &ThreadId,
@@ -143,6 +147,10 @@ impl RemoteHostCommit {
             projection: Arc::new(awaken_run_ingress::RecoveryProjection::new()),
         }
     }
+
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.projection.open_wait_for_thread(thread_id)
+    }
 }
 
 impl HostCommit {
@@ -200,14 +208,8 @@ impl HostCommit {
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String> {
         match self {
-            HostCommit::Local(store) => store.open_wait_for_thread(thread).await,
-            HostCommit::Remote(remote) => Ok(remote.projection.current().and_then(|snapshot| {
-                snapshot
-                    .resume_tickets
-                    .into_iter()
-                    .find(|entry| entry.ticket.thread_id == *thread)
-                    .map(|entry| (entry.run_id, entry.ticket))
-            })),
+            HostCommit::Local(store) => store.authoritative_open_wait_for_thread(thread).await,
+            HostCommit::Remote(remote) => Ok(remote.open_wait_for_thread(thread)),
         }
     }
 
@@ -274,6 +276,15 @@ impl CommittedThreadView for HostCommit {
         match self {
             HostCommit::Local(store) => store.resume_ticket(run_id),
             HostCommit::Remote(remote) => remote.projection.resume_ticket(run_id),
+        }
+    }
+
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        match self {
+            HostCommit::Local(store) => {
+                CommittedThreadView::open_wait_for_thread(store.as_ref(), thread_id)
+            }
+            HostCommit::Remote(remote) => remote.open_wait_for_thread(thread_id),
         }
     }
 

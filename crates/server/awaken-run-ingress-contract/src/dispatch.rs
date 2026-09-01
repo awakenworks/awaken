@@ -1888,12 +1888,6 @@ mod tests {
         async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
             Self::unsupported()
         }
-        async fn awaiting_run(
-            &self,
-            _thread_id: &ThreadId,
-        ) -> Result<Option<RunId>, DispatchError> {
-            Self::unsupported()
-        }
         async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
             Self::unsupported()
         }

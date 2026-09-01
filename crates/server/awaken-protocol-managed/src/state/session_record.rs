@@ -15,32 +15,53 @@ pub(super) struct ProjectedToolIndex {
 }
 
 #[derive(Clone)]
+pub(super) struct ManagedProjectionCheckpoint {
+    /// Runtime message identities consumed by the one prefix reducer. Together
+    /// with the lifecycle/budget coordinates below, this is the only state that
+    /// selects the unconsumed committed suffix on the next refresh.
+    pub(super) thread_message_ids: HashSet<(String, String)>,
+    pub(super) child_latest_run_ids: HashMap<String, awaken_agent_contract::agent::run::Id>,
+    pub(super) lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
+    pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
+    pub(super) budget_reach_generation: u64,
+}
+
+impl Default for ManagedProjectionCheckpoint {
+    fn default() -> Self {
+        Self {
+            thread_message_ids: Default::default(),
+            child_latest_run_ids: Default::default(),
+            lifecycle_cursor: Default::default(),
+            terminal_cursors: Default::default(),
+            budget_reach_generation: 0,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ManagedLiveOverlay {
+    /// Process-local Session update events waiting for the durable command that
+    /// preceded their root CAS to acquire its immutable projection anchor.
+    pub(super) pending_events: Vec<(Event, String)>,
+    /// Disposable predecessor hints for visible `evt_N` overlays.
+    pub(super) anchors: HashMap<String, String>,
+}
+
+#[derive(Clone)]
 pub(super) struct SessionRecord {
     pub(super) agent_id: String,
     pub(super) session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
     pub(super) resource_state: awaken_session_contract::SessionResourceState,
+    /// Rendered projection result. Durable entries advance only through the one
+    /// committed-prefix reducer; only `evt_N` entries originate from
+    /// [`Self::overlay`].
     pub(super) events: Vec<Event>,
-    /// Process-local Session update events waiting for the durable command that
-    /// preceded their root CAS to acquire its immutable projection anchor.
-    /// Keeping them outside `events` prevents a PATCH from becoming visible
-    /// before an earlier accepted input, while the Session root remains the
-    /// only durable ordering authority.
-    pub(super) pending_transient_events: Vec<(Event, String)>,
-    /// Disposable predecessor hints for visible `evt_N` overlays. The key is a
-    /// process-local event id and the value is the stable durable event id after
-    /// which it was committed. These hints never cross replicas and therefore
-    /// cannot become another Managed event source of truth.
-    pub(super) transient_event_anchors: HashMap<String, String>,
-    /// Runtime message identities already lowered into `events`. The transcript
-    /// is durable authority; this set only prevents a peer refresh and the local
-    /// request finisher from projecting the same committed message twice.
-    pub(super) projected_thread_message_ids: HashSet<(String, String)>,
-    /// Latest ordinary Run identity observed for each derived child Thread. This
-    /// lets the local primary-step projection detect a newly committed follow-up
-    /// before the warm projector has refreshed the disposable Thread cache.
-    pub(super) projected_child_latest_run_ids:
-        std::collections::HashMap<String, awaken_agent_contract::agent::run::Id>,
+    /// Source coordinates paired with `events`; no separate child/session state
+    /// machine or independently synchronized cursor exists.
+    pub(super) checkpoint: ManagedProjectionCheckpoint,
+    /// The only process-local state allowed to survive a committed rebuild.
+    pub(super) overlay: ManagedLiveOverlay,
     /// The optional root Run owner and reason whose aggregate idle event is
     /// waiting for coordinated Thread settlement. The owner lets a later terminal
     /// of that same Run supersede an earlier Awaiting reason without allowing an
@@ -53,16 +74,6 @@ pub(super) struct SessionRecord {
     /// primary because the official wire excludes that delivery from the
     /// advisor Thread stream. The event itself remains in the one `events` log.
     pub(super) event_thread_owners: HashMap<String, String>,
-    /// Last committed Run lifecycle fact consumed by this disposable projection.
-    pub(super) projected_lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
-    /// Exact committed lifecycle positions already lowered locally or from the
-    /// feed. A Run may await and resume repeatedly, so Run id alone is not an
-    /// idempotency key; each terminal transition owns a distinct cursor.
-    pub(super) projected_terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
-    /// Latest append-only shared-budget transition lowered into Managed events.
-    /// This is a disposable projection cursor over `SessionBudgetState`, never
-    /// a second accounting or terminal-state authority.
-    pub(super) projected_budget_reach_generation: u64,
     /// Subagent child threads spawned in this Session. Each is announced by a
     /// `session.thread_created` event and remains a projection of durable truth.
     pub(super) child_threads: Vec<SessionThread>,
@@ -142,12 +153,14 @@ impl SessionRecord {
     }
 
     pub(super) fn message_was_projected(&self, thread_id: &str, message_id: &str) -> bool {
-        self.projected_thread_message_ids
+        self.checkpoint
+            .thread_message_ids
             .contains(&(thread_id.to_string(), message_id.to_string()))
     }
 
     pub(super) fn consume_message(&mut self, thread_id: &str, message_id: &str) -> bool {
-        self.projected_thread_message_ids
+        self.checkpoint
+            .thread_message_ids
             .insert((thread_id.to_string(), message_id.to_string()))
     }
 
@@ -162,15 +175,10 @@ impl SessionRecord {
             session,
             resource_state,
             events,
-            pending_transient_events: Vec::new(),
-            transient_event_anchors: Default::default(),
-            projected_thread_message_ids: Default::default(),
-            projected_child_latest_run_ids: Default::default(),
+            checkpoint: Default::default(),
+            overlay: Default::default(),
             deferred_session_stop_reason: None,
             event_thread_owners: Default::default(),
-            projected_lifecycle_cursor: Default::default(),
-            projected_terminal_cursors: Default::default(),
-            projected_budget_reach_generation: 0,
             child_threads: Vec::new(),
             primary_thread_usage: None,
         }

@@ -1,11 +1,13 @@
 ---------------------- MODULE SessionRuntimeProjection ----------------------
 EXTENDS Naturals, TLC
 
-CONSTANTS ToolIds, ErrorIds
+CONSTANTS ToolIds, ErrorIds, MaxSourceVersion
 
-VARIABLES phase, pending, resolving, lastError
+VARIABLES phase, pending, resolving, lastError,
+          sourceVersion, projectedVersion, refreshSucceeded
 
-vars == <<phase, pending, resolving, lastError>>
+vars == <<phase, pending, resolving, lastError,
+          sourceVersion, projectedVersion, refreshSucceeded>>
 NoError == "none"
 
 Init ==
@@ -13,42 +15,47 @@ Init ==
     /\ pending = {}
     /\ resolving = {}
     /\ lastError = NoError
+    /\ sourceVersion = 0
+    /\ projectedVersion = 0
+    /\ refreshSucceeded = FALSE
+
+projectionVars == <<sourceVersion, projectedVersion, refreshSucceeded>>
 
 Running ==
     /\ phase' = "running"
     /\ pending' = {}
     /\ resolving' = {}
-    /\ UNCHANGED lastError
+    /\ UNCHANGED <<lastError, projectionVars>>
 
 RequiresAction(ids) ==
     /\ ids \subseteq ToolIds
     /\ phase' = "idle"
     /\ pending' = ids
     /\ resolving' = {}
-    /\ UNCHANGED lastError
+    /\ UNCHANGED <<lastError, projectionVars>>
 
 AcceptReply(id) ==
     /\ id \in pending
     /\ pending' = pending \ {id}
     /\ resolving' = resolving \cup {id}
-    /\ UNCHANGED <<phase, lastError>>
+    /\ UNCHANGED <<phase, lastError, projectionVars>>
 
 ProcessReply(id) ==
     /\ id \in resolving
     /\ resolving' = resolving \ {id}
-    /\ UNCHANGED <<phase, pending, lastError>>
+    /\ UNCHANGED <<phase, pending, lastError, projectionVars>>
 
 ObserveToolResult(id) ==
     /\ id \in pending \cup resolving
     /\ pending' = pending \ {id}
     /\ resolving' = resolving \ {id}
-    /\ UNCHANGED <<phase, lastError>>
+    /\ UNCHANGED <<phase, lastError, projectionVars>>
 
 IdleTerminal ==
     /\ phase' = "idle"
     /\ pending' = {}
     /\ resolving' = {}
-    /\ UNCHANGED lastError
+    /\ UNCHANGED <<lastError, projectionVars>>
 
 Error(errorId) ==
     /\ errorId \in ErrorIds
@@ -56,12 +63,27 @@ Error(errorId) ==
     /\ pending' = {}
     /\ resolving' = {}
     /\ lastError' = errorId
+    /\ UNCHANGED projectionVars
 
-\* The production projector builds its complete candidate on a cloned warm
-\* record. Any correlation, lifecycle, interval, outcome, or canonicalization
-\* failure occurs before the one final swap and is therefore an abstract
-\* stuttering step over the externally visible projection.
+\* Any correlation, lifecycle, interval, outcome, or canonicalization failure
+\* occurs before the one final swap and is therefore an abstract stuttering
+\* step over the externally visible projection.
 RefreshFailure == UNCHANGED vars
+
+\* Durable authorities may advance without mutating the disposable result.
+CommittedPrefixAdvances ==
+    /\ sourceVersion < MaxSourceVersion
+    /\ sourceVersion' = sourceVersion + 1
+    /\ refreshSucceeded' = FALSE
+    /\ UNCHANGED <<phase, pending, resolving, lastError,
+                    projectedVersion>>
+
+\* A successful refresh consumes the stable source suffix and advances the
+\* result/checkpoint pair to the exact observed committed prefix.
+RefreshSuccess ==
+    /\ projectedVersion' = sourceVersion
+    /\ refreshSucceeded' = TRUE
+    /\ UNCHANGED <<phase, pending, resolving, lastError, sourceVersion>>
 
 Next ==
     \/ Running
@@ -72,6 +94,8 @@ Next ==
     \/ IdleTerminal
     \/ \E errorId \in ErrorIds: Error(errorId)
     \/ RefreshFailure
+    \/ CommittedPrefixAdvances
+    \/ RefreshSuccess
 
 Spec == Init /\ [][Next]_vars
 
@@ -80,6 +104,9 @@ TypeOK ==
     /\ pending \subseteq ToolIds
     /\ resolving \subseteq ToolIds
     /\ lastError \in ErrorIds \cup {NoError}
+    /\ sourceVersion \in 0..MaxSourceVersion
+    /\ projectedVersion \in 0..MaxSourceVersion
+    /\ refreshSucceeded \in BOOLEAN
 
 OnlyIdleMayRequireAction == pending # {} => phase = "idle"
 PendingAndResolvingAreDisjoint == pending \intersect resolving = {}
@@ -89,6 +116,9 @@ ErrorProjectionHasEvidence == phase = "error" => lastError # NoError
 CanSend == phase = "idle" /\ pending = {}
 AcceptedReplyDoesNotBlockFollowup ==
     phase = "idle" /\ pending = {} /\ resolving # {} => CanSend
+ProjectionNeverInventsSourcePrefix == projectedVersion <= sourceVersion
+SuccessfulRefreshReachesObservedSourcePrefix ==
+    refreshSucceeded => projectedVersion = sourceVersion
 
 Safety ==
     /\ TypeOK
@@ -97,4 +127,6 @@ Safety ==
     /\ TerminalFrameClearsPending
     /\ ErrorProjectionHasEvidence
     /\ AcceptedReplyDoesNotBlockFollowup
+    /\ ProjectionNeverInventsSourcePrefix
+    /\ SuccessfulRefreshReachesObservedSourcePrefix
 =============================================================================

@@ -11,10 +11,12 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_ext_builtin_tools::{MessageSendRequest, MessageSender};
 use awaken_run_ingress::PlacementRequirements;
 use awaken_run_ingress::{
@@ -2111,13 +2113,13 @@ async fn send_message_does_not_bind_to_a_client_execution_tool_wait() {
     );
     assert_eq!(
         commit.resume_ticket_for(&run_id),
-        Some(ticket),
+        Some(ticket.clone()),
         "R6/E3: client-execution ticket remains committed authority"
     );
     assert_eq!(
-        store.awaiting_run(&thread_id).await.expect("read dispatch"),
-        Some(run_id),
-        "R6/E3: the dispatch remains Awaiting"
+        commit.open_wait_for_thread(&thread_id),
+        Some((run_id, ticket)),
+        "R6/E3: committed Thread truth remains the sole active-wait authority"
     );
 }
 
@@ -2332,6 +2334,63 @@ async fn send_message_to_an_idle_thread_feeds_the_next_run() {
             .unwrap()
             .is_empty(),
         "the unbound input is consumed"
+    );
+}
+
+#[tokio::test]
+async fn send_message_binds_from_thread_truth_without_a_dispatch_row() {
+    /* Cause/effect graph and decision table:
+     * C1 committed Thread head is Awaiting with an input-compatible ticket;
+     * C2 Dispatch has an Awaiting row for that Run. E1 input is bound to the
+     * exact Run/correlation; E2 input remains unbound. Dispatch ownership is
+     * deliberately irrelevant, so the minimal distinguishing rules are:
+     * | Rule | C1 | C2 | Effect |
+     * | R1   | 1  | 0  | E1     |
+     * | R2   | 0  | 0  | E2 (covered by idle-thread test) |
+     * | R3   | 1  | 1  | E1 (covered by ordinary awaiting resume tests) |
+     * Constraint: only committed Thread truth may select a resumable Run.
+     */
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let thread = ThreadId(THREAD.to_string());
+    let run = RunId("thread-truth-only-run".to_string());
+    let ticket = ResumeTicket::new(
+        "thread-truth-correlation",
+        run.clone(),
+        thread.clone(),
+        SNAP,
+        FP,
+        AwaitTarget::RemoteInput {
+            reason: RemoteInputReason::UserInput,
+            call_id: "thread-truth-call".to_string(),
+        },
+    );
+    awaken_agent_contract::thread::commit::commit_run(
+        commit.as_ref(),
+        &thread,
+        RunDisposition::awaiting(ticket.clone()),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .expect("R1 committed wait");
+    assert_eq!(store.dispatch_count(), 0, "R1/C2 is false");
+
+    OutboxMessageSender::new(store.clone(), commit)
+        .send(send_request(
+            THREAD,
+            "resume from Thread truth",
+            "thread-truth-send",
+        ))
+        .await
+        .expect("R1 stages from Thread truth");
+    assert_eq!(store.relay().await.expect("R1 relay"), 1);
+    let queued = store.list(&thread).await.expect("R1 list pending input");
+    assert_eq!(queued.len(), 1, "R1/E1 one delivery");
+    assert_eq!(queued[0].input.run_id, run, "R1/E1 exact Run");
+    assert_eq!(
+        queued[0].input.correlation_id, ticket.correlation_id,
+        "R1/E1 exact correlation"
     );
 }
 

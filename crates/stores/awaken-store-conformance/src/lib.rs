@@ -379,6 +379,61 @@ pub async fn resume_ticket_awaits_then_clears<S: Coordinator + CheckpointReader>
     );
 }
 
+/// Thread-level wait selection is one atomic committed-view query. Historical
+/// tickets remain addressable by Run for replay, but only the latest Awaiting
+/// Run may be selected for new thread-addressed input.
+pub async fn open_wait_selects_only_the_latest_run<S: Coordinator + CheckpointReader>(store: &S) {
+    /* Cause/effect graph and decision table:
+     * C1 an old Run is Awaiting with ticket T1; C2 a newer Run exists; C3 the
+     * newer Run is terminal; C4 the newer Run is Awaiting with ticket T2.
+     * E1 no open wait; E2 select exactly T1; E3 select exactly T2.
+     * Constraints: C3 and C4 are mutually exclusive; historical T1 may remain
+     * readable by Run but cannot determine the Thread head.
+     * | Rule | C1 | C2 | C3 | C4 | Effect |
+     * | R1   | 0  | 0  | 0  | 0  | E1     |
+     * | R2   | 1  | 0  | 0  | 0  | E2     |
+     * | R3   | 1  | 1  | 1  | 0  | E1     |
+     * | R4   | 1  | 1  | 0  | 1  | E3     |
+     */
+    let thread = ThreadId("conf-open-wait".to_string());
+    let old_run = RunId("conf-open-wait-old".to_string());
+    let old_ticket = ticket(&thread, &old_run);
+    assert_eq!(store.open_wait_for_thread(&thread), None, "R1/E1");
+
+    store
+        .commit(awaiting_checkpoint(&thread, &old_run))
+        .await
+        .expect("R2 old wait");
+    assert_eq!(
+        store.open_wait_for_thread(&thread),
+        Some((old_run.clone(), old_ticket)),
+        "R2/E2"
+    );
+
+    let terminal_run = RunId("conf-open-wait-terminal".to_string());
+    store
+        .commit(ended_checkpoint(&thread, &terminal_run, "terminal"))
+        .await
+        .expect("R3 newer terminal");
+    assert!(
+        store.resume_ticket(&old_run).is_some(),
+        "R3 retains historical Run-addressed ticket"
+    );
+    assert_eq!(store.open_wait_for_thread(&thread), None, "R3/E1");
+
+    let latest_run = RunId("conf-open-wait-latest".to_string());
+    let latest_ticket = ticket(&thread, &latest_run);
+    store
+        .commit(awaiting_checkpoint(&thread, &latest_run))
+        .await
+        .expect("R4 latest wait");
+    assert_eq!(
+        store.open_wait_for_thread(&thread),
+        Some((latest_run, latest_ticket)),
+        "R4/E3"
+    );
+}
+
 /// Concurrent append: two commits for distinct runs on one thread, issued
 /// concurrently, both survive with distinct AND dense (consecutive) sequences —
 /// neither lost the other's transcript and neither collided on the commit

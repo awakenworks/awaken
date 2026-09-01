@@ -114,6 +114,46 @@ fn install_exposes_the_claimed_committed_prefix() {
 }
 
 #[test]
+fn recovery_projection_never_selects_a_historical_wait() {
+    /* Cause/effect graph: C1 snapshot retains an Awaiting ticket; C2 that Run
+     * is the Thread head; C3 a newer terminal Run becomes the head while C1 is
+     * retained. Effects: E1 select the exact ticket; E2 select no wait.
+     * Decision rules: R1 C1+C2=>E1; R2 C1+C3=>E2. Constraint: a remote Worker
+     * uses this one snapshot query, never a ticket scan or Dispatch state.
+     */
+    let projection = RecoveryProjection::new();
+    let claimed = RunId("run".to_string());
+    let thread = ThreadId("thread".to_string());
+    let initial = snapshot();
+    let expected = initial.resume_tickets[0].ticket.clone();
+    projection
+        .install(&claimed, initial.clone())
+        .expect("R1 install awaiting head");
+    assert_eq!(
+        projection.open_wait_for_thread(&thread),
+        Some((claimed.clone(), expected)),
+        "R1/E1"
+    );
+
+    let mut newer_terminal = initial;
+    let terminal = RunId("newer-terminal".to_string());
+    newer_terminal.runs.push(RunRecord {
+        id: terminal.clone(),
+        thread_id: thread.clone(),
+        state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+    });
+    newer_terminal.latest_run_id = Some(terminal);
+    projection
+        .install(&claimed, newer_terminal)
+        .expect("R2 replace with newer terminal head");
+    assert!(
+        projection.resume_ticket(&claimed).is_some(),
+        "R2 historical ticket remains Run-addressable"
+    );
+    assert_eq!(projection.open_wait_for_thread(&thread), None, "R2/E2");
+}
+
+#[test]
 fn acknowledged_commit_advances_projection_once() {
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());

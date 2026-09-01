@@ -568,6 +568,9 @@ impl CommittedThreadView for FailingCommit {
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.inner.resume_ticket(run_id)
     }
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.inner.open_wait_for_thread(thread_id)
+    }
     fn committed_state(
         &self,
         thread_id: &ThreadId,
@@ -897,12 +900,6 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         run_id: &RunId,
     ) -> Result<Option<ThreadId>, awaken_run_ingress::DispatchError> {
         self.inner.cancel(run_id).await
-    }
-    async fn awaiting_run(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Option<RunId>, awaken_run_ingress::DispatchError> {
-        self.inner.awaiting_run(thread_id).await
     }
     async fn purge_dead_letters(&self) -> Result<usize, awaken_run_ingress::DispatchError> {
         self.inner.purge_dead_letters().await
@@ -1686,9 +1683,9 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap();
 
-    // A awaiting run on a thread is resolvable by thread (send_message addressing).
+    // An Awaiting dispatch remains delivery work and cancellation makes that
+    // work claimable; Thread truth, not this queue, owns resume addressing.
     let thread_id = ThreadId(THREAD.to_string());
-    assert!(store.awaiting_run(&thread_id).await.unwrap().is_none());
     store
         .enqueue(RunDispatch::new(activation("run-3")))
         .await
@@ -1710,16 +1707,8 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap();
     assert_eq!(
-        store.awaiting_run(&thread_id).await.unwrap(),
-        Some(RunId("run-3".to_string()))
-    );
-    assert_eq!(
         store.cancel(&RunId("run-3".to_string())).await.unwrap(),
         Some(thread_id.clone())
-    );
-    assert!(
-        store.awaiting_run(&thread_id).await.unwrap().is_none(),
-        "new input cannot target an awaiting run once cancellation is durable"
     );
     let awaiting_cancel = store
         .claim("w", 100, 0, &Default::default())

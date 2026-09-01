@@ -1718,21 +1718,6 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(Some(thread))
     }
 
-    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .order
-            .iter()
-            .find(|run| {
-                state.rows.get(*run).is_some_and(|row| {
-                    row.state == DispatchState::Awaiting
-                        && !row.cancellation_requested
-                        && row.request.thread_id() == thread_id
-                })
-            })
-            .cloned())
-    }
-
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         self.purge_dead(|_| true)
     }

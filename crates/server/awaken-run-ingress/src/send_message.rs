@@ -96,17 +96,13 @@ impl<S: DispatchQueue + Outbox> OutboxMessageSender<S> {
             awaken_agent_contract::stable_fingerprint(&identity)
         );
 
-        // Bind to the run awaiting on the thread if there is one; otherwise
-        // preserve an unbound delivery for a fresh ordinary Run (ADR-0021).
+        // Read the latest Run and its ticket from one committed Thread snapshot.
+        // Dispatch is delivery state only and cannot decide whether a Thread is
+        // awaiting. Otherwise preserve an unbound delivery for a fresh ordinary
+        // Run (ADR-0021).
         Ok(match binding {
-            MessageBinding::AwaitingOrIdle => match self
-                .store
-                .awaiting_run(&thread)
-                .await
-                .map_err(|error| ToolError::Execution(error.to_string()))?
-                .and_then(|run| self.reader.resume_ticket(&run))
-            {
-                Some(ticket)
+            MessageBinding::AwaitingOrIdle => match self.reader.open_wait_for_thread(&thread) {
+                Some((_run_id, ticket))
                     if matches!(
                         ticket.target(),
                         AwaitTarget::RemoteInput { .. }

@@ -605,10 +605,6 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, cancel(run_id))
     }
 
-    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        delegate!(self, awaiting_run(thread_id))
-    }
-
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         delegate!(self, purge_dead_letters())
     }

@@ -515,11 +515,6 @@ pub trait DispatchQueue: Send + Sync {
     /// Returns `None` only for a terminal queue state or unknown run.
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
 
-    /// The run currently awaiting on a thread, if any. A thread is the stable
-    /// addressable unit (a run is one ephemeral execution); this resolves a
-    /// thread-addressed delivery to the run awaiting on it.
-    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError>;
-
     /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
     /// Returns how many were purged.
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;

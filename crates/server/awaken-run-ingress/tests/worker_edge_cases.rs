@@ -27,6 +27,7 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     ContinuationAdmission, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, Outbox,
     RunDispatch, SqliteDispatchStore, SubmitOptions,
@@ -448,9 +449,9 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_awaiting() {
         "the stale input did not drive the tool"
     );
     assert_eq!(
-        store.awaiting_run(&thread).await.unwrap(),
+        commit.open_wait_for_thread(&thread).map(|(run, _)| run),
         Some(run.clone()),
-        "the run is still awaiting on its thread"
+        "committed Thread truth still exposes the active wait"
     );
     assert_eq!(
         store.pending_count(&run),

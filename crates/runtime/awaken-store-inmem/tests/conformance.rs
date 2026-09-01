@@ -37,6 +37,14 @@ async fn resume_ticket_awaits_then_clears() {
 }
 
 #[tokio::test]
+async fn open_wait_selects_only_the_latest_run() {
+    awaken_store_conformance::open_wait_selects_only_the_latest_run(
+        &MemoryCommitCoordinator::new(),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn concurrent_appends_are_dense_and_distinct() {
     awaken_store_conformance::concurrent_appends_are_dense_and_distinct(
         &MemoryCommitCoordinator::new(),

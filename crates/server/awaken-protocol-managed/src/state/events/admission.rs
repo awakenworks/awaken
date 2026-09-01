@@ -12,7 +12,7 @@ impl ManagedState {
             .lock()
             .unwrap()
             .get(session_id)
-            .map(|record| record.projected_lifecycle_cursor)
+            .map(|record| record.checkpoint.lifecycle_cursor)
             .ok_or(StateError::NotFound)
     }
 

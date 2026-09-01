@@ -354,6 +354,17 @@ impl CommittedThreadView for MemoryCommitCoordinator {
         self.resume_ticket_for(run_id)
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.state.lock().ok().and_then(|state| {
+            let latest = state.threads.get(thread_id)?.latest_run.as_ref()?;
+            awaken_agent_contract::thread::read::committed_thread_view::select_open_wait(
+                thread_id,
+                Some(latest),
+                state.resume_tickets.get(&latest.id),
+            )
+        })
+    }
+
     fn run(&self, id: &RunId) -> Option<RunRecord> {
         let state = self.state.lock().ok()?;
         // A run lives in exactly one thread; find the most recent fact for it,

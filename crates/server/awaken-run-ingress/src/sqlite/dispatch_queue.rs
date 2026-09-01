@@ -1863,26 +1863,6 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn awaiting_run(&self, thread_id: &ThreadId) -> Result<Option<RunId>, DispatchError> {
-        let thread_id = thread_id.0.clone();
-        self.with_conn(move |conn, p| {
-            let run: Option<String> = conn
-                .query_row(
-                    &format!(
-                        "SELECT run_id FROM {p}_dispatch WHERE thread_id = ?1 AND status = 'awaiting' \
-                         AND cancel_requested = 0 \
-                         ORDER BY created_at LIMIT 1"
-                    ),
-                    params![thread_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(reject)?;
-            Ok(run.map(RunId))
-        })
-        .await
-    }
-
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         self.with_conn(move |conn, p| {
             let tx = conn

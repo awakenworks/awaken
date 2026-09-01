@@ -595,6 +595,12 @@ impl CommittedThreadView for DamagedAwaitingView {
         }
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        let latest = self.latest_run(thread_id)?;
+        let ticket = self.resume_ticket(&latest.id)?;
+        (ticket.thread_id == *thread_id).then_some((latest.id, ticket))
+    }
+
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
         let mut commands = self.inner.committed_state(thread_id);
         match self.damage {

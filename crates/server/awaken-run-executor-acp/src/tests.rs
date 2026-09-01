@@ -623,6 +623,16 @@ impl CommittedThreadView for RecordingCoordinator {
         self.resume_ticket_for(run_id)
     }
 
+    fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        let commits = self.commits.lock().ok()?;
+        let latest = commits
+            .iter()
+            .rev()
+            .find(|commit| &commit.thread_id == thread_id)?;
+        let ticket = latest.resume_ticket()?.clone();
+        (ticket.thread_id == *thread_id).then(|| (latest.run_id().clone(), ticket))
+    }
+
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
         self.commits
             .lock()

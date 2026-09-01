@@ -974,10 +974,6 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         Err(DispatchError::Rejected(_))
     ));
     assert!(matches!(
-        queue.awaiting_run(&thread).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
         Outbox::relay(&queue).await,
         Err(DispatchError::Rejected(_))
     ));

@@ -191,7 +191,7 @@ impl ManagedState {
                             processed_at: Some(PROCESSED_AT.to_string()),
                         });
                     }
-                    record.projected_terminal_cursors.insert(event.cursor);
+                    record.checkpoint.terminal_cursors.insert(event.cursor);
                     if run_terminates_thread && !is_advisor {
                         // A committed Failed Run is the absorbing admission
                         // fence for an ordinary coordinated Thread. Project the
@@ -575,12 +575,14 @@ impl ManagedState {
         // created/running/message/idle history with one terminal event.
         self.append_child_disposition_projection(record, dispositions);
         record
-            .projected_child_latest_run_ids
+            .checkpoint
+            .child_latest_run_ids
             .retain(|thread_id, _| seen.contains(thread_id));
         for link in links {
             if let Some(latest_run_id) = &link.latest_run_id {
                 record
-                    .projected_child_latest_run_ids
+                    .checkpoint
+                    .child_latest_run_ids
                     .insert(link.thread_id.0.clone(), latest_run_id.clone());
             }
         }

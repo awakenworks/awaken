@@ -797,14 +797,14 @@ impl ManagedState {
             .map(|event| event.id.clone())
             .collect::<std::collections::HashSet<_>>();
         let mut still_pending = Vec::new();
-        for (event, predecessor) in std::mem::take(&mut record.pending_transient_events) {
+        for (event, predecessor) in std::mem::take(&mut record.overlay.pending_events) {
             if visible_durable_ids.contains(&predecessor) {
                 record.events.push(event);
             } else {
                 still_pending.push((event, predecessor));
             }
         }
-        record.pending_transient_events = still_pending;
+        record.overlay.pending_events = still_pending;
 
         // Canonicalization is a disposable projection transaction: validate
         // every immutable anchor against a snapshot of the issued prefix, then
@@ -842,7 +842,8 @@ impl ManagedState {
             .filter(|(_, event)| is_transient_event_id(&event.id))
         {
             let anchor = record
-                .transient_event_anchors
+                .overlay
+                .anchors
                 .get(&event.id)
                 .filter(|candidate| durable_ids.contains(candidate.as_str()))
                 .cloned()
@@ -945,7 +946,8 @@ impl ManagedState {
             .unwrap()
             .get(session_id)
             .ok_or(StateError::NotFound)?
-            .projected_lifecycle_cursor;
+            .checkpoint
+            .lifecycle_cursor;
         // Read Outcome observation before the root recovery fence. A terminal
         // Outcome projection is derived from that same Thread aggregate and its
         // evaluation/state command is the immutable public-order anchor. Reading
@@ -1181,7 +1183,7 @@ impl ManagedState {
         }
 
         let mut sessions = self.sessions.lock().unwrap();
-        // Build the complete disposable projection on a private snapshot. A
+        // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
         // and any later validation/canonicalization error must not retain the
         // earlier mutations (message-consumption marks, cursors, or Events) in
@@ -1199,15 +1201,15 @@ impl ManagedState {
         let record = &mut staged_record;
         merge_durable_inbound_projections(record, durable_inbound_projections);
         record.primary_thread_usage = primary_thread_usage;
-        let unseen_budget_reach = budget_reach_projections
+        let projected_budget_reach = budget_reach_projections
             .iter()
-            .filter(|(generation, _, _)| *generation > record.projected_budget_reach_generation)
+            .filter(|(generation, _, _)| *generation > record.checkpoint.budget_reach_generation)
             .cloned()
             .collect::<Vec<_>>();
-        let current_cursor = record.projected_lifecycle_cursor;
+        let current_cursor = record.checkpoint.lifecycle_cursor;
         accepted_lifecycle.retain(|event| event.cursor > current_cursor);
-        if accepted_cursor > record.projected_lifecycle_cursor {
-            record.projected_lifecycle_cursor = accepted_cursor;
+        if accepted_cursor > record.checkpoint.lifecycle_cursor {
+            record.checkpoint.lifecycle_cursor = accepted_cursor;
         }
         let root_pending = root_pending.as_ref();
         let transcript_evidence = project::committed_transcript_evidence(&messages, root_pending);
@@ -1230,8 +1232,8 @@ impl ManagedState {
                         | RunLifecycleEventKind::Cancelled
                 )
         });
-        let unseen_root_terminal = root_terminal
-            .filter(|event| !record.projected_terminal_cursors.contains(&event.cursor));
+        let projected_root_terminal = root_terminal
+            .filter(|event| !record.checkpoint.terminal_cursors.contains(&event.cursor));
         // The public aggregate opening belongs to the exact committed root
         // opening transition, not to this Coordinator's process-local
         // observation order. A warm replica can see Running before a cold peer
@@ -1343,7 +1345,7 @@ impl ManagedState {
         // existing idempotency authorities, so no create-specific marker is
         // needed. An active child would keep the durable aggregate Running; an
         // Idle root is therefore already the closed-interval case.
-        if unseen_root_terminal.is_some()
+        if projected_root_terminal.is_some()
             && persisted_status == SessionStatus::Idle
             && !aggregate_running_transition
             && Self::needs_aggregate_running_edge(record)
@@ -1361,7 +1363,7 @@ impl ManagedState {
         // terminal set; otherwise warm/cold recovery emits every newly accepted
         // Running/Rescheduled edge. If a cold prefix starts at a terminal, the
         // event tail reconstructs the missing opening edge before output.
-        let project_root_transitions = root_terminal.is_none() || unseen_root_terminal.is_some();
+        let project_root_transitions = root_terminal.is_none() || projected_root_terminal.is_some();
         let mut projected_root_opening = false;
         if project_root_transitions {
             for lifecycle in accepted_lifecycle.iter().filter(|event| {
@@ -1440,7 +1442,7 @@ impl ManagedState {
         }
         if !projected_root_opening
             && !Self::primary_thread_status_is_open(record)
-            && let Some(terminal) = unseen_root_terminal
+            && let Some(terminal) = projected_root_terminal
         {
             let reconstructed = primary_thread_status_event(
                 record,
@@ -1636,7 +1638,7 @@ impl ManagedState {
         });
         let can_idle = persisted_status == SessionStatus::Idle && !active_child;
         let aggregate_budget_reached = !persisted.budget.can_admit_model_request();
-        if let Some(terminal) = unseen_root_terminal {
+        if let Some(terminal) = projected_root_terminal {
             let thread_reason = Self::public_run_stop_reason(
                 record,
                 None,
@@ -1690,8 +1692,8 @@ impl ManagedState {
         if can_idle && child_terminal_reached_budget {
             record.deferred_session_stop_reason = Some((None, StopReason::BudgetReached));
         }
-        if let Some(terminal) = unseen_root_terminal {
-            record.projected_terminal_cursors.insert(terminal.cursor);
+        if let Some(terminal) = projected_root_terminal {
+            record.checkpoint.terminal_cursors.insert(terminal.cursor);
             if let awaken_agent_contract::agent::run::RunState::Ended(
                 awaken_agent_contract::agent::run::EndCause::Error(failure),
             ) = &terminal.state
@@ -1770,13 +1772,13 @@ impl ManagedState {
         pending_event_ids.sort();
         pending_event_ids.dedup();
         if can_idle
-            && (unseen_root_terminal.is_some()
+            && (projected_root_terminal.is_some()
                 || child_terminal.is_some()
                 || record.deferred_session_stop_reason.is_some()
-                || (!unseen_budget_reach.is_empty() && pending_event_ids.is_empty()))
+                || (!projected_budget_reach.is_empty() && pending_event_ids.is_empty()))
         {
-            if pending_event_ids.is_empty() && !unseen_budget_reach.is_empty() {
-                for (generation, usage, budget) in unseen_budget_reach {
+            if pending_event_ids.is_empty() && !projected_budget_reach.is_empty() {
+                for (generation, usage, budget) in projected_budget_reach {
                     record.events.extend([
                         Event {
                             id: managed_multiagent_event_id(
@@ -1804,7 +1806,7 @@ impl ManagedState {
                             processed_at: Some(PROCESSED_AT.to_string()),
                         },
                     ]);
-                    record.projected_budget_reach_generation = generation;
+                    record.checkpoint.budget_reach_generation = generation;
                 }
             } else {
                 let stop_reason = if pending_event_ids.is_empty() {
@@ -1833,7 +1835,8 @@ impl ManagedState {
                     // aggregate idle is replayable here. The shared terminal-cursor
                     // set covers root and children.
                     let aggregate_terminal_cursor = record
-                        .projected_terminal_cursors
+                        .checkpoint
+                        .terminal_cursors
                         .iter()
                         .max()
                         .copied()
@@ -1954,7 +1957,7 @@ impl ManagedState {
                 idle_id,
                 PrimaryThreadStatusProjection::Idle { stop_reason },
             ));
-            record.projected_terminal_cursors.insert(terminal.cursor);
+            record.checkpoint.terminal_cursors.insert(terminal.cursor);
         }
         Self::replace_interval_aggregate_projections(
             record,
