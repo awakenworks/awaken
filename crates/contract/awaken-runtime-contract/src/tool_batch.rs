@@ -4,8 +4,10 @@
 //! result, but each call's execution outcome is committed independently. This
 //! cell is the recovery truth; futures, abort handles, and worker tasks are not.
 
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket, ToolAwaitReason};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroU16;
 
@@ -163,10 +165,39 @@ pub enum ToolBatchError {
     AttemptsExhausted,
     #[error("tool wait kind or correlation does not match")]
     WaitMismatch,
+    #[error("tool batch may contain at most one awaiting call")]
+    MultipleAwaitingCalls,
+    #[error("tool wait correlation must not be empty")]
+    EmptyWaitCorrelation,
     #[error("tool batch still contains non-terminal calls")]
     Incomplete,
     #[error("persisted tool batch is invalid: {0}")]
     InvalidPersistedState(String),
+}
+
+/// Why a committed Run ticket and its Run-scoped tool batch do not describe the
+/// same durable wait. This is the single cross-aggregate consistency check used
+/// by resume, interruption, and public reply admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ToolBatchWaitError {
+    #[error("tool batch is finalized")]
+    Finalized,
+    #[error("resume ticket belongs to another Run")]
+    RunMismatch,
+    #[error("resume ticket belongs to another Thread")]
+    ThreadMismatch,
+    #[error("resume ticket does not target a tool call")]
+    NotToolCall,
+    #[error("tool batch has no awaiting call")]
+    MissingAwaitingCall,
+    #[error("resume ticket names another call")]
+    CallMismatch,
+    #[error("resume ticket has another wait kind")]
+    KindMismatch,
+    #[error("resume ticket has another correlation")]
+    CorrelationMismatch,
+    #[error("resume ticket has another tool payload")]
+    ToolMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +220,6 @@ enum ExecutionRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CallTransition {
-    Await,
     CompleteFromExecutionOrWait,
     CompleteImmediate,
     MarkIndeterminate,
@@ -198,10 +228,6 @@ enum CallTransition {
 
 const fn permits_call_transition(phase: CallPhaseView, transition: CallTransition) -> bool {
     match transition {
-        CallTransition::Await => matches!(
-            phase,
-            CallPhaseView::Requested | CallPhaseView::Executing(_)
-        ),
         CallTransition::CompleteFromExecutionOrWait => matches!(
             phase,
             CallPhaseView::Executing(_) | CallPhaseView::Awaiting(_)
@@ -212,6 +238,25 @@ const fn permits_call_transition(phase: CallPhaseView, transition: CallTransitio
             phase,
             CallPhaseView::Completed | CallPhaseView::Indeterminate
         ),
+    }
+}
+
+const fn permits_await_transition(phase: CallPhaseView, another_call_is_awaiting: bool) -> bool {
+    !another_call_is_awaiting
+        && matches!(
+            phase,
+            CallPhaseView::Requested | CallPhaseView::Executing(_)
+        )
+}
+
+impl From<ToolAwaitReason> for ToolWaitKind {
+    fn from(reason: ToolAwaitReason) -> Self {
+        match reason {
+            ToolAwaitReason::Permission => Self::ToolPermission,
+            ToolAwaitReason::ClientExecution => Self::ExternalResult,
+            ToolAwaitReason::ScheduledAction => Self::ScheduledAction,
+            ToolAwaitReason::Delegation => Self::Delegation,
+        }
     }
 }
 
@@ -347,6 +392,7 @@ impl ToolBatch {
             return Err(ToolBatchError::Empty);
         }
         let mut ids = std::collections::BTreeSet::new();
+        let mut awaiting_calls = 0_u8;
         for entry in &self.calls {
             let call_id = &entry.call.call_id;
             if !ids.insert(call_id) {
@@ -360,10 +406,11 @@ impl ToolBatch {
                         "call {call_id} has an out-of-budget execution attempt"
                     )));
                 }
-                ToolCallPhase::Awaiting { wait } if wait.correlation_id.is_empty() => {
-                    return Err(ToolBatchError::InvalidPersistedState(format!(
-                        "call {call_id} has an empty wait correlation"
-                    )));
+                ToolCallPhase::Awaiting { wait } => {
+                    awaiting_calls = awaiting_calls.saturating_add(1);
+                    if wait.correlation_id.is_empty() {
+                        return Err(ToolBatchError::EmptyWaitCorrelation);
+                    }
                 }
                 ToolCallPhase::Completed(output) if output.call_id != *call_id => {
                     return Err(ToolBatchError::InvalidPersistedState(format!(
@@ -379,6 +426,9 @@ impl ToolBatch {
                     "call {call_id} publishes staged effects before a terminal result"
                 )));
             }
+        }
+        if awaiting_calls > 1 {
+            return Err(ToolBatchError::MultipleAwaitingCalls);
         }
         if self.phase == ToolBatchPhase::Finalized && !self.is_complete() {
             return Err(ToolBatchError::InvalidPersistedState(
@@ -440,17 +490,75 @@ impl ToolBatch {
         correlation_id: impl Into<String>,
     ) -> Result<(), ToolBatchError> {
         self.ensure_open()?;
+        let another_call_is_awaiting = self.calls.iter().any(|entry| {
+            entry.call.call_id != call_id && matches!(entry.phase, ToolCallPhase::Awaiting { .. })
+        });
         let call = self.call_mut(call_id)?;
-        if !permits_call_transition(phase_view(&call.phase), CallTransition::Await) {
+        if !permits_await_transition(phase_view(&call.phase), another_call_is_awaiting) {
+            if another_call_is_awaiting {
+                return Err(ToolBatchError::MultipleAwaitingCalls);
+            }
             return Err(ToolBatchError::InvalidTransition);
+        }
+        let correlation_id = correlation_id.into();
+        if correlation_id.is_empty() {
+            return Err(ToolBatchError::EmptyWaitCorrelation);
         }
         call.phase = ToolCallPhase::Awaiting {
             wait: ToolWait {
                 kind,
-                correlation_id: correlation_id.into(),
+                correlation_id,
             },
         };
         Ok(())
+    }
+
+    /// Validate that this aggregate is the exact execution truth named by a
+    /// committed ResumeTicket. Every identity and payload axis is checked, so a
+    /// stale ticket cannot resume another Run, Thread, call, tool, or wait.
+    pub fn validate_awaiting_ticket<'a>(
+        &'a self,
+        expected_thread: &ThreadId,
+        ticket: &ResumeTicket,
+    ) -> Result<&'a DurableToolCall, ToolBatchWaitError> {
+        if self.phase == ToolBatchPhase::Finalized {
+            return Err(ToolBatchWaitError::Finalized);
+        }
+        if ticket.run_id != self.run_id {
+            return Err(ToolBatchWaitError::RunMismatch);
+        }
+        if &ticket.thread_id != expected_thread {
+            return Err(ToolBatchWaitError::ThreadMismatch);
+        }
+        let AwaitTarget::ToolCall {
+            reason,
+            call_id,
+            tool,
+        } = ticket.target()
+        else {
+            return Err(ToolBatchWaitError::NotToolCall);
+        };
+        let entry = self
+            .calls
+            .iter()
+            .find(|entry| matches!(entry.phase, ToolCallPhase::Awaiting { .. }))
+            .ok_or(ToolBatchWaitError::MissingAwaitingCall)?;
+        if entry.call.call_id != *call_id {
+            return Err(ToolBatchWaitError::CallMismatch);
+        }
+        let ToolCallPhase::Awaiting { wait } = &entry.phase else {
+            unreachable!("entry selected from awaiting calls")
+        };
+        if wait.kind != (*reason).into() {
+            return Err(ToolBatchWaitError::KindMismatch);
+        }
+        if wait.correlation_id != ticket.correlation_id {
+            return Err(ToolBatchWaitError::CorrelationMismatch);
+        }
+        if entry.call.tool_id != tool.tool_id || entry.call.arguments != tool.arguments {
+            return Err(ToolBatchWaitError::ToolMismatch);
+        }
+        Ok(entry)
     }
 
     pub fn complete(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
@@ -608,6 +716,7 @@ impl StateKey for ActiveToolBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::awaiting::{PauseReason, PendingTool};
 
     fn batch() -> ToolBatch {
         ToolBatch::for_step(
@@ -623,6 +732,47 @@ mod tests {
             )],
         )
         .unwrap()
+    }
+
+    fn two_call_batch() -> ToolBatch {
+        ToolBatch::for_step(
+            RunId("r".into()),
+            0,
+            ["c1", "c2"].map(|call_id| {
+                (
+                    ToolCall {
+                        call_id: call_id.into(),
+                        tool_id: format!("tool-{call_id}"),
+                        arguments: serde_json::json!({"call": call_id}),
+                    },
+                    ToolRecoveryPolicy::replay_safe(),
+                )
+            }),
+        )
+        .unwrap()
+    }
+
+    fn tool_ticket(
+        reason: ToolAwaitReason,
+        call_id: &str,
+        tool_id: &str,
+        correlation_id: &str,
+    ) -> ResumeTicket {
+        ResumeTicket::new(
+            correlation_id,
+            RunId("r".into()),
+            ThreadId("thread".into()),
+            "snapshot",
+            "catalog",
+            AwaitTarget::ToolCall {
+                reason,
+                call_id: call_id.into(),
+                tool: PendingTool {
+                    tool_id: tool_id.into(),
+                    arguments: serde_json::json!({"call": call_id}),
+                },
+            },
+        )
     }
 
     #[test]
@@ -700,6 +850,133 @@ mod tests {
             batch.resume_executing("c", ToolWaitKind::ToolPermission, "approval-1"),
             Ok(1)
         );
+    }
+
+    #[test]
+    fn one_batch_admits_only_one_nonempty_durable_wait() {
+        // Cause/effect graph: C1 target call is in an awaitable phase; C2 another
+        // call already awaits; C3 correlation is empty. Effects: E1 establish
+        // the sole wait; E2 reject a parallel wait; E3 reject an unrecoverable
+        // correlation. Decision rules: W1=C1+!C2+!C3=>E1,
+        // W2=C1+C2=>E2, W3=C1+!C2+C3=>E3.
+        // Constraint: a Run owns at most one ResumeTicket, therefore its active
+        // batch must own at most one Awaiting call.
+        let mut batch = two_call_batch();
+        batch
+            .mark_awaiting("c1", ToolWaitKind::ToolPermission, "corr-1")
+            .unwrap();
+        assert_eq!(
+            batch.mark_awaiting("c2", ToolWaitKind::ExternalResult, "corr-2"),
+            Err(ToolBatchError::MultipleAwaitingCalls),
+            "W2/E2"
+        );
+
+        let mut empty = two_call_batch();
+        assert_eq!(
+            empty.mark_awaiting("c1", ToolWaitKind::ToolPermission, ""),
+            Err(ToolBatchError::EmptyWaitCorrelation),
+            "W3/E3"
+        );
+    }
+
+    #[test]
+    fn resume_ticket_must_match_every_durable_wait_axis() {
+        // Cause/effect graph: C1 batch is open; C2 exactly one call awaits;
+        // C3 Run matches; C4 Thread matches; C5 target is a tool call; C6 call
+        // id matches; C7 reason maps to the wait kind; C8 correlation matches;
+        // C9 tool id and arguments match. Effect E1 is the sole awaiting entry;
+        // each negated cause fails closed with its specific error and no state
+        // transition. The decision table has one success rule A1=C1..C9=>E1
+        // and one MC/DC rule A2..A10 for each independently negated cause.
+        let mut batch = two_call_batch();
+        batch
+            .mark_awaiting("c1", ToolWaitKind::ToolPermission, "corr")
+            .unwrap();
+        let exact = tool_ticket(ToolAwaitReason::Permission, "c1", "tool-c1", "corr");
+        assert_eq!(
+            batch
+                .validate_awaiting_ticket(&ThreadId("thread".into()), &exact)
+                .unwrap()
+                .call
+                .call_id,
+            "c1",
+            "A1/E1"
+        );
+
+        let mut wrong_run = exact.clone();
+        wrong_run.run_id = RunId("other".into());
+        let mut wrong_thread = exact.clone();
+        wrong_thread.thread_id = ThreadId("other".into());
+        let not_tool = ResumeTicket::new(
+            "corr",
+            RunId("r".into()),
+            ThreadId("thread".into()),
+            "snapshot",
+            "catalog",
+            AwaitTarget::Pause(PauseReason::Manual),
+        );
+        let wrong_call = tool_ticket(ToolAwaitReason::Permission, "c2", "tool-c2", "corr");
+        let wrong_kind = tool_ticket(ToolAwaitReason::ClientExecution, "c1", "tool-c1", "corr");
+        let wrong_correlation = tool_ticket(ToolAwaitReason::Permission, "c1", "tool-c1", "other");
+        let wrong_tool = tool_ticket(ToolAwaitReason::Permission, "c1", "other", "corr");
+
+        for (rule, ticket, expected) in [
+            ("A2", wrong_run, ToolBatchWaitError::RunMismatch),
+            ("A3", wrong_thread, ToolBatchWaitError::ThreadMismatch),
+            ("A4", not_tool, ToolBatchWaitError::NotToolCall),
+            ("A5", wrong_call, ToolBatchWaitError::CallMismatch),
+            ("A6", wrong_kind, ToolBatchWaitError::KindMismatch),
+            (
+                "A7",
+                wrong_correlation,
+                ToolBatchWaitError::CorrelationMismatch,
+            ),
+            ("A8", wrong_tool, ToolBatchWaitError::ToolMismatch),
+        ] {
+            assert_eq!(
+                batch.validate_awaiting_ticket(&ThreadId("thread".into()), &ticket),
+                Err(expected),
+                "{rule} fails closed"
+            );
+        }
+
+        let no_wait = two_call_batch();
+        assert_eq!(
+            no_wait.validate_awaiting_ticket(&ThreadId("thread".into()), &exact),
+            Err(ToolBatchWaitError::MissingAwaitingCall),
+            "A9"
+        );
+        let mut finalized = two_call_batch();
+        for call_id in ["c1", "c2"] {
+            finalized
+                .complete_immediate(ToolOutput::ok(call_id, "done"))
+                .unwrap();
+        }
+        finalized.finalize().unwrap();
+        assert_eq!(
+            finalized.validate_awaiting_ticket(&ThreadId("thread".into()), &exact),
+            Err(ToolBatchWaitError::Finalized),
+            "A10"
+        );
+    }
+
+    #[test]
+    fn persisted_batch_with_multiple_waits_is_rejected_before_recovery() {
+        // Cause/effect graph: C1 a persisted batch contains one or two Awaiting
+        // calls. Effects: E1 one is decodable; E2 two are rejected at the typed
+        // state boundary. Decision rules P1=C1(one)=>E1, P2=C1(two)=>E2.
+        // This mutation represents corrupted/legacy bytes that safe aggregate
+        // methods can no longer construct.
+        let mut one = two_call_batch();
+        one.mark_awaiting("c1", ToolWaitKind::ToolPermission, "corr-1")
+            .unwrap();
+        let mut value = serde_json::to_value(one).unwrap();
+        value["calls"][1]["phase"] = serde_json::json!({
+            "Awaiting": {
+                "wait": {"kind": "ExternalResult", "correlation_id": "corr-2"}
+            }
+        });
+        assert!(serde_json::from_value::<ToolBatch>(value).is_err(), "P2/E2");
     }
 
     #[test]
@@ -820,11 +1097,10 @@ mod verification {
     }
 
     fn symbolic_transition(tag: u8) -> CallTransition {
-        match tag % 5 {
-            0 => CallTransition::Await,
-            1 => CallTransition::CompleteFromExecutionOrWait,
-            2 => CallTransition::CompleteImmediate,
-            3 => CallTransition::MarkIndeterminate,
+        match tag % 4 {
+            0 => CallTransition::CompleteFromExecutionOrWait,
+            1 => CallTransition::CompleteImmediate,
+            2 => CallTransition::MarkIndeterminate,
             _ => CallTransition::StageResult,
         }
     }
@@ -834,12 +1110,6 @@ mod verification {
         let phase = symbolic_phase(kani::any());
         let transition = symbolic_transition(kani::any());
         let expected = match transition {
-            CallTransition::Await => {
-                matches!(
-                    phase,
-                    CallPhaseView::Requested | CallPhaseView::Executing(_)
-                )
-            }
             CallTransition::CompleteFromExecutionOrWait => {
                 matches!(
                     phase,
@@ -885,5 +1155,26 @@ mod verification {
                 CallPhaseView::Completed | CallPhaseView::Indeterminate
             )
         );
+    }
+
+    #[kani::proof]
+    fn a_second_wait_is_never_admitted() {
+        // Cause/effect decision table: K1 awaitable+no peer => admitted;
+        // K2 awaitable+peer => rejected; K3 non-awaitable => rejected. Symbolic
+        // phase and peer occupancy cover every combination.
+        let phase = symbolic_phase(kani::any());
+        let another_call_is_awaiting = kani::any::<bool>();
+        let admitted = permits_await_transition(phase, another_call_is_awaiting);
+        assert_eq!(
+            admitted,
+            !another_call_is_awaiting
+                && matches!(
+                    phase,
+                    CallPhaseView::Requested | CallPhaseView::Executing(_)
+                )
+        );
+        if another_call_is_awaiting {
+            assert!(!admitted);
+        }
     }
 }

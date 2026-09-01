@@ -794,59 +794,6 @@ async fn awaiting_tool_interrupt_resolves_the_whole_batch_without_inference() {
 }
 
 #[tokio::test]
-async fn awaiting_tool_interrupt_rebuilds_from_the_durable_batch_when_ticket_is_missing() {
-    // Cause/effect graph: C1=Run is durably Awaiting; C2=the consumable
-    // ResumeTicket is present or isolated-missing; C3=the Run-scoped open
-    // ToolBatch is readable and contains the current external wait; C4=the
-    // command is an exact replay. Effects: E1=rebuild interruption from C3 and
-    // settle every unfinished call; E2=one canonical terminal commit consumes
-    // the waiting row; E3=no additional inference; E4=replay returns the exact
-    // terminal state without another commit.
-    //
-    // | Rule | Awaiting | Ticket | External ToolBatch | Replay | Effect |
-    // | R1 | yes | valid | valid | no | ordinary E1+E2+E3 |
-    // | R2 | yes | missing | valid | no | reconstructed E1+E2+E3 |
-    // | R3 | ended | absent | finalized | yes | E4 |
-    // Constraint: a missing ticket never invents reply authority; interruption
-    // is safe because it only closes the already-committed batch with fixed
-    // error outputs. R1 is covered by the preceding test; this case covers R2-R3.
-    let (runtime, commit, llm) = committed_client_tool_wait().await;
-    let damaged = Arc::new(DamagedAwaitingView {
-        inner: commit.clone(),
-        damage: AwaitingDamage::MissingTicket,
-    });
-    let context = RuntimeRunContext::new()
-        .with_commit(commit.clone())
-        .with_reader(damaged);
-
-    let state = runtime
-        .interrupt_awaiting_tools(
-            RunId("run-1".into()),
-            ThreadId("thread-1".into()),
-            context.clone(),
-        )
-        .await
-        .expect("R2 rebuilds from durable batch");
-    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "R2/E1+E2");
-    assert_eq!(llm.0.load(Ordering::SeqCst), 1, "R2/E3");
-    assert!(
-        commit.resume_ticket_for(&RunId("run-1".into())).is_none(),
-        "R2/E2 terminal ThreadCommit consumes the waiting row"
-    );
-
-    let commits = commit.commit_count();
-    assert_eq!(
-        runtime
-            .interrupt_awaiting_tools(RunId("run-1".into()), ThreadId("thread-1".into()), context,)
-            .await
-            .expect("R3 terminal replay"),
-        state,
-        "R3/E4"
-    );
-    assert_eq!(commit.commit_count(), commits, "R3/E4 no new commit");
-}
-
-#[tokio::test]
 async fn corrupt_awaiting_tool_facts_converge_to_an_audited_state_conflict() {
     // Cause/effect graph: C1=Run is durably Awaiting; C2=the ticket is valid or
     // missing; C3=the active ToolBatch is absent, semantically mismatched, or
@@ -862,6 +809,7 @@ async fn corrupt_awaiting_tool_facts_converge_to_an_audited_state_conflict() {
     // | Q2b | yes | valid | missing batch | yes | no | E1+E2+E3+E4 |
     // | Q2c | yes | valid | no external wait | yes | no | E1+E2+E3+E4 |
     // | Q2d | yes | wrong owner | valid batch | yes | no | E1+E2+E3+E4 |
+    // | Q2e | yes | missing | valid batch | yes | no | E1+E2+E3+E4 |
     // | Q3 | ended by Q2 | absent | any | yes | yes | E5 |
     // | Q4 | yes | any | corrupt/missing | no | no | fail without false terminal |
     // Constraint: corrupt bytes remain in the append-only log; only their active
@@ -872,6 +820,7 @@ async fn corrupt_awaiting_tool_facts_converge_to_an_audited_state_conflict() {
         ("Q2b", AwaitingDamage::MissingBatch),
         ("Q2c", AwaitingDamage::IncoherentBatch),
         ("Q2d", AwaitingDamage::IncoherentTicketOwner),
+        ("Q2e", AwaitingDamage::MissingTicket),
     ] {
         let (runtime, commit, llm) = committed_client_tool_wait().await;
         let damaged = Arc::new(DamagedAwaitingView {

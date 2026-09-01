@@ -272,7 +272,9 @@ pub fn counting_text_runtime() -> (Arc<Runtime>, Arc<AtomicUsize>) {
 /// ends with text. Unlike [`ToolThenText`] it keys off *transcript content*, not a
 /// shared call counter, so a re-execution over a fresh transcript repeats the same
 /// tool-then-text arc — exactly what a mid-flight reclaim of a running run triggers.
-struct ToolUntilResult;
+struct ToolUntilResult {
+    calls_per_batch: usize,
+}
 #[async_trait::async_trait]
 impl LlmExecutor for ToolUntilResult {
     async fn infer(&self, r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
@@ -288,11 +290,15 @@ impl LlmExecutor for ToolUntilResult {
         let output = if has_tool_result {
             AssistantOutput::text("all done".to_string())
         } else {
-            AssistantOutput::from_tool_calls(vec![ToolCall {
-                call_id: "call-1".to_string(),
-                tool_id: "echo".to_string(),
-                arguments: serde_json::json!({"text": "ping"}),
-            }])
+            AssistantOutput::from_tool_calls(
+                (1..=self.calls_per_batch)
+                    .map(|index| ToolCall {
+                        call_id: format!("call-{index}"),
+                        tool_id: "echo".to_string(),
+                        arguments: serde_json::json!({"text": "ping", "index": index}),
+                    })
+                    .collect(),
+            )
         };
         Ok(ChatResponse {
             output,
@@ -358,8 +364,21 @@ pub fn concurrency_tracking_tool_runtime(
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
 ) {
-    let (runtime, ran, _entered, active, maximum) = blocking_tool_runtime_parts(release);
+    let (runtime, ran, _entered, active, maximum) =
+        blocking_tool_runtime_parts_with_calls(release, 1);
     (runtime, ran, active, maximum)
+}
+
+/// The same physical-concurrency probe with a model-emitted multi-call batch.
+/// It extends the canonical blocking fixture instead of introducing a parallel
+/// executor or state authority.
+pub fn multi_tool_blocking_runtime(
+    release: Arc<tokio::sync::Semaphore>,
+    calls_per_batch: usize,
+) -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let (runtime, ran, _entered, _active, _maximum) =
+        blocking_tool_runtime_parts_with_calls(release, calls_per_batch);
+    (runtime, ran)
 }
 
 /// The observable form of [`blocking_tool_runtime`]. The entry signal is a
@@ -382,13 +401,21 @@ type BlockingToolRuntimeParts = (
 );
 
 fn blocking_tool_runtime_parts(release: Arc<tokio::sync::Semaphore>) -> BlockingToolRuntimeParts {
+    blocking_tool_runtime_parts_with_calls(release, 1)
+}
+
+fn blocking_tool_runtime_parts_with_calls(
+    release: Arc<tokio::sync::Semaphore>,
+    calls_per_batch: usize,
+) -> BlockingToolRuntimeParts {
+    assert!(calls_per_batch > 0, "a ToolBatch fixture must not be empty");
     let ran = Arc::new(AtomicUsize::new(0));
     let active = Arc::new(AtomicUsize::new(0));
     let maximum = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(tokio::sync::Notify::new());
     let runtime = Arc::new(
         Runtime::new()
-            .with_llm(Arc::new(ToolUntilResult))
+            .with_llm(Arc::new(ToolUntilResult { calls_per_batch }))
             .with_tool(Arc::new(BlockingEcho {
                 ran: ran.clone(),
                 active: active.clone(),

@@ -89,12 +89,15 @@ fn terminal_cleanup_claim_needs_assignment(
         return true;
     }
     // A restarted process in the same logical Worker slot may immediately
-    // fence its predecessor. An exact current incarnation has already received
-    // this assignment and is skipped so one faulted Session cannot starve the
-    // remaining deterministic recovery scan. A different live owner retains
-    // its authority until expiry because cleanup has no Run claim to prove a
+    // fence its predecessor. The exact incarnation may retry only when a later
+    // heartbeat supplies a strictly newer expiry; after that CAS, the same
+    // heartbeat target is equal and skipped so one faulted Session cannot
+    // monopolize its bounded claim loop. A different live owner retains its
+    // authority until expiry because cleanup has no Run claim to prove a
     // cross-owner topology takeover.
-    current.owner == target.owner && current.runtime_incarnation != target.runtime_incarnation
+    current.owner == target.owner
+        && (current.runtime_incarnation != target.runtime_incarnation
+            || current.expires_at_unix_ms < target.lease_expires_at_unix_ms)
 }
 
 fn verify_lease(

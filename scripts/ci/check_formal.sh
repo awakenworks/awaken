@@ -269,6 +269,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness every_tool_call_transition_has_the_unique_documented_precondition \
     --harness terminal_tool_calls_only_accept_result_staging \
     --harness run_end_sealing_targets_exactly_nonterminal_calls \
+    --harness a_second_wait_is_never_admitted \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
     --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
@@ -622,6 +623,11 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -workers auto \
     -metadir "$tlc_state_root/session-run-protocol" \
     -config formal/tla/SessionRunProtocol.cfg formal/tla/SessionRunProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -workers auto \
+    -metadir "$tlc_state_root/session-thread-tool-composition" \
+    -config formal/tla/SessionThreadToolComposition.cfg \
+    formal/tla/SessionThreadToolComposition.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/session-start-protocol" \

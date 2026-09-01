@@ -133,6 +133,11 @@ spec:
           imagePullPolicy: Never
           command: ["/usr/local/bin/awaken-server"]
           args: ["all-in-one", "--config", "/etc/awaken/config.toml", "--no-browser"]
+          # Match the explicit CPU limit instead of inheriting the 32-core k3d
+          # node topology and creating throttled Tokio scheduler workers.
+          env:
+            - name: TOKIO_WORKER_THREADS
+              value: "2"
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

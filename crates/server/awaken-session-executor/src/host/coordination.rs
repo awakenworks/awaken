@@ -428,7 +428,7 @@ impl SharedHost {
         {
             return Err(HostError::bad_request("Session Thread has no awaiting Run"));
         }
-        let mut tickets = snapshot.resume_tickets.into_iter().filter(|entry| {
+        let mut tickets = snapshot.resume_tickets.iter().filter(|entry| {
             entry.run_id == command.expected_run_id
                 && entry.ticket.thread_id == thread_id
                 && entry.ticket.correlation_id == command.expected_correlation_id
@@ -441,12 +441,24 @@ impl SharedHost {
                 "Session Thread has multiple matching committed resume tickets",
             ));
         }
+        let ticket = ticket.ticket.clone();
+        let state = Store::rebuild(&snapshot.state);
+        let batch = awaken_runtime_contract::ActiveToolBatch::load(&state)
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .ok_or_else(|| HostError::internal("Awaiting tool Run has no ActiveToolBatch"))?;
+        batch
+            .validate_awaiting_ticket(&thread_id, &ticket)
+            .map_err(|_| {
+                HostError::bad_request(
+                    "Session Thread awaiting ticket changed after Event admission",
+                )
+            })?;
         self.check_pending(
-            &ticket.ticket,
+            &ticket,
             &command.tool_use_id,
             command.reply.client_executed(),
         )?;
-        Ok((thread_id, ticket.ticket))
+        Ok((thread_id, ticket))
     }
 
     /// Derive the absorbing follow-up fence from the latest committed Run in the

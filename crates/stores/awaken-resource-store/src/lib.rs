@@ -157,6 +157,22 @@ pub(crate) fn prepare_replacement(
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn replacement_coordinates(
+    records: &[ResourceReferenceRecord],
+) -> BTreeSet<(String, String, String)> {
+    records
+        .iter()
+        .map(|record| {
+            (
+                record.target.workspace_id.clone(),
+                kind_name(record.target.kind).to_string(),
+                record.target.resource_id.clone(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn encode_intent(intent: &ResourcePurgeIntent) -> Result<String, ResourcePurgeError> {
     serde_json::to_string(intent).map_err(|error| storage(error.to_string()))
 }
@@ -455,6 +471,79 @@ mod tests {
         holder.join().expect("Q1 release connection");
         assert_eq!(left.await.expect("Q1 left task").expect("Q1/E2"), None);
         assert_eq!(right.await.expect("Q1 right task").expect("Q1/E2"), None);
+    }
+
+    /// Replacement write-amplification cause/effect graph: C1 a holder has an
+    /// exact durable target set; C2 the caller repeats that set in the same or a
+    /// duplicate/reordered representation; C3 the caller supplies a genuinely
+    /// changed set. Effects: E1 exact-set retries perform zero SQLite row
+    /// changes; E2 normalized retries also perform zero changes; E3 a changed
+    /// set is atomically persisted. The reverse-reference index remains the one
+    /// deletion-safety authority; this test forbids a parallel dirty cache.
+    ///
+    /// | Rule | durable set | requested set | Effect |
+    /// |---|---|---|---|
+    /// | N1 | A | A | E1 |
+    /// | N2 | A | A,A reordered | E2 |
+    /// | N3 | A | B | E3 |
+    #[tokio::test]
+    async fn sqlite_identical_reference_replacement_is_a_storage_noop() {
+        let store = SqliteResourceStore::in_memory().unwrap();
+        let holder = "stable-session";
+        let first = ResourceReferenceRecord {
+            target: ResourceTarget::new("workspace-a", ResourceKind::File, "blob-a"),
+            reference: ResourceReference {
+                kind: ResourceReferenceKind::SessionBinding,
+                reference_id: holder.into(),
+            },
+        };
+        let second = ResourceReferenceRecord {
+            target: ResourceTarget::new("workspace-a", ResourceKind::Skill, "skill-b"),
+            reference: first.reference.clone(),
+        };
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                holder,
+                vec![first.clone(), second.clone()],
+            )
+            .await
+            .expect("N1 initial set");
+        let before = store.connection().unwrap().total_changes();
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                holder,
+                vec![second.clone(), first.clone(), first.clone()],
+            )
+            .await
+            .expect("N1-N2 repeated set");
+        assert_eq!(
+            store.connection().unwrap().total_changes(),
+            before,
+            "N1-N2/E1-E2"
+        );
+
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                holder,
+                vec![second.clone()],
+            )
+            .await
+            .expect("N3 changed set");
+        assert!(
+            store.connection().unwrap().total_changes() > before,
+            "N3/E3"
+        );
+        assert!(
+            store.references(&first.target).await.unwrap().is_empty(),
+            "N3/E3"
+        );
+        assert_eq!(
+            store.references(&second.target).await.unwrap(),
+            vec![second.reference]
+        );
     }
 
     /// Storage-local fence FMECA and cause/effect decision table. C1 the first
