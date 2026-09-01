@@ -12,6 +12,7 @@
 pub mod acp_runner;
 pub mod admin_authoring;
 pub mod compact_eval;
+pub mod memory_agent_bench;
 pub mod memory_eval;
 pub mod outcome_acp;
 pub mod outcome_judge;

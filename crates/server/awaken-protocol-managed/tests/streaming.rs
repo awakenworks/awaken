@@ -90,6 +90,32 @@ async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) {
     .await;
 }
 
+async fn state_send_interrupts(state: &Arc<ManagedState>, id: &str, total: usize) {
+    // Keep each batch within the supervisor's 50-step slice so every receipt
+    // crosses the same durable admission/projector path used in production.
+    let mut remaining = total;
+    while remaining > 0 {
+        let batch_size = remaining.min(50);
+        let events = (0..batch_size)
+            .map(|_| serde_json::json!({ "type": "user.interrupt" }))
+            .collect::<Vec<_>>();
+        let req = serde_json::from_value(serde_json::json!({ "events": events })).unwrap();
+        state
+            .send_events(id, req)
+            .await
+            .expect("batch of processed interrupts");
+        remaining -= batch_size;
+    }
+}
+
+fn sse_committed_ids(body: &str) -> Vec<String> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .filter_map(|event| event["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// Drain every frame currently buffered on `rx` (all frames are published
 /// before this call through the awaited admission/reconciliation/projection
 /// sequence). Returns the frames and how many `Lagged` gaps were observed.
@@ -1007,17 +1033,7 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
     // each batch within the supervisor's 50-step slice so all 65 facts cross
     // the same durable projection path instead of relying on unanchored User
     // inputs that are intentionally withheld from the public event prefix.
-    for batch in 0..2 {
-        let batch_size = (65 - batch * 50).min(50);
-        let events = (0..batch_size)
-            .map(|_| serde_json::json!({ "type": "user.interrupt" }))
-            .collect::<Vec<_>>();
-        let req = serde_json::from_value(serde_json::json!({ "events": events })).unwrap();
-        state
-            .send_events(&id, req)
-            .await
-            .expect("batch of processed interrupts");
-    }
+    state_send_interrupts(&state, &id, 65).await;
     state_send_user(&state, &id, "after lag").await;
 
     let (frames, lagged) = drain(&mut rx);
@@ -1030,6 +1046,86 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
         committed_types(&frames).contains(&"session.status_idle"),
         "later committed frames (idle) still arrive despite the lag"
     );
+}
+
+/// Cause/effect graph: C1 24 HTTP SSE responses are opened and their bodies are
+/// deliberately not polled; C2 65 committed receipts exceed the test channel's
+/// 64-frame capacity; C3 a terminal Run commits; C4 every client reconnects.
+/// Effects: E1 C1/C2 do not block admission or terminal commit; E2 every slow
+/// body catches the later Idle and closes within budget; E3 every reconnect full
+/// replays the canonical committed ids exactly once. Decision table:
+/// R1=C1+C2&&!C3=>lag allowed, stream open; R2=C1+C2+C3=>E1+E2;
+/// R3=C1+C2+C3+C4=>E1+E2+E3. Durable Session events remain replay authority;
+/// the broadcast channel is only a best-effort tail.
+#[tokio::test]
+async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
+    let id = http_create(&app).await;
+    let uri = format!("/v1/sessions/{id}/events/stream");
+    let mut slow_bodies = Vec::new();
+    for _ in 0..24 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("open slow SSE response");
+        assert_eq!(response.status(), StatusCode::OK);
+        slow_bodies.push(response.into_body());
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        state_send_interrupts(&state, &id, 65).await;
+        state_send_user(&state, &id, "terminal after slow consumers").await;
+    })
+    .await
+    .expect("R2/E1 slow consumers never backpressure committed admission");
+
+    for (index, body) in slow_bodies.into_iter().enumerate() {
+        let bytes =
+            tokio::time::timeout(std::time::Duration::from_secs(2), Box::pin(body.collect()))
+                .await
+                .unwrap_or_else(|_| panic!("R2/E2 slow body {index} did not terminate"))
+                .expect("collect slow SSE body")
+                .to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).expect("SSE is UTF-8");
+        assert!(
+            body.contains("event: session.status_idle"),
+            "R2/E2 slow body {index} catches the terminal suffix"
+        );
+    }
+
+    let canonical = state
+        .list_events(&id, None, Some(100), false)
+        .expect("canonical replay list")
+        .data
+        .into_iter()
+        .map(|event| event.id)
+        .collect::<Vec<_>>();
+    assert!(
+        !canonical.is_empty(),
+        "the terminal Run produces a durable replay prefix"
+    );
+    for reconnect in 0..24 {
+        let (status, body) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            http_sse(&app, &uri, &[("last-event-id", "stale-client-cursor")]),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("R3 reconnect {reconnect} timed out"));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            sse_committed_ids(&body),
+            canonical,
+            "R3/E3 reconnect {reconnect} full-replays every durable id once"
+        );
+    }
 }
 
 /// Causes: C1 a fresh Session receiver has empty backfill; C2 the sole state-owned

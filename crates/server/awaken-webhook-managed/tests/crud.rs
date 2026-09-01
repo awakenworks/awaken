@@ -1257,6 +1257,126 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
 }
 
 #[tokio::test]
+async fn slow_delivery_never_blocks_new_outbox_commits_and_both_facts_drain() {
+    // Cause/effect graph: C1 one committed lifecycle fact enters a delivery
+    // adapter that remains blocked; C2 another lifecycle fact commits while C1
+    // is blocked; C3 the adapter is released. Effects: E1 C2's durable append
+    // and notifier wake return within the commit budget; E2 neither fact is
+    // dropped; E3 both rows retire after delivery. Decision table:
+    // R1=C1&&!C2=>first row remains pending; R2=C1+C2=>E1+two pending rows;
+    // R3=C1+C2+C3=>E2+E3. Constraint: the Session outbox is the sole durable
+    // owner; this test adds no delivery-side queue or shadow receipt.
+    struct BlockingDelivery {
+        calls: AtomicUsize,
+        entered: AtomicBool,
+        release: tokio::sync::Notify,
+        ids: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl LifecycleFactDelivery for BlockingDelivery {
+        async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
+            self.ids.lock().unwrap().push(fact.id.clone());
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.entered.store(true, Ordering::SeqCst);
+                self.release.notified().await;
+            }
+            Ok(())
+        }
+    }
+
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(ManagedLifecycleFact {
+            id: "session:sesn_slow:created".into(),
+            object_id: "sesn_slow".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.created".into(),
+            timestamp: 1_768_780_800,
+            runtime_interval: None,
+        })
+        .await
+        .expect("append first lifecycle fact");
+    let delivery = Arc::new(BlockingDelivery {
+        calls: AtomicUsize::new(0),
+        entered: AtomicBool::new(false),
+        release: tokio::sync::Notify::new(),
+        ids: Mutex::new(Vec::new()),
+    });
+    let notifier = WebhookOutboxNotifier::with_delivery_interval(
+        delivery.clone(),
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        std::time::Duration::from_millis(10),
+        &service_lifecycle,
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !delivery.entered.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("slow adapter entered its first delivery");
+
+    tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        outbox
+            .append_lifecycle(ManagedLifecycleFact {
+                id: "session:sesn_slow:archived".into(),
+                object_id: "sesn_slow".into(),
+                workspace_id: Some("ws_a".into()),
+                event_type: "session.archived".into(),
+                timestamp: 1_768_780_801,
+                runtime_interval: None,
+            })
+            .await
+            .expect("append while webhook transport is blocked");
+        notifier.notify();
+    })
+    .await
+    .expect("R2/E1 commit path is independent of slow delivery");
+    assert_eq!(
+        outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending during slow delivery")
+            .len(),
+        2,
+        "R2 retains both canonical facts until delivery"
+    );
+
+    delivery.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            notifier.notify();
+            if delivery.ids.lock().unwrap().len() >= 2
+                && outbox
+                    .pending_lifecycle()
+                    .await
+                    .expect("pending after release")
+                    .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("R3 both durable rows drain after transport recovery");
+    let mut ids = delivery.ids.lock().unwrap().clone();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(
+        ids,
+        vec![
+            "session:sesn_slow:archived".to_string(),
+            "session:sesn_slow:created".to_string(),
+        ],
+        "R3/E2 each stable identity reached the adapter"
+    );
+    shutdown_lifecycle(&service_lifecycle).await;
+}
+
+#[tokio::test]
 async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     // Decision rule R2: a committed fact (C1) plus exhausted delivery retries
     // (C2) keeps that exact fact pending (E1) for later reconciliation.

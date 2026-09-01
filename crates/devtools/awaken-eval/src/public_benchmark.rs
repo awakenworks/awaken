@@ -774,7 +774,7 @@ fn index_observations<'a>(
     (by_id, duplicates, unexpected.into_iter().collect())
 }
 
-fn binomial(correct: usize, total: usize) -> BinomialMetrics {
+pub(crate) fn binomial(correct: usize, total: usize) -> BinomialMetrics {
     if total == 0 {
         return BinomialMetrics {
             total,
