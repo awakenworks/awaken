@@ -724,14 +724,12 @@ impl SessionMcpAttachmentSet {
 
     /// Extend every active projection owned by the same realization lease.
     ///
-    /// Renewal deliberately reuses the existing generation and realization id:
-    /// it changes neither desired MCP state nor credential selection. Clearing
-    /// `publication_acknowledged` makes the sole realization phase protocol
-    /// restage and republish the extended exact fence before it reports
-    /// completion. Replaying the same expiry is an idempotent no-op, which lets
-    /// activation converge after a concurrent aggregate lease renewal without
-    /// inventing a second renewal registry.
-    pub fn renew_active_realizations(
+    /// Renewal deliberately reuses the existing generation, realization id,
+    /// Stage identity, and publication acknowledgement. The Runtime updates
+    /// the same resident projection through its lease-only port; forcing this
+    /// aggregate back through Stage/Publish would duplicate physical work.
+    /// Replaying the same expiry is an idempotent no-op.
+    pub fn extend_active_realization_leases(
         &mut self,
         runtime_incarnation: &str,
         lease_epoch: u64,
@@ -767,15 +765,6 @@ impl SessionMcpAttachmentSet {
                 continue;
             }
             claim.lease_expires_at_unix_ms = lease_expires_at_unix_ms;
-            claim.stage_idempotency_key = format!(
-                "renew:{}:{}:{}:{}:{}",
-                attachment.attachment_id.0,
-                attachment.generation.0,
-                runtime_incarnation,
-                lease_epoch,
-                lease_expires_at_unix_ms
-            );
-            attachment.publication_acknowledged = false;
             renewed += 1;
         }
         if renewed > 0 {
@@ -1527,13 +1516,13 @@ mod tests {
     #[test]
     fn active_realization_renewal_cases_follow_the_decision_table() {
         // Cause graph: Active AND exact incarnation AND exact epoch AND later
-        // expiry -> extend the existing claim and require republication. Any
+        // expiry -> extend only the existing claim's authority. Any
         // false fence fails without mutation; non-active generations are not a
         // renewal target and remain unchanged.
         //
         // | Rule | State | Incarnation | Epoch | Expiry | Effect |
         // |---|---|---|---|---|---|
-        // | N1 | Active | exact | exact | later | extend + unacknowledged |
+        // | N1 | Active | exact | exact | later | extend only; keep Stage/publication identity |
         // | N2 | Active | other | exact | later | reject/no mutation |
         // | N3 | Active | exact | other | later | reject/no mutation |
         // | N4 | Active | exact | exact | same | idempotent/no mutation |
@@ -1568,15 +1557,15 @@ mod tests {
         let mut renewed = active();
         assert_eq!(
             renewed
-                .renew_active_realizations("runtime-1", 4, 200)
+                .extend_active_realization_leases("runtime-1", 4, 200)
                 .unwrap(),
             1,
             "N1"
         );
         let claim = renewed.attachments[0].realization.as_ref().unwrap();
         assert_eq!(claim.lease_expires_at_unix_ms, 200, "N1");
-        assert!(claim.stage_idempotency_key.starts_with("renew:"), "N1");
-        assert!(!renewed.attachments[0].publication_acknowledged, "N1");
+        assert_eq!(claim.stage_idempotency_key, "stage-1", "N1");
+        assert!(renewed.attachments[0].publication_acknowledged, "N1");
 
         for (rule, incarnation, epoch, expiry) in [
             ("N2", "runtime-2", 4, 200),
@@ -1586,7 +1575,7 @@ mod tests {
             let mut set = active();
             let before = set.clone();
             assert_eq!(
-                set.renew_active_realizations(incarnation, epoch, expiry),
+                set.extend_active_realization_leases(incarnation, epoch, expiry),
                 Err(McpAttachmentError::StaleRealizationClaim),
                 "{rule}"
             );
@@ -1597,7 +1586,7 @@ mod tests {
         let before = idempotent.clone();
         assert_eq!(
             idempotent
-                .renew_active_realizations("runtime-1", 4, 100)
+                .extend_active_realization_leases("runtime-1", 4, 100)
                 .unwrap(),
             0,
             "N4"
@@ -1612,7 +1601,7 @@ mod tests {
         let before = requested.clone();
         assert_eq!(
             requested
-                .renew_active_realizations("runtime-1", 4, 200)
+                .extend_active_realization_leases("runtime-1", 4, 200)
                 .unwrap(),
             0,
             "N6"

@@ -132,8 +132,10 @@ const DISPATCH_RESERVATION_CLAIM: &str =
     include_str!("migrations/V0026__dispatch_reservation_claim.sql");
 const PENDING_CONTEXT_MESSAGES: &str =
     include_str!("migrations/V0027__pending_context_messages.sql");
+#[cfg(feature = "durable")]
 const PHYSICAL_ATTEMPT_SLOT_POSTGRES: &str =
     include_str!("migrations/V0002__physical_attempt_slot.postgres.sql");
+#[cfg(feature = "durable")]
 const PHYSICAL_ATTEMPT_SLOT_SQLITE: &str =
     include_str!("migrations/V0002__physical_attempt_slot.sqlite.sql");
 

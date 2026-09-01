@@ -1,7 +1,5 @@
 //! SQLite [`SkillStore`] over the crate's `skill_store` migration scope.
 
-use std::sync::{Arc, Mutex};
-
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::{BUNDLE_ID, converged_skill_store_bundle, selected_skill_store_bundle};
@@ -24,7 +22,7 @@ pub enum StoreError {
 }
 
 /// Apply the `skill_store` scoped migration bundle to the guarded connection.
-fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
+fn migrate_guarded(conn: &awaken_sqlite_runtime::SharedSqliteConnection) -> Result<(), StoreError> {
     let guard = conn
         .lock()
         .map_err(|_| StoreError::Migrate("skill_store connection poisoned".into()))?;
@@ -66,30 +64,31 @@ fn storage(err: impl std::fmt::Display) -> SkillStoreError {
     SkillStoreError::Storage(err.to_string())
 }
 
-async fn with_conn<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, SkillStoreError>
+async fn with_conn<T, F>(
+    conn: &awaken_sqlite_runtime::SharedSqliteConnection,
+    f: F,
+) -> Result<T, SkillStoreError>
 where
     T: Send + 'static,
     F: FnOnce(&Connection) -> Result<T, SkillStoreError> + Send + 'static,
 {
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let guard = conn.lock().map_err(|_| storage("skill_store poisoned"))?;
-        f(&guard)
-    })
-    .await
-    .map_err(storage)?
+    awaken_sqlite_runtime::with_connection(conn.clone(), move |connection| f(connection))
+        .await
+        .map_err(storage)?
 }
 
 /// A SQLite-backed [`SkillStore`].
 pub struct SqliteSkillStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteSkillStore {
     /// Open (or create) a database file and apply the skill-store migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|e| StoreError::Open(e.to_string()))?;
         let store = Self::over(conn);
         store.ensure_schema()?;
         Ok(store)
@@ -98,7 +97,9 @@ impl SqliteSkillStore {
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|e| StoreError::Open(e.to_string()))?;
         let store = Self::over(conn);
         store.ensure_schema()?;
         Ok(store)
@@ -109,7 +110,7 @@ impl SqliteSkillStore {
     /// `skill_store` scope so this store shares the caller's database.
     pub fn over(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         }
     }
 

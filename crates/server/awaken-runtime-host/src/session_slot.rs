@@ -334,6 +334,12 @@ pub(crate) struct SessionRuntimeSlot {
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
     pub realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
+    /// Earliest wall-clock instant at which this resident projection may poll
+    /// Control for terminal cleanup again. This is scheduler state only: it
+    /// cannot prove terminality, ownership, or extend the durable lease.
+    /// Keeping it in the canonical Session slot lets overlapping sweeps claim
+    /// one poll atomically without introducing another registry or queue.
+    pub next_terminal_cleanup_poll_at_unix_ms: u64,
     /// Wakes a claim resolver waiting for the Session application's initial
     /// restart reassignment. The lease above remains the only projected fact;
     /// this notification carries no authority or parallel state.
@@ -462,6 +468,25 @@ impl SessionRuntimeSlots {
                     .map(|lease| (session_id.clone(), lease))
             })
             .collect()
+    }
+
+    pub(crate) fn claim_terminal_cleanup_poll(
+        &self,
+        session: &str,
+        expected_lease: &awaken_session_contract::SessionRealizationLease,
+        now_unix_ms: u64,
+        interval_ms: u64,
+    ) -> bool {
+        self.modify(session, |slot| {
+            if slot.realization_lease.as_ref() != Some(expected_lease)
+                || slot.next_terminal_cleanup_poll_at_unix_ms > now_unix_ms
+            {
+                return false;
+            }
+            slot.next_terminal_cleanup_poll_at_unix_ms = now_unix_ms.saturating_add(interval_ms);
+            true
+        })
+        .unwrap_or(false)
     }
 
     pub fn session_ids(&self) -> Vec<String> {

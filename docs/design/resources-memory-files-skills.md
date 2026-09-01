@@ -268,7 +268,8 @@ reclamation. `pending` and its Prepared records are committed before Host or
 worker IO; `active` changes only after realization commits. A failed synchronous
 replacement first re-applies `active`; if rollback also fails, the pending state
 remains discoverable by the reclaimer. The record stores neither a secret nor a
-process-local handle.
+process-local handle. It retains every nonterminal record but only the latest
+Released and Failed generations; `SessionCleanupOperation` owns terminal receipts.
 
 ## Resource Input Component Catalog
 

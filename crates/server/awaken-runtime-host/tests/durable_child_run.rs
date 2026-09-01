@@ -83,23 +83,31 @@ impl LlmExecutor for ParentChildModel {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
+#[test]
+fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     // Cause/effect design: C0 the child publication explicitly sets
     // write=always_ask; C1 the parent Run awaits delegation; C2 the child Run
     // awaits permission in its own thread; C3 the caller approves the exact child
     // tool through the parent; C4 the parent claim projection contains no child
     // Thread; C5 the parent Delegation ticket transports the typed child
-    // Permission without reclassifying it. Effects: E1 expose the child's `write`
-    // boundary once; E2 resume that exact child; E3 settle both durable rows; E4
-    // commit the child result and parent NaturalEnd reply. Constraints: K1 the
-    // Session commit is the sole local parent+child read authority; K2 each claim
+    // Permission without reclassifying it; C6 the same canonical service Runtime
+    // used by cloud Workers drives the complete future. Effects: E1 expose the
+    // child's `write` boundary once; E2 resume that exact child; E3 settle both
+    // durable rows; E4 commit the child result and parent NaturalEnd reply; E5
+    // child execution does not abort on Tokio's smaller default stack.
+    // Constraints: K1 the Session commit is the sole local parent+child read
+    // authority; K2 each claim
     // keeps its own projection; K3 the shared queue is the sole execution fence;
     // K4 the parent validates the relationship while the child ticket owns answer
     // kind and call identity. Decision rules: R1=C0+C1+C2=>E1; R2=C0+C1+C2+C3+C5=>
-    // E2+E3+E4; R3=C4=>use K1, never a stale parent projection.
+    // E2+E3+E4; R3=C4=>use K1, never a stale parent projection;
+    // R4=C1+C2+C6=>E1+E5 through the one service Runtime owner.
     // The injected shared queue is the typed durable-ingress authority; the
     // builder enables its pool without mutating process-global configuration.
+    awaken_service_lifecycle::block_on_service(durable_child_run_scenario());
+}
+
+async fn durable_child_run_scenario() {
     let storage = tempfile::tempdir().expect("storage");
     let memory = Arc::new(MemoryDispatchStore::new());
     let dispatch = Arc::new(AnyDispatchStore::from_dispatch(

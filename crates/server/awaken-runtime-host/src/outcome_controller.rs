@@ -163,7 +163,7 @@ impl SharedHost {
         match command {
             OutcomeCommand::Prepare { outcome_id, .. } => {
                 let _outcome = ctx.outcome.lock().await;
-                let _execution = ctx.execution.lock().await;
+                let _command = ctx.command.lock().await;
                 controller
                     .prepare(
                         Id(outcome_id.to_string()),
@@ -176,7 +176,7 @@ impl SharedHost {
             }
             OutcomeCommand::Resume => {
                 let _outcome = ctx.outcome.lock().await;
-                let _execution = ctx.execution.lock().await;
+                let _command = ctx.command.lock().await;
                 match controller.resume_active().await {
                     Ok(Some(report)) => Ok(OutcomeCommandResult::Driven(Some(
                         HostOutcomeDrive::Completed(project_report(report)),
@@ -383,7 +383,7 @@ mod tests {
     }
 
     /// Cause/effect graph: C1 an Outcome Worker/Judge command owns both Host
-    /// execution locks; C2 a concurrent adapter refresh asks only for an exact
+    /// command-ordering locks; C2 a concurrent adapter refresh asks only for an exact
     /// committed Outcome projection. Effects: E1 C2 completes from committed
     /// truth without waiting for C1; E2 no model call or Outcome transition is
     /// introduced. Constraint: mutating Prepare/Resume commands remain
@@ -394,7 +394,7 @@ mod tests {
     /// Decision rule: R1 must complete within the timeout while both mutation
     /// locks remain held, proving the committed read is lock-independent.
     #[tokio::test]
-    async fn committed_outcome_read_does_not_wait_for_execution_locks() {
+    async fn committed_outcome_read_does_not_wait_for_command_locks() {
         let model = Arc::new(SequenceModel::new(&[]));
         let host = SharedHost::new(model.clone(), "stub");
         let ctx = host
@@ -402,7 +402,7 @@ mod tests {
             .await
             .expect("R1 Session context");
         let _outcome = ctx.outcome.lock().await;
-        let _execution = ctx.execution.lock().await;
+        let _command = ctx.command.lock().await;
 
         let report = tokio::time::timeout(
             std::time::Duration::from_millis(100),

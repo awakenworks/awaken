@@ -1,7 +1,5 @@
 //! SQLite config-store adapter under the built-in `config` namespace.
 
-use std::sync::{Arc, Mutex};
-
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -30,20 +28,24 @@ pub enum StoreError {
 
 /// A SQLite-backed [`ConfigRegistry`].
 pub struct SqliteConfigStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteConfigStore {
     /// Open (or create) a database file and apply the config migrations.
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)
     }
 
@@ -79,7 +81,7 @@ impl SqliteConfigStore {
             .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|error| StoreError::Migrate(error.to_string()))?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         })
     }
 
@@ -88,15 +90,9 @@ impl SqliteConfigStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection, &str) -> Result<T, ConfigStoreError> + Send + 'static,
     {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = conn
-                .lock()
-                .map_err(|_| ConfigStoreError("config connection poisoned".to_string()))?;
-            f(&mut guard, NS)
-        })
-        .await
-        .map_err(|err| ConfigStoreError(err.to_string()))?
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| f(conn, NS))
+            .await
+            .map_err(|err| ConfigStoreError(err.to_string()))?
     }
 }
 

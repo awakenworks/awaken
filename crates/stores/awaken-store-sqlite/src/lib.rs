@@ -17,7 +17,7 @@
 //! commit — never an independent authority.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -119,7 +119,7 @@ const NS: &str = "runtime";
 
 /// A SQLite-backed [`Coordinator`] plus the read ports it serves.
 pub struct SqliteCommitCoordinator {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
     projection: Mutex<Projection>,
     /// Serializes commits so the fence is assigned without a race and the
     /// projection advances in commit order.
@@ -185,7 +185,7 @@ impl SqliteCommitCoordinator {
         let projection = hydrate(&conn).map_err(|err| StoreError::Hydrate(err.to_string()))?;
 
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
             projection: Mutex::new(projection),
             write_lock: tokio::sync::Mutex::new(()),
         })
@@ -245,13 +245,9 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         // Serialize commits: assign the fence and advance the projection without
         // a race, matching SQLite's single-writer model.
         let _writing = self.write_lock.lock().await;
-        let conn = self.conn.clone();
         let data = commit.clone();
-        let next = tokio::task::spawn_blocking(move || {
-            let mut guard = conn
-                .lock()
-                .map_err(|_| Error::Rejected("sqlite connection poisoned".to_string()))?;
-            write_commit(&mut guard, &data)
+        let next = awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            write_commit(conn, &data)
         })
         .await
         .map_err(|err| Error::Rejected(err.to_string()))??;
@@ -269,13 +265,9 @@ impl OperationCoordinator for SqliteCommitCoordinator {
             .validate()
             .map_err(|error| Error::Rejected(error.to_string()))?;
         let _writing = self.write_lock.lock().await;
-        let conn = self.conn.clone();
         let data = operation.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            let mut guard = conn
-                .lock()
-                .map_err(|_| Error::Rejected("sqlite connection poisoned".to_string()))?;
-            write_operation(&mut guard, &data)
+        let outcome = awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            write_operation(conn, &data)
         })
         .await
         .map_err(|error| Error::Rejected(error.to_string()))??;
@@ -387,12 +379,11 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
             RunLifecycleFeedError::Rejected("cursor exceeds SQLite INTEGER range".into())
         })?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = {
-            let conn = self.conn.lock().map_err(|_| {
-                RunLifecycleFeedError::Rejected("commit connection poisoned".into())
-            })?;
-            let mut statement = conn
-                .prepare(&format!(
+        let rows = awaken_sqlite_runtime::with_connection(
+            self.conn.clone(),
+            move |conn| {
+                let mut statement = conn
+                    .prepare(&format!(
                     "WITH lifecycle AS (\
                          SELECT event.sequence, event.run_id, run.thread_id, event.kind, event.payload, \
                                 (SELECT prior.payload FROM {NS}_event AS prior \
@@ -408,24 +399,27 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
                      ) \
                      SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
                      FROM lifecycle WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
-                ))
-                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
-            let mapped = statement
-                .query_map(params![after, limit], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
                     ))
-                })
-                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
-            mapped
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?
-        };
+                    .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+                let mapped = statement
+                    .query_map(params![after, limit], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                        ))
+                    })
+                    .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
+                mapped
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))
+            },
+        )
+        .await
+        .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))??;
 
         let mut events = Vec::with_capacity(rows.len());
         for (sequence, run_id, thread_id, kind, payload, previous_payload) in rows {
@@ -490,160 +484,171 @@ impl RunRecoverySource for SqliteCommitCoordinator {
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| RecoveryError::Rejected("commit connection poisoned".to_string()))?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Deferred)
-            .map_err(recovery_reject)?;
-        let store_cursor: i64 = tx
-            .query_row(
-                &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
-                [],
-                |row| row.get(0),
-            )
-            .map_err(recovery_reject)?;
-        let thread_version: i64 = tx
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"),
-                params![&thread_id.0],
-                |row| row.get(0),
-            )
-            .map_err(recovery_reject)?;
-        let next_commit_ordinal: i64 = tx
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
-                params![&claimed_run_id.0],
-                |row| row.get(0),
-            )
-            .map_err(recovery_reject)?;
+        let connection = self.conn.clone();
+        let thread_id = thread_id.clone();
+        let claimed_run_id = claimed_run_id.clone();
+        awaken_sqlite_runtime::with_connection(connection, move |conn| {
+            read_recovery_snapshot(conn, thread_id, claimed_run_id)
+        })
+        .await
+        .map_err(recovery_reject)?
+    }
+}
 
-        let mut runs = Vec::<RunRecord>::new();
-        let mut latest_run_id = None;
-        {
-            let mut statement = tx
-                .prepare(&format!(
-                    "SELECT run_id, phase FROM {NS}_commit \
+fn read_recovery_snapshot(
+    conn: &mut Connection,
+    thread_id: ThreadId,
+    claimed_run_id: RunId,
+) -> Result<RunRecoverySnapshot, RecoveryError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(recovery_reject)?;
+    let store_cursor: i64 = tx
+        .query_row(
+            &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(recovery_reject)?;
+    let thread_version: i64 = tx
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = ?1"),
+            params![&thread_id.0],
+            |row| row.get(0),
+        )
+        .map_err(recovery_reject)?;
+    let next_commit_ordinal: i64 = tx
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {NS}_commit WHERE run_id = ?1"),
+            params![&claimed_run_id.0],
+            |row| row.get(0),
+        )
+        .map_err(recovery_reject)?;
+
+    let mut runs = Vec::<RunRecord>::new();
+    let mut latest_run_id = None;
+    {
+        let mut statement = tx
+            .prepare(&format!(
+                "SELECT run_id, phase FROM {NS}_commit \
                      WHERE thread_id = ?1 ORDER BY sequence"
-                ))
-                .map_err(recovery_reject)?;
-            let rows = statement
-                .query_map(params![&thread_id.0], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(recovery_reject)?;
-            for row in rows {
-                let (run_id, state) = row.map_err(recovery_reject)?;
-                let run_id = RunId(run_id);
-                let state = serde_json::from_str::<RunState>(&state).map_err(recovery_reject)?;
-                let record = RunRecord {
-                    id: run_id.clone(),
-                    thread_id: thread_id.clone(),
-                    state,
-                };
-                latest_run_id = Some(run_id.clone());
-                if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run_id) {
-                    *existing = record;
-                } else {
-                    runs.push(record);
-                }
+            ))
+            .map_err(recovery_reject)?;
+        let rows = statement
+            .query_map(params![&thread_id.0], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(recovery_reject)?;
+        for row in rows {
+            let (run_id, state) = row.map_err(recovery_reject)?;
+            let run_id = RunId(run_id);
+            let state = serde_json::from_str::<RunState>(&state).map_err(recovery_reject)?;
+            let record = RunRecord {
+                id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                state,
+            };
+            latest_run_id = Some(run_id.clone());
+            if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run_id) {
+                *existing = record;
+            } else {
+                runs.push(record);
             }
         }
+    }
 
-        let (message_commit_cursors, messages) =
-            read_thread_json_rows_with_commit::<Message>(&tx, "message", thread_id)?;
-        let (state_commit_cursors, state) =
-            read_thread_json_rows_with_commit::<StateCommand>(&tx, "state_command", thread_id)?;
-        let mut events = Vec::new();
-        {
-            let mut statement = tx
-                .prepare(&format!(
-                    "SELECT event.sequence, event.run_id, event.kind, event.payload \
+    let (message_commit_cursors, messages) =
+        read_thread_json_rows_with_commit::<Message>(&tx, "message", &thread_id)?;
+    let (state_commit_cursors, state) =
+        read_thread_json_rows_with_commit::<StateCommand>(&tx, "state_command", &thread_id)?;
+    let mut events = Vec::new();
+    {
+        let mut statement = tx
+            .prepare(&format!(
+                "SELECT event.sequence, event.run_id, event.kind, event.payload \
                      FROM {NS}_event AS event \
                      JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
                      WHERE run.thread_id = ?1 ORDER BY event.sequence"
+            ))
+            .map_err(recovery_reject)?;
+        let rows = statement
+            .query_map(params![&thread_id.0], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
-                .map_err(recovery_reject)?;
-            let rows = statement
-                .query_map(params![&thread_id.0], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
-                .map_err(recovery_reject)?;
-            for row in rows {
-                let (sequence, run_id, kind, payload) = row.map_err(recovery_reject)?;
-                events.push(EventRecord {
-                    sequence: StoredU64::try_from(sequence)
-                        .map(StoredU64::domain_value)
-                        .map_err(recovery_reject)?,
-                    run_id: RunId(run_id),
-                    kind: serde_json::from_str(&kind).map_err(recovery_reject)?,
-                    payload: serde_json::from_str(&payload).map_err(recovery_reject)?,
-                });
-            }
+            })
+            .map_err(recovery_reject)?;
+        for row in rows {
+            let (sequence, run_id, kind, payload) = row.map_err(recovery_reject)?;
+            events.push(EventRecord {
+                sequence: StoredU64::try_from(sequence)
+                    .map(StoredU64::domain_value)
+                    .map_err(recovery_reject)?,
+                run_id: RunId(run_id),
+                kind: serde_json::from_str(&kind).map_err(recovery_reject)?,
+                payload: serde_json::from_str(&payload).map_err(recovery_reject)?,
+            });
         }
-        let mut resume_tickets = Vec::new();
-        {
-            let mut statement = tx
-                .prepare(&format!(
-                    "SELECT waiting.run_id, waiting.ticket \
+    }
+    let mut resume_tickets = Vec::new();
+    {
+        let mut statement = tx
+            .prepare(&format!(
+                "SELECT waiting.run_id, waiting.ticket \
                      FROM {NS}_waiting AS waiting \
                      JOIN {NS}_run_record AS run ON run.run_id = waiting.run_id \
                      WHERE run.thread_id = ?1 ORDER BY waiting.run_id"
-                ))
-                .map_err(recovery_reject)?;
-            let rows = statement
-                .query_map(params![&thread_id.0], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(recovery_reject)?;
-            for row in rows {
-                let (run_id, ticket) = row.map_err(recovery_reject)?;
-                let run_id = RunId(run_id);
-                let is_awaiting = runs
-                    .iter()
-                    .any(|run| run.id == run_id && matches!(run.state, RunState::Awaiting));
-                if !is_awaiting {
-                    tracing::error!(
-                        awaken.run.id = %run_id.0,
-                        awaken.thread.id = %thread_id.0,
-                        "quarantining a stale waiting row whose Run is not Awaiting"
-                    );
-                    continue;
-                }
-                if let Some(ticket) = decode_resume_ticket(&run_id, thread_id, &ticket) {
-                    resume_tickets.push(RunResumeTicket { run_id, ticket });
-                }
+            ))
+            .map_err(recovery_reject)?;
+        let rows = statement
+            .query_map(params![&thread_id.0], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(recovery_reject)?;
+        for row in rows {
+            let (run_id, ticket) = row.map_err(recovery_reject)?;
+            let run_id = RunId(run_id);
+            let is_awaiting = runs
+                .iter()
+                .any(|run| run.id == run_id && matches!(run.state, RunState::Awaiting));
+            if !is_awaiting {
+                tracing::error!(
+                    awaken.run.id = %run_id.0,
+                    awaken.thread.id = %thread_id.0,
+                    "quarantining a stale waiting row whose Run is not Awaiting"
+                );
+                continue;
+            }
+            if let Some(ticket) = decode_resume_ticket(&run_id, &thread_id, &ticket) {
+                resume_tickets.push(RunResumeTicket { run_id, ticket });
             }
         }
-        tx.commit().map_err(recovery_reject)?;
-        Ok(RunRecoverySnapshot {
-            thread_id: thread_id.clone(),
-            claimed_run_id: claimed_run_id.clone(),
-            runs,
-            latest_run_id,
-            messages,
-            message_commit_cursors,
-            state,
-            state_commit_cursors,
-            events,
-            resume_tickets,
-            thread_version: StoredU64::try_from(thread_version)
-                .map(StoredU64::domain_value)
-                .map_err(recovery_reject)?,
-            store_cursor: StoredU64::try_from(store_cursor)
-                .map(StoredU64::domain_value)
-                .map_err(recovery_reject)?,
-            next_commit_ordinal: StoredU64::try_from(next_commit_ordinal)
-                .map(StoredU64::domain_value)
-                .map_err(recovery_reject)?,
-        })
     }
+    tx.commit().map_err(recovery_reject)?;
+    Ok(RunRecoverySnapshot {
+        thread_id,
+        claimed_run_id,
+        runs,
+        latest_run_id,
+        messages,
+        message_commit_cursors,
+        state,
+        state_commit_cursors,
+        events,
+        resume_tickets,
+        thread_version: StoredU64::try_from(thread_version)
+            .map(StoredU64::domain_value)
+            .map_err(recovery_reject)?,
+        store_cursor: StoredU64::try_from(store_cursor)
+            .map(StoredU64::domain_value)
+            .map_err(recovery_reject)?,
+        next_commit_ordinal: StoredU64::try_from(next_commit_ordinal)
+            .map(StoredU64::domain_value)
+            .map_err(recovery_reject)?,
+    })
 }
 
 fn read_thread_json_rows_with_commit<T>(
@@ -1218,4 +1223,67 @@ fn json<T: serde::Serialize>(value: &T) -> Result<String, Error> {
 
 fn reject(err: rusqlite::Error) -> Error {
     Error::Rejected(err.to_string())
+}
+
+#[cfg(test)]
+mod scheduler_isolation_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Commit-read scheduler-isolation cause/effect graph: C1 a synchronous
+    /// owner holds the SQLite commit connection; C2 lifecycle delivery and
+    /// recovery concurrently queue on a two-worker Tokio runtime. Effects: E1
+    /// neither read blocks a runtime worker; E2 an authority timer fires before
+    /// the owner releases at 250 ms; E3 both authoritative reads finish after
+    /// release without inventing durable facts. Rule C1=C1+C2=>E1+E2+E3.
+    /// This adapter rule prevents either recovery read port from bypassing the
+    /// workspace's single canonical SQLite scheduling boundary.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_reads_cannot_starve_authority_timers() {
+        let store = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("store"));
+        let held = store.conn.clone();
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().expect("C1 connection lock");
+            held_tx.send(()).expect("C1 announce held connection");
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        held_rx.recv().expect("C1 connection held");
+
+        let started = Instant::now();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            started.elapsed()
+        });
+        let lifecycle = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.events_after(RunLifecycleCursor(0), 16).await }
+        });
+        let recovery = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                store
+                    .recovery_snapshot(&ThreadId("thread".into()), &RunId("run".into()))
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let elapsed = tokio::time::timeout(Duration::from_millis(100), timer)
+            .await
+            .expect("C1/E1-E2 authority timer remains schedulable")
+            .expect("C1 timer task");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "C1/E2 timer fired after {elapsed:?}; recovery reads blocked runtime workers"
+        );
+
+        holder.join().expect("C1 release connection");
+        let lifecycle = lifecycle.await.expect("lifecycle task").expect("C1/E3");
+        assert!(lifecycle.events.is_empty(), "C1/E3 no invented events");
+        let recovery = recovery.await.expect("recovery task").expect("C1/E3");
+        assert!(recovery.runs.is_empty(), "C1/E3 no invented Runs");
+    }
 }

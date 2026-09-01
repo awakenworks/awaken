@@ -1,7 +1,5 @@
 //! SQLite [`MemoryRepository`] over the crate's `memory_store` migration scope.
 
-use std::sync::{Arc, Mutex};
-
 use awaken_store_runtime::StoredU64;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -54,7 +52,7 @@ fn migrate_conn(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn migrate_guarded(conn: &Arc<Mutex<Connection>>) -> Result<(), StoreError> {
+fn migrate_guarded(conn: &awaken_sqlite_runtime::SharedSqliteConnection) -> Result<(), StoreError> {
     let guard = conn
         .lock()
         .map_err(|_| StoreError::Migrate("memory_store connection poisoned".into()))?;
@@ -86,32 +84,33 @@ fn next_domain_version(value: i64) -> Result<u64, MemErr> {
 
 /// Like [`with_conn`] but the closure carries [`MemErr`] (so it can raise
 /// `PathConflict`/`Conflict`/`NotFound`, not only storage faults).
-async fn with_conn_mem<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, MemErr>
+async fn with_conn_mem<T, F>(
+    conn: &awaken_sqlite_runtime::SharedSqliteConnection,
+    f: F,
+) -> Result<T, MemErr>
 where
     T: Send + 'static,
     F: FnOnce(&Connection) -> Result<T, MemErr> + Send + 'static,
 {
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let guard = conn.lock().map_err(|_| mem_err("memory_store poisoned"))?;
-        f(&guard)
-    })
-    .await
-    .map_err(mem_err)?
+    awaken_sqlite_runtime::with_connection(conn.clone(), move |connection| f(connection))
+        .await
+        .map_err(mem_err)?
 }
 
 /// A SQLite-backed [`MemoryRepository`] (path-addressed, CAS). Each mutation holds the
 /// connection mutex, so a read-modify-write (compare-and-swap, rename-replace) is
 /// atomic within the process; a cross-node CAS is the postgres backend's job.
 pub struct SqliteMemoryRepository {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteMemoryRepository {
     /// Open (or create) a database file and apply the memory-store migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|e| StoreError::Open(e.to_string()))?;
         let store = Self::over(conn);
         store.ensure_schema()?;
         Ok(store)
@@ -120,7 +119,9 @@ impl SqliteMemoryRepository {
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|e| StoreError::Open(e.to_string()))?;
         let store = Self::over(conn);
         store.ensure_schema()?;
         Ok(store)
@@ -130,7 +131,7 @@ impl SqliteMemoryRepository {
     /// migration pipeline to own the shared database.
     pub fn over(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         }
     }
 

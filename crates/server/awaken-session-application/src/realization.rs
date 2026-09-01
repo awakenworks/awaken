@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, ManagedLifecycleFact, McpAttachmentState, McpGenerationRef,
-    PersistedSession, RunError, SessionEnvironmentState, SessionExecutionState,
-    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
-    SessionRealizationDirective, SessionRealizationLease, SessionRepositoryError, SessionRuntime,
-    SessionTerminalCleanupAssignment, StageMcpAttachment,
+    PersistedSession, RenewSessionRealization, RunError, SessionEnvironmentState,
+    SessionExecutionState, SessionRealizationAction, SessionRealizationControl,
+    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationLease,
+    SessionRepositoryError, SessionRuntime, SessionTerminalCleanupAssignment, StageMcpAttachment,
 };
 
 use super::{SessionApplication, SessionMutationError};
@@ -58,11 +58,6 @@ fn validate_realization_target(
     {
         return Err(SessionRealizationControlFailure::Invalid(
             "Runtime owner/incarnation and a future lease expiry are required".into(),
-        ));
-    }
-    if target.renew_existing_lease && target.reassign_existing_lease {
-        return Err(SessionRealizationControlFailure::Invalid(
-            "Session realization renewal and reassignment are mutually exclusive".into(),
         ));
     }
     Ok(())
@@ -492,7 +487,6 @@ impl SessionApplication {
                     owner: self.local_realization_owner().to_string(),
                     runtime_incarnation: self.runtime_incarnation().to_string(),
                     lease_expires_at_unix_ms,
-                    renew_existing_lease: false,
                     reassign_existing_lease: false,
                 },
             })
@@ -536,16 +530,13 @@ impl SessionApplication {
         })
     }
 
-    /// Renew due local projections through the same root-CAS phase protocol.
+    /// Renew due local projections through the lease-only root-CAS command.
     pub async fn renew_due_session_realizations(
         &self,
         now_unix_ms: u64,
     ) -> Result<usize, SessionRealizationError> {
         const RENEW_BEFORE_MS: u64 = 150_000;
         const LEASE_MS: u64 = 300_000;
-        self.refresh_executable_projections()
-            .await
-            .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
         let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
         let requested_expiry = now_unix_ms.saturating_add(LEASE_MS);
         let sessions = self
@@ -571,21 +562,18 @@ impl SessionApplication {
             {
                 continue;
             }
-            let directive = self
-                .begin_session_realization_after_refresh(BeginSessionRealization {
+            let renewed_lease = self
+                .renew_session_realization_after_load(RenewSessionRealization {
                     session_id: scoped.session.session_id.clone(),
-                    target: awaken_session_contract::SessionRealizationTarget {
-                        owner: lease.owner,
-                        runtime_incarnation: lease.runtime_incarnation,
-                        lease_expires_at_unix_ms: requested_expiry,
-                        renew_existing_lease: true,
-                        reassign_existing_lease: false,
-                    },
+                    asserted_lease: lease,
+                    requested_expires_at_unix_ms: requested_expiry,
                 })
                 .await
                 .map_err(SessionRealizationError::Control)?;
-            self.drive_local_realization(&scoped.session.session_id, directive)
-                .await?;
+            self.runtime()
+                .renew_session_realization_lease(&scoped.session.session_id, renewed_lease)
+                .await
+                .map_err(SessionRealizationError::Effect)?;
             renewed += 1;
         }
         Ok(renewed)
@@ -799,7 +787,7 @@ impl SessionApplication {
             .await
     }
 
-    async fn session_for_realization(
+    async fn session_for_realization_without_credential_migration(
         &self,
         session_id: &str,
     ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
@@ -821,6 +809,16 @@ impl SessionApplication {
         if !environment_admits_realization_effects(&session.environment) {
             return Err(SessionRealizationControlFailure::NotReady);
         }
+        Ok((owner_scope, session))
+    }
+
+    async fn session_for_realization(
+        &self,
+        session_id: &str,
+    ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
+        let (owner_scope, session) = self
+            .session_for_realization_without_credential_migration(session_id)
+            .await?;
         let session = self
             .ensure_repository_credentials_pinned(&owner_scope, session)
             .await
@@ -847,6 +845,84 @@ fn session_recovery_delay(failure_streak: u32) -> std::time::Duration {
 }
 
 impl SessionApplication {
+    /// Extend only the existing root-owned realization fence. Renewal never
+    /// resolves executable catalogs, pins credentials, materializes transcript
+    /// context, or advances pending MCP/Resource desired state.
+    async fn renew_session_realization_after_load(
+        &self,
+        command: RenewSessionRealization,
+    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
+        if command.session_id.trim().is_empty()
+            || command.asserted_lease.owner.trim().is_empty()
+            || command.asserted_lease.runtime_incarnation.trim().is_empty()
+            || command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms
+            || !awaken_session_contract::realization_lease_is_live_at(
+                command.requested_expires_at_unix_ms,
+                now_unix_ms(),
+            )
+        {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "Session id, exact asserted lease, and a monotonic future expiry are required"
+                    .into(),
+            ));
+        }
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let (owner_scope, mut session) = self
+                .session_for_realization_without_credential_migration(&command.session_id)
+                .await?;
+            let current = session
+                .realization
+                .clone()
+                .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
+            if !awaken_session_contract::realization_lease_authorizes(
+                &current,
+                &command.asserted_lease,
+                now_unix_ms(),
+            ) {
+                return Err(SessionRealizationControlFailure::StaleOwnership);
+            }
+            if command.requested_expires_at_unix_ms <= current.expires_at_unix_ms {
+                return Ok(current);
+            }
+            let mut renewed = current;
+            renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
+            session
+                .mcp
+                .extend_active_realization_leases(
+                    &renewed.runtime_incarnation,
+                    renewed.epoch,
+                    renewed.expires_at_unix_ms,
+                )
+                .map_err(unavailable)?;
+            session.realization = Some(renewed);
+            match self
+                .commit_session_snapshot(
+                    &owner_scope,
+                    session,
+                    "renew-session-realization-lease",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(session) => {
+                    return session
+                        .realization
+                        .ok_or(SessionRealizationControlFailure::NotReady);
+                }
+                Err(SessionMutationError::Conflict)
+                    if attempt + 1 < SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
+                Err(SessionMutationError::Conflict) => {
+                    return Err(SessionRealizationControlFailure::Conflict);
+                }
+                Err(error) => return Err(unavailable(error)),
+            }
+        }
+        Err(SessionRealizationControlFailure::Conflict)
+    }
+
     async fn begin_session_realization_after_refresh(
         &self,
         command: BeginSessionRealization,
@@ -884,20 +960,8 @@ impl SessionApplication {
             let needs_assignment = !existing_live
                 || !same_incarnation
                 || (command.target.reassign_existing_lease && !same_owner);
-            let renews_assignment = command.target.renew_existing_lease
-                && !needs_assignment
-                && session.realization.as_ref().is_some_and(|lease| {
-                    command.target.lease_expires_at_unix_ms > lease.expires_at_unix_ms
-                });
-            if !needs_assignment && !renews_assignment && requested.is_empty() {
-                return self
-                    .next_action(
-                        owner_scope,
-                        &session,
-                        false,
-                        !command.target.renew_existing_lease,
-                    )
-                    .await;
+            if !needs_assignment && requested.is_empty() {
+                return self.next_action(owner_scope, &session, false, true).await;
             }
 
             let lease = if needs_assignment {
@@ -916,16 +980,12 @@ impl SessionApplication {
                     expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
                 }
             } else {
-                let mut lease = session
+                session
                     .realization
                     .clone()
-                    .expect("a live assignment was checked");
-                if renews_assignment {
-                    lease.expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
-                }
-                lease
+                    .expect("a live assignment was checked")
             };
-            if session.resources.pending.is_some() && !command.target.renew_existing_lease {
+            if session.resources.pending.is_some() {
                 session.resources.start_attempt().map_err(unavailable)?;
             }
             let to_claim = if needs_assignment {
@@ -975,16 +1035,6 @@ impl SessionApplication {
                 };
                 result.map_err(unavailable)?;
             }
-            if renews_assignment {
-                session
-                    .mcp
-                    .renew_active_realizations(
-                        &lease.runtime_incarnation,
-                        lease.epoch,
-                        lease.expires_at_unix_ms,
-                    )
-                    .map_err(unavailable)?;
-            }
             if needs_assignment
                 && matches!(
                     session.execution,
@@ -1015,12 +1065,7 @@ impl SessionApplication {
             {
                 Ok(session) => {
                     return self
-                        .next_action(
-                            owner_scope,
-                            &session,
-                            needs_assignment,
-                            !command.target.renew_existing_lease,
-                        )
+                        .next_action(owner_scope, &session, needs_assignment, true)
                         .await;
                 }
                 Err(SessionMutationError::Conflict)
@@ -1175,16 +1220,16 @@ impl SessionApplication {
         }
         // A heartbeat may have extended the aggregate lease while the Runtime
         // was staging a previously admitted request. Promote the newly Active
-        // durable claim to that current lease before publication. The returned
-        // Stage directive then updates the same process-local projection by its
-        // renewal binding; it does not reconnect or reopen credentials.
+        // durable claim to that current lease before publication. The Runtime's
+        // lease-only port already updated the same resident projection, so no
+        // second Stage or credential materialization is required.
         let current_lease = session
             .realization
             .clone()
             .ok_or(SessionRealizationControlFailure::NotReady)?;
-        let renewed_after_activation = session
+        session
             .mcp
-            .renew_active_realizations(
+            .extend_active_realization_leases(
                 &current_lease.runtime_incarnation,
                 current_lease.epoch,
                 current_lease.expires_at_unix_ms,
@@ -1212,9 +1257,6 @@ impl SessionApplication {
                 SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                 error => unavailable(error),
             })?;
-        if renewed_after_activation > 0 {
-            return self.next_action(owner_scope, &session, false, false).await;
-        }
         let publish = Self::publication_generations(&session)?;
         let drain = Self::draining_generations(&session)?;
         self.realization_directive(
@@ -1505,10 +1547,9 @@ impl SessionApplication {
         target: awaken_session_contract::SessionRealizationTarget,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target)?;
-        if target.renew_existing_lease || target.reassign_existing_lease {
+        if target.reassign_existing_lease {
             return Err(SessionRealizationControlFailure::Invalid(
-                "terminal cleanup recovery claims cannot renew or reassign a live logical owner"
-                    .into(),
+                "terminal cleanup recovery claims cannot reassign a live logical owner".into(),
             ));
         }
         let mut conflicted_session_id = None;
@@ -1783,6 +1824,13 @@ impl SessionRealizationControl for SessionApplication {
         self.begin_session_realization_after_refresh(command).await
     }
 
+    async fn renew_session_realization(
+        &self,
+        command: RenewSessionRealization,
+    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
+        self.renew_session_realization_after_load(command).await
+    }
+
     async fn activate_session_realization(
         &self,
         command: ActivateSessionRealization,
@@ -1817,10 +1865,9 @@ impl SessionRealizationControl for SessionApplication {
         target: awaken_session_contract::SessionRealizationTarget,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
         validate_realization_target(&target)?;
-        if target.renew_existing_lease || target.reassign_existing_lease {
+        if target.reassign_existing_lease {
             return Err(SessionRealizationControlFailure::Invalid(
-                "terminal cleanup recovery claims cannot renew or reassign a live logical owner"
-                    .into(),
+                "terminal cleanup recovery claims cannot reassign a live logical owner".into(),
             ));
         }
         self.refresh_executable_projections()

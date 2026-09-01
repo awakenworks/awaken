@@ -198,7 +198,10 @@ PEP or PDP: it has no principal, role, API key, policy, or allow/deny decision.
 The Session application state records `SessionResourceActivation` as
 `Prepared -> Active -> Releasing -> Released | Failed`. It is a reliable cleanup
 record, not a new product resource aggregate, and contains no secret or live
-handle.
+handle. The aggregate retains every unsettled activation plus only the latest
+`Released` and latest `Failed` diagnostic generations. The root-owned cleanup
+operation remains terminal receipt authority; retaining every settled Resource
+replacement here would duplicate that history and make recovery cost unbounded.
 
 The implemented `SessionResourceState` keeps the applied manifest, an optional
 pending manifest, a sequential revision, and the per-binding activation records

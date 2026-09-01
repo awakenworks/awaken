@@ -11,8 +11,6 @@
 //! `SealedAeadSecretStore::over(&key, Arc::new(SqliteSealedBlobStore::open(..)?))`
 //! (features `sealed-aead` + `sqlite`), which stores only `nonce ‖ ciphertext`.
 
-use std::sync::{Arc, Mutex};
-
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::schema::credential_bundle;
@@ -75,46 +73,37 @@ pub fn open_migrated_pair(
 ) -> Result<(SqliteCredentialRepo, SqliteSealedBlobStore), StoreError> {
     let connection = open_file_connection(path)?;
     run_migrations(&connection)?;
-    let conn = Arc::new(Mutex::new(connection));
+    let conn = awaken_sqlite_runtime::SharedSqliteConnection::new(connection);
     Ok((
         SqliteCredentialRepo { conn: conn.clone() },
         SqliteSealedBlobStore { conn },
     ))
 }
 
-async fn with_conn<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, CredentialError>
+async fn with_conn<T, F>(
+    conn: &awaken_sqlite_runtime::SharedSqliteConnection,
+    f: F,
+) -> Result<T, CredentialError>
 where
     T: Send + 'static,
     F: FnOnce(&mut Connection, &str) -> Result<T, CredentialError> + Send + 'static,
 {
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = conn
-            .lock()
-            .map_err(|_| storage("credential connection poisoned"))?;
-        f(&mut guard, NS)
-    })
-    .await
-    .map_err(storage)?
+    awaken_sqlite_runtime::with_connection(conn.clone(), move |connection| f(connection, NS))
+        .await
+        .map_err(storage)?
 }
 
 async fn with_conn_vault_mutation<T, F>(
-    conn: &Arc<Mutex<Connection>>,
+    conn: &awaken_sqlite_runtime::SharedSqliteConnection,
     f: F,
 ) -> Result<T, ManagedVaultMutationError>
 where
     T: Send + 'static,
     F: FnOnce(&mut Connection, &str) -> Result<T, ManagedVaultMutationError> + Send + 'static,
 {
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = conn.lock().map_err(|_| {
-            ManagedVaultMutationError::Store(storage("credential connection poisoned"))
-        })?;
-        f(&mut guard, NS)
-    })
-    .await
-    .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?
+    awaken_sqlite_runtime::with_connection(conn.clone(), move |connection| f(connection, NS))
+        .await
+        .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?
 }
 
 /// One JSON row by primary key, deserialized; `not_found` shapes the miss.
@@ -150,7 +139,7 @@ fn list_rows<T: serde::de::DeserializeOwned>(
 /// material goes through [`SqliteSealedBlobStore`]).
 #[derive(Clone)]
 pub struct SqliteCredentialRepo {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 #[async_trait::async_trait]
@@ -407,7 +396,9 @@ impl SqliteCredentialRepo {
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let store = Self::over(
-            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+            awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(|err| StoreError::Open(err.to_string()))?,
         );
         store.ensure_schema()?;
         Ok(store)
@@ -418,7 +409,7 @@ impl SqliteCredentialRepo {
     /// shares the caller's database.
     pub fn over(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         }
     }
 
@@ -1039,7 +1030,7 @@ impl CredentialRepo for SqliteCredentialRepo {
 /// `{prefix}_secret`, keyed by [`SecretRef`]. Not a `SecretStore` — compose it
 /// under `SealedAeadSecretStore::over` so only sealed bytes ever hit the disk.
 pub struct SqliteSealedBlobStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteSealedBlobStore {
@@ -1055,7 +1046,9 @@ impl SqliteSealedBlobStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let store = Self::over(
-            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+            awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(|err| StoreError::Open(err.to_string()))?,
         );
         store.ensure_schema()?;
         Ok(store)
@@ -1066,7 +1059,7 @@ impl SqliteSealedBlobStore {
     /// shares the caller's database.
     pub fn over(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         }
     }
 

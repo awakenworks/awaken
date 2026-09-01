@@ -1918,7 +1918,7 @@ impl SharedHost {
             live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             projection: tokio::sync::Mutex::new(()),
             outcome: tokio::sync::Mutex::new(()),
-            execution: tokio::sync::Mutex::new(()),
+            command: tokio::sync::Mutex::new(()),
         });
         self.session_slots
             .update(thread, |slot| slot.runtime = Some(ctx.clone()));

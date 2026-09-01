@@ -13,7 +13,8 @@
 //! values, per the port's contract (G3).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::Arc;
 
 use async_trait::async_trait;
 #[cfg(test)]

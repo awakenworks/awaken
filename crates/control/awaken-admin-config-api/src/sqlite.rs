@@ -6,7 +6,7 @@
 //! Repository ports expose storage errors to the application layer; malformed
 //! rows and unavailable SQLite storage therefore become HTTP 500 responses rather
 //! than panics or false not-found results. Calls remain synchronous and short under
-//! the connection mutex.
+//! the connection mutex; opening still uses the one process-wide SQLite policy.
 
 use std::sync::{Arc, Mutex};
 
@@ -42,14 +42,18 @@ pub struct SqliteAdminStore {
 impl SqliteAdminStore {
     /// Open (or create) a database file and apply the admin migrations.
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::over(conn)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::over(conn)
     }
 

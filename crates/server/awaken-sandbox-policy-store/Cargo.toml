@@ -13,6 +13,7 @@ authority = "sandbox-policy"
 awaken-provisioning-contract.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
+awaken-sqlite-runtime.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true

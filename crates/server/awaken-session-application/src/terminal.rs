@@ -485,6 +485,21 @@ impl SessionApplication {
         fact: ManagedLifecycleFact,
         admission: ArchiveAdmission,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let admission_name = match admission {
+            ArchiveAdmission::IdleOnly => "idle_only",
+            ArchiveAdmission::ForceTerminal => "force_terminal",
+        };
+        let command_hash = awaken_session_contract::stable_fingerprint(&(
+            "session-archive-v1",
+            session_id,
+            archived_at,
+            &fact,
+            admission_name,
+        ));
+        let command_record = awaken_session_contract::IdempotencyRecord {
+            key: format!("session:archive:{session_id}:{}", fact.id),
+            payload_hash: command_hash,
+        };
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
@@ -493,7 +508,28 @@ impl SessionApplication {
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;
+            // Terminal disposition is absorbing and therefore precedes command
+            // payload validation. A later retry may carry a different display
+            // timestamp, but it cannot reopen or rewrite the archived root.
             if matches!(session.disposition, SessionDisposition::Archived { .. }) {
+                return Ok(SessionDispositionMutation {
+                    owner_scope,
+                    session,
+                    transitioned: false,
+                });
+            }
+            if let Some(receipt) = self
+                .session_repository()
+                .idempotency_receipt(session_id, &command_record.key)
+                .await
+                .map_err(repository_failure)
+                .map_err(mutation_failure)?
+            {
+                if receipt.payload_hash != command_record.payload_hash {
+                    return Err(SessionPreparationError::Unavailable(
+                        "Session archive command identity was reused with another payload".into(),
+                    ));
+                }
                 return Ok(SessionDispositionMutation {
                     owner_scope,
                     session,
@@ -529,14 +565,19 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             facts.push(fact.clone());
             match self
-                .commit_session_snapshot(&owner_scope, session, "archive", facts)
+                .commit_session_snapshot_with_record(
+                    &owner_scope,
+                    session,
+                    command_record.clone(),
+                    facts,
+                )
                 .await
             {
-                Ok(session) => {
+                Ok((session, transitioned)) => {
                     return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,
-                        transitioned: true,
+                        transitioned,
                     });
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {

@@ -746,27 +746,29 @@ async fn list_dispatches_on_postgres() {
 }
 
 /// Postgres parity for the mid-flight reclaim exactly-once guarantee (memory-only
-/// until now, `lease_semantics.rs`): a run reclaimed while its FIRST execution is
-/// genuinely still in flight is RE-EXECUTED, but the Postgres commit coordinator's
-/// terminal-is-final fence keeps the committed LOG exactly-once — the stale owner's
-/// duplicate post-terminal commit is rejected, so the transcript never gains a
-/// second terminal fact or a duplicate final assistant message. The worker absorbs
-/// the rejected commit as an already-done settle. The external tool side effect
-/// uses the default NeverReplay policy, so the external tool runs only once.
+/// until now, `lease_semantics.rs`): a successor may reclaim the mutation Lease,
+/// but it cannot enter model/tool/Sandbox execution until the predecessor's exact
+/// physical-attempt slot acknowledges quiescence. Once that acknowledgement
+/// arrives, the committed Running projection applies NeverReplay and the successor
+/// completes without invoking the external tool again. The terminal-is-final fence
+/// independently rejects a stale post-terminal commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
+async fn postgres_mid_flight_reclaim_waits_for_quiescence_then_applies_never_replay() {
     // Test design — two-coordinator active-active history: B opens before A's
     // Running commit, so B's process-start projection is intentionally empty.
     // Each Worker must install an authoritative claim snapshot before reading;
     // B therefore observes Running and applies NeverReplay, while A refreshes
     // terminal truth after losing its fenced commit. No decision may depend on
     // either coordinator's stale process-start projection.
-    // Causes: C1 owner A is blocked after committing tool Executing; C2 its lease
-    // expires; C3 owner B reclaims through a second coordinator. Effects: E1 B
-    // reads current Running truth and applies NeverReplay; E2 the external tool
-    // runs once; E3 one terminal log survives A's fenced late commit. Constraint/
-    // Invariant: every claim installs an authoritative snapshot before policy.
-    // Decision rule: execute C1+C2+C3 with two coordinators and assert E1-E3.
+    // Causes: C1 owner A is aborted after committing tool Executing; C2 its lease
+    // expires; C3 owner B reclaims through a second coordinator; C4 A's exact
+    // physical-attempt quiescence acknowledgement is absent/present. Effects:
+    // E1 without C4, B remains outside Runtime and no second tool invocation
+    // occurs; E2 with C4, B reads current Running truth and applies NeverReplay;
+    // E3 one terminal log survives A's fenced late commit. Constraint/invariant:
+    // Lease handoff never implies physical quiescence, and every successor claim
+    // installs an authoritative snapshot before replay policy.
+    // Decision table: R1=C1+C2+C3+!C4 -> blocked/E1; R2=R1+C4 -> E2+E3.
     const LEASE: u64 = 1_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
@@ -846,13 +848,40 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
         .advance_past(lease_a.expires_ms)
         .await;
 
-    // Owner B's lease-expired reclaim recovers the committed Executing phase and
-    // completes the run without entering the non-recoverable tool again.
-    let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
-        .with_lease_ms(LEASE);
-    let processed = worker_b
-        .tick(harness::clock(LEASE + 1))
+    // Owner B may recover the mutation Lease, but the aborted future is not an
+    // authoritative terminal receipt. Its exact physical-attempt slot therefore
+    // keeps B outside Runtime until the predecessor quiescence ACK arrives.
+    let worker_b = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
+            .with_lease_ms(LEASE),
+    );
+    let b_handle = {
+        let worker_b = worker_b.clone();
+        tokio::spawn(async move { worker_b.tick(harness::clock(LEASE + 1)).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        !b_handle.is_finished(),
+        "R1: B waits for predecessor quiescence"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "R1: no overlapping tool execution"
+    );
+
+    assert_eq!(
+        store
+            .finish_attempt(&RunClaim::from(&lease_a))
+            .await
+            .expect("record predecessor quiescence"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R2: only A's exact slot may acknowledge its quiescence"
+    );
+    let processed = tokio::time::timeout(std::time::Duration::from_secs(10), b_handle)
         .await
+        .expect("B resumes after quiescence")
+        .expect("B task joins")
         .expect("B drives");
     assert_eq!(
         processed,

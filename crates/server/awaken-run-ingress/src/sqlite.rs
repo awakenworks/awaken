@@ -9,7 +9,7 @@
 //! the test-support `MemoryDispatchStore` reference backend exactly. The synchronous
 //! `rusqlite` driver runs each operation on a blocking thread.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
@@ -297,7 +297,7 @@ fn known_session_child_threads(
 }
 
 pub struct SqliteDispatchStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
     /// Serializes every dispatch operation with a fenced commit. SQLite is a
     /// single-process backend; an owned guard can therefore span the separate
     /// commit database write without exposing a non-Send rusqlite transaction.
@@ -308,14 +308,18 @@ pub struct SqliteDispatchStore {
 impl SqliteDispatchStore {
     /// Open (or create) a database file and apply the dispatch migrations.
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)
     }
 
@@ -331,7 +335,7 @@ impl SqliteDispatchStore {
             .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
             authority: Arc::new(tokio::sync::Mutex::new(())),
             clock: Arc::new(crate::SystemClock),
         })
@@ -361,15 +365,9 @@ impl SqliteDispatchStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection, &str) -> Result<T, DispatchError> + Send + 'static,
     {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = conn
-                .lock()
-                .map_err(|_| DispatchError::unavailable("dispatch connection poisoned"))?;
-            f(&mut guard, NS)
-        })
-        .await
-        .map_err(DispatchError::unavailable)?
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| f(conn, NS))
+            .await
+            .map_err(|err| DispatchError::Rejected(err.to_string()))?
     }
 
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
@@ -477,7 +475,9 @@ mod migration_history_tests {
          * Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
          * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
          */
-        let connection = Connection::open_in_memory().expect("seed database");
+        let directory = tempfile::tempdir().expect("migration database directory");
+        let path = directory.path().join("dispatch.db");
+        let connection = Connection::open(&path).expect("seed database");
         let expanded = expanded_dispatch_bundle().expect("expanded history");
         let published = MigrationBundle::new(BUNDLE_ID, expanded.migrations()[..24].to_vec())
             .expect("expanded prefix");
@@ -487,16 +487,10 @@ mod migration_history_tests {
             .expect("seed expanded history");
         let migrated =
             SqliteDispatchStore::from_connection(connection).expect("Q2 selected migration");
-        let connection = std::sync::Arc::try_unwrap(migrated.conn)
-            .expect("Q2 sole connection owner")
-            .into_inner()
-            .expect("Q2 unlocked connection");
-        let reopened =
-            SqliteDispatchStore::from_connection(connection).expect("Q3 idempotent reopen");
-        let connection = std::sync::Arc::try_unwrap(reopened.conn)
-            .expect("Q3 sole connection owner")
-            .into_inner()
-            .expect("Q3 unlocked connection");
+        drop(migrated);
+        let reopened = SqliteDispatchStore::open(path.to_str().expect("UTF-8 migration path"))
+            .expect("Q3 idempotent reopen");
+        let connection = reopened.conn.lock().expect("Q3 inspect connection");
         let published_max: i64 = connection
             .query_row(
                 "SELECT MAX(version) FROM runtime_schema_migrations WHERE bundle_id = ?1",

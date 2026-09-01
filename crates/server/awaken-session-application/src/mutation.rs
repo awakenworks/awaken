@@ -38,6 +38,29 @@ pub enum SessionMutationError {
 }
 
 impl SessionApplication {
+    /// Allocate one process-call identity for a mutation that intentionally has
+    /// no external idempotency key. The identity remains stable across this
+    /// call's root-CAS retries, while two genuinely distinct concurrent calls
+    /// can never collapse merely because their compiled snapshots are equal.
+    pub(crate) fn fresh_mutation_record(
+        &self,
+        session_id: &str,
+        operation: &str,
+    ) -> IdempotencyRecord {
+        let sequence = self.mutation_sequence.fetch_add(1, Ordering::Relaxed);
+        let identity = awaken_session_contract::stable_fingerprint(&(
+            "session-application-mutation-v1",
+            self.runtime_incarnation.as_str(),
+            sequence,
+            session_id,
+            operation,
+        ));
+        IdempotencyRecord {
+            key: format!("session:{operation}:{session_id}:{identity}"),
+            payload_hash: identity,
+        }
+    }
+
     /// Bounded retries reload the aggregate and rerun its domain command. Callers
     /// must never merge a stale snapshot after this many conflicts.
     pub const ROOT_CAS_ATTEMPTS: usize = 3;

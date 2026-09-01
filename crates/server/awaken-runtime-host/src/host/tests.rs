@@ -14205,8 +14205,10 @@ struct RemoteTerminalCleanupControl {
     polls_active: std::sync::atomic::AtomicUsize,
     max_polls_active: std::sync::atomic::AtomicUsize,
     claim_targets: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
-    begin_sessions: Mutex<Vec<String>>,
-    begin_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    renewal_sessions: Mutex<Vec<String>>,
+    renewal_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    renewals_active: std::sync::atomic::AtomicUsize,
+    max_renewals_active: std::sync::atomic::AtomicUsize,
     renewal_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
 }
 
@@ -14227,12 +14229,36 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         awaken_session_contract::SessionRealizationDirective,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
-        self.begin_sessions.lock().unwrap().push(command.session_id);
-        let gate = self.begin_gate.lock().unwrap().clone();
+        let _ = command;
+        Err(self
+            .renewal_failure
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(awaken_session_contract::SessionRealizationControlFailure::NotReady))
+    }
+
+    async fn renew_session_realization(
+        &self,
+        command: awaken_session_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        use std::sync::atomic::Ordering;
+
+        let active = self.renewals_active.fetch_add(1, Ordering::SeqCst) + 1;
+        let _active = ActivePollGuard(&self.renewals_active);
+        self.max_renewals_active.fetch_max(active, Ordering::SeqCst);
+        self.renewal_sessions
+            .lock()
+            .unwrap()
+            .push(command.session_id);
+        let gate = self.renewal_gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.acquire_owned()
                 .await
-                .expect("begin gate remains open")
+                .expect("renewal gate remains open")
                 .forget();
         }
         Err(self
@@ -14520,16 +14546,124 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn due_renewals_are_earliest_deadline_first_and_bounded_per_worker() {
+    /* Renewal-admission cause/effect graph: C1 sixty-four independent Session
+     * leases are due; C2 every Control CAS blocks at a deterministic gate; C3
+     * the per-Worker renewal bound is eight; C4 Control later answers every
+     * request. Effects: E1 exactly eight renewals enter while C2 holds; E2 no
+     * ninth renewal enters; E3 the first wave contains the eight earliest
+     * expiries; E4 all renewals eventually enter exactly once; E5 no local
+     * projection is revoked merely because it waited for bounded admission.
+     *
+     * | Rule | Due | First response | Renewal cap | Effect |
+     * |---|---:|---|---:|---|
+     * | W1 | 64 | blocked | 8 | E1 + E2 + E3 |
+     * | W2 | 64 | released | 8 | E4 + E5 |
+     */
+    const SESSION_COUNT: usize = 64;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.renewal_gate.lock().unwrap() = Some(gate.clone());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    for index in 0..SESSION_COUNT {
+        host.install_session_realization_lease(
+            &format!("write-authority-{index:03}"),
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: now.saturating_add(1_000 + index as u64),
+            },
+        );
+    }
+
+    let running = Arc::clone(&host);
+    let sweep = tokio::spawn(async move {
+        running
+            .renew_due_session_realizations(
+                now,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if control.renewal_sessions.lock().unwrap().len()
+                == crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("W1 first renewal enters");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().len(),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+        "W1/E1-E2"
+    );
+    assert_eq!(
+        control.max_renewals_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+        "W1/E1-E2"
+    );
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().as_slice(),
+        (0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
+            .map(|index| format!("write-authority-{index:03}"))
+            .collect::<Vec<_>>(),
+        "W1/E3"
+    );
+
+    gate.add_permits(SESSION_COUNT);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), sweep)
+            .await
+            .expect("W2 bounded renewal waves finish")
+            .expect("W2 renewal task")
+            .is_err(),
+        "W2 Control NotReady remains a retry diagnostic"
+    );
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().as_slice(),
+        (0..SESSION_COUNT)
+            .map(|index| format!("write-authority-{index:03}"))
+            .collect::<Vec<_>>(),
+        "W2/E4"
+    );
+    assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "W2/E4");
+    for index in 0..SESSION_COUNT {
+        assert!(
+            host.session_slots
+                .contains(&format!("write-authority-{index:03}")),
+            "W2/E5"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete() {
     use std::sync::atomic::Ordering;
 
-    /* Scale rule S1: C1 five hundred twelve independent, non-due Sessions and
-     * C2 an immediately responsive Control port under the same production cap
-     * imply E1 every Session is visited exactly once, E2 the deterministic
-     * test finishes within its watchdog, and E3 observed concurrency never
-     * exceeds the configured bound. This is a scheduler-completeness test, not
-     * a production latency claim; live HTTP/PostgreSQL latency remains a
-     * deployment measurement.
+    /* Scale/cadence cause-effect graph: C1 five hundred twelve independent,
+     * non-due Sessions; C2 an immediately responsive Control port; C3 another
+     * renewal tick occurs before the cleanup interval; C4 a tick occurs at the
+     * cleanup interval. Effects: E1 the first discovery visits every Session;
+     * E2 observed concurrency never exceeds the production bound; E3 the hot
+     * renewal tick produces no Control cleanup traffic; E4 the later discovery
+     * visits every Session exactly once again. This is a deterministic
+     * scheduler test, not a production latency claim; live HTTP/PostgreSQL
+     * latency remains a deployment measurement.
+     *
+     * | Rule | cleanup cadence | Sessions | Effect |
+     * |---|---|---:|---|
+     * | S1 | first/immediate | 512 | E1 + E2 |
+     * | S2 | not due | 512 | E3 |
+     * | S3 | due | 512 | E4 |
      */
     const SESSION_COUNT: usize = 512;
     let control = Arc::new(RemoteTerminalCleanupControl::default());
@@ -14571,6 +14705,106 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
             <= crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
         "S1/E3"
     );
+
+    assert_eq!(
+        host.renew_due_session_realizations(
+            1_000,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+        )
+        .await
+        .expect("S2 hot renewal tick succeeds"),
+        0,
+        "S2"
+    );
+    assert_eq!(
+        control.polls_entered.load(Ordering::SeqCst),
+        SESSION_COUNT,
+        "S2/E3"
+    );
+
+    assert_eq!(
+        host.renew_due_session_realizations(
+            crate::application::TERMINAL_CLEANUP_POLL_INTERVAL_MS,
+            awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+        )
+        .await
+        .expect("S3 later cleanup discovery succeeds"),
+        0,
+        "S3"
+    );
+    assert_eq!(
+        control.polls_entered.load(Ordering::SeqCst),
+        SESSION_COUNT * 2,
+        "S3/E4"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_reconciliation_sweeps_claim_one_cleanup_poll_per_session() {
+    use std::sync::atomic::Ordering;
+
+    /* Overlap decision table: C1 two renewal sweeps snapshot the same non-due
+     * lease; C2 cleanup discovery is due; C3 the first Control poll remains in
+     * flight. Effects: E1 the Session slot atomically grants one poll; E2 the
+     * other sweep returns without entering Control; E3 releasing the first
+     * poll completes both sweeps. The slot timestamp schedules discovery only;
+     * the durable Session aggregate still decides terminality.
+     *
+     * | Rule | sweeps | cleanup due | first in flight | Effect |
+     * |---|---:|---|---|---|
+     * | O1 | 2 | yes | yes | E1 + E2 |
+     * | O2 | 2 | claimed | released | E3 |
+     */
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.poll_gate.lock().unwrap() = Some(gate.clone());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    host.install_session_realization_lease(
+        "overlapping-cleanup",
+        awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: 100_000,
+        },
+    );
+    let timing =
+        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000);
+    let first_host = host.clone();
+    let first =
+        tokio::spawn(async move { first_host.renew_due_session_realizations(0, timing).await });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while control.polls_entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("O1 first poll enters");
+
+    let second_host = host.clone();
+    let second =
+        tokio::spawn(async move { second_host.renew_due_session_realizations(0, timing).await });
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), second)
+            .await
+            .expect("O1 second sweep is not blocked by the first poll")
+            .expect("O1 second task")
+            .expect("O1 second sweep succeeds"),
+        0,
+        "O1/E2"
+    );
+    assert_eq!(control.polls_entered.load(Ordering::SeqCst), 1, "O1/E1");
+
+    gate.add_permits(1);
+    assert_eq!(
+        first
+            .await
+            .expect("O2 first task")
+            .expect("O2 first sweep succeeds"),
+        0,
+        "O2/E3"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -14588,7 +14822,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      * | F2 | timeout/Unavailable | expired | E2 |
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    *control.begin_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+    *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     for (session_id, expires_at_unix_ms) in [
@@ -14718,7 +14952,7 @@ async fn due_renewals_are_scheduled_before_non_due_cleanup_polls() {
     use std::sync::atomic::Ordering;
 
     /* Priority rule P1: with eight due renewals and eight non-due cleanup
-     * polls sharing an eight-slot scheduler, every due Begin attempt occurs
+     * polls in separate bounded waves, every due lease-only renewal occurs
      * before a blocked cleanup poll can occupy the pool. This prevents routine
      * terminal polling from consuming another Session's proof window.
      */
@@ -14761,10 +14995,10 @@ async fn due_renewals_are_scheduled_before_non_due_cleanup_polls() {
     })
     .await
     .expect("P1 cleanup wave eventually enters");
-    assert_eq!(control.begin_sessions.lock().unwrap().len(), WAVE, "P1");
+    assert_eq!(control.renewal_sessions.lock().unwrap().len(), WAVE, "P1");
     assert!(
         control
-            .begin_sessions
+            .renewal_sessions
             .lock()
             .unwrap()
             .iter()
@@ -14935,7 +15169,6 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         owner: lease.owner.clone(),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
 

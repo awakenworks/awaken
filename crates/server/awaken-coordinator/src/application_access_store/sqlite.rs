@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use async_trait::async_trait;
 use rusqlite::{Connection, Error as SqliteError, ErrorCode, OptionalExtension, params};
 
@@ -10,7 +8,7 @@ use super::{
 };
 
 pub(super) struct SqliteApplicationAccessRepository {
-    pub(super) connection: Arc<Mutex<Connection>>,
+    pub(super) connection: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteApplicationAccessRepository {
@@ -40,32 +38,27 @@ impl SqliteApplicationAccessRepository {
             )
             .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?;
         Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
+            connection: awaken_sqlite_runtime::SharedSqliteConnection::new(connection),
         })
     }
 
-    /// Follow the existing SQLite adapter runtime model: synchronous rusqlite
-    /// work runs on Tokio's shared blocking pool behind the connection mutex.
-    /// This creates neither a nested runtime nor a repository-specific executor.
+    /// Map the canonical SQLite scheduler boundary into this repository's
+    /// domain error without owning a second executor or lock policy.
     async fn with_connection<T, F>(
         &self,
         operation: F,
     ) -> Result<T, ApplicationAccessRepositoryError>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> Result<T, ApplicationAccessRepositoryError> + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, ApplicationAccessRepositoryError> + Send + 'static,
     {
-        let connection = self.connection.clone();
-        tokio::task::spawn_blocking(move || {
-            let connection = connection.lock().map_err(lock_unavailable)?;
-            operation(&connection)
-        })
-        .await
-        .map_err(|error| {
-            ApplicationAccessRepositoryError::Unavailable(format!(
-                "join application access SQLite operation: {error}"
-            ))
-        })?
+        awaken_sqlite_runtime::with_connection(self.connection.clone(), operation)
+            .await
+            .map_err(|error| {
+                ApplicationAccessRepositoryError::Unavailable(format!(
+                    "run application access SQLite operation: {error}"
+                ))
+            })?
     }
 }
 
@@ -194,10 +187,6 @@ impl ApplicationAccessRepository for SqliteApplicationAccessRepository {
         })
         .await
     }
-}
-
-fn lock_unavailable<T>(error: std::sync::PoisonError<T>) -> ApplicationAccessRepositoryError {
-    ApplicationAccessRepositoryError::Unavailable(error.to_string())
 }
 
 fn unavailable(error: rusqlite::Error) -> ApplicationAccessRepositoryError {

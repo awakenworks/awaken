@@ -24,6 +24,7 @@ tokio = { workspace = true, features = ["rt"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
+awaken-sqlite-runtime.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

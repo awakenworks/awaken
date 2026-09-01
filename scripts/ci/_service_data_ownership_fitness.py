@@ -16,6 +16,9 @@ from pathlib import Path
 
 WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
+WORKER_MAIN = "crates/bin/awaken-worker/src/main.rs"
+SERVICE_LIFECYCLE_SOURCE = "crates/server/awaken-service-lifecycle/src/lib.rs"
+CLI_PROCESS_STARTUP = "crates/bin/awaken-cli/src/process_startup.rs"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
 CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
@@ -581,6 +584,30 @@ def service_binary_violations(
             errors.append(f"`{name}` bypasses the shared service lifecycle")
         if "build_" in source:
             errors.append(f"`{name}` reconstructs applications inside its thin entrypoint")
+    return errors
+
+
+def service_runtime_violations(
+    worker_manifest: dict,
+    worker_main: str,
+    lifecycle_source: str,
+    cli_process_startup: str,
+) -> list[str]:
+    """Keep one stack-safe Tokio Runtime owner for every service launcher."""
+
+    errors: list[str] = []
+    if "awaken-service-lifecycle" not in worker_manifest.get("dependencies", {}):
+        errors.append("awaken-worker must depend on the canonical service Runtime owner")
+    if "#[tokio::main" in worker_main:
+        errors.append("awaken-worker must not recreate Tokio's default-stack Runtime")
+    if worker_main.count("awaken_service_lifecycle::block_on_service(") != 1:
+        errors.append("awaken-worker must enter exactly one canonical service Runtime")
+    if lifecycle_source.count("pub fn block_on_service") != 1:
+        errors.append("service lifecycle must own exactly one public Runtime builder")
+    if lifecycle_source.count(".thread_stack_size(") != 1:
+        errors.append("service lifecycle must own exactly one explicit Worker stack budget")
+    if "pub use awaken_service_lifecycle::block_on_service;" not in cli_process_startup:
+        errors.append("aggregate service launchers must reuse the service-lifecycle Runtime")
     return errors
 
 
@@ -1654,52 +1681,69 @@ def selftest() -> None:
         "build_control()",
         "",
     )  # O38
+    # Service Runtime cause/effect table: C1 a Worker launcher names the shared
+    # lifecycle dependency; C2 it enters that owner exactly once; C3 the owner
+    # has one explicit stack budget; C4 aggregate launchers re-export the same
+    # owner. R39 all causes => no violation. R40 a default-stack macro, missing
+    # dependency, duplicate/missing builder, or parallel CLI builder => reject.
+    assert service_runtime_violations(
+        {"dependencies": {"awaken-service-lifecycle": {"workspace": True}}},
+        "awaken_service_lifecycle::block_on_service(async {})",
+        "pub fn block_on_service .thread_stack_size(",
+        "pub use awaken_service_lifecycle::block_on_service;",
+    ) == []  # O39
+    assert service_runtime_violations(
+        {"dependencies": {}},
+        "#[tokio::main] async fn main() {}",
+        "pub fn block_on_service pub fn block_on_service",
+        "fn block_on_service() {}",
+    )  # O40
     # Model inventory FMECA/cause-effect table: FM1 independent Dream/HTTP model
     # normalization diverges; FM2 a Control catalog reader returns beside the
-    # executable publication inventory. R39 one rule + both consumers + one
-    # startup inventory => accept; R40 any missing cause or retired directory => reject.
+    # executable publication inventory. R41 one rule + both consumers + one
+    # startup inventory => accept; R42 any missing cause or retired directory => reject.
     assert model_inventory_authority_violations(
         "pub async fn current_model_references(",
         "current_model_references(",
         "current_model_references(",
         "let model_inventory:",
-    ) == []  # O39
+    ) == []  # O41
     assert model_inventory_authority_violations(
         "pub async fn current_model_references(",
         "ModelDirectory current_model_references(",
         "",
         "let model_inventory: let model_inventory:",
-    )  # O40 retired path, missing consumer, and duplicate selection
+    )  # O42 retired path, missing consumer, and duplicate selection
     assert inference_materializer_authority_violations(
         "struct PinnedCandidateExecutor;",
         "pub mod coordinator_component;",
-    ) == []  # O41
+    ) == []  # O43
     assert inference_materializer_authority_violations(
         "struct PinnedCandidateExecutor; struct PinnedCandidateExecutor;",
         "struct CredentialInferenceMaterializer; impl InferenceExecutorMaterializer for X {}",
-    )  # O42
+    )  # O44
     assert control_publication_authority_violations(
         "struct CatalogModelPublicationResolver;",
         "pub mod coordinator_component;",
-    ) == []  # O43
+    ) == []  # O45
     assert control_publication_authority_violations(
         "",
         "struct CatalogModelPublicationResolver; CredentialRepo",
-    )  # O44
+    )  # O46
     assert credential_refresh_authority_violations(
         "trait CredentialRefreshFactory; struct VaultRefreshFactory; struct VaultRefresher;",
         "pub mod coordinator_component;",
-    ) == []  # O45
+    ) == []  # O47
     assert credential_refresh_authority_violations(
         "trait CredentialRefreshFactory;",
         "struct VaultRefresher;",
-    )  # O46
+    )  # O48
     assert coordinator_control_authority_dependency_violations(
         {"dependencies": {"awaken-config-service": {"workspace": True}}}
-    ) == []  # O47
+    ) == []  # O49
     assert coordinator_control_authority_dependency_violations(
         {"dependencies": {"awaken-model-catalog": {"workspace": True}}}
-    )  # O48
+    )  # O50
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1775,6 +1819,13 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / COORDINATOR_BIN).read_text(encoding="utf-8"),
     ):
         errors.append(f"{CLI_MANIFEST}: {error}")
+    for error in service_runtime_violations(
+        product_manifests[WORKER_MANIFEST],
+        (repo_root / WORKER_MAIN).read_text(encoding="utf-8"),
+        (repo_root / SERVICE_LIFECYCLE_SOURCE).read_text(encoding="utf-8"),
+        (repo_root / CLI_PROCESS_STARTUP).read_text(encoding="utf-8"),
+    ):
+        errors.append(f"Service Runtime: {error}")
 
     source_root = repo_root / WORKER_SOURCE
     for path in sorted(source_root.rglob("*.rs")):

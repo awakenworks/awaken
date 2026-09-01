@@ -30,6 +30,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 rusqlite = { workspace = true, optional = true }
 awaken-scoped-migration.workspace = true
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
+awaken-sqlite-runtime = { workspace = true, optional = true }
 async-nats = { version = "0.50", optional = true }
 futures-lite = { version = "2", optional = true }
 
@@ -43,6 +44,7 @@ durable = [
     "dep:rusqlite",
     "awaken-scoped-migration/postgres",
     "dep:awaken-scoped-migration-sqlite",
+    "dep:awaken-sqlite-runtime",
 ]
 # Private SQLite dispatch authority for unit/integration/scenario fixtures.
 test-support = ["durable"]
@@ -56,6 +58,7 @@ awaken-store-inmem.workspace = true
 awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "test-util"] }
+tempfile = "3"
 
 [[test]]
 name = "any_store"

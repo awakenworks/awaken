@@ -45,8 +45,8 @@ mod tests {
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, IdempotencyRecord,
         McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
-        McpRealizationReceipt, McpTarget, SessionBaseline, SessionBaselineInputs,
-        SessionBaselineState, SessionMcpAttachmentSet, SessionNetworkPolicy,
+        McpRealizationReceipt, McpTarget, RenewSessionRealization, SessionBaseline,
+        SessionBaselineInputs, SessionBaselineState, SessionMcpAttachmentSet, SessionNetworkPolicy,
         SessionRealizationAction, SessionRealizationControl, SessionResourceState, SessionRevision,
         SessionRuntime, StageMcpAttachment, StepOutcome, ToolPermissionDecision,
     };
@@ -62,6 +62,14 @@ mod tests {
             mode: awaken_session_contract::SessionProjectionInstallMode,
         ) -> Result<(), RunError> {
             crate::test_support::complete_session_projection_init(thread, &projection, &mode)?;
+            Ok(())
+        }
+
+        async fn renew_session_realization_lease(
+            &self,
+            _thread: &str,
+            _lease: awaken_session_contract::SessionRealizationLease,
+        ) -> Result<(), RunError> {
             Ok(())
         }
 
@@ -314,17 +322,15 @@ mod tests {
         // | Q9 | acknowledge | exact | - | duplicate | invalid/no mutation |
         // | Q10 | acknowledge | exact | - | exact | Complete + durable idle |
         // | Q11 | acknowledge replay | exact | - | exact | Complete/no revision |
-        // | Q12 | renew + pending Resource | same owner/incarnation | MCP-only | later expiry | Stage active Resource + same MCP generation |
-        // | Q13 | renew complete + pending Resource | exact | exact | exact | Complete + extended fence; pending survives |
+        // | Q12 | renew + pending desired state | same exact fence | - | - | lease-only root CAS; pending survives untouched |
+        // | Q13 | renew replay | exact current fence | - | - | same lease/no revision |
         // | Q14 | activate pending | exact | exact prepared revision | - | commit that Resource generation (covered by Q6) |
-        // | Q15 | activate pending | exact | no/stale prepared revision | - | preserve/reject pending |
-        // | Q16 | fail MCP renewal + pending Resource | exact | no prepared revision | - | keep idle and preserve Resource retry state |
+        // | Q15 | renew with stale asserted epoch | stale | - | - | fenced/no mutation (covered by the application contract table) |
         let (state, repo) = harness("session-phase").await;
         let target = awaken_session_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX - 2,
-            renew_existing_lease: false,
             reassign_existing_lease: false,
         };
         let begin = BeginSessionRealization {
@@ -569,98 +575,27 @@ mod tests {
             awaken_session_contract::SessionMutationResult::Applied { .. }
         ));
 
+        let before_renewal = repo.get("session-phase").await.unwrap();
         let renewal = state
             .application
-            .begin_session_realization(BeginSessionRealization {
+            .renew_session_realization(RenewSessionRealization {
                 session_id: "session-phase".into(),
-                target: awaken_session_contract::SessionRealizationTarget {
-                    owner: "worker-a".into(),
-                    runtime_incarnation: "worker-a/incarnation-1".into(),
-                    lease_expires_at_unix_ms: u64::MAX - 1,
-                    renew_existing_lease: true,
-                    reassign_existing_lease: false,
-                },
+                asserted_lease: before_renewal
+                    .realization
+                    .clone()
+                    .expect("Q12 existing lease"),
+                requested_expires_at_unix_ms: u64::MAX - 1,
             })
             .await
             .expect("Q12");
-        let SessionRealizationAction::Stage { mcp_stages, .. } = &renewal.action else {
-            panic!("Q12 expected renewal stage")
-        };
-        assert_eq!(
-            renewal.projection.resource_revision, active_resource_revision,
-            "Q12 renewal projects the installed Resource generation"
-        );
-        assert_eq!(
-            renewal.projection.resources,
-            repo.get("session-phase").await.unwrap().resources.active,
-            "Q12 renewal never projects pending custom Skill material"
-        );
-        assert_eq!(mcp_stages.len(), 1, "Q12");
-        assert_eq!(
-            mcp_stages[0].generation.generation,
-            awaken_session_contract::McpGeneration(1),
-            "Q12"
-        );
-        assert_eq!(
-            mcp_stages[0].generation.lease_expires_at_unix_ms,
-            u64::MAX - 1,
-            "Q12"
-        );
-        let renewal_receipts = exact_receipts(&renewal.action);
-        let stale_resource_receipt = state
-            .application
-            .activate_session_realization(ActivateSessionRealization {
-                session_id: "session-phase".into(),
-                lease: renewal.lease.clone(),
-                prepared_resource_revision: Some(
-                    repo.get("session-phase").await.unwrap().resources.revision + 1,
-                ),
-                mcp_receipts: renewal_receipts.clone(),
-            })
-            .await;
-        assert!(
-            matches!(
-                stale_resource_receipt,
-                Err(SessionRealizationControlFailure::Invalid(_))
-            ),
-            "Q15"
-        );
-        let publish = state
-            .application
-            .activate_session_realization(ActivateSessionRealization {
-                session_id: "session-phase".into(),
-                lease: renewal.lease.clone(),
-                prepared_resource_revision: None,
-                mcp_receipts: renewal_receipts,
-            })
-            .await
-            .expect("Q13 publish");
-        let SessionRealizationAction::Publish { publish, drain } = publish.action else {
-            panic!("Q13 expected publish")
-        };
-        let complete = state
-            .application
-            .acknowledge_session_realization(AcknowledgeSessionRealization {
-                session_id: "session-phase".into(),
-                lease: renewal.lease,
-                published: publish,
-                drained: drain,
-            })
-            .await
-            .expect("Q13");
-        assert_eq!(complete.action, SessionRealizationAction::Complete, "Q13");
         let renewed = repo.get("session-phase").await.unwrap();
-        assert_eq!(
-            renewed.realization.unwrap().expires_at_unix_ms,
-            u64::MAX - 1,
-            "Q13"
-        );
-        assert!(renewed.mcp.attachments[0].publication_acknowledged, "Q13");
-        assert_eq!(renewed.resources.pending, Some(desired.clone()), "Q13/Q15");
+        assert_eq!(renewal.expires_at_unix_ms, u64::MAX - 1, "Q12");
+        assert_eq!(renewed.realization.as_ref(), Some(&renewal), "Q12");
+        assert_eq!(renewed.resources.pending, Some(desired.clone()), "Q12");
         assert_eq!(
             renewed.resources.active_revision(),
             active_resource_revision,
-            "Q13/Q15"
+            "Q12"
         );
         assert!(
             renewed
@@ -669,52 +604,45 @@ mod tests {
                 .iter()
                 .filter(|activation| activation.revision == renewed.resources.revision)
                 .all(|activation| activation.attempts == 0 && activation.last_error.is_none()),
-            "Q13/Q15 renewal neither attempts nor fails pending Resource work"
+            "Q12 lease renewal never attempts pending Resource work"
         );
-
-        // Q16: an MCP-only renewal failure is scoped to MCP realization. The
-        // independently pending Resource generation retains its retry state.
-        let failed_renewal = state
-            .application
-            .begin_session_realization(BeginSessionRealization {
-                session_id: "session-phase".into(),
-                target: awaken_session_contract::SessionRealizationTarget {
-                    owner: "worker-a".into(),
-                    runtime_incarnation: "worker-a/incarnation-1".into(),
-                    lease_expires_at_unix_ms: u64::MAX,
-                    renew_existing_lease: true,
-                    reassign_existing_lease: false,
-                },
-            })
-            .await
-            .expect("Q16 renewal");
-        state
-            .application
-            .fail_session_realization(FailSessionRealization {
-                session_id: "session-phase".into(),
-                lease: failed_renewal.lease,
-                prepared_resource_revision: None,
-                retryable: false,
-                source_run_id: None,
-                reason: "MCP connection closed".into(),
-            })
-            .await
-            .expect("Q16 scoped failure");
-        let after_mcp_failure = repo.get("session-phase").await.unwrap();
         assert_eq!(
-            after_mcp_failure.execution,
-            SessionExecutionState::Idle,
-            "Q16"
+            renewed.mcp.attachments[0].state, before_renewal.mcp.attachments[0].state,
+            "Q12"
         );
-        assert_eq!(after_mcp_failure.resources.pending, Some(desired), "Q16");
-        assert!(
-            after_mcp_failure
-                .resources
-                .activations
-                .iter()
-                .filter(|activation| activation.revision == after_mcp_failure.resources.revision)
-                .all(|activation| activation.attempts == 0 && activation.last_error.is_none()),
-            "Q16"
+        assert_eq!(
+            renewed.mcp.attachments[0].publication_acknowledged,
+            before_renewal.mcp.attachments[0].publication_acknowledged,
+            "Q12"
+        );
+        assert_eq!(
+            renewed.mcp.attachments[0]
+                .realization
+                .as_ref()
+                .expect("Q12 renewed MCP claim")
+                .stage_idempotency_key,
+            before_renewal.mcp.attachments[0]
+                .realization
+                .as_ref()
+                .expect("Q12 prior MCP claim")
+                .stage_idempotency_key,
+            "Q12"
+        );
+        let renewed_revision = renewed.revision;
+        let replay = state
+            .application
+            .renew_session_realization(RenewSessionRealization {
+                session_id: "session-phase".into(),
+                asserted_lease: renewal.clone(),
+                requested_expires_at_unix_ms: u64::MAX - 1,
+            })
+            .await
+            .expect("Q13 replay");
+        assert_eq!(replay, renewal, "Q13");
+        assert_eq!(
+            repo.get("session-phase").await.unwrap().revision,
+            renewed_revision,
+            "Q13"
         );
     }
 
@@ -794,7 +722,6 @@ mod tests {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
-            renew_existing_lease: false,
             reassign_existing_lease: false,
         };
         let first = state
@@ -882,7 +809,6 @@ mod tests {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
-            renew_existing_lease: false,
             reassign_existing_lease: false,
         };
         let baseline_stage = baseline_state
@@ -1010,7 +936,6 @@ mod tests {
                         owner: "worker-a".into(),
                         runtime_incarnation: "worker-a/incarnation-2".into(),
                         lease_expires_at_unix_ms: u64::MAX,
-                        renew_existing_lease: false,
                         reassign_existing_lease: false,
                     },
                 })

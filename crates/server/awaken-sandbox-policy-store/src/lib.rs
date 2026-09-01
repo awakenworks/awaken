@@ -4,7 +4,8 @@ mod expanded_schema;
 
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract::{
@@ -12,6 +13,7 @@ use awaken_provisioning_contract::{
     SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
 };
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+use awaken_sqlite_runtime::{SharedSqliteConnection, SqliteConnectionFactory};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sqlx::{PgPool, Row};
 
@@ -138,7 +140,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
 }
 
 pub struct SqliteSandboxExecutionPolicyStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: SharedSqliteConnection,
 }
 
 pub struct PostgresSandboxExecutionPolicyStore {
@@ -312,7 +314,9 @@ fn as_i64(value: u64) -> Result<i64, SandboxExecutionPolicyError> {
 
 impl SqliteSandboxExecutionPolicyStore {
     pub fn open(path: &str) -> Result<Self, String> {
-        let conn = Connection::open(path).map_err(|error| error.to_string())?;
+        let conn = SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|error| error.to_string())?;
         let ledger_exists = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -343,8 +347,18 @@ impl SqliteSandboxExecutionPolicyStore {
             .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: SharedSqliteConnection::new(conn),
         })
+    }
+
+    async fn with_connection<T, F>(&self, operation: F) -> Result<T, SandboxExecutionPolicyError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, SandboxExecutionPolicyError> + Send + 'static,
+    {
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), operation)
+            .await
+            .map_err(store_failed)?
     }
 
     fn exact(
@@ -374,20 +388,20 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         if policy.version != SandboxExecutionPolicyVersion::INITIAL {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        let json = serde_json::to_string(&policy)
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        tx.execute(
-            "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
-            params![policy.id.0, policy.version.0, json],
-        )
-        .and_then(|_| tx.execute("INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES(?1,?2)", params![policy.id.0, policy.version.0]))
-        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
-        tx.commit()
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(store_failed)?;
+            let json = serde_json::to_string(&policy).map_err(store_failed)?;
+            tx.execute(
+                "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
+                params![policy.id.0, policy.version.0, json],
+            )
+            .and_then(|_| tx.execute("INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES(?1,?2)", params![policy.id.0, policy.version.0]))
+            .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+            tx.commit().map_err(store_failed)
+        })
+        .await
     }
 
     async fn publish(
@@ -399,35 +413,37 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         if policy.version != expected_current.checked_next()? {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        let changed = tx
-            .execute(
-                "UPDATE sandbox_execution_policy_current SET version=?1 WHERE policy_id=?2 AND version=?3",
-                params![policy.version.0, policy.id.0, expected_current.0],
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(store_failed)?;
+            let changed = tx
+                .execute(
+                    "UPDATE sandbox_execution_policy_current SET version=?1 WHERE policy_id=?2 AND version=?3",
+                    params![policy.version.0, policy.id.0, expected_current.0],
+                )
+                .map_err(store_failed)?;
+            if changed != 1 {
+                return Err(SandboxExecutionPolicyError::VersionConflict);
+            }
+            let json = serde_json::to_string(&policy).map_err(store_failed)?;
+            tx.execute(
+                "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
+                params![policy.id.0, policy.version.0, json],
             )
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        if changed != 1 {
-            return Err(SandboxExecutionPolicyError::VersionConflict);
-        }
-        let json = serde_json::to_string(&policy)
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        tx.execute(
-            "INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES(?1,?2,?3)",
-            params![policy.id.0, policy.version.0, json],
-        )
-        .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
-        tx.commit()
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
+            .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
+            tx.commit().map_err(store_failed)
+        })
+        .await
     }
 
     async fn get_exact(
         &self,
         reference: &SandboxExecutionPolicyRef,
     ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
-        Self::exact(&self.conn.lock().unwrap(), reference)
+        let reference = reference.clone();
+        self.with_connection(move |conn| Self::exact(conn, &reference))
+            .await
     }
 }
 

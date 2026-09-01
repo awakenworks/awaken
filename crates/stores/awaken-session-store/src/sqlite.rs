@@ -1,7 +1,7 @@
 use super::*;
 
 pub struct SqliteManagedSessionRepository {
-    pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteManagedSessionRepository {
@@ -45,8 +45,21 @@ impl SqliteManagedSessionRepository {
         Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
         Self::rebuild_credential_source_index(&mut conn).map_err(|e| e.to_string())?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         })
+    }
+
+    pub(crate) async fn with_connection<T, F>(
+        &self,
+        operation: F,
+    ) -> Result<T, SessionRepositoryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, SessionRepositoryError> + Send + 'static,
+    {
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), operation)
+            .await
+            .map_err(storage)?
     }
 
     fn migration_receipts(conn: &Connection) -> Result<BTreeMap<i64, String>, String> {
@@ -359,82 +372,85 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 "invalid Session create command".into(),
             ));
         }
-        let mut conn = self.conn.lock().map_err(storage)?;
-        // Acquire the SQLite writer reservation before reading the expected
-        // revision. A deferred read-then-write transaction can otherwise fail
-        // its upgrade immediately when another aggregate writes concurrently.
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        if let Some(replayed) = Self::create_replay(
-            &tx,
-            owner_scope,
-            &session.session_id,
-            &idempotency,
-            MissingCreateReceipt::AllowInsertFence,
-        )? {
-            return Ok(SessionCreateResult::Replayed(replayed));
-        }
-        let new_revision = SESSION_CREATE_REVISION;
-        session.revision = new_revision;
-        let inserted = tx
-            .execute(
-                "INSERT INTO managed_session \
-                    (session_id, scope_id, revision, aggregate_json) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT (session_id) DO NOTHING",
-                params![
-                    session.session_id,
-                    owner_scope,
-                    db_revision(new_revision)?,
-                    aggregate_str(&session)?,
-                ],
-            )
-            .map_err(storage)?;
-        if inserted != 1 {
+        let owner_scope = owner_scope.to_string();
+        self.with_connection(move |conn| {
+            // Acquire the SQLite writer reservation before reading the expected
+            // revision. A deferred read-then-write transaction can otherwise fail
+            // its upgrade immediately when another aggregate writes concurrently.
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
             if let Some(replayed) = Self::create_replay(
                 &tx,
-                owner_scope,
+                &owner_scope,
                 &session.session_id,
                 &idempotency,
-                MissingCreateReceipt::RejectOccupied,
+                MissingCreateReceipt::AllowInsertFence,
             )? {
                 return Ok(SessionCreateResult::Replayed(replayed));
             }
-            return Err(SessionRepositoryError::Conflict(
-                SessionRepositoryConflict::AlreadyExists,
-            ));
-        }
-        // A concurrent delete can win after the first tombstone read. Recheck
-        // in this same write transaction before any index, receipt, or outbox
-        // row makes a deleted identity live again.
-        if Self::is_tombstoned(&tx, &session.session_id)? {
-            return Err(SessionRepositoryError::Conflict(
-                SessionRepositoryConflict::Tombstoned,
-            ));
-        }
-        Self::sync_session_indexes(&tx, &session)?;
-        tx.execute(
-            "INSERT INTO managed_session_idempotency
-                (session_id, idempotency_key, payload_hash, committed_revision)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                session.session_id,
-                idempotency.key,
-                idempotency.payload_hash,
-                db_revision(new_revision)?,
-            ],
-        )
-        .map_err(storage)?;
-        for fact in lifecycle_facts {
+            let new_revision = SESSION_CREATE_REVISION;
+            session.revision = new_revision;
+            let inserted = tx
+                .execute(
+                    "INSERT INTO managed_session \
+                        (session_id, scope_id, revision, aggregate_json) \
+                     VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT (session_id) DO NOTHING",
+                    params![
+                        session.session_id,
+                        owner_scope,
+                        db_revision(new_revision)?,
+                        aggregate_str(&session)?,
+                    ],
+                )
+                .map_err(storage)?;
+            if inserted != 1 {
+                if let Some(replayed) = Self::create_replay(
+                    &tx,
+                    &owner_scope,
+                    &session.session_id,
+                    &idempotency,
+                    MissingCreateReceipt::RejectOccupied,
+                )? {
+                    return Ok(SessionCreateResult::Replayed(replayed));
+                }
+                return Err(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::AlreadyExists,
+                ));
+            }
+            // A concurrent delete can win after the first tombstone read. Recheck
+            // in this same write transaction before any index, receipt, or outbox
+            // row makes a deleted identity live again.
+            if Self::is_tombstoned(&tx, &session.session_id)? {
+                return Err(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::Tombstoned,
+                ));
+            }
+            Self::sync_session_indexes(&tx, &session)?;
             tx.execute(
-                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-                params![fact.id, lifecycle_str(&fact)],
+                "INSERT INTO managed_session_idempotency
+                    (session_id, idempotency_key, payload_hash, committed_revision)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    session.session_id,
+                    idempotency.key,
+                    idempotency.payload_hash,
+                    db_revision(new_revision)?,
+                ],
             )
             .map_err(storage)?;
-        }
-        tx.commit().map_err(storage)?;
-        Ok(SessionCreateResult::Applied(session))
+            for fact in lifecycle_facts {
+                tx.execute(
+                    "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                    params![fact.id, lifecycle_str(&fact)],
+                )
+                .map_err(storage)?;
+            }
+            tx.commit().map_err(storage)?;
+            Ok(SessionCreateResult::Applied(session))
+        })
+        .await
     }
 
     async fn replay_create(
@@ -452,17 +468,22 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 "invalid Session create replay query".into(),
             ));
         }
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn.transaction().map_err(storage)?;
-        let replay = Self::create_replay(
-            &tx,
-            owner_scope,
-            session_id,
-            idempotency,
-            MissingCreateReceipt::RejectOccupied,
-        )?;
-        tx.commit().map_err(storage)?;
-        Ok(replay)
+        let owner_scope = owner_scope.to_string();
+        let session_id = session_id.to_string();
+        let idempotency = idempotency.clone();
+        self.with_connection(move |conn| {
+            let tx = conn.transaction().map_err(storage)?;
+            let replay = Self::create_replay(
+                &tx,
+                &owner_scope,
+                &session_id,
+                &idempotency,
+                MissingCreateReceipt::RejectOccupied,
+            )?;
+            tx.commit().map_err(storage)?;
+            Ok(replay)
+        })
+        .await
     }
 
     async fn commit_mutation(
@@ -474,53 +495,54 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .validate()
             .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
         let session_id = mutation.payload.session_id().to_string();
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        if let Some((stored_hash, committed_revision)) = tx
-            .query_row(
-                "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+        let owner_scope = owner_scope.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            if let Some((stored_hash, committed_revision)) = tx
+                .query_row(
+                    "SELECT payload_hash, committed_revision FROM managed_session_idempotency
                  WHERE session_id = ?1 AND idempotency_key = ?2",
-                params![session_id, mutation.idempotency.key],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(storage)?
-        {
-            let committed_revision = SessionRevision(
-                u64::try_from(committed_revision)
-                    .map_err(|_| corrupt("negative committed Session revision"))?,
-            );
-            return classify_mutation_replay(
-                owner_scope,
-                &stored_hash,
-                committed_revision,
-                next,
-                &mutation.idempotency.payload_hash,
-                &Self::session_identity(&tx, &session_id)?,
-            );
-        }
-        let current = tx
-            .query_row(
-                "SELECT revision, scope_id, aggregate_json
+                    params![session_id, mutation.idempotency.key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(storage)?
+            {
+                let committed_revision = SessionRevision(
+                    u64::try_from(committed_revision)
+                        .map_err(|_| corrupt("negative committed Session revision"))?,
+                );
+                return classify_mutation_replay(
+                    &owner_scope,
+                    &stored_hash,
+                    committed_revision,
+                    next,
+                    &mutation.idempotency.payload_hash,
+                    &Self::session_identity(&tx, &session_id)?,
+                );
+            }
+            let current = tx
+                .query_row(
+                    "SELECT revision, scope_id, aggregate_json
                  FROM managed_session WHERE session_id = ?1",
-                params![session_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        EncodedSessionRow {
-                            aggregate_json: row.get(2)?,
-                            revision: row.get(0)?,
-                        },
-                    ))
-                },
-            )
-            .optional()
-            .map_err(storage)?;
-        let Some((current_revision, current_owner, current_row)) = current else {
-            let tombstone_revision = tx
+                    params![session_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            EncodedSessionRow {
+                                aggregate_json: row.get(2)?,
+                                revision: row.get(0)?,
+                            },
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some((current_revision, current_owner, current_row)) = current else {
+                let tombstone_revision = tx
                 .query_row(
                     "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = ?1",
                     params![session_id],
@@ -529,100 +551,102 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 .optional()
                 .map_err(storage)?
                 .unwrap_or_default();
-            let tombstone_revision = u64::try_from(tombstone_revision)
-                .map_err(|_| corrupt("negative deleted Session revision"))?;
-            return Ok(SessionMutationResult::Conflict {
-                current_revision: SessionRevision(tombstone_revision),
-            });
-        };
-        let current_revision = SessionRevision(
-            u64::try_from(current_revision)
-                .map_err(|_| corrupt("negative managed Session revision"))?,
-        );
-        if current_owner != owner_scope || current_revision != mutation.expected_revision {
-            return Ok(SessionMutationResult::Conflict { current_revision });
-        }
-        if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
-            let current_session = decode(current_row).map_err(corrupt)?;
-            let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
-                unreachable!("guarded above")
+                let tombstone_revision = u64::try_from(tombstone_revision)
+                    .map_err(|_| corrupt("negative deleted Session revision"))?;
+                return Ok(SessionMutationResult::Conflict {
+                    current_revision: SessionRevision(tombstone_revision),
+                });
             };
-            if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
-                return Err(SessionRepositoryError::InvalidMutation(
+            let current_revision = SessionRevision(
+                u64::try_from(current_revision)
+                    .map_err(|_| corrupt("negative managed Session revision"))?,
+            );
+            if current_owner != owner_scope || current_revision != mutation.expected_revision {
+                return Ok(SessionMutationResult::Conflict { current_revision });
+            }
+            if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
+                let current_session = decode(current_row).map_err(corrupt)?;
+                let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
+                    unreachable!("guarded above")
+                };
+                if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
+                    return Err(SessionRepositoryError::InvalidMutation(
                     "Session tombstone requires hidden terminal disposition and completed cleanup"
                         .into(),
                 ));
+                }
             }
-        }
-        match &mutation.payload {
-            SessionMutationPayload::Replace(replacement) => {
-                let mut replacement = replacement.clone();
-                replacement.revision = next;
-                let affected = tx
-                    .execute(
-                        "UPDATE managed_session SET
+            match &mutation.payload {
+                SessionMutationPayload::Replace(replacement) => {
+                    let mut replacement = replacement.clone();
+                    replacement.revision = next;
+                    let affected = tx
+                        .execute(
+                            "UPDATE managed_session SET
                         aggregate_json = ?2, revision = ?3
                      WHERE session_id = ?1 AND scope_id = ?4 AND revision = ?5",
+                            params![
+                                replacement.session_id,
+                                aggregate_str(&replacement)?,
+                                db_revision(next)?,
+                                owner_scope,
+                                db_revision(current_revision)?,
+                            ],
+                        )
+                        .map_err(storage)?;
+                    if affected != 1 {
+                        return Ok(SessionMutationResult::Conflict { current_revision });
+                    }
+                    Self::sync_session_indexes(&tx, &replacement)?;
+                }
+                SessionMutationPayload::Delete(tombstone) => {
+                    let affected = tx
+                        .execute(
+                            "DELETE FROM managed_session
+                         WHERE session_id = ?1 AND scope_id = ?2 AND revision = ?3",
+                            params![session_id, owner_scope, db_revision(current_revision)?],
+                        )
+                        .map_err(storage)?;
+                    if affected != 1 {
+                        return Ok(SessionMutationResult::Conflict { current_revision });
+                    }
+                    tx.execute(
+                        "INSERT INTO managed_session_tombstone
+                        (session_id, scope_id, deleted_revision, deleted_at)
+                     VALUES (?1, ?2, ?3, ?4)",
                         params![
-                            replacement.session_id,
-                            aggregate_str(&replacement)?,
-                            db_revision(next)?,
+                            tombstone.session_id,
                             owner_scope,
-                            db_revision(current_revision)?,
+                            db_revision(tombstone.deleted_revision)?,
+                            tombstone.deleted_at,
                         ],
                     )
                     .map_err(storage)?;
-                if affected != 1 {
-                    return Ok(SessionMutationResult::Conflict { current_revision });
                 }
-                Self::sync_session_indexes(&tx, &replacement)?;
             }
-            SessionMutationPayload::Delete(tombstone) => {
-                let affected = tx
-                    .execute(
-                        "DELETE FROM managed_session
-                         WHERE session_id = ?1 AND scope_id = ?2 AND revision = ?3",
-                        params![session_id, owner_scope, db_revision(current_revision)?],
-                    )
-                    .map_err(storage)?;
-                if affected != 1 {
-                    return Ok(SessionMutationResult::Conflict { current_revision });
-                }
-                tx.execute(
-                    "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        tombstone.session_id,
-                        owner_scope,
-                        db_revision(tombstone.deleted_revision)?,
-                        tombstone.deleted_at,
-                    ],
-                )
-                .map_err(storage)?;
-            }
-        }
-        tx.execute(
-            "INSERT INTO managed_session_idempotency
+            tx.execute(
+                "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
              VALUES (?1, ?2, ?3, ?4)",
-            params![
-                session_id,
-                mutation.idempotency.key,
-                mutation.idempotency.payload_hash,
-                db_revision(next)?,
-            ],
-        )
-        .map_err(storage)?;
-        for fact in mutation.lifecycle_facts {
-            tx.execute(
+                params![
+                    session_id,
+                    mutation.idempotency.key,
+                    mutation.idempotency.payload_hash,
+                    db_revision(next)?,
+                ],
+            )
+            .map_err(storage)?;
+            for fact in mutation.lifecycle_facts {
+                tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
                 params![fact.id, lifecycle_str(&fact)],
             )
             .map_err(storage)?;
-        }
-        tx.commit().map_err(storage)?;
-        Ok(SessionMutationResult::Applied { new_revision: next })
+            }
+            tx.commit().map_err(storage)?;
+            Ok(SessionMutationResult::Applied { new_revision: next })
+        })
+        .await
     }
 
     async fn append_lifecycle(
@@ -630,211 +654,225 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         fact: ManagedLifecycleFact,
     ) -> Result<(), SessionRepositoryError> {
         let data = lifecycle_str(&fact);
-        self.conn
-            .lock()
-            .map_err(storage)?
-            .execute(
+        self.with_connection(move |conn| {
+            conn.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
                 params![fact.id, data],
             )
             .map_err(storage)?;
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-            .map_err(storage)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(storage)?;
-        rows.map(|row| {
-            let encoded = row.map_err(storage)?;
-            decode_lifecycle(&encoded).map_err(corrupt)
+        self.with_connection(|conn| {
+            let mut statement = conn
+                .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            rows.map(|row| {
+                let encoded = row.map_err(storage)?;
+                decode_lifecycle(&encoded).map_err(corrupt)
+            })
+            .collect()
         })
-        .collect()
+        .await
     }
 
     async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
-        self.conn
-            .lock()
-            .map_err(storage)?
-            .execute(
+        let fact_id = fact_id.to_string();
+        self.with_connection(move |conn| {
+            conn.execute(
                 "DELETE FROM managed_lifecycle_outbox WHERE fact_id = ?1",
                 params![fact_id],
             )
             .map_err(storage)?;
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let raw = conn
-            .query_row(
-                "SELECT aggregate_json, revision
-                 FROM managed_session WHERE session_id = ?1",
-                params![session_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(storage)?;
-        let Some(raw) = raw else {
-            return Err(SessionRepositoryError::NotFound);
-        };
-        let (aggregate_json, revision) = raw;
-        decode(EncodedSessionRow {
-            aggregate_json,
-            revision,
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            let raw = conn
+                .query_row(
+                    "SELECT aggregate_json, revision
+                     FROM managed_session WHERE session_id = ?1",
+                    params![session_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some(raw) = raw else {
+                return Err(SessionRepositoryError::NotFound);
+            };
+            let (aggregate_json, revision) = raw;
+            decode(EncodedSessionRow {
+                aggregate_json,
+                revision,
+            })
+            .map_err(corrupt)
         })
-        .map_err(corrupt)
+        .await
     }
 
     async fn list_by_owner(
         &self,
         owner_scope: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT aggregate_json, revision FROM managed_session
-                 WHERE scope_id = ?1 ORDER BY session_id",
-            )
-            .map_err(storage)?;
-        statement
-            .query_map(params![owner_scope], |row| {
-                Ok(EncodedSessionRow {
-                    aggregate_json: row.get(0)?,
-                    revision: row.get(1)?,
+        let owner_scope = owner_scope.to_string();
+        self.with_connection(move |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT aggregate_json, revision FROM managed_session
+                     WHERE scope_id = ?1 ORDER BY session_id",
+                )
+                .map_err(storage)?;
+            statement
+                .query_map(params![owner_scope], |row| {
+                    Ok(EncodedSessionRow {
+                        aggregate_json: row.get(0)?,
+                        revision: row.get(1)?,
+                    })
                 })
-            })
-            .map_err(storage)?
-            .map(|row| {
-                row.map_err(storage)
-                    .and_then(|row| decode(row).map_err(corrupt))
-            })
-            .collect()
+                .map_err(storage)?
+                .map(|row| {
+                    row.map_err(storage)
+                        .and_then(|row| decode(row).map_err(corrupt))
+                })
+                .collect()
+        })
+        .await
     }
 
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let mut scan = SessionRecoveryScan::default();
-        {
-            let mut statement = tx
-                .prepare(
-                    "SELECT session.scope_id, session.session_id, session.aggregate_json, \
+        self.with_connection(|conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let mut scan = SessionRecoveryScan::default();
+            {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                             session.revision, work.observed_revision \
                      FROM managed_session_reconciliation_work work \
                      JOIN managed_session session ON session.session_id = work.session_id \
                      ORDER BY session.session_id LIMIT ?1",
-                )
-                .map_err(storage)?;
-            let rows = statement
-                .query_map(params![RECOVERY_BATCH_SIZE], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        EncodedSessionRow {
-                            aggregate_json: row.get(2)?,
-                            revision: row.get(3)?,
-                        },
-                        row.get::<_, i64>(4)?,
-                    ))
-                })
-                .map_err(storage)?;
-            for row in rows {
-                let (workspace_id, session_id, row, observed_revision) = row.map_err(storage)?;
-                if observed_revision != row.revision {
-                    return Err(corrupt(format!(
-                        "Session reconciliation revision drift for {session_id}"
-                    )));
-                }
-                let stored_revision = row.revision;
-                match decode(row) {
-                    Ok(session) => {
-                        // Quarantine records are evidence, not an absorbing
-                        // lifecycle state. A newer codec may make a known old
-                        // format readable, so every scan revalidates the row
-                        // and clears stale isolation before returning work.
-                        tx.execute(
-                            "DELETE FROM managed_session_quarantine WHERE session_id = ?1",
-                            params![session_id],
-                        )
-                        .map_err(storage)?;
-                        if session.needs_reconciliation() {
-                            scan.sessions.push(ScopedPersistedSession {
-                                workspace_id,
-                                session,
-                            });
-                        }
+                    )
+                    .map_err(storage)?;
+                let rows = statement
+                    .query_map(params![RECOVERY_BATCH_SIZE], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            EncodedSessionRow {
+                                aggregate_json: row.get(2)?,
+                                revision: row.get(3)?,
+                            },
+                            row.get::<_, i64>(4)?,
+                        ))
+                    })
+                    .map_err(storage)?;
+                for row in rows {
+                    let (workspace_id, session_id, row, observed_revision) =
+                        row.map_err(storage)?;
+                    if observed_revision != row.revision {
+                        return Err(corrupt(format!(
+                            "Session reconciliation revision drift for {session_id}"
+                        )));
                     }
-                    Err(error) => {
-                        let reason = error.to_string();
-                        tx.execute(
-                            "INSERT INTO managed_session_quarantine \
+                    let stored_revision = row.revision;
+                    match decode(row) {
+                        Ok(session) => {
+                            // Quarantine records are evidence, not an absorbing
+                            // lifecycle state. A newer codec may make a known old
+                            // format readable, so every scan revalidates the row
+                            // and clears stale isolation before returning work.
+                            tx.execute(
+                                "DELETE FROM managed_session_quarantine WHERE session_id = ?1",
+                                params![session_id],
+                            )
+                            .map_err(storage)?;
+                            if session.needs_reconciliation() {
+                                scan.sessions.push(ScopedPersistedSession {
+                                    workspace_id,
+                                    session,
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            let reason = error.to_string();
+                            tx.execute(
+                                "INSERT INTO managed_session_quarantine \
                                 (session_id, reason, observed_revision) \
                              VALUES (?1, ?2, ?3) \
                              ON CONFLICT (session_id) DO UPDATE SET \
                                 reason = excluded.reason, \
                                 observed_revision = excluded.observed_revision, \
                                 quarantined_at = CURRENT_TIMESTAMP",
-                            params![session_id, reason, stored_revision],
-                        )
-                        .map_err(storage)?;
+                                params![session_id, reason, stored_revision],
+                            )
+                            .map_err(storage)?;
+                        }
                     }
                 }
-            }
-            {
-                let mut quarantined = tx
-                    .prepare(
-                        "SELECT session_id, reason FROM managed_session_quarantine \
+                {
+                    let mut quarantined = tx
+                        .prepare(
+                            "SELECT session_id, reason FROM managed_session_quarantine \
                          ORDER BY session_id LIMIT ?1",
-                    )
-                    .map_err(storage)?;
-                let rows = quarantined
-                    .query_map(params![RECOVERY_BATCH_SIZE], |row| {
-                        Ok(SessionRecoveryQuarantine {
-                            session_id: row.get(0)?,
-                            reason: row.get(1)?,
+                        )
+                        .map_err(storage)?;
+                    let rows = quarantined
+                        .query_map(params![RECOVERY_BATCH_SIZE], |row| {
+                            Ok(SessionRecoveryQuarantine {
+                                session_id: row.get(0)?,
+                                reason: row.get(1)?,
+                            })
                         })
-                    })
-                    .map_err(storage)?;
-                scan.quarantined = rows
-                    .collect::<Result<Vec<_>, rusqlite::Error>>()
-                    .map_err(storage)?;
+                        .map_err(storage)?;
+                    scan.quarantined = rows
+                        .collect::<Result<Vec<_>, rusqlite::Error>>()
+                        .map_err(storage)?;
+                }
             }
-        }
-        tx.commit().map_err(storage)?;
-        Ok(scan)
+            tx.commit().map_err(storage)?;
+            Ok(scan)
+        })
+        .await
     }
 
     async fn count_environment_phase(
         &self,
         phase: SessionEnvironmentPhase,
     ) -> Result<u64, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
-            )
-            .map_err(storage)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    EncodedSessionRow {
-                        aggregate_json: row.get(1)?,
-                        revision: row.get(2)?,
-                    },
-                ))
-            })
-            .map_err(storage)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage)?;
-        count_environment_phase(rows, phase)
+        self.with_connection(move |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+                )
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        EncodedSessionRow {
+                            aggregate_json: row.get(1)?,
+                            revision: row.get(2)?,
+                        },
+                    ))
+                })
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?;
+            count_environment_phase(rows, phase)
+        })
+        .await
     }
 
     async fn sessions_referencing_vault(
@@ -842,32 +880,36 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         workspace_id: &str,
         vault_id: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT session.aggregate_json, session.revision \
-                 FROM managed_session_vault_reference reference \
-                 JOIN managed_session session ON session.session_id = reference.session_id \
-                 WHERE reference.vault_id = ?1 AND session.scope_id = ?2 \
-                 ORDER BY session.session_id",
-            )
-            .map_err(storage)?;
-        let rows = statement
-            .query_map(params![vault_id, workspace_id], |row| {
-                Ok(EncodedSessionRow {
-                    aggregate_json: row.get(0)?,
-                    revision: row.get(1)?,
+        let workspace_id = workspace_id.to_string();
+        let vault_id = vault_id.to_string();
+        self.with_connection(move |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT session.aggregate_json, session.revision \
+                     FROM managed_session_vault_reference reference \
+                     JOIN managed_session session ON session.session_id = reference.session_id \
+                     WHERE reference.vault_id = ?1 AND session.scope_id = ?2 \
+                     ORDER BY session.session_id",
+                )
+                .map_err(storage)?;
+            let rows = statement
+                .query_map(params![vault_id, workspace_id], |row| {
+                    Ok(EncodedSessionRow {
+                        aggregate_json: row.get(0)?,
+                        revision: row.get(1)?,
+                    })
                 })
-            })
-            .map_err(storage)?;
-        let mut sessions = Vec::new();
-        for row in rows {
-            let session = decode(row.map_err(storage)?).map_err(corrupt)?;
-            if !session.is_terminal() {
-                sessions.push(session);
+                .map_err(storage)?;
+            let mut sessions = Vec::new();
+            for row in rows {
+                let session = decode(row.map_err(storage)?).map_err(corrupt)?;
+                if !session.is_terminal() {
+                    sessions.push(session);
+                }
             }
-        }
-        Ok(sessions)
+            Ok(sessions)
+        })
+        .await
     }
 
     async fn sessions_referencing_credential_source(
@@ -875,34 +917,38 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         workspace_id: &str,
         source_id: &awaken_credential_contract::CredentialSourceId,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT session.aggregate_json, session.revision \
-                 FROM managed_session_credential_source_reference reference \
-                 JOIN managed_session session ON session.session_id = reference.session_id \
-                 WHERE reference.credential_source_id = ?1 AND session.scope_id = ?2 \
-                 ORDER BY session.session_id",
-            )
-            .map_err(storage)?;
-        let rows = statement
-            .query_map(params![source_id.0.as_str(), workspace_id], |row| {
-                Ok(EncodedSessionRow {
-                    aggregate_json: row.get(0)?,
-                    revision: row.get(1)?,
+        let workspace_id = workspace_id.to_string();
+        let source_id = source_id.clone();
+        self.with_connection(move |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT session.aggregate_json, session.revision \
+                     FROM managed_session_credential_source_reference reference \
+                     JOIN managed_session session ON session.session_id = reference.session_id \
+                     WHERE reference.credential_source_id = ?1 AND session.scope_id = ?2 \
+                     ORDER BY session.session_id",
+                )
+                .map_err(storage)?;
+            let rows = statement
+                .query_map(params![source_id.0.as_str(), workspace_id], |row| {
+                    Ok(EncodedSessionRow {
+                        aggregate_json: row.get(0)?,
+                        revision: row.get(1)?,
+                    })
                 })
-            })
-            .map_err(storage)?;
-        let mut sessions = Vec::new();
-        for row in rows {
-            let session = decode(row.map_err(storage)?).map_err(corrupt)?;
-            if !session.is_terminal()
-                && referenced_mcp_credential_source_ids(&session).contains(&source_id.0)
-            {
-                sessions.push(session);
+                .map_err(storage)?;
+            let mut sessions = Vec::new();
+            for row in rows {
+                let session = decode(row.map_err(storage)?).map_err(corrupt)?;
+                if !session.is_terminal()
+                    && referenced_mcp_credential_source_ids(&session).contains(&source_id.0)
+                {
+                    sessions.push(session);
+                }
             }
-        }
-        Ok(sessions)
+            Ok(sessions)
+        })
+        .await
     }
 
     async fn idempotency_receipt(
@@ -911,38 +957,45 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         key: &str,
     ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
     {
-        let conn = self.conn.lock().map_err(storage)?;
-        let row = conn
-            .query_row(
-                "SELECT payload_hash, committed_revision FROM managed_session_idempotency
-             WHERE session_id = ?1 AND idempotency_key = ?2",
-                params![session_id, key],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(storage)?;
-        row.map(|(payload_hash, revision)| {
-            u64::try_from(revision)
-                .map(
-                    |revision| awaken_session_contract::SessionIdempotencyReceipt {
-                        payload_hash,
-                        committed_revision: SessionRevision(revision),
-                    },
+        let session_id = session_id.to_string();
+        let key = key.to_string();
+        self.with_connection(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+                     WHERE session_id = ?1 AND idempotency_key = ?2",
+                    params![session_id, key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
                 )
-                .map_err(|_| corrupt("negative Session idempotency revision"))
+                .optional()
+                .map_err(storage)?;
+            row.map(|(payload_hash, revision)| {
+                u64::try_from(revision)
+                    .map(
+                        |revision| awaken_session_contract::SessionIdempotencyReceipt {
+                            payload_hash,
+                            committed_revision: SessionRevision(revision),
+                        },
+                    )
+                    .map_err(|_| corrupt("negative Session idempotency revision"))
+            })
+            .transpose()
         })
-        .transpose()
+        .await
     }
 
     async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        conn.query_row(
-            "SELECT scope_id FROM managed_session WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(storage)?
-        .ok_or(SessionRepositoryError::NotFound)
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row(
+                "SELECT scope_id FROM managed_session WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage)?
+            .ok_or(SessionRepositoryError::NotFound)
+        })
+        .await
     }
 }

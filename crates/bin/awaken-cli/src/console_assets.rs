@@ -112,8 +112,9 @@ mod tests {
         );
         let body = index.into_body().collect().await.unwrap().to_bytes();
         assert!(
-            body.windows(b"Awaken Console".len())
-                .any(|window| window == b"Awaken Console")
+            body.windows(b"Awaken Agents".len())
+                .any(|window| window == b"Awaken Agents"),
+            "the embedded index must be the canonical web/index.html product shell"
         );
 
         let api = app

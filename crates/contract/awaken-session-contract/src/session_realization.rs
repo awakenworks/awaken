@@ -467,16 +467,11 @@ pub struct SessionRealizationTarget {
     pub owner: String,
     pub runtime_incarnation: String,
     pub lease_expires_at_unix_ms: u64,
-    /// Explicitly extend an existing lease for the same owner/incarnation.
-    /// Ordinary create/hot-update commands leave this false, so a later wall
-    /// clock alone cannot turn unrelated realization work into a renewal.
-    #[serde(default)]
-    pub renew_existing_lease: bool,
     /// Explicitly replace a live lease owned by another logical Runtime.
     /// Only a topology edge holding the current execution claim may set this;
     /// ordinary application callers leave it false and therefore cannot steal
-    /// a live Session projection. Renewal and reassignment are mutually
-    /// exclusive operations.
+    /// a live Session projection. Lease extension is a separate exact-fence
+    /// command and can never be smuggled through this assignment value.
     #[serde(default)]
     pub reassign_existing_lease: bool,
 }
@@ -541,6 +536,17 @@ pub struct SessionRepositoryPublicationProjection {
 pub struct BeginSessionRealization {
     pub session_id: String,
     pub target: SessionRealizationTarget,
+}
+
+/// Extend one already-authoritative realization lease without replaying the
+/// projection/phase protocol. The asserted lease is the caller's exact fence;
+/// Control may return a monotonic same-epoch successor but can never change its
+/// owner, Runtime incarnation, or epoch.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RenewSessionRealization {
+    pub session_id: String,
+    pub asserted_lease: SessionRealizationLease,
+    pub requested_expires_at_unix_ms: u64,
 }
 
 /// Persisted initial-realization retry budget state. Runtime leases fence who
@@ -724,6 +730,19 @@ pub trait SessionRealizationControl: Send + Sync {
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure>;
 
+    /// Renew only the existing realization fence. Initial assignment and
+    /// desired-state progression remain owned by `begin`; heartbeat callers
+    /// must not rebuild or reinstall an unchanged frozen projection merely to
+    /// prove continued ownership.
+    async fn renew_session_realization(
+        &self,
+        _command: RenewSessionRealization,
+    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "Session realization lease renewal is unsupported".into(),
+        ))
+    }
+
     async fn activate_session_realization(
         &self,
         command: ActivateSessionRealization,
@@ -892,7 +911,8 @@ pub async fn drive_session_realization(
     mcp: &dyn McpAttachmentRealizer,
     mut directive: SessionRealizationDirective,
 ) -> Result<(), SessionRealizationDriveError> {
-    for _ in 0..4 {
+    loop {
+        let previous = directive.clone();
         let prepare_session = match &directive.action {
             SessionRealizationAction::Stage {
                 prepare_session, ..
@@ -1018,8 +1038,14 @@ pub async fn drive_session_realization(
         if matches!(directive.action, SessionRealizationAction::Complete) {
             return Ok(());
         }
+        // A lease extension can require any number of monotonic Stage/Activate
+        // catch-up rounds. The protocol therefore rejects only a Control
+        // transition that made no observable progress; an arbitrary iteration
+        // cap would turn a healthy, still-owned execution into a false failure.
+        if directive == previous {
+            return Err(SessionRealizationDriveError::DidNotConverge);
+        }
     }
-    Err(SessionRealizationDriveError::DidNotConverge)
 }
 
 #[cfg(test)]

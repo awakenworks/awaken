@@ -13,7 +13,6 @@
 //! list/retrieve projections never expose it again.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
@@ -25,6 +24,7 @@ fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string())
 }
 
+use awaken_sqlite_runtime::SharedSqliteConnection;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -34,6 +34,7 @@ use sqlx::postgres::{PgPool, PgRow};
 // product build.
 mod lease_book;
 pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
+mod backends;
 mod mutation;
 use mutation::{apply_metadata_patch, lease_epoch};
 #[cfg(any(test, feature = "test-support"))]
@@ -48,122 +49,19 @@ pub(crate) use session_access::session_token_sha256;
 /// SQLite persistence for the environment work queue. Ownership, epoch and expiry
 /// are durable because they are safety authority; only poller liveness is ephemeral.
 pub struct SqliteWorkQueue {
-    conn: Arc<Mutex<Connection>>,
+    conn: SharedSqliteConnection,
     book: LeaseBook,
 }
 
 impl SqliteWorkQueue {
-    /// Open (or create) the work-queue database at `path` and apply migrations.
-    pub fn open(path: &str) -> Result<Self, String> {
-        Self::from_connection(
-            awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
-                .open()
-                .map_err(|e| e.to_string())?,
-        )
-    }
-
     /// A private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
         Self::from_connection(
             awaken_sqlite_runtime::SqliteConnectionFactory::memory()
                 .open()
-                .map_err(|e| e.to_string())?,
+                .map_err(|error| error.to_string())?,
         )
-    }
-
-    fn from_connection(conn: Connection) -> Result<Self, String> {
-        apply_sqlite_migrations(&conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-            book: LeaseBook::default(),
-        })
-    }
-
-    /// Reclaim `env_id`'s `active` rows whose durable lease has lapsed.
-    fn reclaim_lapsed(
-        &self,
-        tx: &Transaction<'_>,
-        env_id: &str,
-        now_ms: u64,
-    ) -> Result<(), WorkQueueError> {
-        tx.execute(
-            "UPDATE work_queue_item \
-             SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
-                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
-             WHERE environment_id = ?1 AND state = 'active' \
-               AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?2)",
-            params![env_id, db_millis(now_ms)],
-        )
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    /// Insert a queued row and return its work id. `session` sets `data_id` to the
-    /// session id; a healthcheck's `data_id` is its own work id (self-reference).
-    fn insert(
-        &self,
-        environment_id: &str,
-        data_type: &str,
-        session_id: Option<&str>,
-    ) -> Result<String, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        if let Some(session_id) = session_id
-            && let Some(existing) = tx
-                .query_row(
-                    "SELECT work_id FROM work_queue_item \
-                     WHERE environment_id = ?1 AND data_type = 'session' AND data_id = ?2 \
-                     ORDER BY seq ASC LIMIT 1",
-                    params![environment_id, session_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(storage)?
-        {
-            tx.commit().map_err(storage)?;
-            return Ok(existing);
-        }
-        // A portable monotonic order key (no backend-specific autoincrement): the
-        // next seq under the write lock, so ids are enqueue-ordered on both stores.
-        let next: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        // A session carries the session id; a healthcheck references itself.
-        let data_id = session_id.unwrap_or(&work_id);
-        tx.execute(
-            "INSERT INTO work_queue_item \
-                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
-             VALUES (?1, ?2, ?3, ?4, ?5, '{}', 'queued')",
-            params![work_id, next, environment_id, data_type, data_id],
-        )
-        .map_err(storage)?;
-        tx.commit().map_err(storage)?;
-        Ok(work_id)
-    }
-
-    /// Read the single owned row (belongs to `env_id`) inside `tx`.
-    fn owned(
-        tx: &Transaction<'_>,
-        env_id: &str,
-        wid: &str,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        tx.query_row(
-            &format!(
-                "SELECT {COLS} FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2"
-            ),
-            params![wid, env_id],
-            row_to_item,
-        )
-        .optional()
-        .map_err(storage)
     }
 }
 
@@ -174,83 +72,102 @@ impl WorkQueue for SqliteWorkQueue {
         env_id: &str,
         session_id: &str,
     ) -> Result<String, WorkQueueError> {
-        self.insert(env_id, "session", Some(session_id))
+        let env_id = env_id.to_string();
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| Self::insert(conn, &env_id, "session", Some(&session_id)))
+            .await
     }
 
     async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError> {
-        let work_id = self.insert(env_id, "session", Some(session_id))?;
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let env_id = env_id.to_string();
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            let work_id = Self::insert(conn, &env_id, "session", Some(&session_id))?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            tx.execute(
+                "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
+                 latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
+                 stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
+                 lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?1 AND environment_id = ?2 \
+                 AND data_type = 'session' AND data_id = ?3 AND state = 'stopped'",
+                params![work_id, env_id, session_id],
+            )
             .map_err(storage)?;
-        tx.execute(
-            "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
-             latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
-             stopped_at = NULL, lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?1 AND environment_id = ?2 \
-             AND data_type = 'session' AND data_id = ?3 AND state = 'stopped'",
-            params![work_id, env_id, session_id],
-        )
-        .map_err(storage)?;
-        tx.commit().map_err(storage)?;
-        Ok(work_id)
+            tx.commit().map_err(storage)?;
+            Ok(work_id)
+        })
+        .await
     }
 
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        self.insert(env_id, "healthcheck", None)
+        let env_id = env_id.to_string();
+        self.with_connection(move |conn| Self::insert(conn, &env_id, "healthcheck", None))
+            .await
     }
 
     async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        if let Some(id) = tx
-            .query_row(
-                "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
-                params![env_id],
-                |row| row.get(0),
+        let env_id = env_id.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            if let Some(id) = tx
+                .query_row(
+                    "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
+                    params![env_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?
+            {
+                tx.commit().map_err(storage)?;
+                return Ok(id);
+            }
+            let next: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage)?;
+            let work_id = format!("work_{next:016}");
+            tx.execute(
+                "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued')",
+                params![work_id, next, env_id],
             )
-            .optional()
-            .map_err(storage)?
-        {
+            .map_err(storage)?;
             tx.commit().map_err(storage)?;
-            return Ok(id);
-        }
-        let next: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        tx.execute(
-            "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued')",
-            params![work_id, next, env_id],
-        )
-        .map_err(storage)?;
-        tx.commit().map_err(storage)?;
-        Ok(work_id)
+            Ok(work_id)
+        })
+        .await
     }
 
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {COLS} FROM work_queue_item WHERE environment_id = ?1 ORDER BY seq ASC"
-            ))
-            .map_err(storage)?;
-        let rows = stmt
-            .query_map(params![env_id], row_to_item)
-            .map_err(storage)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+        let env_id = env_id.to_string();
+        self.with_connection(move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {COLS} FROM work_queue_item WHERE environment_id = ?1 ORDER BY seq ASC"
+                ))
+                .map_err(storage)?;
+            let rows = stmt
+                .query_map(params![env_id], row_to_item)
+                .map_err(storage)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+        })
+        .await
     }
 
     async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard.transaction().map_err(storage)?;
-        Self::owned(&tx, env_id, wid)
+        let env_id = env_id.to_string();
+        let wid = wid.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn.transaction().map_err(storage)?;
+            Self::owned(&tx, &env_id, &wid)
+        })
+        .await
     }
 
     async fn claim(
@@ -271,9 +188,14 @@ impl WorkQueue for SqliteWorkQueue {
         now_ms: u64,
         age_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        Ok(self
-            .claim_inner(env_id, lease_owner, poller_id, now_ms, age_ms, false)?
-            .map(|claim| claim.item))
+        self.book.record_poll(env_id, poller_id, now_ms);
+        let env_id = env_id.to_string();
+        let lease_owner = lease_owner.to_string();
+        self.with_connection(move |conn| {
+            Self::claim_inner(conn, &env_id, &lease_owner, now_ms, age_ms, false)
+                .map(|claim| claim.map(|claim| claim.item))
+        })
+        .await
     }
 
     async fn claim_with_session_access(
@@ -284,14 +206,20 @@ impl WorkQueue for SqliteWorkQueue {
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<ClaimedWork>, WorkQueueError> {
-        self.claim_inner(
-            env_id,
-            lease_owner,
-            poller_id,
-            now_ms,
-            reclaim_older_than_ms,
-            true,
-        )
+        self.book.record_poll(env_id, poller_id, now_ms);
+        let env_id = env_id.to_string();
+        let lease_owner = lease_owner.to_string();
+        self.with_connection(move |conn| {
+            Self::claim_inner(
+                conn,
+                &env_id,
+                &lease_owner,
+                now_ms,
+                reclaim_older_than_ms,
+                true,
+            )
+        })
+        .await
     }
 
     async fn authenticate_session_access(
@@ -300,25 +228,27 @@ impl WorkQueue for SqliteWorkQueue {
         now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let digest = session_token_sha256(presented);
-        let conn = self.conn.lock().map_err(storage)?;
-        conn.query_row(
-            "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
-             FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
-               AND session_token_sha256 = ?1 AND lease_expires_ms > ?2 LIMIT 1",
-            params![digest, db_millis(now_ms)],
-            |row| {
-                Ok(WorkSessionAccess {
-                    work_id: row.get(0)?,
-                    environment_id: row.get(1)?,
-                    session_id: row.get(2)?,
-                    lease_owner: row.get(3)?,
-                    lease_epoch: row.get::<_, u64>(4)?,
-                    expires_at_unix_ms: row.get::<_, u64>(5)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(storage)
+        self.with_connection(move |conn| {
+            conn.query_row(
+                "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
+                 FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
+                   AND session_token_sha256 = ?1 AND lease_expires_ms > ?2 LIMIT 1",
+                params![digest, db_millis(now_ms)],
+                |row| {
+                    Ok(WorkSessionAccess {
+                        work_id: row.get(0)?,
+                        environment_id: row.get(1)?,
+                        session_id: row.get(2)?,
+                        lease_owner: row.get(3)?,
+                        lease_epoch: row.get::<_, u64>(4)?,
+                        expires_at_unix_ms: row.get::<_, u64>(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(storage)
+        })
+        .await
     }
 
     async fn ack(
@@ -327,19 +257,28 @@ impl WorkQueue for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.ack_inner(env_id, wid, worker_id, None)
+        let env_id = env_id.to_string();
+        let wid = wid.to_string();
+        let worker_id = worker_id.to_string();
+        self.with_connection(move |conn| Self::ack_inner(conn, &env_id, &wid, &worker_id, None))
+            .await
     }
 
     async fn ack_with_session_access(
         &self,
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.ack_inner(
-            &access.environment_id,
-            &access.work_id,
-            &access.lease_owner,
-            Some(access.lease_epoch),
-        )
+        let access = access.clone();
+        self.with_connection(move |conn| {
+            Self::ack_inner(
+                conn,
+                &access.environment_id,
+                &access.work_id,
+                &access.lease_owner,
+                Some(access.lease_epoch),
+            )
+        })
+        .await
     }
 
     async fn heartbeat(
@@ -350,7 +289,13 @@ impl WorkQueue for SqliteWorkQueue {
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
-        self.heartbeat_inner(env_id, wid, worker_id, None, now_ms, heartbeat)
+        let env_id = env_id.to_string();
+        let wid = wid.to_string();
+        let worker_id = worker_id.to_string();
+        self.with_connection(move |conn| {
+            Self::heartbeat_inner(conn, &env_id, &wid, &worker_id, None, now_ms, heartbeat)
+        })
+        .await
     }
 
     async fn heartbeat_with_session_access(
@@ -359,14 +304,19 @@ impl WorkQueue for SqliteWorkQueue {
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
-        self.heartbeat_inner(
-            &access.environment_id,
-            &access.work_id,
-            &access.lease_owner,
-            Some(access.lease_epoch),
-            now_ms,
-            heartbeat,
-        )
+        let access = access.clone();
+        self.with_connection(move |conn| {
+            Self::heartbeat_inner(
+                conn,
+                &access.environment_id,
+                &access.work_id,
+                &access.lease_owner,
+                Some(access.lease_epoch),
+                now_ms,
+                heartbeat,
+            )
+        })
+        .await
     }
 
     async fn stop(
@@ -375,25 +325,34 @@ impl WorkQueue for SqliteWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.stop_inner(env_id, wid, worker_id, None)
+        let env_id = env_id.to_string();
+        let wid = wid.to_string();
+        let worker_id = worker_id.to_string();
+        self.with_connection(move |conn| Self::stop_inner(conn, &env_id, &wid, &worker_id, None))
+            .await
     }
 
     async fn stop_with_session_access(
         &self,
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.stop_inner(
-            &access.environment_id,
-            &access.work_id,
-            &access.lease_owner,
-            Some(access.lease_epoch),
-        )
+        let access = access.clone();
+        self.with_connection(move |conn| {
+            Self::stop_inner(
+                conn,
+                &access.environment_id,
+                &access.work_id,
+                &access.lease_owner,
+                Some(access.lease_epoch),
+            )
+        })
+        .await
     }
 
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
-        let guard = self.conn.lock().map_err(storage)?;
-        guard
-            .execute(
+        let worker_owner = worker_owner.to_string();
+        self.with_connection(move |conn| {
+            conn.execute(
                 "UPDATE work_queue_item SET stop_requested_at = NULL, stopped_at = NULL, \
                  state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
                  lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
@@ -401,6 +360,8 @@ impl WorkQueue for SqliteWorkQueue {
                 params![worker_owner],
             )
             .map_err(storage)
+        })
+        .await
     }
 
     async fn retire_session(
@@ -408,59 +369,63 @@ impl WorkQueue for SqliteWorkQueue {
         env_id: &str,
         session_id: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let work_id: Option<String> = tx
-            .query_row(
-                "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 \
-                 AND data_type = 'session' AND data_id = ?2 ORDER BY seq ASC LIMIT 1",
-                params![env_id, session_id],
-                |row| row.get(0),
+        let env_id = env_id.to_string();
+        let session_id = session_id.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let work_id: Option<String> = tx
+                .query_row(
+                    "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 \
+                     AND data_type = 'session' AND data_id = ?2 ORDER BY seq ASC LIMIT 1",
+                    params![env_id, session_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some(work_id) = work_id else {
+                return Ok(None);
+            };
+            tx.execute(
+                "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+                 state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+                 lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?2",
+                params![OBJECT_AT, work_id],
             )
-            .optional()
             .map_err(storage)?;
-        let Some(work_id) = work_id else {
-            return Ok(None);
-        };
-        tx.execute(
-            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
-             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
-             lease_refreshed_ms = NULL, session_token_sha256 = NULL WHERE work_id = ?2",
-            params![OBJECT_AT, work_id],
-        )
-        .map_err(storage)?;
-        let item = Self::owned(&tx, env_id, &work_id)?;
-        tx.commit().map_err(storage)?;
-        Ok(item)
+            let item = Self::owned(&tx, &env_id, &work_id)?;
+            tx.commit().map_err(storage)?;
+            Ok(item)
+        })
+        .await
     }
 
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
-        let epoch = i64::try_from(lease.epoch).map_err(storage)?;
-        let guard = self.conn.lock().map_err(storage)?;
-        let changed = guard
-            .execute(
-                "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+        let lease = lease.clone();
+        self.with_connection(move |conn| {
+            let epoch = i64::try_from(lease.epoch).map_err(storage)?;
+            let changed = conn
+                .execute(
+                    "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
                  state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
                  lease_refreshed_ms = NULL, session_token_sha256 = NULL \
                  WHERE work_id = ?2 AND environment_id = ?3 AND data_type = 'session' \
                  AND data_id = ?4 AND state = 'active' AND lease_owner = ?5 AND lease_epoch = ?6",
-                params![
-                    OBJECT_AT,
-                    lease.work_id,
-                    lease.environment_id,
-                    lease.session_id,
-                    lease.owner,
-                    epoch,
-                ],
-            )
-            .map_err(storage)?;
-        if changed == 1 {
-            return Ok(true);
-        }
-        guard
-            .query_row(
+                    params![
+                        OBJECT_AT,
+                        lease.work_id,
+                        lease.environment_id,
+                        lease.session_id,
+                        lease.owner,
+                        epoch,
+                    ],
+                )
+                .map_err(storage)?;
+            if changed == 1 {
+                return Ok(true);
+            }
+            conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM work_queue_item WHERE work_id = ?1 \
                  AND environment_id = ?2 AND data_type = 'session' AND data_id = ?3 \
                  AND state = 'stopped' AND lease_epoch = ?4)",
@@ -468,6 +433,8 @@ impl WorkQueue for SqliteWorkQueue {
                 |row| row.get(0),
             )
             .map_err(storage)
+        })
+        .await
     }
 
     async fn acquire_session(
@@ -477,13 +444,16 @@ impl WorkQueue for SqliteWorkQueue {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        let work_id = self.insert(env_id, "session", Some(session_id))?;
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        self.reclaim_lapsed(&tx, env_id, now_ms)?;
-        let current: (String, Option<String>, i64, Option<i64>) = tx
+        let env_id = env_id.to_string();
+        let session_id = session_id.to_string();
+        let worker_owner = worker_owner.to_string();
+        self.with_connection(move |conn| {
+            let work_id = Self::insert(conn, &env_id, "session", Some(&session_id))?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            Self::reclaim_lapsed(&tx, &env_id, now_ms)?;
+            let current: (String, Option<String>, i64, Option<i64>) = tx
             .query_row(
                 "SELECT state, lease_owner, lease_epoch, lease_expires_ms FROM work_queue_item \
                  WHERE work_id = ?1 AND environment_id = ?2",
@@ -491,25 +461,27 @@ impl WorkQueue for SqliteWorkQueue {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(storage)?;
-        if current.0 == "active" && current.1.as_deref() != Some(worker_owner) {
-            let owner = current.1.clone().ok_or_else(|| {
-                WorkQueueError::Storage("active Session Work has no lease owner".into())
-            })?;
-            let (_, epoch) = lease_epoch(current.2, false)?;
-            let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
-                .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
-            return Ok(Some(SessionWorkLease {
-                work_id,
-                environment_id: env_id.to_string(),
-                session_id: session_id.to_string(),
-                owner,
-                epoch,
-                expires_at_unix_ms,
-            }));
-        }
-        let epoch = if current.0 == "active" && current.1.as_deref() == Some(worker_owner) {
-            let (_, epoch) = lease_epoch(current.2, false)?;
-            tx.execute(
+            if current.0 == "active" && current.1.as_deref() != Some(worker_owner.as_str()) {
+                let owner = current.1.clone().ok_or_else(|| {
+                    WorkQueueError::Storage("active Session Work has no lease owner".into())
+                })?;
+                let (_, epoch) = lease_epoch(current.2, false)?;
+                let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
+                    .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
+                return Ok(Some(SessionWorkLease {
+                    work_id,
+                    environment_id: env_id,
+                    session_id,
+                    owner,
+                    epoch,
+                    expires_at_unix_ms,
+                }));
+            }
+            let epoch = if current.0 == "active"
+                && current.1.as_deref() == Some(worker_owner.as_str())
+            {
+                let (_, epoch) = lease_epoch(current.2, false)?;
+                tx.execute(
                 "UPDATE work_queue_item SET lease_expires_ms = ?1, lease_refreshed_ms = ?2 \
                  WHERE work_id = ?3 AND environment_id = ?4 AND lease_owner = ?5",
                 params![
@@ -521,20 +493,20 @@ impl WorkQueue for SqliteWorkQueue {
                 ],
             )
             .map_err(storage)?;
-            epoch
-        } else {
-            let active: i64 = tx
+                epoch
+            } else {
+                let active: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
                     params![env_id],
                     |row| row.get(0),
                 )
                 .map_err(storage)?;
-            if active > 0 || current.0 != "queued" {
-                return Ok(None);
-            }
-            let (epoch_db, epoch) = lease_epoch(current.2, true)?;
-            tx.execute(
+                if active > 0 || current.0 != "queued" {
+                    return Ok(None);
+                }
+                let (epoch_db, epoch) = lease_epoch(current.2, true)?;
+                tx.execute(
                 "UPDATE work_queue_item SET state = 'active', started_at = ?1, \
                  lease_owner = ?2, lease_epoch = ?3, lease_expires_ms = ?4, \
                  lease_refreshed_ms = ?5, latest_heartbeat_at = NULL WHERE work_id = ?6",
@@ -548,17 +520,19 @@ impl WorkQueue for SqliteWorkQueue {
                 ],
             )
             .map_err(storage)?;
-            epoch
-        };
-        tx.commit().map_err(storage)?;
-        Ok(Some(SessionWorkLease {
-            work_id,
-            environment_id: env_id.to_string(),
-            session_id: session_id.to_string(),
-            owner: worker_owner.to_string(),
-            epoch,
-            expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
-        }))
+                epoch
+            };
+            tx.commit().map_err(storage)?;
+            Ok(Some(SessionWorkLease {
+                work_id,
+                environment_id: env_id,
+                session_id,
+                owner: worker_owner,
+                epoch,
+                expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
+            }))
+        })
+        .await
     }
 
     async fn update_metadata(
@@ -567,40 +541,50 @@ impl WorkQueue for SqliteWorkQueue {
         wid: &str,
         patch: BTreeMap<String, Option<String>>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        let mut guard = self.conn.lock().map_err(storage)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let env_id = env_id.to_string();
+        let wid = wid.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let Some(mut current) = Self::owned(&tx, &env_id, &wid)? else {
+                return Ok(None);
+            };
+            apply_metadata_patch(&mut current.metadata, patch);
+            let metadata_json = metadata_str(&current.metadata);
+            tx.execute(
+                "UPDATE work_queue_item SET metadata_json = ?1 WHERE work_id = ?2",
+                params![metadata_json, wid],
+            )
             .map_err(storage)?;
-        let Some(mut current) = Self::owned(&tx, env_id, wid)? else {
-            return Ok(None);
-        };
-        apply_metadata_patch(&mut current.metadata, patch);
-        let metadata_json = metadata_str(&current.metadata);
-        tx.execute(
-            "UPDATE work_queue_item SET metadata_json = ?1 WHERE work_id = ?2",
-            params![metadata_json, wid],
-        )
-        .map_err(storage)?;
-        let item = Self::owned(&tx, env_id, wid)?;
-        tx.commit().map_err(storage)?;
-        Ok(item)
+            let item = Self::owned(&tx, &env_id, &wid)?;
+            tx.commit().map_err(storage)?;
+            Ok(item)
+        })
+        .await
     }
 
     async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let count = |state_clause: &str| -> Result<usize, WorkQueueError> {
-            conn.query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND {state_clause}"
-                ),
-                params![env_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|count| count as usize)
-            .map_err(storage)
-        };
-        let depth = count("state = 'queued'")?;
-        let pending = count("state IN ('starting', 'active', 'stopping')")?;
+        let owned_env_id = env_id.to_string();
+        let (depth, pending) = self
+            .with_connection(move |conn| {
+                let count = |state_clause: &str| -> Result<usize, WorkQueueError> {
+                    conn.query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND {state_clause}"
+                        ),
+                        params![owned_env_id],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .map(|count| count as usize)
+                    .map_err(storage)
+                };
+                Ok((
+                    count("state = 'queued'")?,
+                    count("state IN ('starting', 'active', 'stopping')")?,
+                ))
+            })
+            .await?;
         // Parity with the in-memory queue: oldest stays set while an item is still
         // processing (queued OR pending), and pollers are counted from the liveness
         // book, not proxied from the active count.
@@ -614,25 +598,30 @@ impl WorkQueue for SqliteWorkQueue {
     }
 
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let mut stmt = tx
-            .prepare("SELECT work_id FROM work_queue_item WHERE environment_id = ?1")
-            .map_err(storage)?;
-        let ids = stmt
-            .query_map(params![env_id], |row| row.get::<_, String>(0))
-            .map_err(storage)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage)?;
-        drop(stmt);
-        tx.execute(
-            "DELETE FROM work_queue_item WHERE environment_id = ?1",
-            params![env_id],
-        )
-        .map_err(storage)?;
-        tx.commit().map_err(storage)?;
+        let owned_env_id = env_id.to_string();
+        let ids = self
+            .with_connection(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(storage)?;
+                let mut stmt = tx
+                    .prepare("SELECT work_id FROM work_queue_item WHERE environment_id = ?1")
+                    .map_err(storage)?;
+                let ids = stmt
+                    .query_map(params![owned_env_id], |row| row.get::<_, String>(0))
+                    .map_err(storage)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage)?;
+                drop(stmt);
+                tx.execute(
+                    "DELETE FROM work_queue_item WHERE environment_id = ?1",
+                    params![owned_env_id],
+                )
+                .map_err(storage)?;
+                tx.commit().map_err(storage)?;
+                Ok(ids)
+            })
+            .await?;
         self.book.forget_env(env_id, &ids);
         Ok(())
     }
@@ -663,102 +652,6 @@ fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
 pub struct PostgresWorkQueue {
     pool: PgPool,
     book: LeaseBook,
-}
-
-impl PostgresWorkQueue {
-    /// Connect and apply the work-queue migrations under the `work_queue` namespace.
-    pub async fn connect(url: &str) -> Result<Self, String> {
-        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
-        Self::with_pool(pool).await
-    }
-
-    /// Build from an existing pool: apply the work-queue migrations.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
-        apply_postgres_migrations(&pool).await?;
-        Ok(Self {
-            pool,
-            book: LeaseBook::default(),
-        })
-    }
-
-    pub async fn connect_existing(url: &str) -> Result<Self, String> {
-        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
-        verify_postgres_migrations(&pool).await?;
-        Ok(Self {
-            pool,
-            book: LeaseBook::default(),
-        })
-    }
-
-    async fn insert(
-        &self,
-        env_id: &str,
-        data_type: &str,
-        session_id: Option<&str>,
-    ) -> Result<String, WorkQueueError> {
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        // Serialize the portable MAX(seq)+1 allocator. This is infrequent control
-        // plane work and avoids a backend-specific sequence while remaining safe
-        // across processes.
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        if let Some(session_id) = session_id
-            && let Some(existing) = sqlx::query_scalar::<_, String>(
-                "SELECT work_id FROM work_queue_item \
-                 WHERE environment_id = $1 AND data_type = 'session' AND data_id = $2 \
-                 ORDER BY seq ASC LIMIT 1",
-            )
-            .bind(env_id)
-            .bind(session_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?
-        {
-            tx.commit().await.map_err(storage)?;
-            return Ok(existing);
-        }
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(storage)?;
-        let work_id = format!("work_{next:016}");
-        let data_id = session_id.unwrap_or(&work_id).to_string();
-        sqlx::query(
-            "INSERT INTO work_queue_item \
-                (work_id, seq, environment_id, data_type, data_id, metadata_json, state) \
-             VALUES ($1, $2, $3, $4, $5, '{}', 'queued')",
-        )
-        .bind(&work_id)
-        .bind(next)
-        .bind(env_id)
-        .bind(data_type)
-        .bind(&data_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(work_id)
-    }
-
-    async fn fetch_owned(
-        &self,
-        env_id: &str,
-        wid: &str,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
-        ))
-        .bind(wid)
-        .bind(env_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?
-        .map(|row| pg_row_to_item(&row))
-        .transpose()
-    }
 }
 
 #[async_trait]
@@ -1256,9 +1149,77 @@ mod tests {
     use super::LEASE_TTL_MS;
     use super::*;
     use awaken_session_contract::work_queue::{WorkPayload, WorkState};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn q() -> SqliteWorkQueue {
         SqliteWorkQueue::open_in_memory().unwrap()
+    }
+
+    /// Work-store scheduler cause/effect graph: C1 a synchronous inspector owns
+    /// the queue connection; C2 the authoritative Session-acquire path and a
+    /// background stats read arrive concurrently on a two-worker Tokio runtime.
+    /// Effects: E1 neither waiter blocks a Tokio worker, E2 a 10 ms authority
+    /// timer fires before the 250 ms inspector release, and E3 both queue
+    /// operations complete against the one durable authority after release.
+    ///
+    /// | Rule | Connection owner | Async waiters | Effect |
+    /// |---|---|---|---|
+    /// | Q1 | synchronous inspector | acquire + stats | E1 + E2 + E3 |
+    ///
+    /// This adapter-level rule fails if any WorkQueue operation bypasses the
+    /// canonical fair SQLite scheduler and locks rusqlite on a runtime thread.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sqlite_work_authority_waiters_never_block_runtime_timers() {
+        let queue = Arc::new(q());
+        let held = queue.conn.clone();
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().expect("Q1 connection lock");
+            held_tx.send(()).expect("Q1 announce held connection");
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        held_rx.recv().expect("Q1 connection held");
+
+        let started = Instant::now();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            started.elapsed()
+        });
+        let acquire = tokio::spawn({
+            let queue = Arc::clone(&queue);
+            async move { queue.acquire_session("env", "session", "owner", 0).await }
+        });
+        let stats = tokio::spawn({
+            let queue = Arc::clone(&queue);
+            async move { queue.stats("env", 0).await }
+        });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let elapsed = tokio::time::timeout(Duration::from_millis(100), timer)
+            .await
+            .expect("Q1/E1-E2 authority timer remains schedulable")
+            .expect("Q1 timer task");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "Q1/E2 timer fired after {elapsed:?}; WorkQueue blocked runtime workers"
+        );
+
+        holder.join().expect("Q1 release connection");
+        let lease = acquire
+            .await
+            .expect("Q1 acquire task")
+            .expect("Q1/E3 acquire")
+            .expect("Q1/E3 Session lease");
+        assert_eq!(lease.session_id, "session", "Q1/E3");
+        stats.await.expect("Q1 stats task").expect("Q1/E3 stats");
+        let final_stats = queue.stats("env", 0).await.expect("Q1/E3 final stats");
+        assert_eq!(
+            final_stats.depth + final_stats.pending,
+            1,
+            "Q1/E3 one durable row after both unordered waiters complete"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ authority = "captured-content"
 awaken-runtime-contract.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
+awaken-sqlite-runtime.workspace = true
 async-trait.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true

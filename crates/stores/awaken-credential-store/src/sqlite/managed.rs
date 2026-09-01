@@ -12,22 +12,16 @@ fn invalid_pending(error: ManagedCredentialMutationError) -> CredentialError {
 }
 
 async fn with_conn_managed_mutation<T, F>(
-    conn: &Arc<Mutex<Connection>>,
+    conn: &awaken_sqlite_runtime::SharedSqliteConnection,
     f: F,
 ) -> Result<T, ManagedCredentialMutationError>
 where
     T: Send + 'static,
     F: FnOnce(&mut Connection, &str) -> Result<T, ManagedCredentialMutationError> + Send + 'static,
 {
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = conn.lock().map_err(|_| {
-            ManagedCredentialMutationError::Store(storage("credential connection poisoned"))
-        })?;
-        f(&mut guard, NS)
-    })
-    .await
-    .map_err(|error| ManagedCredentialMutationError::Store(storage(error)))?
+    awaken_sqlite_runtime::with_connection(conn.clone(), move |connection| f(connection, NS))
+        .await
+        .map_err(|error| ManagedCredentialMutationError::Store(storage(error)))?
 }
 
 #[async_trait::async_trait]

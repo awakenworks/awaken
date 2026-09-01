@@ -514,7 +514,6 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         lease_expires_at_unix_ms: u64::MAX,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
     assert!(
@@ -675,7 +674,6 @@ async fn continuation_phases_gate_direct_and_recovery_realization_effects() {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         lease_expires_at_unix_ms: u64::MAX,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
     for (rule, session_id) in [

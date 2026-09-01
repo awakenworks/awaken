@@ -6,13 +6,13 @@
 //! `coordinator_data_capture` migration scope.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::{
     CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
 };
+use awaken_sqlite_runtime::{SharedSqliteConnection, SqliteConnectionFactory};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::StoreError;
@@ -20,14 +20,14 @@ use crate::schema::{COORDINATOR_CAPTURE_PREFIX, coordinator_data_capture_bundle}
 
 const NS: &str = COORDINATOR_CAPTURE_PREFIX;
 
-fn open_migrated(conn: Connection) -> Result<Arc<Mutex<Connection>>, StoreError> {
+fn open_migrated(conn: Connection) -> Result<SharedSqliteConnection, StoreError> {
     let bundle = coordinator_data_capture_bundle()
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
     awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
         .map_err(|e| StoreError::Migrate(e.to_string()))?
         .run_bundle(&conn, &bundle)
         .map_err(|e| StoreError::Migrate(e.to_string()))?;
-    Ok(Arc::new(Mutex::new(conn)))
+    Ok(SharedSqliteConnection::new(conn))
 }
 
 fn now_millis() -> i64 {
@@ -39,14 +39,16 @@ fn now_millis() -> i64 {
 
 /// A SQLite-backed captured-content store.
 pub struct SqliteCapturedContentStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: SharedSqliteConnection,
     seq: AtomicU64,
 }
 
 impl SqliteCapturedContentStore {
     /// Open (or create) a database file and apply the migrations.
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|e| StoreError::Open(e.to_string()))?;
+        let conn = SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|e| StoreError::Open(e.to_string()))?;
         Ok(Self {
             conn: open_migrated(conn)?,
             seq: AtomicU64::new(0),
@@ -56,7 +58,9 @@ impl SqliteCapturedContentStore {
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
+        let conn = SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|e| StoreError::Open(e.to_string()))?;
         Ok(Self {
             conn: open_migrated(conn)?,
             seq: AtomicU64::new(0),
@@ -83,9 +87,23 @@ impl SqliteCapturedContentStore {
         now: i64,
     ) -> Result<String, CaptureError> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        let id = format!("cap_{now}_{n:016}");
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|error| CaptureError::Store(error.to_string()))?;
+        Self::try_insert_on(&mut conn, n, subject, purpose, content, now)
+    }
+
+    fn try_insert_on(
+        conn: &mut Connection,
+        sequence: u64,
+        subject: &DataSubjectId,
+        purpose: Purpose,
+        content: &str,
+        now: i64,
+    ) -> Result<String, CaptureError> {
+        let id = format!("cap_{now}_{sequence:016}");
         let purpose = serde_json::to_string(&purpose).unwrap_or_default();
-        let mut conn = self.conn.lock().unwrap();
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| CaptureError::Store(error.to_string()))?;
@@ -176,8 +194,15 @@ impl CaptureSink for SqliteCapturedContentStore {
         _kind: ContentKind,
         content: &str,
     ) -> Result<(), CaptureError> {
-        self.try_insert(subject, purpose, content, now_millis())?;
-        Ok(())
+        let sequence = self.seq.fetch_add(1, Ordering::SeqCst);
+        let subject = subject.clone();
+        let content = content.to_string();
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            Self::try_insert_on(conn, sequence, &subject, purpose, &content, now_millis())
+                .map(|_| ())
+        })
+        .await
+        .map_err(|error| CaptureError::Store(error.to_string()))?
     }
 }
 
@@ -187,31 +212,32 @@ impl ContentEraser for SqliteCapturedContentStore {
         &self,
         subject: &DataSubjectId,
     ) -> Result<usize, awaken_runtime_contract::ErasureError> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
-        let previous = tx
-            .query_row(
-                &format!("SELECT records_removed FROM {NS}_fence WHERE subject = ?1"),
-                params![subject.0],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?
-            .unwrap_or(0);
-        // Restricted (Art. 18) rows survive erasure until released. A DELETE that
-        // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
-        let removed = tx
-            .execute(
-                &format!("DELETE FROM {NS}_captured WHERE subject = ?1 AND restricted = 0"),
-                params![subject.0],
-            )
-            .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
-        let receipt = previous.checked_add(removed as i64).ok_or_else(|| {
-            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
-        })?;
-        tx.execute(
+        let subject = subject.clone();
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            let previous = tx
+                .query_row(
+                    &format!("SELECT records_removed FROM {NS}_fence WHERE subject = ?1"),
+                    params![subject.0],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?
+                .unwrap_or(0);
+            // Restricted (Art. 18) rows survive erasure until released. A DELETE that
+            // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
+            let removed = tx
+                .execute(
+                    &format!("DELETE FROM {NS}_captured WHERE subject = ?1 AND restricted = 0"),
+                    params![subject.0],
+                )
+                .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
+            let receipt = previous.checked_add(removed as i64).ok_or_else(|| {
+                awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+            })?;
+            tx.execute(
             &format!(
                 "INSERT INTO {NS}_fence (subject, erased_at, records_removed) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(subject) DO UPDATE SET records_removed = excluded.records_removed"
@@ -219,11 +245,14 @@ impl ContentEraser for SqliteCapturedContentStore {
             params![subject.0, now_millis(), receipt],
         )
         .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
-        tx.commit()
-            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
-        usize::try_from(receipt).map_err(|error| {
-            awaken_runtime_contract::ErasureError(format!("invalid erasure receipt: {error}"))
+            tx.commit()
+                .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+            usize::try_from(receipt).map_err(|error| {
+                awaken_runtime_contract::ErasureError(format!("invalid erasure receipt: {error}"))
+            })
         })
+        .await
+        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?
     }
 }
 

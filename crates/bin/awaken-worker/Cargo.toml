@@ -41,6 +41,7 @@ awaken-runtime-host = { workspace = true, default-features = false }
 awaken-resource-worker-http.workspace = true
 awaken-sandbox-memoryd.workspace = true
 awaken-worker-runtime.workspace = true
+awaken-service-lifecycle.workspace = true
 awaken-runtime-contract = { workspace = true }
 awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true

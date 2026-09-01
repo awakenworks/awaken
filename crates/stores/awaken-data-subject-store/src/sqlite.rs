@@ -3,8 +3,6 @@
 //! aggregate serializes into the `data {json}` column; `id`/`org` are keyed
 //! columns for lookups.
 
-use std::sync::{Arc, Mutex};
-
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
@@ -28,33 +26,33 @@ fn storage(err: impl std::fmt::Display) -> DataSubjectError {
     DataSubjectError::Storage(err.to_string())
 }
 
-async fn with_conn<T, F>(conn: &Arc<Mutex<Connection>>, f: F) -> Result<T, DataSubjectError>
+async fn with_conn<T, F>(
+    conn: &awaken_sqlite_runtime::SharedSqliteConnection,
+    f: F,
+) -> Result<T, DataSubjectError>
 where
     T: Send + 'static,
     F: FnOnce(&mut Connection, &str) -> Result<T, DataSubjectError> + Send + 'static,
 {
-    let conn = conn.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut guard = conn
-            .lock()
-            .map_err(|_| storage("data_subject connection poisoned"))?;
-        f(&mut guard, NS)
-    })
-    .await
-    .map_err(storage)?
+    awaken_sqlite_runtime::with_connection(conn.clone(), move |connection| f(connection, NS))
+        .await
+        .map_err(storage)?
 }
 
 /// A SQLite-backed [`DataSubjectRepo`].
 pub struct SqliteDataSubjectRepo {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteDataSubjectRepo {
     /// Open (or create) a database file and apply the data-subject migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let store =
-            Self::over(Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?);
+        let store = Self::over(
+            awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+                .open()
+                .map_err(|err| StoreError::Open(err.to_string()))?,
+        );
         store.ensure_schema()?;
         Ok(store)
     }
@@ -63,7 +61,9 @@ impl SqliteDataSubjectRepo {
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let store = Self::over(
-            Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,
+            awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(|err| StoreError::Open(err.to_string()))?,
         );
         store.ensure_schema()?;
         Ok(store)
@@ -74,7 +74,7 @@ impl SqliteDataSubjectRepo {
     /// shares the caller's database.
     pub fn over(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         }
     }
 

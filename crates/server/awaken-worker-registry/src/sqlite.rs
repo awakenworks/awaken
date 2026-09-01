@@ -1,12 +1,10 @@
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
     WorkerIdentity, WorkerObservationSource, WorkerRegistration,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::path::Path;
 
 use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
 use crate::durable_i64;
@@ -14,17 +12,25 @@ use crate::schema::{BUNDLE_ID, NS, converged_registry_bundle, selected_registry_
 use crate::transition;
 
 pub struct SqliteWorkerDirectory {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteWorkerDirectory {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RegistryError> {
-        Self::from_connection(Connection::open(path).map_err(persist)?)
+        Self::from_connection(
+            awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+                .open()
+                .map_err(persist)?,
+        )
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, RegistryError> {
-        Self::from_connection(Connection::open_in_memory().map_err(persist)?)
+        Self::from_connection(
+            awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(persist)?,
+        )
     }
 
     fn from_connection(conn: Connection) -> Result<Self, RegistryError> {
@@ -57,7 +63,7 @@ impl SqliteWorkerDirectory {
             .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(persist)?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         })
     }
 
@@ -139,15 +145,21 @@ impl SqliteWorkerDirectory {
         Ok(())
     }
 
+    async fn with_connection<T, F>(&self, operation: F) -> Result<T, RegistryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, RegistryError> + Send + 'static,
+    {
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), operation)
+            .await
+            .map_err(persist)?
+    }
+
     fn mutate(
-        &self,
+        conn: &mut Connection,
         identity: &WorkerIdentity,
         decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
     ) -> Result<RegistryMutation, RegistryError> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(persist)?;
@@ -168,21 +180,20 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 #[async_trait]
 impl WorkerObservationSource for SqliteWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {WORKER_COLUMNS} FROM worker_registry_worker ORDER BY worker_id"
-            ))
-            .map_err(persist)?;
-        let rows = stmt.query_map([], encoded_row).map_err(persist)?;
-        rows.map(|row| {
-            let encoded = row.map_err(persist)?;
-            decode(encoded)
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker ORDER BY worker_id"
+                ))
+                .map_err(persist)?;
+            let rows = stmt.query_map([], encoded_row).map_err(persist)?;
+            rows.map(|row| {
+                let encoded = row.map_err(persist)?;
+                decode(encoded)
+            })
+            .collect()
         })
-        .collect()
+        .await
     }
 }
 
@@ -194,22 +205,21 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegisteredWorker, RegistryError> {
-        let worker_id = registration.worker_id.clone();
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(persist)?;
-        let current = Self::read(&tx, &worker_id)?;
-        let (record, changed) =
-            transition::register(current.as_ref(), registration, now_ms, ttl_ms)?;
-        if changed {
-            Self::write(&tx, &record)?;
-        }
-        tx.commit().map_err(persist)?;
-        Ok(record)
+        self.with_connection(move |conn| {
+            let worker_id = registration.worker_id.clone();
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(persist)?;
+            let current = Self::read(&tx, &worker_id)?;
+            let (record, changed) =
+                transition::register(current.as_ref(), registration, now_ms, ttl_ms)?;
+            if changed {
+                Self::write(&tx, &record)?;
+            }
+            tx.commit().map_err(persist)?;
+            Ok(record)
+        })
+        .await
     }
 
     async fn heartbeat(
@@ -219,9 +229,13 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| {
-            transition::heartbeat(current, identity, heartbeat, now_ms, ttl_ms)
+        let identity = identity.clone();
+        self.with_connection(move |conn| {
+            Self::mutate(conn, &identity, |current| {
+                transition::heartbeat(current, &identity, heartbeat, now_ms, ttl_ms)
+            })
         })
+        .await
     }
 
     async fn begin_drain(
@@ -229,67 +243,80 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         identity: &WorkerIdentity,
         deadline_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| {
-            transition::begin_drain(current, identity, deadline_ms)
+        let identity = identity.clone();
+        self.with_connection(move |conn| {
+            Self::mutate(conn, &identity, |current| {
+                transition::begin_drain(current, &identity, deadline_ms)
+            })
         })
+        .await
     }
 
     async fn mark_quiesced(
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| transition::quiesce(current, identity))
+        let identity = identity.clone();
+        self.with_connection(move |conn| {
+            Self::mutate(conn, &identity, |current| {
+                transition::quiesce(current, &identity)
+            })
+        })
+        .await
     }
 
     async fn deregister(
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| {
-            transition::deregister(current, identity)
+        let identity = identity.clone();
+        self.with_connection(move |conn| {
+            Self::mutate(conn, &identity, |current| {
+                transition::deregister(current, &identity)
+            })
         })
+        .await
     }
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let tx = conn.transaction().map_err(persist)?;
-        Self::read(&tx, worker_id)
+        let worker_id = worker_id.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn.transaction().map_err(persist)?;
+            Self::read(&tx, &worker_id)
+        })
+        .await
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
         let durable_now_ms = durable_i64("now_ms", now_ms)?;
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(persist)?;
-        let encoded = {
-            let mut stmt = tx
-                .prepare(&format!(
-                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker \
-                     WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= ?1",
-                ))
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(persist)?;
-            let rows = stmt
-                .query_map(params![durable_now_ms], encoded_row)
-                .map_err(persist)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(persist)?
-        };
-        let mut expired = Vec::new();
-        for value in encoded {
-            let current = decode(value)?;
-            if let Some(next) = transition::expire(&current, now_ms) {
-                expired.push(next.snapshot.identity.clone());
-                Self::write(&tx, &next)?;
+            let encoded = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {WORKER_COLUMNS} FROM worker_registry_worker \
+                         WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= ?1",
+                    ))
+                    .map_err(persist)?;
+                let rows = stmt
+                    .query_map(params![durable_now_ms], encoded_row)
+                    .map_err(persist)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(persist)?
+            };
+            let mut expired = Vec::new();
+            for value in encoded {
+                let current = decode(value)?;
+                if let Some(next) = transition::expire(&current, now_ms) {
+                    expired.push(next.snapshot.identity.clone());
+                    Self::write(&tx, &next)?;
+                }
             }
-        }
-        tx.commit().map_err(persist)?;
-        Ok(expired)
+            tx.commit().map_err(persist)?;
+            Ok(expired)
+        })
+        .await
     }
 }
 
@@ -312,4 +339,72 @@ fn encoded_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EncodedWorkerRow> {
         heartbeat_at_ms: row.get(14)?,
         drain_deadline_ms: row.get(15)?,
     })
+}
+
+#[cfg(test)]
+mod scheduler_isolation_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Worker-registry scheduler-isolation cause/effect graph: C1 a synchronous
+    /// SQLite owner holds the registry connection; C2 two async observations
+    /// contend on a two-worker Tokio runtime. Effects: E1 registry waiters stay
+    /// on the blocking pool; E2 the heartbeat timer fires before the owner
+    /// releases at 250 ms; E3 both observations complete after release.
+    /// Decision rule W1=C1+C2=>E1+E2+E3. This adapter-level rule proves the
+    /// registry delegates to the canonical SQLite scheduler boundary rather
+    /// than merely inheriting its connection PRAGMAs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connection_contention_cannot_starve_worker_heartbeat_timers() {
+        let directory = Arc::new(SqliteWorkerDirectory::open_in_memory().expect("directory"));
+        let held = directory.conn.clone();
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().expect("W1 connection lock");
+            held_tx.send(()).expect("W1 announce held connection");
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        held_rx.recv().expect("W1 connection held");
+
+        let started = Instant::now();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            started.elapsed()
+        });
+        let left = tokio::spawn({
+            let directory = Arc::clone(&directory);
+            async move { directory.list().await }
+        });
+        let right = tokio::spawn({
+            let directory = Arc::clone(&directory);
+            async move { directory.list().await }
+        });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let elapsed = tokio::time::timeout(Duration::from_millis(100), timer)
+            .await
+            .expect("W1/E1-E2 heartbeat timer remains schedulable")
+            .expect("W1 timer task");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "W1/E2 timer fired after {elapsed:?}; registry blocked runtime workers"
+        );
+
+        holder.join().expect("W1 release connection");
+        assert!(
+            left.await
+                .expect("left observation")
+                .expect("W1/E3")
+                .is_empty()
+        );
+        assert!(
+            right
+                .await
+                .expect("right observation")
+                .expect("W1/E3")
+                .is_empty()
+        );
+    }
 }

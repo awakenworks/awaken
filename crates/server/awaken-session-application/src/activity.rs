@@ -228,6 +228,7 @@ impl SessionApplication {
                 super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
                 error => SessionActivityError::Unavailable(error.to_string()),
             })?;
+        let admission = self.fresh_mutation_record(session_id, "begin-activity");
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
                 .owner(session_id)
@@ -247,10 +248,15 @@ impl SessionApplication {
             let external = self.requires_external_realization(&session);
             Self::open_activity_on_snapshot(&mut session, None, external, false)?;
             match self
-                .commit_session_snapshot(&owner_scope, session, "begin-activity", Vec::new())
+                .commit_session_snapshot_with_record(
+                    &owner_scope,
+                    session,
+                    admission.clone(),
+                    Vec::new(),
+                )
                 .await
             {
-                Ok(session) => return Ok(session),
+                Ok((session, _)) => return Ok(session),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
@@ -358,6 +364,15 @@ impl SessionApplication {
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionActivityError::mutation)?;
+            // Close the receipt/read race: if a concurrent exact caller
+            // committed after our pre-loop check but before this snapshot, its
+            // durable receipt wins before we compile another epoch.
+            if let Some(committed) = self
+                .replayed_activity_operation(session_id, &record)
+                .await?
+            {
+                return Ok(committed);
+            }
             let epoch = session
                 .revision
                 .0

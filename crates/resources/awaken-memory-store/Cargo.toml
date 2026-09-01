@@ -29,6 +29,7 @@ rusqlite = { workspace = true, optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
+awaken-sqlite-runtime = { workspace = true, optional = true }
 awaken-store-runtime.workspace = true
 
 [dev-dependencies]
@@ -40,7 +41,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 default = []
 # Process-local Memory authority and private SQLite databases for tests/scenarios.
 test-support = []
-sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
+sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite", "dep:awaken-sqlite-runtime"]
 postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 
 [lints]

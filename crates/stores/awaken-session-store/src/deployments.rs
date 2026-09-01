@@ -105,59 +105,65 @@ fn is_exact_revision_step(revision: u64, expected_revision: Option<u64>) -> bool
 #[async_trait]
 impl DeploymentRepository for SqliteManagedSessionRepository {
     async fn deployments(&self) -> Result<Vec<DeploymentView>, DeploymentRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT deployment_id, workspace_id, revision, data FROM managed_deployment \
-                 ORDER BY deployment_id",
-            )
-            .map_err(storage)?;
-        statement
-            .query_map([], |row| {
-                Ok(StoredDeploymentRow {
-                    deployment_id: row.get(0)?,
-                    workspace_id: row.get(1)?,
-                    revision: row.get::<_, i64>(2)?.try_into().map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            2,
-                            rusqlite::types::Type::Integer,
-                            Box::new(error),
-                        )
-                    })?,
-                    data: row.get(3)?,
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT deployment_id, workspace_id, revision, data FROM managed_deployment \
+                     ORDER BY deployment_id",
+                )
+                .map_err(storage)?;
+            statement
+                .query_map([], |row| {
+                    Ok(StoredDeploymentRow {
+                        deployment_id: row.get(0)?,
+                        workspace_id: row.get(1)?,
+                        revision: row.get::<_, i64>(2)?.try_into().map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Integer,
+                                Box::new(error),
+                            )
+                        })?,
+                        data: row.get(3)?,
+                    })
                 })
-            })
-            .map_err(storage)?
-            .map(|row| row.map_err(storage))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(StoredDeploymentRow::decode)
-            .collect()
+                .map_err(storage)?
+                .map(|row| row.map_err(storage))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(StoredDeploymentRow::decode)
+                .collect()
+        })
+        .await
+        .map_err(storage)?
     }
 
     async fn deployment_runs(&self) -> Result<Vec<DeploymentRunView>, DeploymentRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT run_id, deployment_id, workspace_id, data \
-                 FROM managed_deployment_run ORDER BY run_id",
-            )
-            .map_err(storage)?;
-        statement
-            .query_map([], |row| {
-                Ok(StoredDeploymentRunRow {
-                    run_id: row.get(0)?,
-                    deployment_id: row.get(1)?,
-                    workspace_id: row.get(2)?,
-                    data: row.get(3)?,
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), |conn| {
+            let mut statement = conn
+                .prepare(
+                    "SELECT run_id, deployment_id, workspace_id, data \
+                     FROM managed_deployment_run ORDER BY run_id",
+                )
+                .map_err(storage)?;
+            statement
+                .query_map([], |row| {
+                    Ok(StoredDeploymentRunRow {
+                        run_id: row.get(0)?,
+                        deployment_id: row.get(1)?,
+                        workspace_id: row.get(2)?,
+                        data: row.get(3)?,
+                    })
                 })
-            })
-            .map_err(storage)?
-            .map(|row| row.map_err(storage))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(StoredDeploymentRunRow::decode)
-            .collect()
+                .map_err(storage)?
+                .map(|row| row.map_err(storage))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(StoredDeploymentRunRow::decode)
+                .collect()
+        })
+        .await
+        .map_err(storage)?
     }
 
     async fn write_deployment(
@@ -171,75 +177,78 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         if !is_exact_revision_step(record.revision, expected_revision) {
             return Ok(DeploymentWriteOutcome::Conflict);
         }
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        if scheduled_live(&record.data)? {
-            let mut statement = tx
-                .prepare("SELECT deployment_id, data FROM managed_deployment")
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
-            let scheduled = statement
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(storage)?
-                .map(|row| row.map_err(storage))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter(|(id, _)| id != &record.deployment_id)
-                .map(|(_, data)| scheduled_live(&data))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter(|scheduled| *scheduled)
-                .count();
-            drop(statement);
-            if scheduled >= scheduled_limit {
-                tx.rollback().map_err(storage)?;
-                return Ok(DeploymentWriteOutcome::ScheduledCapacityReached);
+            if scheduled_live(&record.data)? {
+                let mut statement = tx
+                    .prepare("SELECT deployment_id, data FROM managed_deployment")
+                    .map_err(storage)?;
+                let scheduled = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(storage)?
+                    .map(|row| row.map_err(storage))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .filter(|(id, _)| id != &record.deployment_id)
+                    .map(|(_, data)| scheduled_live(&data))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .filter(|scheduled| *scheduled)
+                    .count();
+                drop(statement);
+                if scheduled >= scheduled_limit {
+                    tx.rollback().map_err(storage)?;
+                    return Ok(DeploymentWriteOutcome::ScheduledCapacityReached);
+                }
             }
-        }
-        let revision = db_revision(record.revision)?;
-        let affected = match expected_revision {
-            None => tx
-                .execute(
-                    "INSERT OR IGNORE INTO managed_deployment \
+            let revision = db_revision(record.revision)?;
+            let affected = match expected_revision {
+                None => tx
+                    .execute(
+                        "INSERT OR IGNORE INTO managed_deployment \
                      (deployment_id, workspace_id, revision, data) VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        record.deployment_id,
-                        record.workspace_id,
-                        revision,
-                        record.data
-                    ],
-                )
-                .map_err(storage)?,
-            Some(expected) => tx
-                .execute(
-                    "UPDATE managed_deployment SET workspace_id=?2, revision=?3, data=?4 \
+                        params![
+                            record.deployment_id,
+                            record.workspace_id,
+                            revision,
+                            record.data
+                        ],
+                    )
+                    .map_err(storage)?,
+                Some(expected) => tx
+                    .execute(
+                        "UPDATE managed_deployment SET workspace_id=?2, revision=?3, data=?4 \
                      WHERE deployment_id=?1 AND revision=?5",
-                    params![
-                        record.deployment_id,
-                        record.workspace_id,
-                        revision,
-                        record.data,
-                        db_revision(expected)?
-                    ],
-                )
-                .map_err(storage)?,
-        };
-        if affected == 0 {
-            tx.rollback().map_err(storage)?;
-            return Ok(DeploymentWriteOutcome::Conflict);
-        }
-        if let Some(fact) = lifecycle {
-            tx.execute(
+                        params![
+                            record.deployment_id,
+                            record.workspace_id,
+                            revision,
+                            record.data,
+                            db_revision(expected)?
+                        ],
+                    )
+                    .map_err(storage)?,
+            };
+            if affected == 0 {
+                tx.rollback().map_err(storage)?;
+                return Ok(DeploymentWriteOutcome::Conflict);
+            }
+            if let Some(fact) = lifecycle {
+                tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
                 params![fact.id, lifecycle_str(&fact)],
             )
             .map_err(storage)?;
-        }
-        tx.commit().map_err(storage)?;
-        Ok(DeploymentWriteOutcome::Applied)
+            }
+            tx.commit().map_err(storage)?;
+            Ok(DeploymentWriteOutcome::Applied)
+        })
+        .await
+        .map_err(storage)?
     }
 
     async fn upsert_deployment_run(
@@ -248,29 +257,32 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
         let record = StoredDeploymentRunRow::encode(run)?;
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn.transaction().map_err(storage)?;
-        tx.execute(
-            "INSERT INTO managed_deployment_run \
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            let tx = conn.transaction().map_err(storage)?;
+            tx.execute(
+                "INSERT INTO managed_deployment_run \
                  (run_id, deployment_id, workspace_id, data) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(run_id) DO UPDATE SET data=excluded.data",
-            params![
-                record.run_id,
-                record.deployment_id,
-                record.workspace_id,
-                record.data
-            ],
-        )
-        .map_err(storage)?;
-        if let Some(fact) = lifecycle {
-            tx.execute(
+                params![
+                    record.run_id,
+                    record.deployment_id,
+                    record.workspace_id,
+                    record.data
+                ],
+            )
+            .map_err(storage)?;
+            if let Some(fact) = lifecycle {
+                tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
                 params![fact.id, lifecycle_str(&fact)],
             )
             .map_err(storage)?;
-        }
-        tx.commit().map_err(storage)?;
-        Ok(())
+            }
+            tx.commit().map_err(storage)?;
+            Ok(())
+        })
+        .await
+        .map_err(storage)?
     }
 
     async fn claim_scheduled_run(
@@ -281,74 +293,78 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         run: DeploymentRunView,
         lifecycle: DeploymentLifecycleFact,
     ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError> {
+        let claim_id = claim_id.to_string();
         let deployment = StoredDeploymentRow::encode(deployment)?;
         let run = StoredDeploymentRunRow::encode(run)?;
         if !is_exact_revision_step(deployment.revision, Some(expected_deployment_revision)) {
             return Ok(ScheduledRunClaimOutcome::StaleDeployment);
         }
-        let mut conn = self.conn.lock().map_err(storage)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        let current_revision: Option<i64> = tx
-            .query_row(
-                "SELECT revision FROM managed_deployment WHERE deployment_id=?1",
-                params![deployment.deployment_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage)?;
-        if current_revision != Some(db_revision(expected_deployment_revision)?) {
-            tx.rollback().map_err(storage)?;
-            return Ok(ScheduledRunClaimOutcome::StaleDeployment);
-        }
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT run_id FROM managed_deployment_claim WHERE claim_id=?1",
-                params![claim_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage)?;
-        if existing.is_some() {
-            tx.commit().map_err(storage)?;
-            return Ok(ScheduledRunClaimOutcome::AlreadyClaimed);
-        }
-        tx.execute(
-            "INSERT INTO managed_deployment_run \
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let current_revision: Option<i64> = tx
+                .query_row(
+                    "SELECT revision FROM managed_deployment WHERE deployment_id=?1",
+                    params![deployment.deployment_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            if current_revision != Some(db_revision(expected_deployment_revision)?) {
+                tx.rollback().map_err(storage)?;
+                return Ok(ScheduledRunClaimOutcome::StaleDeployment);
+            }
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT run_id FROM managed_deployment_claim WHERE claim_id=?1",
+                    params![claim_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            if existing.is_some() {
+                tx.commit().map_err(storage)?;
+                return Ok(ScheduledRunClaimOutcome::AlreadyClaimed);
+            }
+            tx.execute(
+                "INSERT INTO managed_deployment_run \
              (run_id, deployment_id, workspace_id, data) VALUES (?1, ?2, ?3, ?4)",
-            params![&run.run_id, run.deployment_id, run.workspace_id, run.data],
-        )
-        .map_err(storage)?;
-        tx.execute(
-            "INSERT INTO managed_deployment_claim (claim_id, run_id) VALUES (?1, ?2)",
-            params![claim_id, run.run_id],
-        )
-        .map_err(storage)?;
-        let affected = tx
-            .execute(
-                "UPDATE managed_deployment SET workspace_id=?2, revision=?3, data=?4 \
-             WHERE deployment_id=?1 AND revision=?5",
-                params![
-                    deployment.deployment_id,
-                    deployment.workspace_id,
-                    db_revision(deployment.revision)?,
-                    deployment.data,
-                    db_revision(expected_deployment_revision)?
-                ],
+                params![&run.run_id, run.deployment_id, run.workspace_id, run.data],
             )
             .map_err(storage)?;
-        if affected != 1 {
-            tx.rollback().map_err(storage)?;
-            return Ok(ScheduledRunClaimOutcome::StaleDeployment);
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params![lifecycle.id, lifecycle_str(&lifecycle)],
-        )
-        .map_err(storage)?;
-        tx.commit().map_err(storage)?;
-        Ok(ScheduledRunClaimOutcome::Claimed)
+            tx.execute(
+                "INSERT INTO managed_deployment_claim (claim_id, run_id) VALUES (?1, ?2)",
+                params![claim_id, run.run_id],
+            )
+            .map_err(storage)?;
+            let affected = tx
+                .execute(
+                    "UPDATE managed_deployment SET workspace_id=?2, revision=?3, data=?4 \
+             WHERE deployment_id=?1 AND revision=?5",
+                    params![
+                        deployment.deployment_id,
+                        deployment.workspace_id,
+                        db_revision(deployment.revision)?,
+                        deployment.data,
+                        db_revision(expected_deployment_revision)?
+                    ],
+                )
+                .map_err(storage)?;
+            if affected != 1 {
+                tx.rollback().map_err(storage)?;
+                return Ok(ScheduledRunClaimOutcome::StaleDeployment);
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                params![lifecycle.id, lifecycle_str(&lifecycle)],
+            )
+            .map_err(storage)?;
+            tx.commit().map_err(storage)?;
+            Ok(ScheduledRunClaimOutcome::Claimed)
+        })
+        .await
+        .map_err(storage)?
     }
 }
 

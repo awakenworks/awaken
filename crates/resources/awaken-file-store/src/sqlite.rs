@@ -4,9 +4,7 @@
 //! `put` is an idempotent `INSERT ... ON CONFLICT (id) DO NOTHING`, matching the
 //! immutable/dedup contract; the id is computed in the core, so equal bytes yield
 //! the same id on every backend. The `FileStore` trait is async, so the sync
-//! `rusqlite` calls run under `spawn_blocking` behind a connection mutex.
-
-use std::sync::{Arc, Mutex};
+//! `rusqlite` calls use the workspace's canonical SQLite scheduler boundary.
 
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -48,14 +46,18 @@ size_bytes, created_at, expires_at, downloadable, scope_id, logical_path, harves
 
 /// A SQLite-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
 pub struct SqliteFileStore {
-    conn: Arc<Mutex<Connection>>,
+    conn: awaken_sqlite_runtime::SharedSqliteConnection,
 }
 
 impl SqliteFileStore {
     /// Open (or create) a database file and apply the file-store migrations
     /// (one-step convenience for a store-owned database).
     pub fn open(path: &str) -> Result<Self, FileStoreError> {
-        let store = Self::over(Connection::open(path).map_err(e)?);
+        let store = Self::over(
+            awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+                .open()
+                .map_err(e)?,
+        );
         store.ensure_schema()?;
         Ok(store)
     }
@@ -63,7 +65,11 @@ impl SqliteFileStore {
     /// Open a private in-memory database (tests / ephemeral).
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, FileStoreError> {
-        let store = Self::over(Connection::open_in_memory().map_err(e)?);
+        let store = Self::over(
+            awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(e)?,
+        );
         store.ensure_schema()?;
         Ok(store)
     }
@@ -73,7 +79,7 @@ impl SqliteFileStore {
     /// `file_store` scope so this store shares the caller's database.
     pub fn over(conn: Connection) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: awaken_sqlite_runtime::SharedSqliteConnection::new(conn),
         }
     }
 
@@ -97,15 +103,9 @@ impl SqliteFileStore {
         T: Send + 'static,
         F: FnOnce(&Connection) -> Result<T, FileStoreError> + Send + 'static,
     {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let guard = conn
-                .lock()
-                .map_err(|_| e("file store connection poisoned"))?;
-            f(&guard)
-        })
-        .await
-        .map_err(e)?
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| f(conn))
+            .await
+            .map_err(e)?
     }
 }
 

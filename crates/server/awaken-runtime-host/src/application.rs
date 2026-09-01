@@ -17,6 +17,15 @@ use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecuto
 use futures_util::stream::{self, StreamExt};
 
 pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS: usize = 8;
+/// Independent Session lease renewals are fast root CAS operations. Bound them
+/// per Worker so cloud replica count scales total capacity without removing
+/// local backpressure or allowing one Worker to overload Control.
+pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize = 8;
+/// Warm terminal discovery is deliberately slower than lease supervision.
+/// Durable Session state remains authoritative, while this cadence prevents
+/// every resident Session from generating a loopback Control request on every
+/// one-second renewal tick.
+pub(crate) const TERMINAL_CLEANUP_POLL_INTERVAL_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenewalFailureDisposition {
@@ -72,6 +81,17 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.call("begin", self.inner.begin_session_realization(command))
+            .await
+    }
+
+    async fn renew_session_realization(
+        &self,
+        command: awaken_session_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.call("renew", self.inner.renew_session_realization(command))
             .await
     }
 
@@ -862,7 +882,15 @@ impl crate::SharedHost {
         lease: awaken_session_contract::SessionRealizationLease,
     ) {
         let changed = self.session_slots.update(session_id, |slot| {
+            let authority_changed = slot.realization_lease.as_ref().is_some_and(|current| {
+                current.owner != lease.owner
+                    || current.runtime_incarnation != lease.runtime_incarnation
+                    || current.epoch != lease.epoch
+            });
             slot.realization_lease = Some(lease);
+            if authority_changed {
+                slot.next_terminal_cleanup_poll_at_unix_ms = 0;
+            }
             slot.realization_changed.clone()
         });
         changed.notify_waiters();
@@ -1172,25 +1200,36 @@ impl crate::SharedHost {
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: String,
         lease: awaken_session_contract::SessionRealizationLease,
+        now_unix_ms: u64,
         renew_before_unix_ms: u64,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
-        // Cause/effect decision table: C1 lease is due, C2 cleanup is terminal,
-        // C3 Control explicitly rejects this owner, C4 Control/effect is
-        // temporarily unavailable, and C5 the old lease remains live. Effects:
-        // E1 renew before cleanup polling; E2 execute/finalize cleanup; E3
-        // interrupt and revoke immediately; E4 retain and retry; E5 interrupt
-        // and revoke at expiry. No Worker-local queue or receipt registry
-        // participates.
+        // Cause/effect decision table: C1 lease is due, C2 the process-local
+        // cleanup cadence is due, C3 cleanup is terminal, C4 Control explicitly
+        // rejects this owner, C5 Control/effect is temporarily unavailable, and
+        // C6 the old lease remains live. Effects: E1 renew before cleanup
+        // polling; E2 poll once and execute/finalize cleanup; E3 skip remote
+        // cleanup work until its cadence; E4 interrupt and revoke immediately;
+        // E5 retain and retry; E6 interrupt and revoke at expiry. No Worker-local
+        // queue or receipt registry participates.
         //
-        // | Rule | due | Control/effect | old lease | Effect |
-        // | R1 | yes | renewal succeeds | any | E1 |
-        // | R2 | no | terminal cleanup | any | E2 |
-        // | R3 | any | explicit loss | any | E3 |
-        // | R4 | any | temporary failure | live | E4 |
-        // | R5 | any | temporary failure | expired | E5 |
+        // | Rule | lease due | cleanup due | Control/effect | old lease | Effect |
+        // | R1 | yes | any | renewal succeeds | any | E1 |
+        // | R2 | no | yes | terminal cleanup | any | E2 |
+        // | R3 | no | no | not called | any | E3 |
+        // | R4 | any | any | explicit loss | any | E4 |
+        // | R5 | any | yes | temporary failure | live | E5 |
+        // | R6 | any | yes | temporary failure | expired | E6 |
         let due = lease.expires_at_unix_ms <= renew_before_unix_ms;
         if !due {
+            if !self.session_slots.claim_terminal_cleanup_poll(
+                &session_id,
+                &lease,
+                now_unix_ms,
+                TERMINAL_CLEANUP_POLL_INTERVAL_MS,
+            ) {
+                return Ok(false);
+            }
             match self
                 .reconcile_terminal_cleanup_for_lease(control, &session_id, &lease)
                 .await
@@ -1219,66 +1258,25 @@ impl crate::SharedHost {
                     == RenewalFailureDisposition::RevokeImmediately;
                 (crate::HostError::internal(error.to_string()), revoke)
             };
-            let renewal_command = || awaken_session_contract::BeginSessionRealization {
+            let renewal_command = || awaken_session_contract::RenewSessionRealization {
                 session_id: session_id.clone(),
-                target: awaken_session_contract::SessionRealizationTarget {
-                    owner: lease.owner.clone(),
-                    runtime_incarnation: lease.runtime_incarnation.clone(),
-                    lease_expires_at_unix_ms: requested_expiry_unix_ms,
-                    renew_existing_lease: true,
-                    reassign_existing_lease: false,
-                },
+                asserted_lease: lease.clone(),
+                requested_expires_at_unix_ms: requested_expiry_unix_ms,
             };
-            let mut directive = match control.begin_session_realization(renewal_command()).await {
-                Ok(directive) => directive,
+            let renewed_lease = match control.renew_session_realization(renewal_command()).await {
+                Ok(renewed_lease) => renewed_lease,
                 Err(error) => return Err(control_failure(error)),
             };
             let realization = self.session_slots.realization_lock(&session_id);
             let Ok(_realization) = realization.try_lock() else {
-                // Control has extended only the same owner/incarnation/epoch.
-                // Preserve that authority locally, but never start a second
-                // effect driver. The active driver compares exact generation
-                // fences at Activate/Acknowledge and catches up before it can
-                // report completion.
-                self.install_session_realization_lease(&session_id, directive.lease.clone());
+                // Control extended only the same owner/incarnation/epoch. The
+                // active phase driver observes the renewed aggregate fence at
+                // Activate/Acknowledge; renewal never starts a second driver.
+                self.install_session_realization_lease(&session_id, renewed_lease);
                 return Ok::<bool, (crate::HostError, bool)>(true);
             };
-            // A Session command can advance the aggregate after Begin but
-            // before Activate/Acknowledge. Keep the one realization lock,
-            // re-read Control, and replay the same idempotent driver. This
-            // closes the renewal-versus-successor-Run race without a second
-            // projection owner or a provider-specific retry path.
-            const MAX_CONTROL_CONFLICT_ATTEMPTS: usize = 2;
-            for attempt in 0..MAX_CONTROL_CONFLICT_ATTEMPTS {
-                match crate::host::HostWorkerResolver::drive_session_realization_raw(
-                    self,
-                    control,
-                    &session_id,
-                    directive,
-                    None,
-                    None,
-                    false,
-                )
-                .await
-                {
-                    Ok(()) => return Ok::<bool, (crate::HostError, bool)>(true),
-                    Err(awaken_session_contract::SessionRealizationDriveError::Control(
-                        awaken_session_contract::SessionRealizationControlFailure::Conflict,
-                    )) if attempt + 1 < MAX_CONTROL_CONFLICT_ATTEMPTS => {
-                        directive = control
-                            .begin_session_realization(renewal_command())
-                            .await
-                            .map_err(control_failure)?;
-                    }
-                    Err(awaken_session_contract::SessionRealizationDriveError::Control(error)) => {
-                        return Err(control_failure(error));
-                    }
-                    Err(error) => {
-                        return Err((crate::HostError::internal(error.to_string()), false));
-                    }
-                }
-            }
-            unreachable!("bounded realization conflict loop returns on every branch")
+            self.install_session_realization_lease(&session_id, renewed_lease);
+            Ok::<bool, (crate::HostError, bool)>(true)
         }
         .await;
         match renewal {
@@ -1305,8 +1303,8 @@ impl crate::SharedHost {
     }
 
     /// Renew every due Session before polling terminal cleanup for non-due
-    /// projections. Both use the same Control phase protocol as initial
-    /// creation and hot replacement.
+    /// projections. Renewal uses the lease-only root CAS; cleanup remains an
+    /// independently bounded read-side reconciliation.
     /// Environment-only Sessions participate because image/package realization
     /// can outlive the initial lease even when no MCP attachment exists.
     /// A conclusive ownership loss or expired proof revokes only that Session;
@@ -1318,12 +1316,41 @@ impl crate::SharedHost {
     /// earliest-due ordering keeps cleanup traffic behind renewal traffic. If
     /// Control still cannot answer before an individual durable expiry, that
     /// Session fails closed instead of inventing local grace.
+    async fn reconcile_session_realization_batch(
+        &self,
+        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        realizations: Vec<(String, awaken_session_contract::SessionRealizationLease)>,
+        now_unix_ms: u64,
+        renew_before_unix_ms: u64,
+        requested_expiry_unix_ms: u64,
+        concurrency: usize,
+    ) -> Vec<Result<bool, crate::HostError>> {
+        stream::iter(realizations)
+            .map(|(session_id, lease)| {
+                let control = Arc::clone(&control);
+                async move {
+                    self.reconcile_one_session_realization(
+                        control.as_ref(),
+                        session_id,
+                        lease,
+                        now_unix_ms,
+                        renew_before_unix_ms,
+                        requested_expiry_unix_ms,
+                    )
+                    .await
+                }
+            })
+            .buffer_unordered(concurrency.max(1))
+            .collect::<Vec<_>>()
+            .await
+    }
+
     pub async fn renew_due_session_realizations(
         &self,
         now_unix_ms: u64,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
-        let mut realizations = self.session_slots.realization_leases();
+        let realizations = self.session_slots.realization_leases();
         if realizations.is_empty() {
             return Ok(0);
         }
@@ -1341,34 +1368,43 @@ impl crate::SharedHost {
                 inner: Arc::clone(control),
                 request_timeout: timing.request_timeout(),
             });
-        // Due renewals precede non-due cleanup polls. Earliest deadline first
-        // then prevents HashMap order from starving one Session during a
-        // sustained recovery wave. Session id is only a stable tie-breaker.
-        realizations.sort_by(|left, right| {
-            let left_due = left.1.expires_at_unix_ms <= renew_before_unix_ms;
-            let right_due = right.1.expires_at_unix_ms <= renew_before_unix_ms;
-            right_due
-                .cmp(&left_due)
-                .then_with(|| left.1.expires_at_unix_ms.cmp(&right.1.expires_at_unix_ms))
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        let outcomes = stream::iter(realizations)
-            .map(|(session_id, lease)| {
-                let control = Arc::clone(&control);
-                async move {
-                    self.reconcile_one_session_realization(
-                        control.as_ref(),
-                        session_id,
-                        lease,
-                        renew_before_unix_ms,
-                        requested_expiry_unix_ms,
-                    )
-                    .await
-                }
-            })
-            .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS)
-            .collect::<Vec<_>>()
+        // Split write-authority renewals from read-heavy terminal discovery.
+        // Both are bounded independently; earliest-deadline renewals enter the
+        // first bounded wave before cleanup discovery is admitted.
+        let (mut due, mut cleanup): (Vec<_>, Vec<_>) = realizations
+            .into_iter()
+            .partition(|(_, lease)| lease.expires_at_unix_ms <= renew_before_unix_ms);
+        let order =
+            |left: &(String, awaken_session_contract::SessionRealizationLease),
+             right: &(String, awaken_session_contract::SessionRealizationLease)| {
+                left.1
+                    .expires_at_unix_ms
+                    .cmp(&right.1.expires_at_unix_ms)
+                    .then_with(|| left.0.cmp(&right.0))
+            };
+        due.sort_by(order);
+        cleanup.sort_by(order);
+        let mut outcomes = self
+            .reconcile_session_realization_batch(
+                Arc::clone(&control),
+                due,
+                now_unix_ms,
+                renew_before_unix_ms,
+                requested_expiry_unix_ms,
+                MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+            )
             .await;
+        outcomes.extend(
+            self.reconcile_session_realization_batch(
+                control,
+                cleanup,
+                now_unix_ms,
+                renew_before_unix_ms,
+                requested_expiry_unix_ms,
+                MAX_CONCURRENT_SESSION_REALIZATION_RECONCILIATIONS,
+            )
+            .await,
+        );
         let mut renewed = 0;
         let mut first_error = None;
         for outcome in outcomes {

@@ -39,7 +39,8 @@ struct RecordingSessionControl {
     acknowledgements: Mutex<usize>,
     failures: Mutex<usize>,
     begins: Mutex<Vec<awaken_session_contract::BeginSessionRealization>>,
-    begin_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
+    renewals: Mutex<Vec<awaken_session_contract::RenewSessionRealization>>,
+    renewal_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
     agent_lists: AtomicUsize,
     agent_messages: Mutex<Vec<awaken_session_contract::SessionAgentMessageCommand>>,
     agent_boundaries: Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
@@ -214,9 +215,6 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.begins.lock().unwrap().push(command.clone());
-        if let Some(error) = self.begin_failure.lock().unwrap().clone() {
-            return Err(error);
-        }
         let projection = self
             .projection
             .lock()
@@ -233,6 +231,22 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
             },
             action: awaken_session_contract::SessionRealizationAction::Complete,
         })
+    }
+
+    async fn renew_session_realization(
+        &self,
+        command: awaken_session_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationLease,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.renewals.lock().unwrap().push(command.clone());
+        if let Some(error) = self.renewal_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
+        let mut lease = command.asserted_lease;
+        lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
+        Ok(lease)
     }
 
     async fn activate_session_realization(
@@ -848,12 +862,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T7 | exact/live | Session lease expired | - | reject before Control |
     // | T8 | exact/live | Session lease exact | - | acknowledge reaches Control |
     // | T9 | exact/live | Session lease exact | - | failure reaches Control |
-    // | T10 | exact/live | explicit renewal within registry lease | - | begin reaches Control |
-    // | T11 | exact/live | implicit/non-renew begin | - | reject before Control |
-    // | T12 | exact/live | desired renewal beyond registry lease | - | cap to registry expiry; begin reaches Control |
+    // | T10 | exact/live | exact asserted lease within registry lease | - | lease-only renew reaches Control |
+    // | T11 | exact/live | asserted owner/incarnation mismatch | - | reject before Control |
+    // | T12 | exact/live | desired renewal beyond registry lease | - | cap to registry expiry; renew reaches Control |
     // | T13 | exact/live | exact/live | wrong Session | reject resume before Control |
     // | T14 | exact/live | exact/live | frozen Session | mark claim-authorized reassignment |
-    // | T15 | exact/live | renew+reassign | - | reject contradictory authority |
+    // | T15 | exact/live | requested expiry precedes assertion | - | reject contradictory authority |
     // | T16 | exact/live | explicit renewal | Control NotReady | preserve typed reply |
     // | T17 | exact/live | Work owned by other Worker | yes | reject resume before Control |
     // | T18 | exact/live | Work owner changes before phase | - | reject phase before Control |
@@ -1004,14 +1018,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | Rule | identity | target authority | Effect |
     // | K1 | current | exact, bounded, fresh | typed assignment |
     // | K2 | stale/foreign | any | reject before Control |
-    // | K3 | current | over-expiry or phase flags | reject before Control |
+    // | K3 | current | over-expiry or reassignment flag | reject before Control |
     // | K4 | current | exact assigned lease | poll + exact completion |
     // | K5 | current | exact lease + exact old v2 | normalize + exact completion |
     let cleanup_target = awaken_session_contract::SessionRealizationTarget {
         owner: registered.snapshot.identity.worker_id.clone(),
         runtime_incarnation: registered.snapshot.identity.lease_owner(),
         lease_expires_at_unix_ms: 30_000,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
     let assignment = client
@@ -1048,13 +1061,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "K2 foreign owner"
     );
     let mut flagged_target = cleanup_target.clone();
-    flagged_target.renew_existing_lease = true;
+    flagged_target.reassign_existing_lease = true;
     assert!(
         client
             .claim_next_terminal_cleanup(&registered.snapshot.identity, flagged_target)
             .await
             .is_err(),
-        "K3 renewal flag"
+        "K3 reassignment flag"
     );
     let mut over_expiry = cleanup_target;
     over_expiry.lease_expires_at_unix_ms = 40_001;
@@ -1314,90 +1327,89 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "P5"
     );
 
-    let renewal = awaken_session_contract::BeginSessionRealization {
+    let renewal = awaken_session_contract::RenewSessionRealization {
         session_id: "signed-thread".into(),
-        target: awaken_session_contract::SessionRealizationTarget {
+        asserted_lease: awaken_session_contract::SessionRealizationLease {
             owner: registered.snapshot.identity.worker_id.clone(),
             runtime_incarnation: registered.snapshot.identity.lease_owner(),
-            lease_expires_at_unix_ms: realization_lease.expires_at_unix_ms,
-            renew_existing_lease: true,
-            reassign_existing_lease: false,
+            epoch: realization_lease.epoch,
+            expires_at_unix_ms: realization_lease.expires_at_unix_ms,
         },
+        requested_expires_at_unix_ms: realization_lease.expires_at_unix_ms,
     };
     client
-        .begin_session_realization(&registered.snapshot.identity, renewal.clone())
+        .renew_session_realization(&registered.snapshot.identity, renewal.clone())
         .await
         .expect("T10");
-    assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T10");
+    assert_eq!(session_control.renewals.lock().unwrap().len(), 1, "T10");
     *session_work.owner.lock().unwrap() = None;
     session_work.retired.store(true, Ordering::SeqCst);
     assert!(
         matches!(
             client
-                .begin_session_realization(&registered.snapshot.identity, renewal.clone())
+                .renew_session_realization(&registered.snapshot.identity, renewal.clone())
                 .await,
             Err(awaken_session_contract::SessionRealizationControlFailure::Retired)
         ),
         "T24"
     );
-    assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T24");
+    assert_eq!(session_control.renewals.lock().unwrap().len(), 1, "T24");
     session_work.retired.store(false, Ordering::SeqCst);
     *session_work.owner.lock().unwrap() = Some(registered.snapshot.identity.lease_owner());
-    *session_control.begin_failure.lock().unwrap() =
+    *session_control.renewal_failure.lock().unwrap() =
         Some(awaken_session_contract::SessionRealizationControlFailure::NotReady);
     assert!(
         matches!(
             client
-                .begin_session_realization(&registered.snapshot.identity, renewal.clone())
+                .renew_session_realization(&registered.snapshot.identity, renewal.clone())
                 .await,
             Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
         ),
         "T16"
     );
-    *session_control.begin_failure.lock().unwrap() = None;
+    *session_control.renewal_failure.lock().unwrap() = None;
     let mut implicit = renewal.clone();
-    implicit.target.renew_existing_lease = false;
+    implicit.asserted_lease.owner = "another-worker".into();
     assert!(
         client
-            .begin_session_realization(&registered.snapshot.identity, implicit)
+            .renew_session_realization(&registered.snapshot.identity, implicit)
             .await
             .is_err(),
         "T11"
     );
     let mut excessive = renewal;
-    excessive.target.lease_expires_at_unix_ms = u64::MAX;
+    excessive.requested_expires_at_unix_ms = u64::MAX;
     client
-        .begin_session_realization(&registered.snapshot.identity, excessive.clone())
+        .renew_session_realization(&registered.snapshot.identity, excessive.clone())
         .await
         .expect("T12 bounded renewal");
     assert_eq!(
-        session_control.begins.lock().unwrap().len(),
-        4,
+        session_control.renewals.lock().unwrap().len(),
+        3,
         "T11/T12/T16"
     );
     assert_eq!(
         session_control
-            .begins
+            .renewals
             .lock()
             .unwrap()
             .last()
             .expect("T12 reaches Control")
-            .target
-            .lease_expires_at_unix_ms,
+            .requested_expires_at_unix_ms,
         registered.snapshot.expires_at_ms,
         "T12 never exceeds the authenticated registry lease"
     );
     let mut contradictory = excessive;
-    contradictory.target.lease_expires_at_unix_ms = realization_lease.expires_at_unix_ms;
-    contradictory.target.reassign_existing_lease = true;
+    contradictory.requested_expires_at_unix_ms =
+        realization_lease.expires_at_unix_ms.saturating_sub(1);
     assert!(
         client
-            .begin_session_realization(&registered.snapshot.identity, contradictory)
+            .renew_session_realization(&registered.snapshot.identity, contradictory)
             .await
             .is_err(),
         "T15"
     );
-    assert_eq!(session_control.begins.lock().unwrap().len(), 4, "T15/T16");
+    assert_eq!(session_control.renewals.lock().unwrap().len(), 3, "T15/T16");
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     assert!(
         client
@@ -1886,7 +1898,6 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
                 owner: "local-worker".into(),
                 runtime_incarnation: identity.lease_owner(),
                 lease_expires_at_unix_ms: u64::MAX,
-                renew_existing_lease: false,
                 reassign_existing_lease: false,
             },
         }))

@@ -163,8 +163,8 @@ pub use session::{
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, FrozenAgentPublicationDecision, FrozenSessionProjection,
-    SessionProjectionInstallMode, SessionProjectionSynchronizer, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlDisposition,
+    RenewSessionRealization, SessionProjectionInstallMode, SessionProjectionSynchronizer,
+    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlDisposition,
     SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
     SessionRealizationProgress, SessionRealizationTarget, SessionRepositoryPublicationProjection,
     SessionTerminalCleanupAssignment, drive_session_realization, frozen_agent_publication_decision,

@@ -482,7 +482,6 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         owner: "worker".into(),
         runtime_incarnation: incarnation.into(),
         lease_expires_at_unix_ms: u64::MAX,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
 
@@ -570,6 +569,103 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
 }
 
 #[tokio::test]
+async fn lease_renewal_is_a_projection_free_root_cas() {
+    // Renewal cause/effect graph: C1 exact live owner/incarnation/epoch; C2 the
+    // requested expiry is newer/equal/older; C3 executable projection refresh
+    // is unavailable; C4 asserted epoch is stale. Effects: E1 one root CAS
+    // extends only lease expiry; E2 exact replay returns the current lease with
+    // no write; E3 malformed/non-monotonic input is rejected; E4 stale fencing
+    // is rejected; E5 no catalog refresh, transcript materialization, credential
+    // migration, or desired-state phase is entered.
+    //
+    // | Rule | fence | requested expiry | refresh | Effect |
+    // |---|---|---|---|---|
+    // | R1 | exact/live | newer | unavailable | E1 + E5 |
+    // | R2 | exact/live | equal/current | unavailable | E2 + E5 |
+    // | R3 | exact/live | older than assertion | any | E3 |
+    // | R4 | stale epoch | newer | any | E4 + E5 |
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("renewal Session repository"),
+    );
+    let asserted = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-1".into(),
+        epoch: 7,
+        expires_at_unix_ms: u64::MAX - 2,
+    };
+    let mut session = persisted("lease-only-renewal", true, "idle");
+    session.realization = Some(asserted.clone());
+    create(repo.as_ref(), session).await;
+    let refresh = Arc::new(ToggleProjectionRefresh::default());
+    refresh.fail.store(true, Ordering::SeqCst);
+    let mut application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    application
+        .set_executable_projection_refresh(refresh.clone())
+        .unwrap();
+
+    let renewed = application
+        .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+            session_id: "lease-only-renewal".into(),
+            asserted_lease: asserted.clone(),
+            requested_expires_at_unix_ms: u64::MAX - 1,
+        })
+        .await
+        .expect("R1 renewal bypasses projection refresh");
+    assert_eq!(renewed.expires_at_unix_ms, u64::MAX - 1, "R1/E1");
+    assert_eq!(refresh.calls.load(Ordering::SeqCst), 0, "R1/E5");
+    let after_first = repo.get("lease-only-renewal").await.unwrap();
+
+    let replayed = application
+        .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+            session_id: "lease-only-renewal".into(),
+            asserted_lease: asserted.clone(),
+            requested_expires_at_unix_ms: u64::MAX - 1,
+        })
+        .await
+        .expect("R2 response-loss replay");
+    assert_eq!(replayed, renewed, "R2/E2");
+    assert_eq!(
+        repo.get("lease-only-renewal").await.unwrap(),
+        after_first,
+        "R2/E2 no second write"
+    );
+
+    let older = application
+        .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+            session_id: "lease-only-renewal".into(),
+            asserted_lease: asserted.clone(),
+            requested_expires_at_unix_ms: asserted.expires_at_unix_ms - 1,
+        })
+        .await;
+    assert!(
+        matches!(
+            older,
+            Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+        ),
+        "R3/E3"
+    );
+    let mut stale = asserted;
+    stale.epoch -= 1;
+    let stale = application
+        .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+            session_id: "lease-only-renewal".into(),
+            asserted_lease: stale,
+            requested_expires_at_unix_ms: u64::MAX,
+        })
+        .await;
+    assert_eq!(
+        stale,
+        Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership),
+        "R4/E4"
+    );
+    assert_eq!(refresh.calls.load(Ordering::SeqCst), 0, "R4/E5");
+}
+
+#[tokio::test]
 async fn local_realization_uses_stable_owner_and_process_incarnation() {
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -640,7 +736,6 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
                 owner: "other-worker".into(),
                 runtime_incarnation: "other-worker/boot-2".into(),
                 lease_expires_at_unix_ms: u64::MAX,
-                renew_existing_lease: false,
                 reassign_existing_lease: true,
             },
         },
@@ -649,28 +744,6 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     .expect("L4 claim-authorized reassignment");
     assert_eq!(reassigned.lease.epoch, replaced_lease.epoch + 1, "L4/E4");
     assert_eq!(reassigned.lease.owner, "other-worker", "L4/E4");
-
-    let invalid = awaken_session_contract::SessionRealizationControl::begin_session_realization(
-        &other,
-        awaken_session_contract::BeginSessionRealization {
-            session_id: "local-restart".into(),
-            target: awaken_session_contract::SessionRealizationTarget {
-                owner: "other-worker".into(),
-                runtime_incarnation: "other-worker/boot-2".into(),
-                lease_expires_at_unix_ms: u64::MAX,
-                renew_existing_lease: true,
-                reassign_existing_lease: true,
-            },
-        },
-    )
-    .await;
-    assert!(
-        matches!(
-            invalid,
-            Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
-        ),
-        "L5"
-    );
 }
 
 /// Reference-projection FMECA and cause/effect decision table. C1 the
@@ -1201,7 +1274,6 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         owner: "worker-b".into(),
         runtime_incarnation: "worker-b:publication".into(),
         lease_expires_at_unix_ms: u64::MAX,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
     let assignment = application
@@ -1338,7 +1410,6 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             owner: "worker-c".into(),
             runtime_incarnation: "worker-c:publication".into(),
             lease_expires_at_unix_ms: u64::MAX,
-            renew_existing_lease: false,
             reassign_existing_lease: false,
         })
         .await
@@ -1442,7 +1513,6 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a:2:boot-new".into(),
         lease_expires_at_unix_ms: u64::MAX,
-        renew_existing_lease: false,
         reassign_existing_lease: false,
     };
     let lease = |owner: &str, incarnation: &str, epoch: u64, expiry: u64| {
@@ -1553,7 +1623,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     );
     let invalid = application
         .claim_next_terminal_cleanup(awaken_session_contract::SessionRealizationTarget {
-            renew_existing_lease: true,
+            reassign_existing_lease: true,
             ..target.clone()
         })
         .await;
@@ -1562,7 +1632,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             invalid,
             Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
         ),
-        "claim-next never doubles as renewal"
+        "claim-next never doubles as live reassignment"
     );
 
     let inner: Arc<dyn ManagedSessionRepository> = Arc::new(

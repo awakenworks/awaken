@@ -33,6 +33,7 @@ schemars = { version = "1", optional = true }
 # Feature `sqlite`: embedded durable admin aggregate backend
 # over the crate's own `admin` migration scope (ADR-0043 sqlite-repos).
 rusqlite = { workspace = true, optional = true }
+awaken-sqlite-runtime = { workspace = true, optional = true }
 # Feature `postgres`: network-DB admin store over the same `admin` migration
 # scope (ADR-0043). The sync store ports are bridged onto a dedicated runtime the
 # store owns, so `tokio` (multi-thread) is a hard dep of this feature.
@@ -58,7 +59,7 @@ test-support = [
     "awaken-model-catalog/test-support",
 ]
 # SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
-sqlite = ["dep:rusqlite"]
+sqlite = ["dep:rusqlite", "dep:awaken-sqlite-runtime"]
 # Postgres-backed admin store (`postgres::PostgresAdminStore`), ADR-0043.
 postgres = ["dep:sqlx", "dep:tokio"]
 # Emit JSON Schema for the admin config DTOs (drives TS-contract generation,

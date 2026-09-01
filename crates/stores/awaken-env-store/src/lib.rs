@@ -4,7 +4,6 @@
 //! portable migration bundle.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_environment_contract::{
@@ -14,6 +13,7 @@ use awaken_environment_contract::{
     EnvironmentSandboxPolicyRef, EnvironmentStoreError,
 };
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+use awaken_sqlite_runtime::{SharedSqliteConnection, SqliteConnectionFactory};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -249,17 +249,25 @@ fn pg_row(row: &PgRow) -> Result<EnvItem, EnvironmentStoreError> {
 
 /// SQLite persistence for the environment registry.
 pub struct SqliteEnvRegistry {
-    conn: Arc<Mutex<Connection>>,
+    conn: SharedSqliteConnection,
 }
 
 impl SqliteEnvRegistry {
     pub fn open(path: &str) -> Result<Self, String> {
-        Self::from_connection(Connection::open(path).map_err(|e| e.to_string())?)
+        Self::from_connection(
+            SqliteConnectionFactory::file(path)
+                .open()
+                .map_err(|e| e.to_string())?,
+        )
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
-        Self::from_connection(Connection::open_in_memory().map_err(|e| e.to_string())?)
+        Self::from_connection(
+            SqliteConnectionFactory::memory()
+                .open()
+                .map_err(|e| e.to_string())?,
+        )
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
@@ -269,8 +277,18 @@ impl SqliteEnvRegistry {
             .run_bundle(&conn, &bundle)
             .map_err(|e| e.to_string())?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: SharedSqliteConnection::new(conn),
         })
+    }
+
+    async fn with_connection<T, F>(&self, operation: F) -> Result<T, EnvironmentStoreError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, EnvironmentStoreError> + Send + 'static,
+    {
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), operation)
+            .await
+            .map_err(environment_store)?
     }
 
     fn read(tx: &Transaction<'_>, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
@@ -331,11 +349,8 @@ impl EnvRegistry for SqliteEnvRegistry {
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
         command.config.validate()?;
-        let mut guard = self
-            .conn
-            .lock()
-            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
-        let tx = guard
+        awaken_sqlite_runtime::with_connection(self.conn.clone(), move |conn| {
+            let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         let fingerprint = command.fingerprint();
@@ -403,38 +418,47 @@ impl EnvRegistry for SqliteEnvRegistry {
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         tx.commit()
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
-        Ok(CreateEnvironmentOutcome::Created(item))
+            Ok(CreateEnvironmentOutcome::Created(item))
+        })
+        .await
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?
     }
 
     async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        let conn = self.conn.lock().map_err(environment_store)?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
-            ))
-            .map_err(environment_store)?;
-        let rows = stmt.query_map([], sqlite_row).map_err(environment_store)?;
-        rows.map(|row| row.map_err(environment_store)?.try_into_item())
-            .collect()
+        self.with_connection(move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
+                ))
+                .map_err(environment_store)?;
+            let rows = stmt.query_map([], sqlite_row).map_err(environment_store)?;
+            rows.map(|row| row.map_err(environment_store)?.try_into_item())
+                .collect()
+        })
+        .await
     }
 
     async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        let conn = self.conn.lock().map_err(environment_store)?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
-            ))
-            .map_err(environment_store)?;
-        stmt.query_map([], sqlite_row)
-            .map_err(environment_store)?
-            .map(|row| row.map_err(environment_store)?.try_into_item())
-            .collect()
+        self.with_connection(move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
+                ))
+                .map_err(environment_store)?;
+            let rows = stmt.query_map([], sqlite_row).map_err(environment_store)?;
+            rows.map(|row| row.map_err(environment_store)?.try_into_item())
+                .collect()
+        })
+        .await
     }
 
     async fn get(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        let mut guard = self.conn.lock().map_err(environment_store)?;
-        let tx = guard.transaction().map_err(environment_store)?;
-        Self::read(&tx, id)
+        let id = id.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn.transaction().map_err(environment_store)?;
+            Self::read(&tx, &id)
+        })
+        .await
     }
 
     async fn get_revision(
@@ -442,18 +466,21 @@ impl EnvRegistry for SqliteEnvRegistry {
         id: &str,
         revision: EnvironmentRevision,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        let conn = self.conn.lock().map_err(environment_store)?;
-        conn.query_row(
-            &format!(
-                "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
-            ),
-            params![id, revision.0],
-            sqlite_row,
-        )
-        .optional()
-        .map_err(environment_store)?
-        .map(PersistedEnvRow::try_into_item)
-        .transpose()
+        let id = id.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row(
+                &format!(
+                    "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
+                ),
+                params![id, revision.0],
+                sqlite_row,
+            )
+            .optional()
+            .map_err(environment_store)?
+            .map(PersistedEnvRow::try_into_item)
+            .transpose()
+        })
+        .await
     }
 
     async fn exists(&self, id: &str) -> Result<bool, EnvironmentStoreError> {
@@ -465,64 +492,71 @@ impl EnvRegistry for SqliteEnvRegistry {
         id: &str,
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        let mut guard = self.conn.lock().map_err(environment_store)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let id = id.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(environment_store)?;
+            let Some(mut item) = Self::read(&tx, &id)? else {
+                return Ok(None);
+            };
+            if item.archived_at.is_some() {
+                return Ok(None);
+            }
+            if !item.apply(patch)? {
+                return Ok(Some(item));
+            }
+            tx.execute(
+                "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
+                 config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7 WHERE env_id = ?8",
+                params![
+                    item.name,
+                    encode_description(&item.description),
+                    metadata_str(&item.metadata)?,
+                    config_str(&item.config)?,
+                    item.revision.0,
+                    item.scope,
+                    sandbox_policy_str(&item.sandbox_policy)?,
+                    id
+                ],
+            )
             .map_err(environment_store)?;
-        let Some(mut item) = Self::read(&tx, id)? else {
-            return Ok(None);
-        };
-        if item.archived_at.is_some() {
-            return Ok(None);
-        }
-        if !item.apply(patch)? {
-            return Ok(Some(item));
-        }
-        tx.execute(
-            "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
-             config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7 WHERE env_id = ?8",
-            params![
-                item.name,
-                encode_description(&item.description),
-                metadata_str(&item.metadata)?,
-                config_str(&item.config)?,
-                item.revision.0,
-                item.scope,
-                sandbox_policy_str(&item.sandbox_policy)?,
-                id
-            ],
-        )
-        .map_err(environment_store)?;
-        Self::insert_revision(&tx, &item).map_err(environment_store)?;
-        Self::insert_registration_intent(&tx, &item).map_err(environment_store)?;
-        tx.commit().map_err(environment_store)?;
-        Ok(Some(item))
+            Self::insert_revision(&tx, &item).map_err(environment_store)?;
+            Self::insert_registration_intent(&tx, &item).map_err(environment_store)?;
+            tx.commit().map_err(environment_store)?;
+            Ok(Some(item))
+        })
+        .await
     }
 
     async fn archive(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        let mut guard = self.conn.lock().map_err(environment_store)?;
-        let tx = guard
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        let id = id.to_string();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(environment_store)?;
+            let Some(mut item) = Self::read(&tx, &id)? else {
+                return Ok(None);
+            };
+            if item.archived_at.is_some() {
+                return Ok(Some(item));
+            }
+            item.archived_at = Some(OBJECT_AT.to_string());
+            item.revision =
+                EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
+                    EnvironmentStoreError::Backend("Environment revision exhausted".into())
+                })?);
+            tx.execute(
+                "UPDATE env_registry_env SET archived_at = ?1, revision = ?2 WHERE env_id = ?3",
+                params![OBJECT_AT, item.revision.0, id],
+            )
             .map_err(environment_store)?;
-        let Some(mut item) = Self::read(&tx, id)? else {
-            return Ok(None);
-        };
-        if item.archived_at.is_some() {
-            return Ok(Some(item));
-        }
-        item.archived_at = Some(OBJECT_AT.to_string());
-        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
-            EnvironmentStoreError::Backend("Environment revision exhausted".into())
-        })?);
-        tx.execute(
-            "UPDATE env_registry_env SET archived_at = ?1, revision = ?2 WHERE env_id = ?3",
-            params![OBJECT_AT, item.revision.0, id],
-        )
-        .map_err(environment_store)?;
-        Self::insert_revision(&tx, &item).map_err(environment_store)?;
-        Self::insert_registration_intent(&tx, &item).map_err(environment_store)?;
-        tx.commit().map_err(environment_store)?;
-        Ok(Some(item))
+            Self::insert_revision(&tx, &item).map_err(environment_store)?;
+            Self::insert_registration_intent(&tx, &item).map_err(environment_store)?;
+            tx.commit().map_err(environment_store)?;
+            Ok(Some(item))
+        })
+        .await
     }
 
     async fn registration_intent(
@@ -530,86 +564,96 @@ impl EnvRegistry for SqliteEnvRegistry {
         id: &str,
         revision: EnvironmentRevision,
     ) -> Result<Option<EnvironmentRegistrationIntent>, EnvironmentStoreError> {
-        let conn = self.conn.lock().map_err(environment_store)?;
-        let row = conn
-            .query_row(
-                "SELECT operation, delivered FROM env_registry_registration_intent \
+        let id = id.to_string();
+        self.with_connection(move |conn| {
+            let row = conn
+                .query_row(
+                    "SELECT operation, delivered FROM env_registry_registration_intent \
                  WHERE env_id = ?1 AND revision = ?2",
-                params![id, revision.0],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(environment_store)?;
-        row.map(|(operation, delivered)| {
-            Ok(EnvironmentRegistrationIntent {
-                environment_id: id.to_string(),
-                revision,
-                operation: parse_operation(&operation).map_err(EnvironmentStoreError::Backend)?,
-                delivered: delivered != 0,
+                    params![id, revision.0],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(environment_store)?;
+            row.map(|(operation, delivered)| {
+                Ok(EnvironmentRegistrationIntent {
+                    environment_id: id,
+                    revision,
+                    operation: parse_operation(&operation)
+                        .map_err(EnvironmentStoreError::Backend)?,
+                    delivered: delivered != 0,
+                })
             })
+            .transpose()
         })
-        .transpose()
+        .await
     }
 
     async fn registration_intents(
         &self,
         filter: EnvironmentRegistrationIntentFilter,
     ) -> Result<Vec<EnvironmentRegistrationIntent>, EnvironmentStoreError> {
-        let conn = self.conn.lock().map_err(environment_store)?;
-        let where_clause = match filter {
-            EnvironmentRegistrationIntentFilter::Pending => " WHERE delivered = 0",
-            EnvironmentRegistrationIntentFilter::All => "",
-        };
-        let mut statement = conn
-            .prepare(&format!(
-                "SELECT env_id, revision, operation, delivered \
+        self.with_connection(move |conn| {
+            let where_clause = match filter {
+                EnvironmentRegistrationIntentFilter::Pending => " WHERE delivered = 0",
+                EnvironmentRegistrationIntentFilter::All => "",
+            };
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT env_id, revision, operation, delivered \
                  FROM env_registry_registration_intent{where_clause} ORDER BY env_id, revision"
-            ))
-            .map_err(environment_store)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
                 ))
+                .map_err(environment_store)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(environment_store)?;
+            rows.map(|row| {
+                let (environment_id, revision, operation, delivered) =
+                    row.map_err(environment_store)?;
+                Ok(EnvironmentRegistrationIntent {
+                    environment_id,
+                    revision: EnvironmentRevision(u64::try_from(revision).map_err(|_| {
+                        EnvironmentStoreError::Backend(
+                            "invalid Environment registration revision".into(),
+                        )
+                    })?),
+                    operation: parse_operation(&operation)
+                        .map_err(EnvironmentStoreError::Backend)?,
+                    delivered: delivered != 0,
+                })
             })
-            .map_err(environment_store)?;
-        rows.map(|row| {
-            let (environment_id, revision, operation, delivered) =
-                row.map_err(environment_store)?;
-            Ok(EnvironmentRegistrationIntent {
-                environment_id,
-                revision: EnvironmentRevision(u64::try_from(revision).map_err(|_| {
-                    EnvironmentStoreError::Backend(
-                        "invalid Environment registration revision".into(),
-                    )
-                })?),
-                operation: parse_operation(&operation).map_err(EnvironmentStoreError::Backend)?,
-                delivered: delivered != 0,
-            })
+            .collect()
         })
-        .collect()
+        .await
     }
 
     async fn mark_registration_intent_delivered(
         &self,
         intent: &EnvironmentRegistrationIntent,
     ) -> Result<bool, EnvironmentStoreError> {
-        let conn = self.conn.lock().map_err(environment_store)?;
-        let changed = conn
-            .execute(
-                "UPDATE env_registry_registration_intent SET delivered = 1 \
+        let intent = intent.clone();
+        self.with_connection(move |conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE env_registry_registration_intent SET delivered = 1 \
                  WHERE env_id = ?1 AND revision = ?2 AND operation = ?3",
-                params![
-                    intent.environment_id,
-                    intent.revision.0,
-                    operation_str(intent.operation),
-                ],
-            )
-            .map_err(environment_store)?;
-        Ok(changed == 1)
+                    params![
+                        intent.environment_id,
+                        intent.revision.0,
+                        operation_str(intent.operation),
+                    ],
+                )
+                .map_err(environment_store)?;
+            Ok(changed == 1)
+        })
+        .await
     }
 }
 
