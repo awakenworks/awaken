@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::fresh_process_id;
 use serde_json::Value;
 
-use crate::types::{AiSdkChatRequest, UIMessage, UIMessagePart};
+use crate::types::{AiSdkChatRequest, AwakenFileKind, UIMessage, UIMessagePart};
 
 /// A client's answer to an awaiting tool, before binding-specific translation.
 #[derive(Debug, Clone, PartialEq)]
@@ -217,6 +217,10 @@ fn part_to_block(part: &UIMessagePart) -> Option<ContentBlock> {
                 None => ContentBlock::image_url(url.clone()),
             })
         }
+        UIMessagePart::AwakenFile { file_id, kind } => Some(match kind {
+            AwakenFileKind::Image => ContentBlock::image_file(file_id),
+            AwakenFileKind::Document => ContentBlock::document_file(file_id),
+        }),
         UIMessagePart::Tool(_) | UIMessagePart::Other { .. } => None,
     }
 }
@@ -375,6 +379,51 @@ mod tests {
             }
         ));
         assert_eq!(blocks_text(&p.messages[0].content), "what is this");
+    }
+
+    #[test]
+    fn decodes_preuploaded_file_data_parts_without_url_or_bytes() {
+        // Decision table: image/document kind selects the matching neutral File
+        // source; both retain only the opaque id for attempt-bound authorization.
+        use awaken_agent_contract::agent::content::{DocumentSource, ImageSource};
+        let req = AiSdkChatRequest {
+            messages: vec![ui(
+                "user",
+                "u1",
+                vec![
+                    json!({
+                        "type":"data-awaken-file",
+                        "data": {
+                            "object":"awaken.file_reference",
+                            "fileRef":"file_0123456789abcdef0123456789abcdef",
+                            "kind":"image"
+                        }
+                    }),
+                    json!({
+                        "type":"data-awaken-file",
+                        "data": {
+                            "object":"awaken.file_reference",
+                            "fileRef":"file_fedcba9876543210fedcba9876543210",
+                            "kind":"document"
+                        }
+                    }),
+                ],
+            )],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+
+        let p = process(req, &[]);
+        assert!(matches!(
+            &p.messages[0].content[0],
+            ContentBlock::Image { source: ImageSource::File { file_id } }
+                if file_id == "file_0123456789abcdef0123456789abcdef"
+        ));
+        assert!(matches!(
+            &p.messages[0].content[1],
+            ContentBlock::Document { source: DocumentSource::File { file_id }, .. }
+                if file_id == "file_fedcba9876543210fedcba9876543210"
+        ));
     }
 
     #[test]

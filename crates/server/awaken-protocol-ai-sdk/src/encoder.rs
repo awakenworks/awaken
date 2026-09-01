@@ -14,7 +14,7 @@ use awaken_agent_contract::event::{
 use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::Value;
 
-use crate::types::{UIStreamEvent, assistant_parts, history_message, text_parts};
+use crate::types::{UIStreamEvent, assistant_parts, history_message, history_parts, text_parts};
 
 /// The AI SDK v6 transcoder: the one per-protocol adapter for both tiers (ADR-0058
 /// Axis 9). `fact()` projects committed whole-units (`tool-input-available`,
@@ -492,7 +492,7 @@ impl HistorySink for AiSdkHistorySink {
     fn user_or_system(&mut self, id: &str, role: Role, content: &[ContentBlock]) {
         let role = if role == Role::User { "user" } else { "system" };
         self.encoded
-            .push(history_message(id, role, text_parts(content)));
+            .push(history_message(id, role, history_parts(content)));
     }
 
     fn assistant(&mut self, id: &str, content: &[ContentBlock], tools: &[ToolUseRef<'_>]) {
@@ -1102,6 +1102,36 @@ mod tests {
         assert_eq!(part["type"], "tool-read");
         assert_eq!(part["state"], "output-available");
         assert_eq!(part["output"], json!("data"));
+    }
+
+    #[test]
+    fn history_replays_logical_file_parts_without_content_urls() {
+        // A committed logical File remains the same reference/kind across
+        // reload; history never manufactures a browser-download coordinate.
+        let messages = vec![Message {
+            id: Id("u-file".into()),
+            role: Role::User,
+            content: vec![
+                ContentBlock::document_file("file_0123456789abcdef0123456789abcdef"),
+                ContentBlock::text("summarize"),
+            ],
+        }];
+
+        let encoded = encode_history(&messages, None);
+        assert_eq!(encoded[0]["parts"][0]["type"], "data-awaken-file");
+        assert_eq!(
+            encoded[0]["parts"][0]["data"],
+            json!({
+                "object":"awaken.file_reference",
+                "fileRef":"file_0123456789abcdef0123456789abcdef",
+                "kind":"document"
+            })
+        );
+        assert!(encoded[0]["parts"][0].get("url").is_none());
+        assert_eq!(
+            encoded[0]["parts"][1],
+            json!({"type":"text","text":"summarize"})
+        );
     }
 
     #[test]
