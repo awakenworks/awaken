@@ -16,7 +16,7 @@ impl Inbox for SqliteDispatchStore {
                     "SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
                      FROM {p}_pending WHERE thread_id = ?1 ORDER BY created_at"
                 ))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let rows = stmt
                 .query_map(params![thread.0], |r| {
                     Ok((
@@ -29,7 +29,7 @@ impl Inbox for SqliteDispatchStore {
                         r.get::<_, Option<i64>>(6)?,
                     ))
                 })
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let mut records = Vec::new();
             for row in rows {
                 let (
@@ -41,7 +41,7 @@ impl Inbox for SqliteDispatchStore {
                     revision,
                     available_at,
                 ) =
-                    row.map_err(reject)?;
+                    row.map_err(store_error)?;
                 records.push(PendingRecord {
                     input: PendingInput {
                         message_id,
@@ -76,7 +76,7 @@ impl Inbox for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let outcome = match current_revision(&tx, p, &message_id)? {
                 None => CasOutcome::NotFound,
                 Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
@@ -85,11 +85,11 @@ impl Inbox for SqliteDispatchStore {
                         &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
                         params![message_id],
                     )
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                     CasOutcome::Applied
                 }
             };
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(outcome)
         })
         .await
@@ -106,7 +106,7 @@ impl Inbox for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let outcome = match current_revision(&tx, p, &message_id)? {
                 None => CasOutcome::NotFound,
                 Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
@@ -118,11 +118,11 @@ impl Inbox for SqliteDispatchStore {
                         ),
                         params![result_json, message_id],
                     )
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                     CasOutcome::Applied
                 }
             };
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(outcome)
         })
         .await
@@ -151,7 +151,7 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
                     "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
                      WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
                 ))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let rows = statement
                 .query_map(params![after, limit], |row| {
                     Ok((
@@ -160,10 +160,10 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
                         row.get::<_, String>(2)?,
                     ))
                 })
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let mut events = Vec::new();
             for row in rows {
-                let (sequence, recorded_at_ms, operation) = row.map_err(reject)?;
+                let (sequence, recorded_at_ms, operation) = row.map_err(store_error)?;
                 events.push(DispatchOperationalEvent {
                     cursor: DispatchCursor(u64::try_from(sequence).map_err(|_| {
                         DispatchError::Rejected(
@@ -204,7 +204,7 @@ impl Outbox for SqliteDispatchStore {
                     ),
                     params![&input.message_id, payload],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if changed > 0 {
                 return Ok(true);
             }
@@ -215,7 +215,7 @@ impl Outbox for SqliteDispatchStore {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()
-                .map_err(reject)?
+                .map_err(store_error)?
                 .map(|stored| serde_json::from_str::<PendingInput>(&stored).map_err(json_err))
                 .transpose()?;
             match existing {
@@ -242,7 +242,7 @@ impl Outbox for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let stored = tx
                 .query_row(
                     &format!(
@@ -261,7 +261,7 @@ impl Outbox for SqliteDispatchStore {
                     },
                 )
                 .optional()
-                .map_err(reject)?
+                .map_err(store_error)?
                 .ok_or_else(|| {
                     DispatchError::Rejected(format!(
                         "Session resume Run `{}` was not found",
@@ -285,15 +285,15 @@ impl Outbox for SqliteDispatchStore {
                          (json_extract(payload, '$.run_id') = ?2 AND \
                          json_extract(payload, '$.correlation_id') = ?3)"
                     ))
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 let rows = statement
                     .query_map(
                         params![&input.message_id, &input.run_id.0, &input.correlation_id],
                         |row| row.get::<_, String>(0),
                     )
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 rows.map(|row| {
-                    row.map_err(reject).and_then(|payload| {
+                    row.map_err(store_error).and_then(|payload| {
                         serde_json::from_str::<PendingInput>(&payload).map_err(json_err)
                     })
                 })
@@ -306,14 +306,14 @@ impl Outbox for SqliteDispatchStore {
                          WHERE message_id = ?1 OR \
                          (run_id = ?2 AND correlation_id = ?3)"
                     ))
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 let rows = statement
                     .query_map(
                         params![&input.message_id, &input.run_id.0, &input.correlation_id],
                         |row| row.get::<_, String>(0),
                     )
-                    .map_err(reject)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
+                    .map_err(store_error)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
             };
             for message_id in pending_ids {
                 if let Some(pending) = load_pending_input(&tx, p, &message_id)? {
@@ -346,13 +346,13 @@ impl Outbox for SqliteDispatchStore {
                 &format!("UPDATE {p}_dispatch SET request = ?1 WHERE run_id = ?2"),
                 params![json(&request)?, &input.run_id.0],
             )
-            .map_err(reject)?;
+            .map_err(store_error)?;
             tx.execute(
                 &format!("INSERT INTO {p}_outbox (message_id, payload) VALUES (?1, ?2)"),
                 params![&input.message_id, json(&input)?],
             )
-            .map_err(reject)?;
-            tx.commit().map_err(reject)?;
+            .map_err(store_error)?;
+            tx.commit().map_err(store_error)?;
             Ok(true)
         })
         .await
@@ -363,11 +363,11 @@ impl Outbox for SqliteDispatchStore {
             let staged: Vec<(String, String)> = {
                 let mut stmt = conn
                     .prepare(&format!("SELECT message_id, payload FROM {p}_outbox"))
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 let rows = stmt
                     .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                    .map_err(reject)?;
-                rows.collect::<Result<_, _>>().map_err(reject)?
+                    .map_err(store_error)?;
+                rows.collect::<Result<_, _>>().map_err(store_error)?
             };
 
             let mut relayed = 0;
@@ -379,14 +379,14 @@ impl Outbox for SqliteDispatchStore {
                 // drop the outbox row.
                 let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 append_pending_row(&tx, p, &input)?;
                 tx.execute(
                     &format!("DELETE FROM {p}_outbox WHERE message_id = ?1"),
                     params![message_id],
                 )
-                .map_err(reject)?;
-                tx.commit().map_err(reject)?;
+                .map_err(store_error)?;
+                tx.commit().map_err(store_error)?;
                 relayed += 1;
             }
             Ok(relayed)
@@ -404,7 +404,7 @@ impl Outbox for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let replay = exact_run_replay(&tx, p, &request)?;
             let staged = tx
                 .query_row(
@@ -413,7 +413,7 @@ impl Outbox for SqliteDispatchStore {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()
-                .map_err(reject)?
+                .map_err(store_error)?
                 .map(|payload| serde_json::from_str::<PendingInput>(&payload).map_err(json_err))
                 .transpose()?;
             let input = normalize_pending_millis(input);
@@ -423,7 +423,7 @@ impl Outbox for SqliteDispatchStore {
                 .as_ref()
                 .is_some_and(|existing| existing != &input)
             {
-                return Err(DispatchError::Rejected(format!(
+                return Err(DispatchError::Conflict(format!(
                     "idempotency key `{message_id}` was reused with another continuation payload"
                 )));
             }
@@ -445,9 +445,9 @@ impl Outbox for SqliteDispatchStore {
                     &format!("DELETE FROM {p}_outbox WHERE message_id = ?1"),
                     params![message_id],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(())
         })
         .await

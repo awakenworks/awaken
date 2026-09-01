@@ -46,9 +46,33 @@ type checking are valuable executable evidence, but are not formal proofs.
   the observed committed prefix, while a failed refresh stutters. Browser tests
   cover the production TypeScript
   projection and the list status mapping fails closed for unknown states. The
-  model proves that a retained reply no longer needs user action while remaining
-  recoverable; it does not prove database snapshot isolation, cold reconstruction
-  of pre-anchor legacy history, browser delivery, or lifecycle-supervisor fairness.
+  separate `ManagedProjectionPublish.tla` model checks two reverse-completing
+  refresh writers over independent Session, root/child Thread, lifecycle, and
+  budget source coordinates, including a source advance between the first and
+  second read. It proves mixed reads cannot build a publishable candidate,
+  result/checkpoint pairing, local cache
+  CAS, source non-invention, visible non-regression, failure/rejection
+  stuttering, and that equal source coordinates plus equal rendered content
+  change neither cache nor broadcast. Equal legacy coordinates with changed
+  rendered content still publish rather than hiding an unversioned source.
+  The Rust decision-table and concurrent-reader tests exercise the same publication
+  branches. Together, the models prove that a retained reply no longer needs
+  user action while remaining recoverable and that a stale refresher cannot
+  roll the visible projection backwards. They do not prove database snapshot
+  isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
+  or lifecycle-supervisor fairness.
+- Internal Agent messaging has no message store or Dispatch-owned waiting
+  state. `AgentMessageProtocol.tla` composes the canonical
+  `SessionActivityKernel` and `RunIngressKernel`, adding only committed source
+  request, admission certainty, target commit, and source receipt. It proves
+  that unavailable admission and identity conflict cannot settle activity
+  before target truth, stale claims remain fenced by the ingress kernel, a
+  receipt cannot precede target commit, and internal delivery never creates
+  pending input.
+  Production refinement additionally validates the command against the source
+  Run's committed `ActiveToolBatch`; backend conformance tests own atomic
+  admission. The model does not prove model intent, Worker availability,
+  scheduler fairness, or delivery to an external side effect.
 - Tool permission defaults and exact overrides share the neutral
   `ToolExecutionPolicy`. `ToolPermissionPolicy.tla` exhaustively checks Agent
   default-allow, MCP default-ask, exact allow/ask/disabled configuration, and

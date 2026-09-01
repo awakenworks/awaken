@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_ext_builtin_tools::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
-    AgentMessageTarget, AgentRosterEntry, LIST_AGENTS, SEND_TO_AGENT, Toolset, coordination_tools,
+    AgentMessageTarget, AgentRosterEntry, LIST_AGENTS, SEND_MESSAGE, Toolset, coordination_tools,
 };
 use awaken_runtime_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOperationContext, ToolRecoveryCapability, ToolRecoveryPolicy,
@@ -32,7 +32,7 @@ impl AgentCoordinator for RecordingCoordinator {
         }])
     }
 
-    async fn send_to_agent(
+    async fn send_message(
         &self,
         request: AgentMessageRequest,
     ) -> Result<AgentMessageReceipt, ToolError> {
@@ -109,7 +109,7 @@ async fn list_agents_uses_the_runtime_owned_source_run() {
 }
 
 #[tokio::test]
-async fn send_to_agent_selects_spawn_or_follow_up_without_a_second_route() {
+async fn send_message_selects_spawn_or_follow_up_without_a_second_route() {
     // Decision table:
     // | Rule | agent_id | thread_id | Effect |
     // | R1   | value    | absent    | Spawn |
@@ -120,7 +120,7 @@ async fn send_to_agent_selects_spawn_or_follow_up_without_a_second_route() {
     // receipt. Constraint/invariant: no adapter-local routing registry exists.
     let service = Arc::new(RecordingCoordinator::default());
     let tools = coordination_tools(service.clone());
-    let send = find(&tools, SEND_TO_AGENT);
+    let send = find(&tools, SEND_MESSAGE);
     let spawned = invoke(
         send.clone(),
         serde_json::json!({"agent_id":"researcher","message":"investigate"}),
@@ -153,7 +153,7 @@ async fn send_to_agent_selects_spawn_or_follow_up_without_a_second_route() {
 }
 
 #[tokio::test]
-async fn send_to_agent_rejects_ambiguous_empty_and_unknown_inputs_before_effects() {
+async fn send_message_rejects_ambiguous_empty_and_unknown_inputs_before_effects() {
     // Decision table:
     // | Rule | agent_id | thread_id | message | Effect |
     // | R1   | absent   | absent    | text    | reject |
@@ -164,7 +164,7 @@ async fn send_to_agent_rejects_ambiguous_empty_and_unknown_inputs_before_effects
     // returns InvalidArguments and records zero sends. Constraint/invariant:
     // validation completes before the coordinator effect boundary.
     let service = Arc::new(RecordingCoordinator::default());
-    let send = find(&coordination_tools(service.clone()), SEND_TO_AGENT);
+    let send = find(&coordination_tools(service.clone()), SEND_MESSAGE);
     let cases = [
         serde_json::json!({"message":"x"}),
         serde_json::json!({"agent_id":"a","session_thread_id":"t","message":"x"}),
@@ -196,7 +196,7 @@ async fn coordination_effects_require_runtime_context() {
     for (id, arguments) in [
         (LIST_AGENTS, serde_json::json!({})),
         (
-            SEND_TO_AGENT,
+            SEND_MESSAGE,
             serde_json::json!({"agent_id":"a","message":"x"}),
         ),
     ] {
@@ -243,12 +243,12 @@ fn coordination_catalog_and_executables_are_exact_and_recoverable() {
         "R1"
     );
     assert_eq!(
-        descriptors[SEND_TO_AGENT],
+        descriptors[SEND_MESSAGE],
         ToolRecoveryPolicy::durable_request(),
         "R2/descriptor"
     );
     assert_eq!(
-        find(&tools, SEND_TO_AGENT).recovery_capability(),
+        find(&tools, SEND_MESSAGE).recovery_capability(),
         ToolRecoveryCapability::DurableRequest,
         "R2/executable"
     );

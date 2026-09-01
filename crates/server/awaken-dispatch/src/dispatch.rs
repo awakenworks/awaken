@@ -55,7 +55,7 @@ pub(crate) fn decide_run_identity(
     if replay {
         Ok(RunIdentityDecision::Replay)
     } else {
-        Err(DispatchError::Rejected(format!(
+        Err(DispatchError::Conflict(format!(
             "run id `{}` was reused with another or unverifiable dispatch payload",
             incoming.run_id().0
         )))
@@ -462,7 +462,7 @@ pub(crate) fn validate_session_resume_evidence<'a>(
     for candidate in existing {
         if candidate.message_id == input.message_id {
             if candidate != input {
-                return Err(DispatchError::Rejected(format!(
+                return Err(DispatchError::Conflict(format!(
                     "idempotency key `{}` was reused with another Session resume payload",
                     input.message_id
                 )));
@@ -471,7 +471,7 @@ pub(crate) fn validate_session_resume_evidence<'a>(
         } else if candidate.run_id == input.run_id
             && candidate.correlation_id == input.correlation_id
         {
-            return Err(DispatchError::Rejected(format!(
+            return Err(DispatchError::Conflict(format!(
                 "Run `{}` correlation `{}` already has another durable reply",
                 input.run_id.0, input.correlation_id
             )));

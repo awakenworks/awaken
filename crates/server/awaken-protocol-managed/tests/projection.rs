@@ -1047,7 +1047,7 @@ async fn a_retries_exhausted_run_idles_with_that_stop_reason() {
 /// reporting its reservation `Activated`; C1 the canonical lifecycle supervisor
 /// observes that terminal prefix and the Runtime Host settles its retained
 /// Session activity epoch; C2 first accepted
-/// `send_to_agent` creates a real stable Thread; C3 its ordinary child Run
+/// `send_message` creates a real stable Thread; C3 its ordinary child Run
 /// completes with private Thinking plus public Text; C4 a follow-up targets that
 /// Thread and creates a second Run; C5 warm refresh repeats. Effects: E0 each
 /// aggregate lifecycle closes after canonical recovery rather than an unrelated

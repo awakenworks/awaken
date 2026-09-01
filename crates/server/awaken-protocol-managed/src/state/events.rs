@@ -5,7 +5,7 @@ use super::*;
 use crate::types::{EvaluatedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_ext_builtin_tools::SEND_TO_AGENT;
+use awaken_ext_builtin_tools::SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 #[cfg(test)]
 use awaken_session_contract::SessionThreadToolReply;
@@ -35,6 +35,7 @@ pub(super) fn coordinated_child_run_is_terminal(
 
 /// One public inbound event rebuilt from canonical Session/Thread truth. The
 /// batch coordinate is ephemeral ordering metadata, never a second event log.
+#[derive(Clone)]
 struct DurableInboundProjection {
     event: Event,
 }

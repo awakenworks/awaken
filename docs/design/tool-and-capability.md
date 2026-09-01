@@ -119,8 +119,9 @@ not.
 | Toolset | Tool ids | Runtime rule |
 |---|---|---|
 | `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | descriptors and realization contracts live in the extension; filesystem tools execute in-process and both Web tools resolve through one configured provider catalog; runtime core ships no concrete tool id |
-| `builtin-task-tools` | `send_message`, `cancel_task`, `recover_failed_messages` | task tools are ordinary plugin tools over runtime state/effect/commit seams; recovery tools are ops-scoped unless explicitly enabled |
+| `builtin-task-tools` | `cancel_task` | task control is an ordinary plugin tool over the runtime control seam |
 | `builtin-delegation-tools` | `agent_run` | delegation is one tool id with a target argument, not one generated id per target agent |
+| `builtin-coordination-tools` | `list_agents`, `send_message` | Agent messaging is the one Thread-owned coordination command, not a Task ingress/outbox adapter |
 
 `agent_run` has a stable descriptor id. Its arguments include at least
 `agent_id` and `prompt`; optional arguments such as input metadata, handoff mode,
@@ -141,11 +142,6 @@ Invocation is fail-closed:
 
 Do not reintroduce `agent_run_<agent_id>` as a tool id. If UI or logs need a
 friendly label, derive it from `agent_run` plus the `agent_id` argument.
-
-`recover_failed_messages` is a task recovery tool, not a normal business tool:
-it inspects and replays the dead-letter list for durable messages that failed
-delivery. Default agent profiles should hide it unless the agent has an explicit
-operations or recovery role.
 
 ## Admin Assistant Tool Boundary
 

@@ -6,7 +6,7 @@
 
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::Role;
-use awaken_ext_builtin_tools::{LIST_AGENTS, SEND_TO_AGENT};
+use awaken_ext_builtin_tools::{LIST_AGENTS, SEND_MESSAGE};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, TokenUsage, ToolCall,
 };
@@ -498,9 +498,9 @@ impl LlmExecutor for InstructionEchoModel {
 }
 
 /// Return one deterministic step of the fixed Managed coordination protocol.
-/// Both coordinator fixtures use this helper so `list_agents` -> `send_to_agent`
+/// Both coordinator fixtures use this helper so `list_agents` -> `send_message`
 /// sequencing has one owner. A tool-free child returns `None` and keeps its own
-/// model behavior; the `send_to_agent` result is only an admission receipt, never
+/// model behavior; the `send_message` result is only an admission receipt, never
 /// the child Agent's eventual reply.
 fn managed_coordination_output(
     request: &ChatRequest,
@@ -508,7 +508,7 @@ fn managed_coordination_output(
     message: &str,
 ) -> Option<AssistantOutput> {
     let has_list = request.tools.iter().any(|tool| tool.id == LIST_AGENTS);
-    let has_send = request.tools.iter().any(|tool| tool.id == SEND_TO_AGENT);
+    let has_send = request.tools.iter().any(|tool| tool.id == SEND_MESSAGE);
     if !has_list || !has_send {
         return None;
     }
@@ -552,7 +552,7 @@ fn managed_coordination_output(
         }]),
         1 => AssistantOutput::from_tool_calls(vec![ToolCall {
             call_id: format!("send-agent-{run_ordinal}"),
-            tool_id: SEND_TO_AGENT.into(),
+            tool_id: SEND_MESSAGE.into(),
             arguments: serde_json::json!({
                 "agent_id": agent_id,
                 "message": message,
@@ -818,7 +818,7 @@ impl LlmExecutor for McpToolModel {
 }
 
 /// A deterministic model for the Managed coordination e2e. A coordinator first
-/// calls fixed `list_agents`, then asynchronously calls fixed `send_to_agent`
+/// calls fixed `list_agents`, then asynchronously calls fixed `send_message`
 /// (Native `researcher`, ACP `acp-worker`, explicit `self`, or `ghost`) and ends
 /// on the admission receipt. A child answers on its own Thread. The self-copy
 /// task answers directly so one recursive edge cannot manufacture a deeper tree.
@@ -1080,7 +1080,7 @@ mod tests {
         // C2=current-Run result count is 0/1/2, C3=target is published/missing/self,
         // C4=send result is success/error, C5=latest User input is an internal
         // child report. Effects are E1=plain child reply,
-        // E2=list_agents, E3=send_to_agent with exactly one selector, E4=receipt
+        // E2=list_agents, E3=send_message with exactly one selector, E4=receipt
         // acknowledgement, E5=surfaced failure, and E6=report acknowledgement
         // without another tool call. Results before the last User Run are
         // constrained to have no effect on the new Run.
@@ -1103,7 +1103,7 @@ mod tests {
 
         // A Managed coordinator discovers the roster before addressing a child.
         let mut r = req(vec![msg(Role::User, "go research this")]);
-        r.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        r.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let listed = infer(&DelegatingModel, r).await;
         assert_eq!(listed.output.tool_calls()[0].tool_id, LIST_AGENTS);
         assert_eq!(
@@ -1116,10 +1116,10 @@ mod tests {
             msg(Role::User, "go research this"),
             tool_result("list-agents-1", r#"[{"agent_id":"researcher"}]"#),
         ]);
-        r.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        r.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let delegated = infer(&DelegatingModel, r).await;
         let call = &delegated.output.tool_calls()[0];
-        assert_eq!(call.tool_id, SEND_TO_AGENT);
+        assert_eq!(call.tool_id, SEND_MESSAGE);
         assert_eq!(call.arguments["agent_id"], "researcher");
         assert_eq!(call.arguments["message"], "do the research");
         assert!(call.arguments.get("session_thread_id").is_none());
@@ -1130,7 +1130,7 @@ mod tests {
             msg(Role::User, "delegate to the ghost agent"),
             tool_result("list-agents-1", "[]"),
         ]);
-        rg.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        rg.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let ghost = infer(&DelegatingModel, rg).await;
         assert_eq!(ghost.output.tool_calls()[0].arguments["agent_id"], "ghost");
 
@@ -1141,7 +1141,7 @@ mod tests {
             tool_result("list-agents-1", "[]"),
             tool_result("send-agent-1", r#"{"accepted":true}"#),
         ]);
-        accepted.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        accepted.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let accepted = infer(&DelegatingModel, accepted).await;
         assert_eq!(
             accepted.output.text_content(),
@@ -1153,7 +1153,7 @@ mod tests {
             tool_result("list-agents-1", "[]"),
             tool_error("send-agent-1", "not in frozen roster"),
         ]);
-        failed.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        failed.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let failed = infer(&DelegatingModel, failed).await;
         assert_eq!(
             failed.output.text_content(),
@@ -1166,7 +1166,7 @@ mod tests {
             Role::User,
             "Message from agent researcher (thread child-1):\nresearched: 42",
         )]);
-        report.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        report.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let report = infer(&DelegatingModel, report).await;
         assert!(report.output.tool_calls().is_empty());
         assert_eq!(
@@ -1175,7 +1175,7 @@ mod tests {
         );
 
         let mut self_copy = req(vec![msg(Role::User, "self-copy task")]);
-        self_copy.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        self_copy.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let self_copy = infer(&DelegatingModel, self_copy).await;
         assert_eq!(self_copy.output.text_content(), "self copy: 42");
     }
@@ -1201,7 +1201,7 @@ mod tests {
         );
 
         let mut listed = req(vec![msg(Role::User, "delegate to agent_worker")]);
-        listed.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        listed.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let listed = infer(&RegistryDelegatingModel, listed).await;
         assert_eq!(listed.output.tool_calls()[0].tool_id, LIST_AGENTS);
 
@@ -1209,10 +1209,10 @@ mod tests {
             msg(Role::User, "delegate to agent_worker"),
             tool_result("list-agents-1", r#"[{"agent_id":"agent_worker"}]"#),
         ]);
-        sent.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        sent.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let sent = infer(&RegistryDelegatingModel, sent).await;
         let call = &sent.output.tool_calls()[0];
-        assert_eq!(call.tool_id, SEND_TO_AGENT);
+        assert_eq!(call.tool_id, SEND_MESSAGE);
         assert_eq!(call.arguments["agent_id"], "agent_worker");
         assert_eq!(call.arguments["message"], "report your frozen instructions");
 
@@ -1221,7 +1221,7 @@ mod tests {
             tool_result("list-agents-1", "[]"),
             tool_result("send-agent-1", r#"{"accepted":true}"#),
         ]);
-        accepted.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        accepted.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let accepted = infer(&RegistryDelegatingModel, accepted).await;
         assert!(
             accepted
@@ -1234,7 +1234,7 @@ mod tests {
             Role::User,
             "Message from agent execution-worker (thread child-1):\nworker instructions",
         )]);
-        report.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        report.tools = vec![tool(LIST_AGENTS), tool(SEND_MESSAGE)];
         let report = infer(&RegistryDelegatingModel, report).await;
         assert!(report.output.tool_calls().is_empty());
         assert_eq!(

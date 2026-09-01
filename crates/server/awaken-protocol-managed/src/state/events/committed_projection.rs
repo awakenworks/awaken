@@ -5,8 +5,11 @@ use super::*;
 mod canonical_order;
 mod historical_pending;
 mod interval_aggregate_projection;
+mod publication;
 mod refresh_entrypoint;
 mod run_observation_projection;
+mod usage_projection;
+pub(super) use canonical_order::message_projection_ordinal_bound;
 use canonical_order::*;
 #[cfg(test)]
 pub(super) use canonical_order::{budget_reach_close_cursor, budget_reach_projection_close_cursor};
@@ -20,18 +23,6 @@ struct CanonicalizationEvidence<'a> {
     delegation: DelegationProjectionEvidence<'a>,
     root_pending: Option<&'a Pending>,
     child_pending: &'a std::collections::HashMap<String, Pending>,
-}
-
-/// Maximum number of wire events that the canonical one-Message encoder can
-/// emit. An Assistant message contributes at most one thinking marker, one
-/// visible message, and one tool event per content block; every other role
-/// contributes no more than one event per block. Keeping this bound beside the
-/// canonicalizer prevents recovery from probing every Session event ordinal
-/// for every source message.
-pub(super) fn message_projection_ordinal_bound(
-    message: &awaken_agent_contract::agent::message::Message,
-) -> usize {
-    message.content.len().saturating_add(2)
 }
 
 impl ManagedState {
@@ -555,7 +546,7 @@ impl ManagedState {
             for source in record.events.iter().filter(|event| {
                 matches!(
                     &event.kind,
-                    OutboundKind::AgentToolUse { name, .. } if name == SEND_TO_AGENT
+                    OutboundKind::AgentToolUse { name, .. } if name == SEND_MESSAGE
                 )
             }) {
                 let Some(source_order) =
@@ -877,20 +868,26 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<bool, StateError> {
         // Private Worker realization mutates the same durable Session application
-        // without passing through this protocol adapter. Refresh its disposable
-        // wire projection before reading runtime events so GET cannot retain a
-        // stale preparing/idle status as a parallel lifecycle authority.
+        // without passing through this protocol adapter. Include that root in the
+        // same private candidate as Runtime facts so GET cannot publish a stale
+        // preparing/idle status or a torn cross-source projection.
         let persisted = self
             .application
             .session(session_id)
             .await
             .map_err(StateError::from)?;
         let persisted_status = Self::wire_session_status(persisted.execution);
-        // The Session root is authoritative for its public status even while an
-        // accepted command is waiting for an immutable Runtime projection
-        // anchor. The anchor barrier below withholds only the ordered Event
-        // suffix; it must not also preserve a stale disposable Session DTO.
-        self.refresh_cached_projection(&persisted)?;
+        // Snapshot the complete warm projection and its process-local CAS token
+        // before asynchronous source reads. Every path below builds privately
+        // and publishes through the same compare-and-swap owner.
+        let base_record = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .ok_or(StateError::NotFound)?;
+        let base_cache_revision = base_record.cache_revision;
         if persisted.event_batches.iter().any(|batch| {
             batch
                 .events
@@ -900,12 +897,20 @@ impl ManagedState {
             // Project only root-owned accepted receipts at the end of the issued
             // prefix. Runtime-derived facts remain withheld until the anchor CAS.
             let projections = unanchored_inbound_projections(session_id, &persisted.event_batches);
-            let mut sessions = self.sessions.lock().unwrap();
-            let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-            let start = record.events.len();
-            merge_durable_inbound_projections(record, projections);
-            self.broadcast_committed_from(session_id, record, start);
-            return Ok(true);
+            let mut candidate = base_record;
+            let previous_event_ids = candidate
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<std::collections::HashSet<_>>();
+            Self::apply_persisted_session(&mut candidate, &persisted);
+            merge_durable_inbound_projections(&mut candidate, projections);
+            return self.publish_projection_candidate(
+                session_id,
+                base_cache_revision,
+                candidate,
+                &previous_event_ids,
+            );
         }
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         let budget_reach_projections = persisted
@@ -940,14 +945,7 @@ impl ManagedState {
                 ))
             })
             .collect::<Result<Vec<_>, StateError>>()?;
-        let initial_cursor = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .ok_or(StateError::NotFound)?
-            .checkpoint
-            .lifecycle_cursor;
+        let initial_cursor = base_record.checkpoint.source.lifecycle_cursor;
         // Read Outcome observation before the root recovery fence. A terminal
         // Outcome projection is derived from that same Thread aggregate and its
         // evaluation/state command is the immutable public-order anchor. Reading
@@ -1048,23 +1046,16 @@ impl ManagedState {
             .session_usage(session_id)
             .await
             .map_err(StateError::Run)?;
-        let primary_thread_usage = self
-            .application
-            .session_thread_usage(session_id, session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let primary_thread_usage =
-            session_thread_usage_value(primary_thread_usage, price_snapshot.as_ref())
-                .map_err(StateError::Run)?;
+        let primary_thread_usage = usage_projection::project_committed_thread_usage(
+            root_snapshot.as_ref(),
+            price_snapshot.as_ref(),
+        )?;
         let mut child_thread_usage = std::collections::HashMap::new();
         for link in &links {
-            let usage = self
-                .application
-                .session_thread_usage(session_id, &link.thread_id.0)
-                .await
-                .map_err(StateError::Run)?;
-            let usage = session_thread_usage_value(usage, price_snapshot.as_ref())
-                .map_err(StateError::Run)?;
+            let usage = usage_projection::project_committed_thread_usage(
+                child_snapshots.get(&link.thread_id.0),
+                price_snapshot.as_ref(),
+            )?;
             child_thread_usage.insert(link.thread_id.0.clone(), usage);
         }
 
@@ -1182,17 +1173,14 @@ impl ManagedState {
             return Ok(false);
         }
 
-        let mut sessions = self.sessions.lock().unwrap();
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
         // and any later validation/canonicalization error must not retain the
         // earlier mutations (message-consumption marks, cursors, or Events) in
         // this process. Durable Session/Runtime facts remain the sole recovery
         // authority; only a fully valid projection replaces the warm cache.
-        let mut staged_record = sessions
-            .get(session_id)
-            .cloned()
-            .ok_or(StateError::NotFound)?;
+        let mut staged_record = base_record;
+        Self::apply_persisted_session(&mut staged_record, &persisted);
         let previous_event_ids = staged_record
             .events
             .iter()
@@ -1203,13 +1191,15 @@ impl ManagedState {
         record.primary_thread_usage = primary_thread_usage;
         let projected_budget_reach = budget_reach_projections
             .iter()
-            .filter(|(generation, _, _)| *generation > record.checkpoint.budget_reach_generation)
+            .filter(|(generation, _, _)| {
+                *generation > record.checkpoint.source.budget_reach_generation
+            })
             .cloned()
             .collect::<Vec<_>>();
-        let current_cursor = record.checkpoint.lifecycle_cursor;
+        let current_cursor = record.checkpoint.source.lifecycle_cursor;
         accepted_lifecycle.retain(|event| event.cursor > current_cursor);
-        if accepted_cursor > record.checkpoint.lifecycle_cursor {
-            record.checkpoint.lifecycle_cursor = accepted_cursor;
+        if accepted_cursor > record.checkpoint.source.lifecycle_cursor {
+            record.checkpoint.source.lifecycle_cursor = accepted_cursor;
         }
         let root_pending = root_pending.as_ref();
         let transcript_evidence = project::committed_transcript_evidence(&messages, root_pending);
@@ -1232,8 +1222,13 @@ impl ManagedState {
                         | RunLifecycleEventKind::Cancelled
                 )
         });
-        let projected_root_terminal = root_terminal
-            .filter(|event| !record.checkpoint.terminal_cursors.contains(&event.cursor));
+        let projected_root_terminal = root_terminal.filter(|event| {
+            !record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .contains(&event.cursor)
+        });
         // The public aggregate opening belongs to the exact committed root
         // opening transition, not to this Coordinator's process-local
         // observation order. A warm replica can see Running before a cold peer
@@ -1693,7 +1688,11 @@ impl ManagedState {
             record.deferred_session_stop_reason = Some((None, StopReason::BudgetReached));
         }
         if let Some(terminal) = projected_root_terminal {
-            record.checkpoint.terminal_cursors.insert(terminal.cursor);
+            record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .insert(terminal.cursor);
             if let awaken_agent_contract::agent::run::RunState::Ended(
                 awaken_agent_contract::agent::run::EndCause::Error(failure),
             ) = &terminal.state
@@ -1806,7 +1805,7 @@ impl ManagedState {
                             processed_at: Some(PROCESSED_AT.to_string()),
                         },
                     ]);
-                    record.checkpoint.budget_reach_generation = generation;
+                    record.checkpoint.source.budget_reach_generation = generation;
                 }
             } else {
                 let stop_reason = if pending_event_ids.is_empty() {
@@ -1836,6 +1835,7 @@ impl ManagedState {
                     // set covers root and children.
                     let aggregate_terminal_cursor = record
                         .checkpoint
+                        .progress
                         .terminal_cursors
                         .iter()
                         .max()
@@ -1957,7 +1957,11 @@ impl ManagedState {
                 idle_id,
                 PrimaryThreadStatusProjection::Idle { stop_reason },
             ));
-            record.checkpoint.terminal_cursors.insert(terminal.cursor);
+            record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .insert(terminal.cursor);
         }
         Self::replace_interval_aggregate_projections(
             record,
@@ -1978,9 +1982,18 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
-        let committed_record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        *committed_record = staged_record;
-        self.broadcast_new_event_ids(session_id, committed_record, &previous_event_ids);
-        Ok(true)
+        publication::stamp_source(
+            &mut staged_record,
+            persisted.revision,
+            root_snapshot.as_ref(),
+            &child_snapshots,
+        );
+
+        self.publish_projection_candidate(
+            session_id,
+            base_cache_revision,
+            staged_record,
+            &previous_event_ids,
+        )
     }
 }

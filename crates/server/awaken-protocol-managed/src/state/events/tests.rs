@@ -2837,7 +2837,7 @@ async fn aggregate_running_edge_is_decided_from_the_locked_event_tail() {
 }
 
 #[tokio::test]
-async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
+async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
     // Causes: the fixtures below establish `cached running dto` with the concrete inputs, state,
     // dependencies, and failure triggers used by this case.
     // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
@@ -2845,19 +2845,20 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1 the canonical Session activity CAS has committed
-    // Running; C2 the disposable Session DTO is refreshed from C1 before any
-    // lifecycle projection; C3 the latest committed root lifecycle fact is
+    // Running; C2 the disposable Session DTO still reflects the previous
+    // published candidate; C3 the latest committed root lifecycle fact is
     // Running; C4 a live subscriber is already attached; C5 the identical
     // committed prefix is refreshed again. Effects: E1 C1+C2+C3 append and
     // broadcast aggregate Running before primary Thread Running; E2 the
     // lifecycle cursor advances through C3; E3 C5 appends and broadcasts
-    // nothing. The DTO is current-state projection only and cannot prove an
-    // append-only history edge already exists.
+    // nothing; E4 C5 does not advance the process-local cache CAS coordinate.
+    // The DTO is current-state projection only and cannot prove an append-only
+    // history edge already exists.
     //
     // | Rule | Session | DTO | Root lifecycle | Refresh | Effects |
     // |---|---|---|---|---|---|
-    // | O1 | Running | Running | latest Running | first | E1,E2 |
-    // | O2 | Running | Running | same prefix | repeat | E3 |
+    // | O1 | Running | previous | latest Running | first | E1,E2 |
+    // | O2 | Running | Running | same prefix | repeat | E3,E4 |
     let runtime = LifecycleRuntime::default();
     let state = ManagedState::new(runtime.clone());
     let session = state
@@ -2873,18 +2874,15 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
     let (snapshot, mut live) = state.stream_subscribe(&session.id).unwrap();
     assert!(snapshot.is_empty(), "O1 starts without event history");
 
-    let running = state
+    state
         .application
         .begin_activity(&session.id)
         .await
         .expect("O1/C1 commits aggregate Running");
-    state
-        .refresh_cached_projection(&running)
-        .expect("O1/C2 refreshes the disposable DTO first");
     assert_eq!(
         state.get_session(&session.id).unwrap().status,
-        SessionStatus::Running,
-        "O1/C2"
+        SessionStatus::Idle,
+        "O1/C2 root state cannot publish outside the canonical candidate"
     );
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         1,
@@ -2916,6 +2914,13 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
         lifecycle_cursor(1),
         "O1/E2"
     );
+    let first_cache_revision = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .cache_revision;
 
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
@@ -2927,6 +2932,17 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
         2,
         "O2/E3 no duplicate history"
     );
+    assert_eq!(
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&session.id)
+            .unwrap()
+            .cache_revision,
+        first_cache_revision,
+        "O2/E4 stable refresh is a completed read, not a cache write"
+    );
     assert!(
         matches!(
             live.try_recv(),
@@ -2934,6 +2950,150 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
         ),
         "O2/E3 no duplicate broadcast"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_stable_projection_readers_are_all_no_ops() {
+    // Cause/effect graph: C1 sixteen readers observe the same cache revision;
+    // C2 all durable Session/Thread source coordinates remain unchanged; C3 no
+    // overlay mutation races the reads. Effects: E1 every refresh succeeds;
+    // E2 cache revision and event history remain unchanged; E3 no reader can
+    // exhaust PREFIX_RETRIES because another read published an equal source.
+    // Decision rule P1=C1+C2+C3=>E1+E2+E3. Source advance and overlay races are
+    // covered by the adjacent reverse-writer and overlay-fence tests.
+    let state = Arc::new(ManagedState::new(LifecycleRuntime::default()));
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let before = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (record.cache_revision, record.events.clone())
+    };
+
+    let mut readers = tokio::task::JoinSet::new();
+    for _ in 0..16 {
+        let state = state.clone();
+        let session_id = session.id.clone();
+        readers.spawn(async move { state.refresh_committed_events(&session_id).await });
+    }
+    while let Some(result) = readers.join_next().await {
+        result.expect("P1 reader task").expect("P1/E1+E3");
+    }
+
+    let after = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (record.cache_revision, record.events.clone())
+    };
+    assert_eq!(after, before, "P1/E2 stable readers do not publish");
+}
+
+#[tokio::test]
+async fn stale_session_root_cannot_roll_back_the_managed_cache() {
+    // Cause/effect graph: C1 cache contains Session revision N; C2 a delayed
+    // reader supplies revision N-1; C3 the exact revision N is replayed.
+    // Effects: E1 C1+C2 preserves both DTO and cache CAS revision; E2 C1+C3 is
+    // also a no-op. Decision rules R1=(older)->E1 and R2=(equal)->E2 cover every
+    // non-newer root snapshot. A genuinely newer root is covered by the adjacent
+    // running-projection test. Constraint: only monotonically newer Session root
+    // truth may mutate the disposable cache.
+    let state = ManagedState::new(LifecycleRuntime::default());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let stale = state.application.session(&session.id).await.unwrap();
+    let current = state
+        .application
+        .begin_activity(&session.id)
+        .await
+        .expect("commit newer root");
+    let projection_candidate = |persisted: &PersistedSession| {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        let mut candidate = record.clone();
+        ManagedState::apply_persisted_session(&mut candidate, persisted);
+        (
+            record.cache_revision,
+            record
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<std::collections::HashSet<_>>(),
+            candidate,
+        )
+    };
+    let (base_revision, previous_event_ids, candidate) = projection_candidate(&current);
+    assert!(
+        state
+            .publish_projection_candidate(
+                &session.id,
+                base_revision,
+                candidate,
+                &previous_event_ids,
+            )
+            .unwrap(),
+        "newer root publishes through the sole CAS owner"
+    );
+    let before = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (
+            record.cache_revision,
+            record.checkpoint.source.session_revision,
+            record.session.status,
+        )
+    };
+
+    let (base_revision, previous_event_ids, candidate) = projection_candidate(&stale);
+    assert!(
+        !state
+            .publish_projection_candidate(
+                &session.id,
+                base_revision,
+                candidate,
+                &previous_event_ids,
+            )
+            .unwrap(),
+        "R1 stale source is rejected by the canonical publisher"
+    );
+    let after_older = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (
+            record.cache_revision,
+            record.checkpoint.source.session_revision,
+            record.session.status,
+        )
+    };
+    assert_eq!(after_older, before, "R1/E1 older root is ignored");
+
+    state.publish_persisted_session(&current).unwrap();
+    let after_equal = {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        (
+            record.cache_revision,
+            record.checkpoint.source.session_revision,
+            record.session.status,
+        )
+    };
+    assert_eq!(after_equal, before, "R2/E2 exact replay is ignored");
 }
 
 #[tokio::test]
@@ -6781,7 +6941,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
 
 #[tokio::test]
 async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
-    // Cause/effect graph: C1 a root send_to_agent ToolUse is listable at
+    // Cause/effect graph: C1 a root send_message ToolUse is listable at
     // cursor 10 with no accepted link; C2 an accepted ToolResult and its
     // Runtime-owned link become visible at cursor 30; C3 a cold peer reads the
     // final facts. E1 C1 remains an immutable prefix; E2 thread-created and
@@ -6823,7 +6983,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
         Role::Assistant,
         vec![ContentBlock::tool_use(
             call_id,
-            SEND_TO_AGENT,
+            SEND_MESSAGE,
             serde_json::json!({
                 "agent_id":"researcher",
                 "message":"investigate"
@@ -7104,7 +7264,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
             Role::Assistant,
             vec![ContentBlock::tool_use(
                 parent_call_id,
-                SEND_TO_AGENT,
+                SEND_MESSAGE,
                 serde_json::json!({
                     "agent_id":"researcher",
                     "message":"research durable identity"
@@ -8506,12 +8666,12 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
                 vec![
                     ContentBlock::ToolUse {
                         id: "terminal-skew".into(),
-                        name: SEND_TO_AGENT.into(),
+                        name: SEND_MESSAGE.into(),
                         input: serde_json::json!({"agent_id":"researcher"}),
                     },
                     ContentBlock::ToolUse {
                         id: "terminal-skew-b".into(),
-                        name: SEND_TO_AGENT.into(),
+                        name: SEND_MESSAGE.into(),
                         input: serde_json::json!({"agent_id":"researcher"}),
                     },
                 ],

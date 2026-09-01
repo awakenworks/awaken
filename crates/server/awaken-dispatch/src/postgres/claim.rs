@@ -16,15 +16,15 @@ async fn claim_exact_transaction(
     .bind(&requested_run.0)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     let mode = if let Some(row) = phase {
-        let status = row.try_get::<String, _>("status").map_err(reject)?;
+        let status = row.try_get::<String, _>("status").map_err(store_error)?;
         let state = DispatchState::from_db(&status).ok_or_else(|| {
             DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
         })?;
         let deadline = row
             .try_get::<Option<i64>, _>("lease_until")
-            .map_err(reject)?
+            .map_err(store_error)?
             .map(crate::clock::millis_from_db)
             .transpose()
             .map_err(|error| DispatchError::Rejected(error.to_string()))?;
@@ -62,7 +62,7 @@ async fn claim_exact_transaction_with_mode(
     .bind(&requested_run.0)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     let Some(thread_id) = thread_id else {
         return Ok(None);
     };
@@ -73,7 +73,7 @@ async fn claim_exact_transaction_with_mode(
         .bind(&thread_id)
         .execute(&mut **tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let thread_available = thread_available_for_claim(p);
     let no_running_peer = no_running_peer(p);
     let eligibility = match mode {
@@ -119,23 +119,25 @@ async fn claim_exact_transaction_with_mode(
         .bind(retry_limit)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
     else {
         return Ok(None);
     };
-    let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+    let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
     let previous: Option<Json<WorkerAssignment>> =
-        row.try_get("worker_assignment").map_err(reject)?;
-    let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
-    let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
-    let previous_owner: Option<String> = row.try_get("lease_owner").map_err(reject)?;
-    let previous_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
+        row.try_get("worker_assignment").map_err(store_error)?;
+    let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
+    let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
+    let previous_owner: Option<String> = row.try_get("lease_owner").map_err(store_error)?;
+    let previous_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
     if let ExactClaimMode::RetryExhausted { max_attempts } = mode {
-        let status = row.try_get::<String, _>("status").map_err(reject)?;
+        let status = row.try_get::<String, _>("status").map_err(store_error)?;
         let lease_until = row
             .try_get::<Option<i64>, _>("lease_until")
-            .map_err(reject)?;
-        let attempt_count = row.try_get::<i64, _>("attempt_count").map_err(reject)?;
+            .map_err(store_error)?;
+        let attempt_count = row
+            .try_get::<i64, _>("attempt_count")
+            .map_err(store_error)?;
         if !retry_exhaustion_evidence_is_eligible(
             &status,
             lease_until,
@@ -163,7 +165,7 @@ async fn claim_exact_transaction_with_mode(
     {
         return Ok(None);
     }
-    let status: String = row.try_get("status").map_err(reject)?;
+    let status: String = row.try_get("status").map_err(store_error)?;
     let current_transition =
         crate::persisted_dispatch_transition(&status, previous_epoch, cancellation_requested != 0)?;
     let claimed_transition = if mode == ExactClaimMode::ReservationRecovery {
@@ -214,7 +216,7 @@ async fn claim_exact_transaction_with_mode(
     .bind(claimed_status)
     .execute(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     let claim = RunClaim {
         run_id: requested_run.clone(),
         owner: owner.to_string(),
@@ -271,23 +273,23 @@ async fn claim_exact_transaction_with_mode(
     .bind(crate::clock::db_millis(now_ms))
     .fetch_all(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     let mut pending = Vec::with_capacity(rows.len());
     for row in rows {
-        let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+        let Json(result): Json<ResumeResult> = row.try_get("result").map_err(store_error)?;
         let context_messages = row
             .try_get::<Option<Json<Vec<Message>>>, _>("context_messages")
-            .map_err(reject)?
+            .map_err(store_error)?
             .map(|Json(messages)| messages)
             .unwrap_or_default();
         pending.push(PendingInput {
-            message_id: row.try_get("message_id").map_err(reject)?,
+            message_id: row.try_get("message_id").map_err(store_error)?,
             run_id: requested_run.clone(),
-            thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
-            correlation_id: row.try_get("correlation_id").map_err(reject)?,
+            thread_id: ThreadId(row.try_get("thread_id").map_err(store_error)?),
+            correlation_id: row.try_get("correlation_id").map_err(store_error)?,
             available_at_ms: row
                 .try_get::<Option<i64>, _>("available_at")
-                .map_err(reject)?
+                .map_err(store_error)?
                 .map(crate::clock::millis_from_db)
                 .transpose()
                 .map_err(|err| DispatchError::Rejected(err.to_string()))?,

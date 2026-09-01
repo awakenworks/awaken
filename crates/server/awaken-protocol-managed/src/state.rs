@@ -80,7 +80,7 @@ pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
     resource_binding_id,
 };
-use session_record::SessionRecord;
+use session_record::{ProjectionPublishDecision, SessionRecord, decide_projection_publish};
 #[cfg(test)]
 pub(crate) use types::DelegatedRun;
 #[cfg(any(test, feature = "test-support"))]

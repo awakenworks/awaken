@@ -1110,7 +1110,7 @@ pub fn build_schedule_router() -> Router {
     mount(host)
 }
 
-/// A router that routes a fixed Managed `send_to_agent` command for `researcher`
+/// A router that routes a fixed Managed `send_message` command for `researcher`
 /// to a REMOTE A2A Agent at `AWAKEN_REMOTE_AGENT_URL`. The ordinary child Run
 /// crosses `message:send` → poll `get_task`, then projects its reply on the child
 /// Thread independently from the parent's admission receipt.

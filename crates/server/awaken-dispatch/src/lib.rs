@@ -37,7 +37,6 @@ mod postgres_helpers;
 #[cfg(feature = "durable")]
 mod postgres_identity;
 mod recovery_projection;
-mod send_message;
 mod service;
 #[cfg(feature = "durable")]
 mod sqlite;
@@ -98,7 +97,6 @@ pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
 };
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
-pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 #[cfg(feature = "durable")]
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
