@@ -517,6 +517,9 @@ impl SessionAgentCoordination for SessionApplication {
                 "Agent coordination requires a message and Runtime operation identity",
             ));
         }
+        self.runtime()
+            .validate_session_agent_message_source(&command)
+            .await?;
         let (owner, session) = self.coordination_session(&command.session_id).await?;
         let roster = self.coordination_roster(&owner, &session)?;
         let existing_links = self
@@ -570,7 +573,7 @@ impl SessionAgentCoordination for SessionApplication {
                     })
                     .ok_or_else(|| {
                         RunError::bad_request(
-                            "only ordinary Agent Threads accept send_to_agent follow-ups",
+                            "only ordinary Agent Threads accept send_message follow-ups",
                         )
                     })?;
                 if let Some(snapshot) = self

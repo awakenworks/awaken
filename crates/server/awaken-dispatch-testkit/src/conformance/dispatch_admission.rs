@@ -616,14 +616,13 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
         .expect("SC3 exact replay succeeds at capacity");
     let mut collision = winner.clone();
     collision.activation.thread_id = thread_id(ns, "managed-collision-thread");
+    let collision = store
+        .enqueue_session_child(collision, admission())
+        .await
+        .expect_err("SC4 same Run with changed payload conflicts");
     assert!(
-        store
-            .enqueue_session_child(collision, admission())
-            .await
-            .expect_err("SC4 same Run with changed payload conflicts")
-            .to_string()
-            .contains("reused"),
-        "SC4"
+        matches!(collision, DispatchError::Conflict(message) if message.contains("reused")),
+        "SC4 typed conflict retains the original activity and dispatch"
     );
 
     let mut follow_up = dispatch(ns, "managed-follow-up", "managed-follow-up-placeholder");

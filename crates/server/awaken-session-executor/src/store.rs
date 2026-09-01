@@ -187,19 +187,6 @@ impl HostCommit {
         }
     }
 
-    /// Latest committed run from authoritative local storage or the remote
-    /// Worker's non-authoritative recovery projection.
-    pub(crate) fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        match self {
-            HostCommit::Local(store) => store.latest_run(thread),
-            HostCommit::Remote(remote) => remote.projection.current().and_then(|snapshot| {
-                snapshot
-                    .latest_run_id
-                    .and_then(|latest| snapshot.runs.into_iter().find(|run| run.id == latest))
-            }),
-        }
-    }
-
     /// The awaiting run on `thread`, if any, recovered from committed truth. After a
     /// restart the durable variants read their hydrated projection, so a rebuilt
     /// session can restore its awaiting position and be resumed.

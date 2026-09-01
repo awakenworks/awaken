@@ -213,7 +213,7 @@ async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
 }
 
 /// Native A2A fixture kept local to this protocol test. The shared scenario
-/// `DelegatingModel` owns Managed `list_agents`/`send_to_agent`; reusing it here
+/// `DelegatingModel` owns Managed `list_agents`/`send_message`; reusing it here
 /// would merge two distinct protocol contracts back into one compatibility
 /// model.
 struct NativeDelegatingModel;

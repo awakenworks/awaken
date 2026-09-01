@@ -12,7 +12,7 @@ impl ManagedState {
             .lock()
             .unwrap()
             .get(session_id)
-            .map(|record| record.checkpoint.lifecycle_cursor)
+            .map(|record| record.checkpoint.source.lifecycle_cursor)
             .ok_or(StateError::NotFound)
     }
 
@@ -578,7 +578,7 @@ impl ManagedState {
             .session(session_id)
             .await
             .map_err(StateError::from)?;
-        self.refresh_cached_projection(&persisted)?;
+        self.publish_persisted_session(&persisted)?;
         let accepted = persisted
             .event_batches
             .iter()
@@ -593,11 +593,10 @@ impl ManagedState {
             .iter()
             .map(|projection| projection.event.clone())
             .collect::<Vec<_>>();
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let start = record.events.len();
-        merge_durable_inbound_projections(record, receipt_projections);
-        self.broadcast_committed_from(session_id, record, start);
+        self.publish_projection_update(session_id, |candidate| {
+            merge_durable_inbound_projections(candidate, receipt_projections.clone());
+            Ok(())
+        })?;
         Ok(SendEventsResponse { data: receipts })
     }
 }

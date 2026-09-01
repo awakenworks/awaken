@@ -14,8 +14,9 @@ authority, credential secrets, or public protocol DTOs.
 | Toolset | Default role | Execution owner | Notes |
 |---|---|---|---|
 | `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`; the two Web tools use the shared configurable Web provider catalog |
-| `builtin-task-tools` | runtime task and recovery helpers | Runtime extension plus Dispatch / Server | `send_message`, `cancel_task`, `recover_failed_messages` |
+| `builtin-task-tools` | runtime task control | Runtime extension plus live control | `cancel_task` |
 | `builtin-delegation-tools` | Agent delegation | Runtime extension (local or remote child Run) | one `agent_run` tool with `agent_id` argument |
+| `builtin-coordination-tools` | Agent roster and messaging | Runtime extension plus Session coordination | `list_agents`, one `send_message` backed by source Thread state and a deterministic target Run |
 
 Each toolset is independently enabled. Installing the package does not make every
 tool visible to every agent.
@@ -104,12 +105,9 @@ Gateway hop and must not invent a parallel policy inside Cloud.
 
 ## Task Tools
 
-Task tools are ordinary runtime extension tools over existing state/effect/ingress
-ports. They must not create a second task runtime.
-
-`recover_failed_messages` is operations-scoped. It inspects or replays failed
-durable messages only when an agent profile explicitly grants recovery authority.
-Default business agents should not see it.
+Task tools are ordinary runtime extension tools over existing live-control
+ports. They must not create a second task runtime. Agent messaging belongs to
+the separate Coordination toolset and must not be reintroduced here.
 
 ## Delegation Tool
 

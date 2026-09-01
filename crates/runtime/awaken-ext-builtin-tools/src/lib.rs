@@ -15,7 +15,7 @@ mod web;
 pub use coordination::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
     AgentMessageTarget, AgentRosterEntry, LIST_AGENTS, ListAgentsArgs, ListAgentsTool,
-    SEND_TO_AGENT, SendToAgentArgs, SendToAgentTool, coordination_tools,
+    SEND_MESSAGE, SendMessageArgs, SendMessageTool, coordination_tools,
 };
 pub use erasure::{Erased, erase};
 pub use hand::{
@@ -23,11 +23,7 @@ pub use hand::{
     GrepTool, HandToolContext, MoveArgs, MoveTool, ReadArgs, ReadTool, WriteArgs, WriteTool,
     executable_hand_tools, executable_hand_tools_in,
 };
-pub use task::{
-    CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSendRequest, MessageSender,
-    RecoverFailedMessagesArgs, RecoverFailedMessagesTool, SEND_MESSAGE_TOOL_ID, SendMessageArgs,
-    SendMessageTool, TaskCanceller, task_tools,
-};
+pub use task::{CancelTaskArgs, CancelTaskTool, TaskCanceller, task_tools};
 pub use web::{
     AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID, AwakenDirectFetchProvider,
     BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
@@ -170,9 +166,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         hand_tool::<DeleteTool>(),
         hand_tool::<GlobTool>(),
         hand_tool::<GrepTool>(),
-        task_tool_with_recovery::<SendMessageTool>(ToolRecoveryPolicy::durable_request()),
         task_tool::<CancelTaskTool>(),
-        task_tool::<RecoverFailedMessagesTool>(),
         BuiltinTool::delegation(
             ToolDescriptor::for_args::<AgentRunArgs>(
                 "builtin:delegation",
@@ -183,7 +177,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             .with_recovery(ToolRecoveryPolicy::durable_request()),
         ),
         coordination_tool::<ListAgentsTool>(),
-        coordination_tool_with_recovery::<SendToAgentTool>(ToolRecoveryPolicy::durable_request()),
+        coordination_tool_with_recovery::<SendMessageTool>(ToolRecoveryPolicy::durable_request()),
     ]
 }
 
@@ -193,10 +187,6 @@ fn hand_tool<T: Tool>() -> BuiltinTool {
 
 fn task_tool<T: Tool>() -> BuiltinTool {
     BuiltinTool::task(ToolDescriptor::for_tool::<T>("builtin:task"))
-}
-
-fn task_tool_with_recovery<T: Tool>(recovery: ToolRecoveryPolicy) -> BuiltinTool {
-    BuiltinTool::task(ToolDescriptor::for_tool::<T>("builtin:task").with_recovery(recovery))
 }
 
 fn coordination_tool<T: Tool>() -> BuiltinTool {

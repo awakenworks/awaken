@@ -18,7 +18,7 @@ pub(super) fn claim_retry_exhausted_transaction(
     let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let run_id = tx
         .query_row(
             &format!(
@@ -32,9 +32,9 @@ pub(super) fn claim_retry_exhausted_transaction(
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let Some(run_id) = run_id else {
-        tx.commit().map_err(reject)?;
+        tx.commit().map_err(store_error)?;
         return Ok(None);
     };
     let claimed = claim_exact_transaction_with_mode(
@@ -47,7 +47,7 @@ pub(super) fn claim_retry_exhausted_transaction(
         &Default::default(),
         ExactClaimMode::RetryExhausted { max_attempts },
     )?;
-    tx.commit().map_err(reject)?;
+    tx.commit().map_err(store_error)?;
     Ok(claimed)
 }
 
@@ -67,7 +67,7 @@ pub(super) fn claim_exact_transaction(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let mode = phase
         .map(|(status, deadline)| {
             let state = DispatchState::from_db(&status).ok_or_else(|| {
@@ -174,7 +174,7 @@ pub(super) fn claim_exact_transaction_with_mode(
             },
         )
         .optional()
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let Some((
         request_json,
         sandbox,
@@ -271,7 +271,7 @@ pub(super) fn claim_exact_transaction_with_mode(
             claimed_status,
         ],
     )
-    .map_err(reject)?;
+    .map_err(store_error)?;
     let claim = RunClaim {
         run_id: RunId(requested_run.to_string()),
         owner: owner.to_string(),

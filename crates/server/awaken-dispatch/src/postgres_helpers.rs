@@ -17,7 +17,7 @@ where
         sqlx::query_scalar("SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
             .fetch_one(executor)
             .await
-            .map_err(reject)?;
+            .map_err(store_error)?;
     crate::clock::millis_from_db(now).map_err(|error| DispatchError::Rejected(error.to_string()))
 }
 
@@ -39,7 +39,7 @@ pub(super) async fn current_worker_claim(
     .bind(&owner)
     .fetch_optional(pool)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     epoch
         .map(|epoch| {
             Ok(RunClaim {
@@ -68,7 +68,7 @@ pub(super) async fn retry_exhausted_candidate(
     .bind(max_attempts)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(reject)
+    .map_err(store_error)
 }
 
 /// The one PostgreSQL pending insert path, reused by direct delivery, Inbox
@@ -92,7 +92,7 @@ pub(super) async fn append_pending_transaction(
     .bind(input.available_at_ms.map(crate::clock::db_millis))
     .execute(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     if inserted.rows_affected() > 0 {
         return Ok(true);
     }
@@ -121,11 +121,11 @@ where
     .bind(message_id)
     .fetch_optional(executor)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     row.map(|row| {
         let available_at = row
             .try_get::<Option<i64>, _>("available_at")
-            .map_err(reject)?
+            .map_err(store_error)?
             .map(u64::try_from)
             .transpose()
             .map_err(|_| {
@@ -133,17 +133,17 @@ where
                     "pending-input `{message_id}` has a negative delivery time"
                 ))
             })?;
-        let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+        let Json(result): Json<ResumeResult> = row.try_get("result").map_err(store_error)?;
         let context_messages = row
             .try_get::<Option<Json<Vec<Message>>>, _>("context_messages")
-            .map_err(reject)?
+            .map_err(store_error)?
             .map(|Json(messages)| messages)
             .unwrap_or_default();
         Ok(PendingInput {
             message_id: message_id.to_string(),
-            run_id: RunId(row.try_get("run_id").map_err(reject)?),
-            thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
-            correlation_id: row.try_get("correlation_id").map_err(reject)?,
+            run_id: RunId(row.try_get("run_id").map_err(store_error)?),
+            thread_id: ThreadId(row.try_get("thread_id").map_err(store_error)?),
+            correlation_id: row.try_get("correlation_id").map_err(store_error)?,
             available_at_ms: available_at,
             result,
             context_messages,
@@ -153,11 +153,11 @@ where
 }
 
 pub(super) fn idempotency_conflict(message_id: &str, aggregate: &str) -> DispatchError {
-    DispatchError::Rejected(format!(
+    DispatchError::Conflict(format!(
         "idempotency key `{message_id}` was reused with another {aggregate} payload"
     ))
 }
 
-fn reject(error: sqlx::Error) -> DispatchError {
-    DispatchError::Rejected(error.to_string())
+fn store_error(error: sqlx::Error) -> DispatchError {
+    DispatchError::unavailable(error)
 }

@@ -22,10 +22,10 @@ pub(crate) async fn exact_run_replay(
     .bind(&request.run_id().0)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(reject)?
+    .map_err(store_error)?
     .map(|row| row.try_get::<Json<RunDispatch>, _>("request"))
     .transpose()
-    .map_err(reject)?
+    .map_err(store_error)?
     .map(|Json(request)| request);
     let completed = if live.is_none() {
         sqlx::query(&format!(
@@ -34,10 +34,10 @@ pub(crate) async fn exact_run_replay(
         .bind(&request.run_id().0)
         .fetch_optional(&mut **tx)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
         .map(|row| row.try_get::<Option<String>, _>("request_fingerprint"))
         .transpose()
-        .map_err(reject)?
+        .map_err(store_error)?
     } else {
         None
     };
@@ -61,7 +61,7 @@ pub(crate) async fn lock_run_identity(
         .execute(&mut **tx)
         .await
         .map(|_| ())
-        .map_err(reject)
+        .map_err(store_error)
 }
 
 /// Serialize absent-row capacity decisions for one parent Session. Child Run ids
@@ -77,7 +77,7 @@ pub(crate) async fn lock_session_child_admission(
         .execute(&mut **tx)
         .await
         .map(|_| ())
-        .map_err(reject)
+        .map_err(store_error)
 }
 
 pub(crate) async fn load_completion_events(
@@ -102,29 +102,29 @@ pub(crate) async fn load_completion_events(
     .bind(limit)
     .fetch_all(pool)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     rows.into_iter()
         .map(|row| {
-            let sequence = row.try_get::<i64, _>("sequence").map_err(reject)?;
+            let sequence = row.try_get::<i64, _>("sequence").map_err(store_error)?;
             Ok(DispatchCompletion {
                 sequence: u64::try_from(sequence).map_err(|_| {
                     DispatchError::Rejected("persisted completion sequence is negative".to_string())
                 })?,
-                run_id: RunId(row.try_get("run_id").map_err(reject)?),
+                run_id: RunId(row.try_get("run_id").map_err(store_error)?),
                 thread_id: row
                     .try_get::<Option<String>, _>("thread_id")
-                    .map_err(reject)?
+                    .map_err(store_error)?
                     .map(awaken_agent_contract::agent::thread::Id),
                 session_thread_id: row
                     .try_get::<Option<String>, _>("session_thread_id")
-                    .map_err(reject)?
+                    .map_err(store_error)?
                     .map(awaken_agent_contract::agent::thread::Id),
-                request_fingerprint: row.try_get("request_fingerprint").map_err(reject)?,
+                request_fingerprint: row.try_get("request_fingerprint").map_err(store_error)?,
             })
         })
         .collect()
 }
 
-fn reject(error: impl std::fmt::Display) -> DispatchError {
-    DispatchError::Rejected(error.to_string())
+fn store_error(error: impl std::fmt::Display) -> DispatchError {
+    DispatchError::unavailable(error)
 }

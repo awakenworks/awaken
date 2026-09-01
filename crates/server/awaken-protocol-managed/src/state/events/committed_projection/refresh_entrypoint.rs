@@ -15,8 +15,8 @@ impl ManagedState {
     }
 
     /// Rehydration and ordinary reads share this seqlock-style retry. A changed
-    /// Session revision discards the mixed root/Runtime read instead of
-    /// publishing a suffix whose eventual command anchor would precede it.
+    /// Session or committed Thread prefix discards the mixed read instead of
+    /// publishing a projection assembled from incomparable source versions.
     pub(in crate::state) async fn refresh_committed_projection(
         &self,
         session_id: &str,
@@ -28,7 +28,7 @@ impl ManagedState {
             }
         }
         Err(StateError::Run(RunError::unavailable(
-            "Session root changed while reading its Runtime projection",
+            "Managed projection sources changed while reading one committed prefix",
         )))
     }
 }

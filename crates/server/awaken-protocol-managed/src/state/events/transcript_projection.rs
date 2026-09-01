@@ -423,7 +423,7 @@ impl ManagedState {
             .flatten()
     }
 
-    /// Lower accepted parent `send_to_agent` calls into one cross-Thread message.
+    /// Lower accepted parent `send_message` calls into one cross-Thread message.
     /// Spawn calls are bound by the operation id that created the durable link;
     /// follow-ups are bound by the existing Thread id. A failed tool result never
     /// creates a message merely because its target link already exists.
@@ -440,7 +440,7 @@ impl ManagedState {
                 let OutboundKind::AgentToolUse { name, input, .. } = &event.kind else {
                     return None;
                 };
-                if name != SEND_TO_AGENT {
+                if name != SEND_MESSAGE {
                     return None;
                 }
                 let receipt_thread = Self::accepted_coordination_thread(record, &event.id)?;

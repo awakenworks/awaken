@@ -298,7 +298,7 @@ impl AgentCoordinator for HostAgentCoordinator {
             })
     }
 
-    async fn send_to_agent(
+    async fn send_message(
         &self,
         request: AgentMessageRequest,
     ) -> Result<AgentMessageReceipt, ToolError> {

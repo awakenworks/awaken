@@ -9,6 +9,18 @@ pub(super) struct CanonicalEventOrder {
     pub(super) ordinal: usize,
 }
 
+/// Maximum number of wire events that the canonical one-Message encoder can
+/// emit. An Assistant message contributes at most one thinking marker, one
+/// visible message, and one tool event per content block; every other role
+/// contributes no more than one event per block. Keeping this bound beside the
+/// canonicalizer prevents recovery from probing every Session event ordinal
+/// for every source message.
+pub(in crate::state::events) fn message_projection_ordinal_bound(
+    message: &awaken_agent_contract::agent::message::Message,
+) -> usize {
+    message.content.len().saturating_add(2)
+}
+
 /// Compare one Thread's committed recovery prefix while ignoring the
 /// backend-wide diagnostic high-water, which unrelated Threads may advance.
 pub(super) fn same_thread_projection_prefix(
@@ -474,7 +486,7 @@ pub(super) fn report_commit_cursor(
         .max()
 }
 
-/// First committed visibility of one accepted `send_to_agent` cross-post. The
+/// First committed visibility of one accepted `send_message` cross-post. The
 /// ToolUse declares intent, but only its non-error accepted ToolResult binds a
 /// concrete coordinated Thread.
 pub(super) fn accepted_coordination_order(

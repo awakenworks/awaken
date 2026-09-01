@@ -11,7 +11,7 @@ fn current_revision(
         |r| r.get::<_, i64>(0),
     )
     .optional()
-    .map_err(reject)?
+    .map_err(store_error)?
     .map(|revision| durable_u64("pending input revision", revision))
     .transpose()
 }
@@ -27,7 +27,7 @@ fn pending_for_run(
              FROM {prefix}_pending WHERE run_id = ?1 \
              AND (available_at IS NULL OR available_at <= ?2) ORDER BY created_at"
         ))
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let rows = stmt
         .query_map(params![run_id, crate::clock::db_millis(now_ms)], |row| {
             Ok((
@@ -39,11 +39,11 @@ fn pending_for_run(
                 row.get::<_, Option<i64>>(5)?,
             ))
         })
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let mut pending = Vec::new();
     for row in rows {
         let (message_id, thread_id, correlation_id, result, context_messages, available_at) =
-            row.map_err(reject)?;
+            row.map_err(store_error)?;
         pending.push(PendingInput {
             message_id,
             run_id: RunId(run_id.to_string()),
@@ -77,7 +77,7 @@ fn insert_operation(
         ),
         params![operation.run_id().0, json(operation)?, recorded_at_ms],
     )
-    .map_err(reject)?;
+    .map_err(store_error)?;
     Ok(())
 }
 
@@ -109,7 +109,7 @@ fn append_pending_row(
                 input.available_at_ms.map(crate::clock::db_millis)
             ],
         )
-        .map_err(reject)?;
+        .map_err(store_error)?;
     if changed > 0 {
         return Ok(true);
     }
@@ -146,7 +146,7 @@ fn load_pending_input(
         },
     )
     .optional()
-    .map_err(reject)?
+    .map_err(store_error)?
     .map(
         |(run_id, thread_id, correlation_id, result, context_messages, available_at)| {
             Ok(PendingInput {
@@ -172,11 +172,11 @@ fn load_pending_input(
 }
 
 fn idempotency_conflict(message_id: &str, aggregate: &str) -> DispatchError {
-    DispatchError::Rejected(format!(
+    DispatchError::Conflict(format!(
         "idempotency key `{message_id}` was reused with another {aggregate} payload"
     ))
 }
 
 fn json_err(err: serde_json::Error) -> DispatchError {
-    DispatchError::Rejected(err.to_string())
+    DispatchError::unavailable(err)
 }

@@ -12,7 +12,7 @@ impl ManagedState {
     pub async fn reconcile_resource_activations(&self) -> usize {
         let report = self.application.reconcile_resource_activations().await;
         for session in &report.settled {
-            if let Err(error) = self.refresh_cached_projection(session) {
+            if let Err(error) = self.publish_persisted_session(session) {
                 tracing::warn!(
                     session = %session.session_id,
                     error = ?error,
@@ -328,7 +328,7 @@ impl ManagedState {
                 .await
                 .map_err(Self::map_resource_manifest_error)?
         {
-            self.refresh_cached_projection(&outcome.session)?;
+            self.publish_persisted_session(&outcome.session)?;
             return Ok(Self::resource_manifest_view(&outcome.session));
         }
         let persisted = self
@@ -428,7 +428,7 @@ impl ManagedState {
         .await
         {
             Ok(outcome) => {
-                self.refresh_cached_projection(&outcome.session)?;
+                self.publish_persisted_session(&outcome.session)?;
                 Ok(outcome)
             }
             Err(
@@ -437,7 +437,7 @@ impl ManagedState {
                     source,
                 },
             ) => {
-                self.refresh_cached_projection(&outcome.session)?;
+                self.publish_persisted_session(&outcome.session)?;
                 Err(Self::map_preparation_error(source))
             }
             Err(error) => {
@@ -621,7 +621,7 @@ impl ManagedState {
             )
             .await
             .map_err(Self::map_preparation_error)?;
-        self.refresh_cached_projection(&persisted)?;
+        self.publish_persisted_session(&persisted)?;
         let input = persisted
             .resources
             .desired()
