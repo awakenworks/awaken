@@ -610,13 +610,12 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
-formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 363/363 formalizable obligations model-linked or
-kernel-proved, plus 11 explicitly external obligations, for 100% formal
-evidence coverage. The evidence dimensions are reported independently: 223
-model-checked, 30 model-proved, 175 Kani-kernel-proved, and 6 linked to the
-executable Runtime trace refinement bridge. These dimensions overlap and must
-not be summed. No formalizable row remains executable-only.
+formalizable safety obligations have checked formal evidence. The gate prints
+the current obligation total, coverage ratio, external-assumption total, and
+the independent model-checked, model-proved, Kani-kernel-proved, and executable
+trace-refinement dimensions directly from that ledger. Those dimensions
+overlap and must not be summed. The generated gate output, rather than a second
+checkpoint count in this document, is the authority for the current totals.
 Environmental properties are listed separately and never
 silently omitted or mislabeled as model-linked merely to raise the percentage.
 
@@ -626,32 +625,28 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The current denominator of 363 formalizable obligations
-is not derived from all source code: it is the number of manually enumerated
-rows marked `formalizable` in that ledger. To prevent that
+The formalizable-obligation denominator is not derived from all source code: it
+is the number of manually enumerated rows marked `formalizable` in that ledger.
+To prevent that
 curated denominator from hiding an unenumerated module,
 `scripts/ci/check_formal_surface.py` independently scans production Rust for
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
-The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 720 candidate modules: all 720 are classified,
-387 have checked formal evidence associated with the production file, 242 have
-a direct Kani/trace proof link, and 265 are linked to an explicit product
-requirement boundary. This deliberately over-approximating inventory is not a
-claim that every signal in every listed file
-is itself a distinct proof obligation. A module may leave the uncovered set
-only through a ledger link or a reviewed `formal/surface-exclusions.json`
-boundary with a concrete reason. Both strict targets are now enforced: zero
-uncovered source surfaces and zero executable-only formalizable obligations.
-The source tree and strict CI name the same 233 unique Kani harnesses; repeated
-ledger references are allowed only when one production proof supports more than
-one precisely stated obligation.
+The formal gate prints both current denominators and every evidence dimension
+on each run. This deliberately over-approximating inventory is not a claim that
+every signal in every listed file is itself a distinct proof obligation. A
+module may leave the uncovered set only through a ledger link or a reviewed
+`formal/surface-exclusions.json` boundary with a concrete reason. The strict
+targets remain zero uncovered source surfaces and zero executable-only
+formalizable obligations. The gate also compares the unique Kani harnesses in
+the source tree with the ledger; repeated ledger references are allowed only
+when one production proof supports more than one precisely stated obligation.
 
-The Web inventory is a separate denominator: 79/79 signal-detected TypeScript
-or TSX candidate files are classified, with zero uncovered, across 26 product
-requirements. All 79 are deliberately marked `product_boundary_only`; this is
-an ownership and residual-risk inventory, not a claim that any browser module
-has been formally proved.
+The Web inventory is a separate generated denominator. Classified TypeScript
+and TSX candidates use `product_boundary_only`; the gate reports any uncovered
+candidate instead of treating it as proved or silently omitting it. This is an
+ownership and residual-risk inventory, not a claim that any browser module has
+been formally proved.
 
 `formal/proof-boundaries.json` and `formal/VERIFICATION_BOUNDARIES.md` keep the
 remaining product limits honest. Every requirement-only surface, plus any
