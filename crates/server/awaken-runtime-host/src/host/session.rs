@@ -1683,18 +1683,6 @@ impl SharedHost {
                 acp_tool_exports.extend(exports);
             }
         }
-        // Recover the session's position from committed truth: a durable store may
-        // already hold this thread's history and an awaiting run after a restart.
-        let mut state = SessionState::default();
-        if let Some((run_id, _)) = commit
-            .open_wait_for_thread(&thread_id)
-            .await
-            .map_err(HostError::internal)?
-        {
-            // The activated resume boundary installs its exact snapshot; session
-            // construction only restores the committed position.
-            state.awaiting_run = Some(run_id);
-        }
         let runtime = Arc::new(runtime);
         let acp_executor = self.acp.as_ref().zip(env.clone()).map(|(acp, env)| {
             acp.executor_for(
@@ -1928,7 +1916,7 @@ impl SharedHost {
             cancel: Arc::new(std::sync::Mutex::new(None)),
             active_run: std::sync::Mutex::new(None),
             live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
-            state: tokio::sync::Mutex::new(state),
+            projection: tokio::sync::Mutex::new(()),
             outcome: tokio::sync::Mutex::new(()),
             execution: tokio::sync::Mutex::new(()),
         });
@@ -1947,7 +1935,11 @@ impl SharedHost {
         // settlement owner, including ordinary cold contexts opened without a
         // claimed identity.
         if !ctx.durable
-            && let Some(run) = ctx.commit.latest_run(&ctx.thread_id)
+            && let Some(run) = ctx
+                .commit
+                .authoritative_latest_run(&ctx.thread_id)
+                .await
+                .map_err(HostError::internal)?
             && run.state.is_terminal()
         {
             let _ = awaken_runtime_contract::terminal::redeliver_committed_terminal(

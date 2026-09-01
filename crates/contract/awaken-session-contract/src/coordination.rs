@@ -162,8 +162,9 @@ pub struct SessionAgentBoundaryCommand {
 }
 
 /// Session-approved report handed to the Runtime owner. The message id is the
-/// agent-contract provenance minted from `source_run_id`; the Host persists it
-/// through the ordinary Outbox/Inbox and root dispatch owners.
+/// agent-contract provenance minted from `source_run_id`; the Host freezes it
+/// directly into the deterministic root Run activation. Thread commits remain
+/// the message authority, so no parallel Outbox/Inbox fact is created.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionAgentReportContinuation {
     pub session_id: String,

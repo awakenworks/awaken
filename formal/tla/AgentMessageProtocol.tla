@@ -1,206 +1,226 @@
-------------------------- MODULE AgentMessageProtocol -------------------------
-EXTENDS Naturals, TLC
+------------------------- MODULE AgentMessageProtocol ----------------------
+EXTENDS Naturals
 
-CONSTANTS Owners, NoOwner
+\* Internal Agent messaging composes the canonical Session-activity and
+\* Run-ingress kernels. This module owns only cross-domain ordering: committed
+\* source request, admission certainty, target Thread commit, and source receipt.
+CONSTANTS Owners, NoOwner, MessageActivity, MaxEpoch
 
-VARIABLES requestDurable, activityOpen, dispatchState, claimOwner,
-          targetMessageCommitted, sourceReceiptCommitted, threadClosed,
-          previousRequestDurable, previousActivityOpen, previousDispatchState,
-          previousClaimOwner, previousTargetMessageCommitted,
-          previousSourceReceiptCommitted, previousThreadClosed, lastOutcome
+Activities == {MessageActivity}
 
-vars == <<requestDurable, activityOpen, dispatchState, claimOwner,
-          targetMessageCommitted, sourceReceiptCommitted, threadClosed,
-          previousRequestDurable, previousActivityOpen, previousDispatchState,
-          previousClaimOwner, previousTargetMessageCommitted,
-          previousSourceReceiptCommitted, previousThreadClosed, lastOutcome>>
+VARIABLES
+    dispatchState, dispatchOwner, dispatchEpoch, dispatchCancelled, dispatchInput,
+    activityEpoch, activeActivityEpochs, settledActivities, nextActivityEpoch,
+    requestDurable, admissionOutcome, targetMessageCommitted,
+    sourceReceiptCommitted, lastOutcome
 
-SnapshotPrevious ==
-    /\ previousRequestDurable' = requestDurable
-    /\ previousActivityOpen' = activityOpen
-    /\ previousDispatchState' = dispatchState
-    /\ previousClaimOwner' = claimOwner
-    /\ previousTargetMessageCommitted' = targetMessageCommitted
-    /\ previousSourceReceiptCommitted' = sourceReceiptCommitted
-    /\ previousThreadClosed' = threadClosed
+dispatchVars == <<dispatchState, dispatchOwner, dispatchEpoch,
+                  dispatchCancelled, dispatchInput>>
+activityVars == <<activityEpoch, activeActivityEpochs,
+                  settledActivities, nextActivityEpoch>>
+protocolVars == <<requestDurable, admissionOutcome,
+                  targetMessageCommitted, sourceReceiptCommitted, lastOutcome>>
+vars == <<dispatchVars, activityVars, protocolVars>>
+
+Ingress == INSTANCE RunIngressKernel WITH
+    Owners <- Owners,
+    NoOwner <- NoOwner,
+    MaxEpoch <- MaxEpoch,
+    kState <- dispatchState,
+    kOwner <- dispatchOwner,
+    kLeaseEpoch <- dispatchEpoch,
+    kCancelRequested <- dispatchCancelled,
+    kPendingInput <- dispatchInput
+
+Activity == INSTANCE SessionActivityKernel WITH
+    ActivityIds <- Activities,
+    MaxActivityEpoch <- MaxEpoch,
+    kActivityEpoch <- activityEpoch,
+    kActiveActivityEpochs <- activeActivityEpochs,
+    kSettledActivities <- settledActivities,
+    kNextActivityEpoch <- nextActivityEpoch
 
 Init ==
+    /\ Ingress!Init
+    /\ Activity!Init
     /\ requestDurable = FALSE
-    /\ activityOpen = FALSE
-    /\ dispatchState = "absent"
-    /\ claimOwner = NoOwner
+    /\ admissionOutcome = "None"
     /\ targetMessageCommitted = FALSE
     /\ sourceReceiptCommitted = FALSE
-    /\ threadClosed = FALSE
-    /\ previousRequestDurable = FALSE
-    /\ previousActivityOpen = FALSE
-    /\ previousDispatchState = "absent"
-    /\ previousClaimOwner = NoOwner
-    /\ previousTargetMessageCommitted = FALSE
-    /\ previousSourceReceiptCommitted = FALSE
-    /\ previousThreadClosed = FALSE
     /\ lastOutcome = "none"
 
 PersistRequest ==
     /\ ~requestDurable
-    /\ SnapshotPrevious
     /\ requestDurable' = TRUE
     /\ lastOutcome' = "request_committed"
-    /\ UNCHANGED <<activityOpen, dispatchState, claimOwner,
-                    targetMessageCommitted, sourceReceiptCommitted, threadClosed>>
+    /\ UNCHANGED <<dispatchVars, activityVars, admissionOutcome,
+                    targetMessageCommitted, sourceReceiptCommitted>>
 
-AdmitExact ==
+OpenActivity ==
     /\ requestDurable
-    /\ SnapshotPrevious
-    /\ IF dispatchState = "absent" /\ ~threadClosed
-       THEN /\ activityOpen' = TRUE
-            /\ dispatchState' = "pending"
-            /\ claimOwner' = NoOwner
-            /\ lastOutcome' = "admitted"
-       ELSE /\ UNCHANGED <<activityOpen, dispatchState, claimOwner>>
-            /\ lastOutcome' = IF dispatchState = "absent"
-                               THEN "closed_rejection"
-                               ELSE "exact_replay"
-    /\ UNCHANGED <<requestDurable, targetMessageCommitted,
-                    sourceReceiptCommitted, threadClosed>>
+    /\ Activity!Open(MessageActivity)
+    /\ lastOutcome' = "activity_opened"
+    /\ UNCHANGED <<dispatchVars, requestDurable, admissionOutcome,
+                    targetMessageCommitted, sourceReceiptCommitted>>
 
-AdmitConflict ==
-    /\ requestDurable
-    /\ SnapshotPrevious
-    /\ lastOutcome' = "payload_conflict"
-    /\ UNCHANGED <<requestDurable, activityOpen, dispatchState, claimOwner,
-                    targetMessageCommitted, sourceReceiptCommitted, threadClosed>>
+AdmitSuccess ==
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ Ingress!ActivateReservation
+    /\ admissionOutcome' = "Success"
+    /\ lastOutcome' = "admitted"
+    /\ UNCHANGED <<activityVars, requestDurable,
+                    targetMessageCommitted, sourceReceiptCommitted>>
 
-Claim(owner) ==
-    /\ owner \in Owners
-    /\ dispatchState = "pending"
-    /\ ~threadClosed
-    /\ SnapshotPrevious
-    /\ dispatchState' = "claimed"
-    /\ claimOwner' = owner
-    /\ lastOutcome' = "claimed"
-    /\ UNCHANGED <<requestDurable, activityOpen, targetMessageCommitted,
-                    sourceReceiptCommitted, threadClosed>>
-
-LeaseExpires ==
-    /\ dispatchState = "claimed"
-    /\ ~targetMessageCommitted
-    /\ SnapshotPrevious
-    /\ dispatchState' = "pending"
-    /\ claimOwner' = NoOwner
-    /\ lastOutcome' = "lease_expired"
-    /\ UNCHANGED <<requestDurable, activityOpen, targetMessageCommitted,
-                    sourceReceiptCommitted, threadClosed>>
-
-CommitTarget(owner) ==
-    /\ owner \in Owners
-    /\ dispatchState = "claimed"
-    /\ claimOwner = owner
-    /\ SnapshotPrevious
-    /\ targetMessageCommitted' = TRUE
-    /\ lastOutcome' = "target_committed"
-    /\ UNCHANGED <<requestDurable, activityOpen, dispatchState, claimOwner,
-                    sourceReceiptCommitted, threadClosed>>
-
-CommitSourceReceipt ==
-    /\ dispatchState # "absent"
-    /\ SnapshotPrevious
-    /\ sourceReceiptCommitted' = TRUE
-    /\ lastOutcome' = "source_receipt_committed"
-    /\ UNCHANGED <<requestDurable, activityOpen, dispatchState, claimOwner,
-                    targetMessageCommitted, threadClosed>>
-
-SettleDispatch ==
-    /\ dispatchState = "claimed"
-    /\ targetMessageCommitted
-    /\ SnapshotPrevious
-    /\ dispatchState' = "done"
-    /\ claimOwner' = NoOwner
-    /\ activityOpen' = FALSE
-    /\ lastOutcome' = "settled"
-    /\ UNCHANGED <<requestDurable, targetMessageCommitted,
-                    sourceReceiptCommitted, threadClosed>>
-
-CloseThread ==
-    /\ ~threadClosed
-    /\ SnapshotPrevious
-    /\ threadClosed' = TRUE
-    /\ IF dispatchState \in {"pending", "claimed"}
-       THEN /\ dispatchState' = "cancelled"
-            /\ claimOwner' = NoOwner
-            /\ activityOpen' = FALSE
-       ELSE /\ UNCHANGED <<dispatchState, claimOwner, activityOpen>>
-    /\ lastOutcome' = "thread_closed"
+\* Validation rejection proves that no dispatch committed, so the activity may
+\* close. Identity conflict is modeled separately because prior work may exist.
+AdmitRejected ==
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ Ingress!RejectReservation
+    /\ Activity!Settle(MessageActivity)
+    /\ admissionOutcome' = "Rejected"
+    /\ lastOutcome' = "closed_rejection"
     /\ UNCHANGED <<requestDurable, targetMessageCommitted,
                     sourceReceiptCommitted>>
 
+AdmitConflict ==
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ admissionOutcome' = "Conflict"
+    /\ lastOutcome' = "identity_conflict"
+    /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
+\* An unavailable response represents both possible physical outcomes. Neither
+\* branch settles the Session activity; exact retry is the only safe recovery.
+AdmitUnknownBeforeCommit ==
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ dispatchState = "Reserved"
+    /\ admissionOutcome' = "Unknown"
+    /\ lastOutcome' = "unknown_before_commit"
+    /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
+AdmitUnknownAfterCommit ==
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ Ingress!ActivateReservation
+    /\ admissionOutcome' = "Unknown"
+    /\ lastOutcome' = "unknown_after_commit"
+    /\ UNCHANGED <<activityVars, requestDurable,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
+RetryExact ==
+    /\ admissionOutcome = "Unknown"
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ IF dispatchState = "Reserved"
+          THEN Ingress!ActivateReservation
+          ELSE /\ dispatchState \in {"Pending", "Leased"}
+               /\ UNCHANGED dispatchVars
+    /\ admissionOutcome' = "Success"
+    /\ lastOutcome' = "exact_retry"
+    /\ UNCHANGED <<activityVars, requestDurable,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
+Claim(owner) ==
+    /\ dispatchState = "Pending"
+    /\ Ingress!Claim(owner)
+    /\ lastOutcome' = "claimed"
+    /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
+LeaseExpires(owner, epoch) ==
+    /\ Ingress!Relinquish(owner, epoch)
+    /\ lastOutcome' = "lease_expired"
+    /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
+CommitTarget(owner, epoch) ==
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = owner
+    /\ dispatchEpoch = epoch
+    /\ ~targetMessageCommitted
+    /\ targetMessageCommitted' = TRUE
+    /\ lastOutcome' = "target_committed"
+    /\ UNCHANGED <<dispatchVars, activityVars, requestDurable,
+                    admissionOutcome, sourceReceiptCommitted>>
+
+CommitSourceReceipt ==
+    /\ targetMessageCommitted
+    /\ ~sourceReceiptCommitted
+    /\ activityEpoch[MessageActivity] \in activeActivityEpochs
+    /\ Activity!Settle(MessageActivity)
+    /\ sourceReceiptCommitted' = TRUE
+    /\ lastOutcome' = "source_receipt_committed"
+    /\ UNCHANGED <<dispatchVars, requestDurable, admissionOutcome,
+                    targetMessageCommitted>>
+
+SettleDispatch(owner, epoch) ==
+    /\ targetMessageCommitted
+    /\ Ingress!SettleDone(owner, epoch)
+    /\ lastOutcome' = "dispatch_settled"
+    /\ UNCHANGED <<activityVars, requestDurable, admissionOutcome,
+                    targetMessageCommitted, sourceReceiptCommitted>>
+
 Next ==
     \/ PersistRequest
-    \/ AdmitExact
+    \/ OpenActivity
+    \/ AdmitSuccess
+    \/ AdmitRejected
     \/ AdmitConflict
+    \/ AdmitUnknownBeforeCommit
+    \/ AdmitUnknownAfterCommit
+    \/ RetryExact
     \/ \E owner \in Owners: Claim(owner)
-    \/ LeaseExpires
-    \/ \E owner \in Owners: CommitTarget(owner)
+    \/ \E owner \in Owners, epoch \in 1..MaxEpoch: LeaseExpires(owner, epoch)
+    \/ \E owner \in Owners, epoch \in 1..MaxEpoch: CommitTarget(owner, epoch)
     \/ CommitSourceReceipt
-    \/ SettleDispatch
-    \/ CloseThread
+    \/ \E owner \in Owners, epoch \in 1..MaxEpoch: SettleDispatch(owner, epoch)
 
 TypeOK ==
+    /\ Ingress!TypeOK
+    /\ Activity!TypeOK
     /\ requestDurable \in BOOLEAN
-    /\ activityOpen \in BOOLEAN
-    /\ dispatchState \in {"absent", "pending", "claimed", "done", "cancelled"}
-    /\ claimOwner \in Owners \cup {NoOwner}
+    /\ admissionOutcome \in {"None", "Success", "Rejected", "Conflict", "Unknown"}
     /\ targetMessageCommitted \in BOOLEAN
     /\ sourceReceiptCommitted \in BOOLEAN
-    /\ threadClosed \in BOOLEAN
-    /\ previousRequestDurable \in BOOLEAN
-    /\ previousActivityOpen \in BOOLEAN
-    /\ previousDispatchState \in {"absent", "pending", "claimed", "done", "cancelled"}
-    /\ previousClaimOwner \in Owners \cup {NoOwner}
-    /\ previousTargetMessageCommitted \in BOOLEAN
-    /\ previousSourceReceiptCommitted \in BOOLEAN
-    /\ previousThreadClosed \in BOOLEAN
-    /\ lastOutcome \in {"none", "request_committed", "admitted",
-                         "closed_rejection", "exact_replay", "payload_conflict",
-                         "claimed", "lease_expired", "target_committed",
-                         "source_receipt_committed", "settled", "thread_closed"}
+    /\ lastOutcome \in {"none", "request_committed", "activity_opened",
+                         "admitted", "closed_rejection", "identity_conflict",
+                         "unknown_before_commit", "unknown_after_commit",
+                         "exact_retry", "claimed", "lease_expired",
+                         "target_committed", "source_receipt_committed",
+                         "dispatch_settled"}
 
-RequestBeforeDispatch == dispatchState # "absent" => requestDurable
-ReceiptImpliesDurableDispatch == sourceReceiptCommitted => dispatchState # "absent"
-TargetCommitRequiresDurableRequest == targetMessageCommitted => requestDurable
-OneLiveClaim == (dispatchState = "claimed") = (claimOwner \in Owners)
-ActivityNotSettledEarly == dispatchState \in {"pending", "claimed"} => activityOpen
-ClosedThreadHasNoRunnableDispatch ==
-    threadClosed => dispatchState \notin {"pending", "claimed"}
-ExactReplayStutters ==
-    lastOutcome = "exact_replay"
-      => /\ requestDurable = previousRequestDurable
-         /\ activityOpen = previousActivityOpen
-         /\ dispatchState = previousDispatchState
-         /\ claimOwner = previousClaimOwner
-         /\ targetMessageCommitted = previousTargetMessageCommitted
-         /\ sourceReceiptCommitted = previousSourceReceiptCommitted
-         /\ threadClosed = previousThreadClosed
-PayloadConflictStutters ==
-    lastOutcome = "payload_conflict"
-      => /\ requestDurable = previousRequestDurable
-         /\ activityOpen = previousActivityOpen
-         /\ dispatchState = previousDispatchState
-         /\ claimOwner = previousClaimOwner
-         /\ targetMessageCommitted = previousTargetMessageCommitted
-         /\ sourceReceiptCommitted = previousSourceReceiptCommitted
-         /\ threadClosed = previousThreadClosed
+RequestBeforeActivity ==
+    activityEpoch[MessageActivity] > 0 => requestDurable
+
+ActivityBeforeDispatch ==
+    dispatchState # "Reserved" => activityEpoch[MessageActivity] > 0
+
+UnknownNeverSettlesActivity ==
+    admissionOutcome = "Unknown" /\ ~targetMessageCommitted
+      => activityEpoch[MessageActivity] \in activeActivityEpochs
+
+ConflictNeverSettlesPriorActivity ==
+    admissionOutcome = "Conflict" /\ ~targetMessageCommitted
+      => activityEpoch[MessageActivity] \in activeActivityEpochs
+
+ReceiptRequiresTargetCommit == sourceReceiptCommitted => targetMessageCommitted
+
+ReceiptSettlesActivity ==
+    sourceReceiptCommitted
+      => activityEpoch[MessageActivity] \notin activeActivityEpochs
+
+InternalMessageNeverUsesPendingInput == ~dispatchInput
 
 Safety ==
     /\ TypeOK
-    /\ RequestBeforeDispatch
-    /\ ReceiptImpliesDurableDispatch
-    /\ TargetCommitRequiresDurableRequest
-    /\ OneLiveClaim
-    /\ ActivityNotSettledEarly
-    /\ ClosedThreadHasNoRunnableDispatch
-    /\ ExactReplayStutters
-    /\ PayloadConflictStutters
+    /\ Ingress!Safety
+    /\ Activity!Safety
+    /\ RequestBeforeActivity
+    /\ ActivityBeforeDispatch
+    /\ UnknownNeverSettlesActivity
+    /\ ConflictNeverSettlesPriorActivity
+    /\ ReceiptRequiresTargetCommit
+    /\ ReceiptSettlesActivity
+    /\ InternalMessageNeverUsesPendingInput
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

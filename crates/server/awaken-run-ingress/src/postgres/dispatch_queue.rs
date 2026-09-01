@@ -19,7 +19,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let (request, reservation_ttl_ms) =
             validate_session_run_reservation_request(request, reservation_ttl_ms)?;
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         let deadline = crate::clock::deadline_millis(store_now_ms, reservation_ttl_ms);
         lock_run_identity(&mut tx, &request.run_id().0).await?;
@@ -29,15 +29,15 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&request.run_id().0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if let Some(row) = live {
-            let status: String = row.try_get("status").map_err(reject)?;
-            let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+            let status: String = row.try_get("status").map_err(store_error)?;
+            let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
             let state = DispatchState::from_db(&status).ok_or_else(|| {
                 DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
             })?;
             let outcome = classify_live_session_run_reservation(&stored, state, &request);
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(outcome);
         }
         let completed: Option<Option<String>> = sqlx::query_scalar(&format!(
@@ -46,13 +46,13 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&request.run_id().0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if let Some(request_fingerprint) = completed {
             let outcome = classify_completed_session_run_reservation(
                 request_fingerprint.as_deref(),
                 &request,
             );
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(outcome);
         }
         let options = SubmitOptions {
@@ -68,7 +68,7 @@ impl DispatchQueue for PostgresDispatchStore {
             Some(crate::clock::db_millis(deadline)),
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(SessionRunReservationOutcome::Reserved)
     }
 
@@ -79,7 +79,7 @@ impl DispatchQueue for PostgresDispatchStore {
         session_activity_epoch: u64,
     ) -> Result<SessionRunReservationActivation, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         lock_run_identity(&mut tx, &run_id.0).await?;
         let current = sqlx::query(&format!(
             "SELECT status, request, lease_epoch, cancel_requested \
@@ -88,7 +88,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(row) = current else {
             let completed: bool = sqlx::query_scalar(&format!(
                 "SELECT EXISTS(SELECT 1 FROM {p}_dispatch_completion WHERE run_id = $1)"
@@ -96,7 +96,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .bind(&run_id.0)
             .fetch_one(&mut *tx)
             .await
-            .map_err(reject)?;
+            .map_err(store_error)?;
             let outcome = classify_session_run_reservation_activation(
                 None,
                 completed,
@@ -104,11 +104,11 @@ impl DispatchQueue for PostgresDispatchStore {
                 session_activity_epoch,
             )?
             .expect("missing reservation always has a closed outcome");
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(outcome);
         };
-        let status: String = row.try_get("status").map_err(reject)?;
-        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+        let status: String = row.try_get("status").map_err(store_error)?;
+        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
         let state = DispatchState::from_db(&status).ok_or_else(|| {
             DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
         })?;
@@ -121,8 +121,9 @@ impl DispatchQueue for PostgresDispatchStore {
         let outcome = if let Some(outcome) = classified {
             outcome
         } else {
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
-            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                row.try_get("cancel_requested").map_err(store_error)?;
             let next = crate::persisted_dispatch_transition(
                 &status,
                 lease_epoch,
@@ -140,7 +141,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .bind(crate::dispatch_state_db(next.state))
             .execute(&mut *tx)
             .await
-            .map_err(reject)?
+            .map_err(store_error)?
             .rows_affected();
             if changed == 1 {
                 SessionRunReservationActivation::Activated
@@ -148,13 +149,13 @@ impl DispatchQueue for PostgresDispatchStore {
                 SessionRunReservationActivation::RecoveryClaimed
             }
         };
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(outcome)
     }
 
     async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         lock_run_identity(&mut tx, &run_id.0).await?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
@@ -163,12 +164,12 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let removable = if let Some(current) = current {
-            let status: String = current.try_get("status").map_err(reject)?;
-            let lease_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
+            let status: String = current.try_get("status").map_err(store_error)?;
+            let lease_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
             let cancellation_requested: i64 =
-                current.try_get("cancel_requested").map_err(reject)?;
+                current.try_get("cancel_requested").map_err(store_error)?;
             matches!(
                 crate::persisted_dispatch_transition(
                     &status,
@@ -182,7 +183,7 @@ impl DispatchQueue for PostgresDispatchStore {
             false
         };
         if !removable {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(false);
         }
         let changed = sqlx::query(&format!(
@@ -191,16 +192,16 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&run_id.0)
         .execute(&mut *tx)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
         .rows_affected();
         if changed == 1 {
             sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
                 .bind(&run_id.0)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
+                .map_err(store_error)?;
         }
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(changed == 1)
     }
 
@@ -212,7 +213,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let resolution = validate_session_run_reservation_resolution(resolution)?;
         let p = NS;
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let row = sqlx::query(&format!(
             "SELECT request, cancel_requested FROM {p}_dispatch WHERE run_id = $1 \
              AND status = 'reservation_running' AND lease_owner = $2 \
@@ -223,13 +224,13 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(claim_epoch)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(row) = row else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
-        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
-        let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
         let current = crate::persisted_dispatch_transition(
             "reservation_running",
             claim_epoch,
@@ -264,7 +265,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(crate::dispatch_state_db(next.state))
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?
+                .map_err(store_error)?
                 .rows_affected()
             }
             SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
@@ -289,7 +290,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(crate::dispatch_state_db(next.state))
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?
+                .map_err(store_error)?
                 .rows_affected()
             }
             SessionRunReservationResolution::Rejected => {
@@ -307,14 +308,14 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(claim_epoch)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?
+                .map_err(store_error)?
                 .rows_affected();
                 if changed == 1 {
                     sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = $1"))
                         .bind(&claim.run_id.0)
                         .execute(&mut *tx)
                         .await
-                        .map_err(reject)?;
+                        .map_err(store_error)?;
                 }
                 changed
             }
@@ -323,7 +324,7 @@ impl DispatchQueue for PostgresDispatchStore {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
     }
 
@@ -333,20 +334,20 @@ impl DispatchQueue for PostgresDispatchStore {
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         lock_run_identity(&mut tx, &request.run_id().0).await?;
 
         // Run-id idempotency survives successful completion: a live row or the
         // permanent completion tombstone makes the whole command a no-op. Check
         // before supersession so replay cannot mutate sibling dispatches.
         if exact_run_replay(&mut tx, p, &request).await? {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(());
         }
 
         validate_executable_dispatch_admission(&request)?;
         insert_new_dispatch(&mut tx, p, &request, &options).await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(())
     }
 
@@ -356,15 +357,15 @@ impl DispatchQueue for PostgresDispatchStore {
         admission: SessionChildAdmission,
     ) -> Result<(), DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         if exact_run_replay(&mut tx, p, &request).await? {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(());
         }
         admit_session_child(&mut tx, p, &request, &admission).await?;
         insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(())
     }
 
@@ -377,7 +378,7 @@ impl DispatchQueue for PostgresDispatchStore {
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         if exact_run_replay(&mut tx, p, &request).await? {
             let run_id = request.run_id().clone();
@@ -391,12 +392,12 @@ impl DispatchQueue for PostgresDispatchStore {
                 capabilities,
             )
             .await?;
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(claimed);
         }
         validate_executable_dispatch_admission(&request)?;
         if !can_claim_locally(&request.placement) {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(None);
         }
         insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
@@ -411,7 +412,7 @@ impl DispatchQueue for PostgresDispatchStore {
             capabilities,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -424,7 +425,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let owner = worker.identity.lease_owner();
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         if exact_run_replay(&mut tx, p, &request).await? {
@@ -439,12 +440,12 @@ impl DispatchQueue for PostgresDispatchStore {
                 &installed_worker_credential_capabilities(worker)?,
             )
             .await?;
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(claimed);
         }
         validate_executable_dispatch_admission(&request)?;
         if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(None);
         }
         insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
@@ -459,7 +460,7 @@ impl DispatchQueue for PostgresDispatchStore {
             &installed_worker_credential_capabilities(worker)?,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -473,7 +474,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         append_pending_transaction(&mut tx, NS, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
@@ -485,7 +486,7 @@ impl DispatchQueue for PostgresDispatchStore {
             capabilities,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -498,7 +499,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         append_pending_transaction(&mut tx, NS, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
@@ -510,7 +511,7 @@ impl DispatchQueue for PostgresDispatchStore {
             &installed_worker_credential_capabilities(worker)?,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -538,7 +539,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(epoch)
         .fetch_one(&self.pool)
         .await
-        .map_err(reject)
+        .map_err(store_error)
     }
 
     async fn lock_session_run_reservation_epoch(
@@ -594,9 +595,9 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::clock::db_millis(now_ms))
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         for run_id in candidates {
-            let mut tx = self.pool.begin().await.map_err(reject)?;
+            let mut tx = self.pool.begin().await.map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &mut tx,
                 &RunId(run_id),
@@ -607,7 +608,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 capabilities,
             )
             .await?;
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             if claimed.is_some() {
                 return Ok(claimed);
             }
@@ -640,17 +641,18 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::clock::db_millis(now_ms))
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let capabilities = installed_worker_credential_capabilities(worker)?;
         let mut selected = Vec::new();
         for row in rows {
-            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
-            let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
+            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
             let previous: Option<Json<WorkerAssignment>> =
-                row.try_get("worker_assignment").map_err(reject)?;
-            let status: String = row.try_get("status").map_err(reject)?;
-            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
+                row.try_get("worker_assignment").map_err(store_error)?;
+            let status: String = row.try_get("status").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                row.try_get("cancel_requested").map_err(store_error)?;
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
             let next_epoch = next_claim_epoch(lease_epoch)?;
             if matches!(status.as_str(), "reserved" | "reservation_running")
                 || cancellation_requested != 0
@@ -664,11 +666,11 @@ impl DispatchQueue for PostgresDispatchStore {
                 .is_ok()
                     && can_admit_attempt_credentials(&request, &capabilities, next_epoch, now_ms))
             {
-                selected.push(RunId(row.try_get("run_id").map_err(reject)?));
+                selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
             }
         }
         for run_id in selected {
-            let mut tx = self.pool.begin().await.map_err(reject)?;
+            let mut tx = self.pool.begin().await.map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &mut tx,
                 &run_id,
@@ -679,7 +681,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 &capabilities,
             )
             .await?;
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             if claimed.is_some() {
                 return Ok(claimed);
             }
@@ -714,17 +716,18 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::clock::db_millis(now_ms))
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let capabilities = installed_worker_credential_capabilities(requester)?;
         let mut selected = Vec::new();
         for row in rows {
-            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
-            let sandbox: Option<String> = row.try_get("sandbox").map_err(reject)?;
+            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
             let previous: Option<Json<WorkerAssignment>> =
-                row.try_get("worker_assignment").map_err(reject)?;
-            let status: String = row.try_get("status").map_err(reject)?;
-            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
+                row.try_get("worker_assignment").map_err(store_error)?;
+            let status: String = row.try_get("status").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                row.try_get("cancel_requested").map_err(store_error)?;
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
             let next_epoch = next_claim_epoch(lease_epoch)?;
             if matches!(status.as_str(), "reserved" | "reservation_running")
                 || cancellation_requested != 0
@@ -746,11 +749,11 @@ impl DispatchQueue for PostgresDispatchStore {
                     now_ms,
                 ))
             {
-                selected.push(RunId(row.try_get("run_id").map_err(reject)?));
+                selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
             }
         }
         for run_id in selected {
-            let mut tx = self.pool.begin().await.map_err(reject)?;
+            let mut tx = self.pool.begin().await.map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &mut tx,
                 &run_id,
@@ -761,7 +764,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 &capabilities,
             )
             .await?;
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             if claimed.is_some() {
                 return Ok(claimed);
             }
@@ -777,7 +780,7 @@ impl DispatchQueue for PostgresDispatchStore {
         now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction(
             &mut tx,
             requested_run,
@@ -788,7 +791,7 @@ impl DispatchQueue for PostgresDispatchStore {
             capabilities,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -799,7 +802,7 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction_with_mode(
             &mut tx,
             requested_run,
@@ -811,7 +814,7 @@ impl DispatchQueue for PostgresDispatchStore {
             ExactClaimMode::TerminalRecovery,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -824,11 +827,11 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = crate::clock::normalize_millis(now_ms);
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         loop {
             let run_id = retry_exhausted_candidate(&mut tx, NS, now_ms, max_attempts_i64).await?;
             let Some(run_id) = run_id else {
-                tx.commit().await.map_err(reject)?;
+                tx.commit().await.map_err(store_error)?;
                 return Ok(None);
             };
             if let Some(claimed) = claim_exact_transaction_with_mode(
@@ -843,7 +846,7 @@ impl DispatchQueue for PostgresDispatchStore {
             )
             .await?
             {
-                tx.commit().await.map_err(reject)?;
+                tx.commit().await.map_err(store_error)?;
                 return Ok(Some(claimed));
             }
             // A concurrent exact claim won the advisory candidate. Search again
@@ -858,7 +861,7 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction(
             &mut tx,
             requested_run,
@@ -869,7 +872,7 @@ impl DispatchQueue for PostgresDispatchStore {
             &installed_worker_credential_capabilities(worker)?,
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
 
@@ -895,7 +898,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(claim_epoch)
         .execute(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -916,7 +919,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(claim_epoch)
         .execute(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         Ok(if result.rows_affected() == 1 {
             SettleOutcome::Applied
         } else {
@@ -931,7 +934,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
             "SELECT credential_bindings, credential_receipts FROM {p}_dispatch \
              WHERE run_id = $1 AND status = 'running' \
@@ -942,21 +945,21 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(claim_epoch)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(current) = current else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
         let bindings = current
             .try_get::<Option<Json<Vec<AttemptCredentialBinding>>>, _>("credential_bindings")
-            .map_err(reject)?
+            .map_err(store_error)?
             .map(|value| value.0)
             .unwrap_or_default();
         verify_credential_realization_receipt(&bindings, &receipt)
             .map_err(|error| DispatchError::Rejected(error.to_string()))?;
         let mut receipts = current
             .try_get::<Option<Json<Vec<CredentialRealizationReceipt>>>, _>("credential_receipts")
-            .map_err(reject)?
+            .map_err(store_error)?
             .map(|value| value.0)
             .unwrap_or_default();
         if let Some(existing) = receipts
@@ -968,7 +971,7 @@ impl DispatchQueue for PostgresDispatchStore {
                     "credential realization receipt conflicts with committed evidence".to_string(),
                 ));
             }
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(SettleOutcome::Applied);
         }
         receipts.push(receipt);
@@ -983,12 +986,12 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(claim_epoch)
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if changed.rows_affected() != 1 {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
     }
 
@@ -1010,7 +1013,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::clock::db_millis(now_ms))
         .fetch_one(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         Ok(Some(durable_u64("runnable dispatch depth", depth)?))
     }
 
@@ -1021,7 +1024,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<AttemptAdmission, DispatchError> {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
              active_attempt_owner, active_attempt_epoch \
@@ -1030,18 +1033,21 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&claim.run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(current) = current else {
             let _ = tx.rollback().await;
             return Ok(AttemptAdmission::Fenced);
         };
-        let status: String = current.try_get("status").map_err(reject)?;
-        let owner: Option<String> = current.try_get("lease_owner").map_err(reject)?;
-        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
-        let lease_until: Option<i64> = current.try_get("lease_until").map_err(reject)?;
-        let active_owner: Option<String> =
-            current.try_get("active_attempt_owner").map_err(reject)?;
-        let active_epoch: Option<i64> = current.try_get("active_attempt_epoch").map_err(reject)?;
+        let status: String = current.try_get("status").map_err(store_error)?;
+        let owner: Option<String> = current.try_get("lease_owner").map_err(store_error)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+        let lease_until: Option<i64> = current.try_get("lease_until").map_err(store_error)?;
+        let active_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let active_epoch: Option<i64> = current
+            .try_get("active_attempt_epoch")
+            .map_err(store_error)?;
         let live = status == "running"
             && owner.as_deref() == Some(&claim.owner)
             && persisted_epoch == epoch
@@ -1065,7 +1071,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(epoch)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
+                .map_err(store_error)?;
                 AttemptAdmission::Applied
             }
             _ => {
@@ -1074,7 +1080,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 ));
             }
         };
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(admission)
     }
 
@@ -1091,7 +1097,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(epoch)
         .execute(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if changed.rows_affected() == 1 {
             return Ok(SettleOutcome::Applied);
         }
@@ -1102,7 +1108,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&claim.run_id.0)
         .fetch_optional(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         Ok(if empty.unwrap_or(false) {
             SettleOutcome::Applied
         } else {
@@ -1113,7 +1119,7 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
@@ -1121,17 +1127,20 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&claim.run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(current) = current else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
-        let status: String = current.try_get("status").map_err(reject)?;
-        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
-        let persisted_owner: Option<String> = current.try_get("lease_owner").map_err(reject)?;
-        let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
-        let active_attempt: Option<i64> =
-            current.try_get("active_attempt_epoch").map_err(reject)?;
+        let status: String = current.try_get("status").map_err(store_error)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+        let persisted_owner: Option<String> =
+            current.try_get("lease_owner").map_err(store_error)?;
+        let cancellation_requested: i64 =
+            current.try_get("cancel_requested").map_err(store_error)?;
+        let active_attempt: Option<i64> = current
+            .try_get("active_attempt_epoch")
+            .map_err(store_error)?;
         if active_attempt.is_some() {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
@@ -1160,7 +1169,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::dispatch_state_db(next.state))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if changed.rows_affected() != 1 {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
@@ -1173,7 +1182,7 @@ impl DispatchQueue for PostgresDispatchStore {
             },
         )
         .await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
     }
 
@@ -1186,7 +1195,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
         let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let authority = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, cancel_requested, request, active_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
@@ -1194,16 +1203,18 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(authority) = authority else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
-        let status: String = authority.try_get("status").map_err(reject)?;
-        let persisted_epoch: i64 = authority.try_get("lease_epoch").map_err(reject)?;
-        let cancellation_requested: i64 = authority.try_get("cancel_requested").map_err(reject)?;
-        let active_attempt: Option<i64> =
-            authority.try_get("active_attempt_epoch").map_err(reject)?;
+        let status: String = authority.try_get("status").map_err(store_error)?;
+        let persisted_epoch: i64 = authority.try_get("lease_epoch").map_err(store_error)?;
+        let cancellation_requested: i64 =
+            authority.try_get("cancel_requested").map_err(store_error)?;
+        let active_attempt: Option<i64> = authority
+            .try_get("active_attempt_epoch")
+            .map_err(store_error)?;
         if active_attempt.is_some() {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
@@ -1221,12 +1232,12 @@ impl DispatchQueue for PostgresDispatchStore {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
-        let owner: Option<String> = authority.try_get("lease_owner").map_err(reject)?;
+        let owner: Option<String> = authority.try_get("lease_owner").map_err(store_error)?;
         let Some(owner) = owner else {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
-        let Json(request): Json<RunDispatch> = authority.try_get("request").map_err(reject)?;
+        let Json(request): Json<RunDispatch> = authority.try_get("request").map_err(store_error)?;
         let request_fingerprint = request.admission_fingerprint();
         let claim = RunClaim {
             run_id: run_id.clone(),
@@ -1246,7 +1257,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .bind(epoch_i64)
             .execute(&mut *tx)
             .await
-            .map_err(reject)?
+            .map_err(store_error)?
             .rows_affected(),
             awaken_run_ingress_contract::GuardedTransition::Applied(next) => sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET status = $3, lease_owner = NULL, \
@@ -1258,7 +1269,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .bind(crate::dispatch_state_db(next.state))
             .execute(&mut *tx)
             .await
-            .map_err(reject)?
+            .map_err(store_error)?
             .rows_affected(),
             awaken_run_ingress_contract::GuardedTransition::Fenced => unreachable!(),
         };
@@ -1286,7 +1297,7 @@ impl DispatchQueue for PostgresDispatchStore {
             )
             .execute(&mut *tx)
             .await
-            .map_err(reject)?;
+            .map_err(store_error)?;
         }
         // The fence held; now reconcile the run's pending input.
         match outcome {
@@ -1300,7 +1311,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(consumed)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
+                .map_err(store_error)?;
             }
             DispatchOutcome::Awaiting => {
                 sqlx::query(&format!(
@@ -1309,11 +1320,11 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(consumed)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
+                .map_err(store_error)?;
             }
         }
         insert_operation(&mut tx, &DispatchOperation::Settled { claim, outcome }).await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
     }
 
@@ -1332,7 +1343,7 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<usize, DispatchError> {
         let p = NS;
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let rows = sqlx::query(&format!(
             "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested \
              FROM {p}_dispatch WHERE status = 'running' \
@@ -1344,20 +1355,23 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(max_attempts_i64)
         .fetch_all(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let mut quarantined = 0usize;
         for row in &rows {
             let owner = row
                 .try_get::<Option<String>, _>("lease_owner")
-                .map_err(reject)?
+                .map_err(store_error)?
                 .ok_or_else(|| {
                     DispatchError::Rejected(
                         "expired running dispatch has no persisted lease owner".to_string(),
                     )
                 })?;
-            let epoch = row.try_get::<i64, _>("lease_epoch").map_err(reject)?;
-            let attempt_count = row.try_get::<i64, _>("attempt_count").map_err(reject)?;
-            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            let epoch = row.try_get::<i64, _>("lease_epoch").map_err(store_error)?;
+            let attempt_count = row
+                .try_get::<i64, _>("attempt_count")
+                .map_err(store_error)?;
+            let cancellation_requested: i64 =
+                row.try_get("cancel_requested").map_err(store_error)?;
             let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
             let current = crate::persisted_dispatch_transition(
                 "running",
@@ -1369,7 +1383,7 @@ impl DispatchQueue for PostgresDispatchStore {
             else {
                 continue;
             };
-            let run_id: String = row.try_get("run_id").map_err(reject)?;
+            let run_id: String = row.try_get("run_id").map_err(store_error)?;
             let changed = sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET status = $4, lease_owner = NULL, \
                  lease_until = NULL, dead_lettered_at = $1 WHERE run_id = $2 \
@@ -1381,7 +1395,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .bind(crate::dispatch_state_db(next.state))
             .execute(&mut *tx)
             .await
-            .map_err(reject)?;
+            .map_err(store_error)?;
             if changed.rows_affected() != 1 {
                 continue;
             }
@@ -1408,7 +1422,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .await?;
             quarantined += 1;
         }
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(quarantined)
     }
 
@@ -1428,22 +1442,23 @@ impl DispatchQueue for PostgresDispatchStore {
         ))
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         rows.into_iter()
             .map(|row| {
-                let Json(request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+                let Json(request): Json<RunDispatch> =
+                    row.try_get("request").map_err(store_error)?;
                 Ok(DispatchSummary {
-                    run_id: RunId(row.try_get("run_id").map_err(reject)?),
-                    thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
+                    run_id: RunId(row.try_get("run_id").map_err(store_error)?),
+                    thread_id: ThreadId(row.try_get("thread_id").map_err(store_error)?),
                     session_thread_id: request.session_thread_id,
                     session_activity_epoch: request.session_activity_epoch,
                     reservation_deadline_ms: if row
                         .try_get::<String, _>("status")
-                        .map_err(reject)?
+                        .map_err(store_error)?
                         == "reserved"
                     {
                         row.try_get::<Option<i64>, _>("lease_until")
-                            .map_err(reject)?
+                            .map_err(store_error)?
                             .map(crate::clock::millis_from_db)
                             .transpose()
                             .map_err(|error| DispatchError::Rejected(error.to_string()))?
@@ -1451,7 +1466,7 @@ impl DispatchQueue for PostgresDispatchStore {
                         None
                     },
                     state: {
-                        let status = row.try_get::<String, _>("status").map_err(reject)?;
+                        let status = row.try_get::<String, _>("status").map_err(store_error)?;
                         DispatchState::from_db(&status).ok_or_else(|| {
                             DispatchError::Rejected(format!(
                                 "unknown persisted dispatch state {status}"
@@ -1460,19 +1475,20 @@ impl DispatchQueue for PostgresDispatchStore {
                     },
                     cancellation_requested: row
                         .try_get::<i64, _>("cancel_requested")
-                        .map_err(reject)?
+                        .map_err(store_error)?
                         != 0,
                     attempt_count: durable_u64(
                         "dispatch attempt count",
-                        row.try_get::<i64, _>("attempt_count").map_err(reject)?,
+                        row.try_get::<i64, _>("attempt_count")
+                            .map_err(store_error)?,
                     )?,
                     sandbox_bound: row
                         .try_get::<Option<String>, _>("sandbox")
-                        .map_err(reject)?
+                        .map_err(store_error)?
                         .is_some(),
                     physical_attempt_active: row
                         .try_get::<Option<i64>, _>("active_attempt_epoch")
-                        .map_err(reject)?
+                        .map_err(store_error)?
                         .is_some(),
                 })
             })
@@ -1481,7 +1497,7 @@ impl DispatchQueue for PostgresDispatchStore {
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
              WHERE run_id = $1 FOR UPDATE"
@@ -1489,21 +1505,22 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(current) = current else {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(false);
         };
-        let status: String = current.try_get("status").map_err(reject)?;
-        let lease_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
-        let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
+        let status: String = current.try_get("status").map_err(store_error)?;
+        let lease_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+        let cancellation_requested: i64 =
+            current.try_get("cancel_requested").map_err(store_error)?;
         let Some(next) = crate::persisted_dispatch_transition(
             &status,
             lease_epoch,
             cancellation_requested != 0,
         )?
         .requeue_dead_letter() else {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(false);
         };
         let result = sqlx::query(&format!(
@@ -1515,14 +1532,14 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::dispatch_state_db(next.state))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
-        tx.commit().await.map_err(reject)?;
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(result.rows_affected() > 0)
     }
 
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
             "SELECT thread_id, status, lease_owner, lease_epoch, cancel_requested FROM {p}_dispatch \
              WHERE run_id = $1 AND status IN \
@@ -1532,18 +1549,25 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let Some(current) = current else {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(None);
         };
-        let thread = current.try_get::<String, _>("thread_id").map_err(reject)?;
-        let status = current.try_get::<String, _>("status").map_err(reject)?;
+        let thread = current
+            .try_get::<String, _>("thread_id")
+            .map_err(store_error)?;
+        let status = current
+            .try_get::<String, _>("status")
+            .map_err(store_error)?;
         let previous_owner = current
             .try_get::<Option<String>, _>("lease_owner")
-            .map_err(reject)?;
-        let previous_epoch = current.try_get::<i64, _>("lease_epoch").map_err(reject)?;
-        let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
+            .map_err(store_error)?;
+        let previous_epoch = current
+            .try_get::<i64, _>("lease_epoch")
+            .map_err(store_error)?;
+        let cancellation_requested: i64 =
+            current.try_get("cancel_requested").map_err(store_error)?;
         let transition = crate::persisted_dispatch_transition(
             &status,
             previous_epoch,
@@ -1554,7 +1578,7 @@ impl DispatchQueue for PostgresDispatchStore {
             revoked_lease,
         } = transition.cancel().map_err(crate::transition_error)?
         else {
-            tx.commit().await.map_err(reject)?;
+            tx.commit().await.map_err(store_error)?;
             return Ok(None);
         };
         let next_epoch = durable_i64("dispatch lease epoch", next.lease_epoch)?;
@@ -1572,7 +1596,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::dispatch_state_db(next.state))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if revoked_lease {
             insert_operation(
                 &mut tx,
@@ -1595,27 +1619,27 @@ impl DispatchQueue for PostgresDispatchStore {
             )
             .await?;
         }
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(Some(ThreadId(thread)))
     }
 
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         sqlx::query(&format!(
             "DELETE FROM {p}_pending WHERE run_id IN \
              (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
         ))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let result = sqlx::query(&format!(
             "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
         ))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
-        tx.commit().await.map_err(reject)?;
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(result.rows_affected() as usize)
     }
 
@@ -1623,7 +1647,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
                     AND dead_lettered_at <= $1";
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         sqlx::query(&format!(
             "DELETE FROM {p}_pending WHERE run_id IN \
              (SELECT run_id FROM {p}_dispatch WHERE {cond})"
@@ -1631,13 +1655,13 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(crate::clock::db_millis(cutoff_ms))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let result = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
             .bind(crate::clock::db_millis(cutoff_ms))
             .execute(&mut *tx)
             .await
-            .map_err(reject)?;
-        tx.commit().await.map_err(reject)?;
+            .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(result.rows_affected() as usize)
     }
 }

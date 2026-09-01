@@ -217,7 +217,7 @@ impl MemoryDispatchStore {
 fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, DispatchError> {
     state
         .lock()
-        .map_err(|_| DispatchError::Rejected("dispatch store poisoned".to_string()))
+        .map_err(|_| DispatchError::unavailable("dispatch store poisoned"))
 }
 
 fn push_operation(state: &mut State, operation: DispatchOperation) {
@@ -247,7 +247,7 @@ fn append_pending(state: &mut State, input: PendingInput) -> Result<bool, Dispat
         return if existing.input == input {
             Ok(false)
         } else {
-            Err(DispatchError::Rejected(format!(
+            Err(DispatchError::Conflict(format!(
                 "idempotency key `{}` was reused with another pending-input payload",
                 input.message_id
             )))

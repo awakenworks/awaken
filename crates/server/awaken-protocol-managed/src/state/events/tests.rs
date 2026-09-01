@@ -2837,7 +2837,7 @@ async fn aggregate_running_edge_is_decided_from_the_locked_event_tail() {
 }
 
 #[tokio::test]
-async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
+async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
     // Causes: the fixtures below establish `cached running dto` with the concrete inputs, state,
     // dependencies, and failure triggers used by this case.
     // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
@@ -2845,8 +2845,8 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1 the canonical Session activity CAS has committed
-    // Running; C2 the disposable Session DTO is refreshed from C1 before any
-    // lifecycle projection; C3 the latest committed root lifecycle fact is
+    // Running; C2 the disposable Session DTO still reflects the previous
+    // published candidate; C3 the latest committed root lifecycle fact is
     // Running; C4 a live subscriber is already attached; C5 the identical
     // committed prefix is refreshed again. Effects: E1 C1+C2+C3 append and
     // broadcast aggregate Running before primary Thread Running; E2 the
@@ -2857,7 +2857,7 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
     //
     // | Rule | Session | DTO | Root lifecycle | Refresh | Effects |
     // |---|---|---|---|---|---|
-    // | O1 | Running | Running | latest Running | first | E1,E2 |
+    // | O1 | Running | previous | latest Running | first | E1,E2 |
     // | O2 | Running | Running | same prefix | repeat | E3,E4 |
     let runtime = LifecycleRuntime::default();
     let state = ManagedState::new(runtime.clone());
@@ -2874,18 +2874,15 @@ async fn cached_running_dto_cannot_precede_the_aggregate_running_event() {
     let (snapshot, mut live) = state.stream_subscribe(&session.id).unwrap();
     assert!(snapshot.is_empty(), "O1 starts without event history");
 
-    let running = state
+    state
         .application
         .begin_activity(&session.id)
         .await
         .expect("O1/C1 commits aggregate Running");
-    state
-        .refresh_cached_projection(&running)
-        .expect("O1/C2 refreshes the disposable DTO first");
     assert_eq!(
         state.get_session(&session.id).unwrap().status,
-        SessionStatus::Running,
-        "O1/C2"
+        SessionStatus::Idle,
+        "O1/C2 root state cannot publish outside the canonical candidate"
     );
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         1,
@@ -3026,7 +3023,33 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         .begin_activity(&session.id)
         .await
         .expect("commit newer root");
-    state.refresh_cached_projection(&current).unwrap();
+    let projection_candidate = |persisted: &PersistedSession| {
+        let sessions = state.sessions.lock().unwrap();
+        let record = sessions.get(&session.id).unwrap();
+        let mut candidate = record.clone();
+        ManagedState::apply_persisted_session(&mut candidate, persisted);
+        (
+            record.cache_revision,
+            record
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<std::collections::HashSet<_>>(),
+            candidate,
+        )
+    };
+    let (base_revision, previous_event_ids, candidate) = projection_candidate(&current);
+    assert!(
+        state
+            .publish_projection_candidate(
+                &session.id,
+                base_revision,
+                candidate,
+                &previous_event_ids,
+            )
+            .unwrap(),
+        "newer root publishes through the sole CAS owner"
+    );
     let before = {
         let sessions = state.sessions.lock().unwrap();
         let record = sessions.get(&session.id).unwrap();
@@ -3037,7 +3060,18 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         )
     };
 
-    state.refresh_cached_projection(&stale).unwrap();
+    let (base_revision, previous_event_ids, candidate) = projection_candidate(&stale);
+    assert!(
+        !state
+            .publish_projection_candidate(
+                &session.id,
+                base_revision,
+                candidate,
+                &previous_event_ids,
+            )
+            .unwrap(),
+        "R1 stale source is rejected by the canonical publisher"
+    );
     let after_older = {
         let sessions = state.sessions.lock().unwrap();
         let record = sessions.get(&session.id).unwrap();
@@ -3049,7 +3083,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
     };
     assert_eq!(after_older, before, "R1/E1 older root is ignored");
 
-    state.refresh_cached_projection(&current).unwrap();
+    state.publish_persisted_session(&current).unwrap();
     let after_equal = {
         let sessions = state.sessions.lock().unwrap();
         let record = sessions.get(&session.id).unwrap();

@@ -1,15 +1,6 @@
-//! Per-thread live session state ([`SessionState`]) and its runtime context
-//! bundle ([`SessionCtx`]) — the mutable position and isolated runtime a
-//! [`SharedHost`] keeps for each thread id.
+//! Per-thread runtime context ([`SessionCtx`]) owned by [`SharedHost`].
 
 use super::*;
-
-/// A Thread's mutable process-local execution position. Durable dynamic system
-/// context belongs to the Session root and never enters this state.
-#[derive(Default)]
-pub(crate) struct SessionState {
-    pub(crate) awaiting_run: Option<RunId>,
-}
 
 /// Derived validity key for a process-local Runtime cache. It includes exactly
 /// the frozen publication inputs captured by Runtime plugins; claim/run identity
@@ -67,7 +58,7 @@ pub(crate) struct ChildExecutionSubstrate {
 
 /// One thread's live state: an isolated runtime, its config, its commit
 /// coordinator (the source of committed truth), its sandbox root, and its
-/// position.
+/// process-local coordination locks.
 pub(crate) struct SessionCtx {
     pub(crate) runtime: Arc<Runtime>,
     /// The delivery seam a Run's execution goes through (slice C): `DirectRunIngress`
@@ -113,8 +104,8 @@ pub(crate) struct SessionCtx {
     pub(crate) skill_registry: Option<Arc<dyn SkillRegistry>>,
     /// The in-flight run's cancellation token, so a concurrent `interrupt` (a
     /// separate request) can cancel it. A plain `std::sync::Mutex` (brief locks),
-    /// held by neither the run loop nor the state lock, so interrupt never blocks
-    /// on the loop that holds `state`.
+    /// held by neither the run loop nor the execution lock, so interrupt never
+    /// waits for model or tool IO.
     pub(crate) cancel: Arc<std::sync::Mutex<Option<CancellationToken>>>,
     /// Stable identity of the foreground Run currently being driven. Direct
     /// execution uses `cancel`; durable execution uses this id to persist a
@@ -124,12 +115,14 @@ pub(crate) struct SessionCtx {
     /// leftovers. Same locking discipline as `cancel`; lifecycle and lookup
     /// live in [`crate::live_inbox`].
     pub(crate) live_inbox: std::sync::Mutex<crate::live_inbox::LiveInboxSlot>,
-    pub(crate) state: tokio::sync::Mutex<SessionState>,
+    /// Serializes publication of committed step projections to the process-local
+    /// protocol hub. It contains no execution position: awaiting truth is read
+    /// exclusively from the committed Thread view.
+    pub(crate) projection: tokio::sync::Mutex<()>,
     /// Serializes Outcome commands without holding ordinary Session position
     /// state across Worker/Judge IO. `interrupt` never takes this lock.
     pub(crate) outcome: tokio::sync::Mutex<()>,
-    /// One externally executing Run at a time on the Worker Thread. Position
-    /// state is locked only for short reads/writes, never across model/tool IO.
+    /// One externally executing Run at a time on the Worker Thread.
     pub(crate) execution: tokio::sync::Mutex<()>,
 }
 
@@ -154,7 +147,7 @@ impl SessionCtx {
 
     /// A run context carrying a fresh cancellation token, registered on this ctx so
     /// a concurrent `interrupt` can cancel the run it drives. Only one run is in
-    /// flight per thread at a time (the `state` lock serializes them), so the slot
+    /// flight per thread at a time (the `execution` lock serializes them), so the slot
     /// always holds the current run's token.
     pub(crate) fn context(&self) -> RuntimeRunContext {
         let token = CancellationToken::new();

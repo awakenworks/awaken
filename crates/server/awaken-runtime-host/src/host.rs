@@ -121,7 +121,6 @@ mod worker_resolver;
 pub(crate) use completion::CompletionRegistry;
 pub(crate) use session_ctx::{
     ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
-    SessionState,
 };
 pub use types::{
     CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeIteration,

@@ -139,7 +139,7 @@ impl ManagedState {
                 .await;
             match result {
                 Ok(outcome) => {
-                    self.refresh_cached_projection(&outcome.session)
+                    self.publish_persisted_session(&outcome.session)
                         .map_err(|error| {
                             ManagedCredentialAdoptionError::Unavailable(error.to_string())
                         })?;

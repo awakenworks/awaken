@@ -210,6 +210,19 @@ SHA-256 fingerprint on the existing completion tombstone. Different or legacy
 unverifiable payloads fail closed before placement or supersession policy can
 mask the collision. Exact retries preserve the first accepted dispatch options.
 
+Admission errors preserve commit certainty instead of collapsing every store
+failure into a rejection:
+
+| Error | What is known | Required caller behavior |
+|---|---|---|
+| `Rejected` | This dispatch did not commit. | Correct the request or policy failure before submitting new intent. |
+| `Conflict` | A different immutable dispatch identity already exists. | Preserve the existing activity; do not replace it with the colliding payload. |
+| `Unavailable` | The response does not prove whether the dispatch committed. | Retry the exact same Run id and fingerprint; do not settle Session activity or create replacement intent. |
+
+This distinction closes the response-loss gap: a database or transport failure
+after commit cannot be interpreted as proof of non-commit. Backend identity
+checks make the prescribed exact retry idempotent.
+
 ## Durable Semantics
 
 Durable behavior is additive:

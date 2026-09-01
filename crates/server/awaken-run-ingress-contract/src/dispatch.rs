@@ -42,12 +42,24 @@ pub use credential_admission::{
     compile_attempt_credential_bindings, worker_credential_realization_capabilities,
 };
 
-/// A durable-store failure. Commit-time agent truth uses the commit coordinator's
-/// own error; this is only the dispatch queue's own storage failure.
-#[derive(Debug, thiserror::Error)]
+/// Admission or durable-store failure classified by what the caller may safely
+/// conclude. `Rejected` proves that this command did not commit, `Conflict`
+/// proves another immutable identity already exists, and `Unavailable`
+/// deliberately proves neither: retry must preserve the exact dispatch identity.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DispatchError {
     #[error("dispatch store rejected: {0}")]
     Rejected(String),
+    #[error("dispatch identity conflict: {0}")]
+    Conflict(String),
+    #[error("dispatch store unavailable: {0}")]
+    Unavailable(String),
+}
+
+impl DispatchError {
+    pub fn unavailable(error: impl std::fmt::Display) -> Self {
+        Self::Unavailable(error.to_string())
+    }
 }
 
 /// Failure at a committed Run boundary that must complete before delivery

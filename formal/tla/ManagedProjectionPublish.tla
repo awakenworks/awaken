@@ -5,13 +5,13 @@ CONSTANTS Writers, Components, MaxSourceVersion, MaxCacheRevision, NoWriter
 
 VARIABLES source, cacheRevision, resultFence, checkpointFence,
           writerPhase, observedCacheRevision, candidateFence,
-          candidateChanged,
+          firstSource, candidateChanged,
           previousResultFence, lastWriter, lastOutcome,
           lastCacheBefore, lastCacheAfter, lastBroadcast, lastCandidateChanged
 
 vars == <<source, cacheRevision, resultFence, checkpointFence,
           writerPhase, observedCacheRevision, candidateFence,
-          candidateChanged,
+          firstSource, candidateChanged,
           previousResultFence, lastWriter, lastOutcome,
           lastCacheBefore, lastCacheAfter, lastBroadcast, lastCandidateChanged>>
 
@@ -28,6 +28,7 @@ Init ==
     /\ writerPhase = [writer \in Writers |-> "idle"]
     /\ observedCacheRevision = [writer \in Writers |-> 0]
     /\ candidateFence = [writer \in Writers |-> ZeroFence]
+    /\ firstSource = [writer \in Writers |-> ZeroFence]
     /\ candidateChanged = [writer \in Writers |-> FALSE]
     /\ previousResultFence = ZeroFence
     /\ lastWriter = NoWriter
@@ -50,26 +51,46 @@ SourceAdvance(component) ==
     /\ lastCandidateChanged' = FALSE
     /\ UNCHANGED <<cacheRevision, resultFence, checkpointFence,
                     writerPhase, observedCacheRevision, candidateFence,
-                    candidateChanged>>
+                    firstSource, candidateChanged>>
 
 BeginRefresh(writer, auxiliaryChanged) ==
     /\ writer \in Writers
     /\ auxiliaryChanged \in BOOLEAN
     /\ writerPhase[writer] = "idle"
-    /\ writerPhase' = [writerPhase EXCEPT ![writer] = "built"]
+    /\ writerPhase' = [writerPhase EXCEPT ![writer] = "reading"]
     /\ observedCacheRevision' =
          [observedCacheRevision EXCEPT ![writer] = cacheRevision]
-    /\ candidateFence' = [candidateFence EXCEPT ![writer] = source]
+    /\ firstSource' = [firstSource EXCEPT ![writer] = source]
     /\ candidateChanged' =
          [candidateChanged EXCEPT ![writer] = auxiliaryChanged \/ source # resultFence]
     /\ previousResultFence' = resultFence
     /\ lastWriter' = writer
-    /\ lastOutcome' = "built"
+    /\ lastOutcome' = "first_read"
     /\ lastCacheBefore' = cacheRevision
     /\ lastCacheAfter' = cacheRevision
     /\ lastBroadcast' = FALSE
     /\ lastCandidateChanged' = FALSE
-    /\ UNCHANGED <<source, cacheRevision, resultFence, checkpointFence>>
+    /\ UNCHANGED <<source, cacheRevision, resultFence, checkpointFence,
+                    candidateFence>>
+
+FinishRead(writer) ==
+    /\ writer \in Writers
+    /\ writerPhase[writer] = "reading"
+    /\ previousResultFence' = resultFence
+    /\ lastWriter' = writer
+    /\ lastCacheBefore' = cacheRevision
+    /\ lastCacheAfter' = cacheRevision
+    /\ lastBroadcast' = FALSE
+    /\ lastCandidateChanged' = FALSE
+    /\ IF source = firstSource[writer]
+       THEN /\ writerPhase' = [writerPhase EXCEPT ![writer] = "built"]
+            /\ candidateFence' = [candidateFence EXCEPT ![writer] = source]
+            /\ lastOutcome' = "built"
+       ELSE /\ writerPhase' = [writerPhase EXCEPT ![writer] = "idle"]
+            /\ UNCHANGED candidateFence
+            /\ lastOutcome' = "mixed_source"
+    /\ UNCHANGED <<source, cacheRevision, resultFence, checkpointFence,
+                    observedCacheRevision, firstSource, candidateChanged>>
 
 Publish(writer) ==
     /\ writer \in Writers
@@ -101,7 +122,8 @@ Publish(writer) ==
             /\ lastCacheAfter' = cacheRevision + 1
             /\ lastBroadcast' = TRUE
     /\ writerPhase' = [writerPhase EXCEPT ![writer] = "idle"]
-    /\ UNCHANGED <<source, observedCacheRevision, candidateFence, candidateChanged>>
+    /\ UNCHANGED <<source, observedCacheRevision, candidateFence,
+                    firstSource, candidateChanged>>
 
 RefreshFailure(writer) ==
     /\ writer \in Writers
@@ -115,12 +137,14 @@ RefreshFailure(writer) ==
     /\ lastBroadcast' = FALSE
     /\ lastCandidateChanged' = FALSE
     /\ UNCHANGED <<source, cacheRevision, resultFence, checkpointFence,
-                    observedCacheRevision, candidateFence, candidateChanged>>
+                    observedCacheRevision, candidateFence, firstSource,
+                    candidateChanged>>
 
 Next ==
     \/ \E component \in Components: SourceAdvance(component)
     \/ \E writer \in Writers, auxiliaryChanged \in BOOLEAN:
          BeginRefresh(writer, auxiliaryChanged)
+    \/ \E writer \in Writers: FinishRead(writer)
     \/ \E writer \in Writers: Publish(writer)
     \/ \E writer \in Writers: RefreshFailure(writer)
 
@@ -129,13 +153,14 @@ TypeOK ==
     /\ cacheRevision \in 0..MaxCacheRevision
     /\ resultFence \in [Components -> 0..MaxSourceVersion]
     /\ checkpointFence \in [Components -> 0..MaxSourceVersion]
-    /\ writerPhase \in [Writers -> {"idle", "built"}]
+    /\ writerPhase \in [Writers -> {"idle", "reading", "built"}]
     /\ observedCacheRevision \in [Writers -> 0..MaxCacheRevision]
     /\ candidateFence \in [Writers -> [Components -> 0..MaxSourceVersion]]
+    /\ firstSource \in [Writers -> [Components -> 0..MaxSourceVersion]]
     /\ candidateChanged \in [Writers -> BOOLEAN]
     /\ previousResultFence \in [Components -> 0..MaxSourceVersion]
     /\ lastWriter \in Writers \cup {NoWriter}
-    /\ lastOutcome \in {"none", "source_advanced", "built", "applied",
+    /\ lastOutcome \in {"none", "source_advanced", "first_read", "built", "mixed_source", "applied",
                          "stale_cache", "source_regression", "already_current", "failed"}
     /\ lastCacheBefore \in 0..MaxCacheRevision
     /\ lastCacheAfter \in 0..MaxCacheRevision
@@ -150,7 +175,7 @@ PublishIsAtomicCAS ==
        THEN lastCacheAfter = lastCacheBefore + 1
        ELSE lastCacheAfter = lastCacheBefore
 FailureAndRejectionStutter ==
-    lastOutcome \in {"failed", "stale_cache", "source_regression", "already_current"}
+    lastOutcome \in {"failed", "mixed_source", "stale_cache", "source_regression", "already_current"}
       => resultFence = previousResultFence
 ChangedCandidateIsRequiredForPublish ==
     lastOutcome = "applied"
@@ -162,6 +187,10 @@ AlreadyCurrentIsARead ==
          /\ resultFence = previousResultFence
 BroadcastIffPublished == lastBroadcast = (lastOutcome = "applied")
 
+MixedSourceNeverBuilds ==
+    lastOutcome = "mixed_source"
+      => writerPhase[lastWriter] = "idle"
+
 Safety ==
     /\ TypeOK
     /\ ResultAndCheckpointArePaired
@@ -172,6 +201,7 @@ Safety ==
     /\ ChangedCandidateIsRequiredForPublish
     /\ AlreadyCurrentIsARead
     /\ BroadcastIffPublished
+    /\ MixedSourceNeverBuilds
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

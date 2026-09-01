@@ -19,7 +19,43 @@ pub(super) fn stamp_source(
 }
 
 impl ManagedState {
-    pub(super) fn publish_projection_candidate(
+    /// Rebuild a small synchronous candidate against the latest cache revision
+    /// and publish it through the same CAS as the full async reducer. The
+    /// closure must be deterministic because a racing publisher may require a
+    /// retry against a newer base.
+    pub(in crate::state) fn publish_projection_update(
+        &self,
+        session_id: &str,
+        mut update: impl FnMut(&mut SessionRecord) -> Result<(), StateError>,
+    ) -> Result<(), StateError> {
+        loop {
+            let base = self
+                .sessions
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .cloned()
+                .ok_or(StateError::NotFound)?;
+            let base_cache_revision = base.cache_revision;
+            let previous_event_ids = base
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<HashSet<_>>();
+            let mut candidate = base;
+            update(&mut candidate)?;
+            if self.publish_projection_candidate(
+                session_id,
+                base_cache_revision,
+                candidate,
+                &previous_event_ids,
+            )? {
+                return Ok(());
+            }
+        }
+    }
+
+    pub(in crate::state) fn publish_projection_candidate(
         &self,
         session_id: &str,
         base_cache_revision: u64,

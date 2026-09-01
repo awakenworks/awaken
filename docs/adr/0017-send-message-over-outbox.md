@@ -41,9 +41,9 @@ Thread status cache.
 
 ### D2: The target fresh Run owns the accepted message
 
-Both spawn and follow-up freeze exactly one user message in the target
+Spawn, follow-up, and a terminal child's report freeze exactly one user message in the target
 `RunActivation.input`. The deterministic `RunDispatch` carries that complete
-activation through `enqueue_session_child`; backend Run-id idempotency rejects a
+activation through the canonical queue admission; backend Run-id idempotency rejects a
 same-id/different-payload collision. When the Worker commits, the message becomes
 ordinary target-Thread transcript truth through `ThreadCommit.messages`.
 
@@ -81,6 +81,8 @@ does not inject live input and never consumes that Run's `ResumeTicket`.
 - The target message has one content owner: the deterministic fresh activation,
   then the target Thread transcript after commit.
 - Spawn and follow-up use one admission path and one idempotency boundary.
+- Child-to-parent reports use that same activation-input boundary and create no
+  root Inbox or Outbox record.
 - Dispatch cannot resume an unrelated Awaiting Run or strand input on a stale
   ticket because it never performs that classification.
 - External pending input and internal Agent coordination remain distinct

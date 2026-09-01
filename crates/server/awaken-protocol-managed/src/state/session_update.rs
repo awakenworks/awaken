@@ -9,7 +9,7 @@ impl ManagedState {
     pub async fn reconcile_session_realizations(&self) -> usize {
         let report = self.application.reconcile_session_realizations().await;
         for session in &report.settled {
-            if let Err(error) = self.refresh_cached_projection(session) {
+            if let Err(error) = self.publish_persisted_session(session) {
                 tracing::warn!(
                     session = %session.session_id,
                     error = ?error,
@@ -65,34 +65,11 @@ impl ManagedState {
         &self,
         outcome: &awaken_session_application::SessionUpdateOutcome,
     ) -> Result<(), StateError> {
-        self.refresh_cached_projection(&outcome.session)?;
+        self.publish_persisted_session(&outcome.session)?;
         if !outcome.command_applied || !outcome.changes.any() {
             return Ok(());
         }
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions
-            .get_mut(&outcome.session.session_id)
-            .ok_or(StateError::NotFound)?;
-        let event = Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionUpdated {
-                title: outcome.changes.title.then(|| record.session.title.clone()),
-                metadata: if outcome.changes.metadata {
-                    record.session.metadata.clone()
-                } else {
-                    Default::default()
-                },
-                agent: outcome
-                    .changes
-                    .agent()
-                    .then(|| record.session.agent.clone()),
-                budget: outcome
-                    .changes
-                    .budget
-                    .then(|| record.session.budget.clone()),
-            },
-            processed_at: Some(PROCESSED_AT.to_string()),
-        };
+        let event_id = self.next_event_id();
         let predecessor = outcome
             .session
             .event_batches
@@ -103,25 +80,49 @@ impl ManagedState {
             .map(|entry| {
                 durable_inbound_event_id(&outcome.session.session_id, entry.event.operation_id())
             });
-        if let Some(predecessor) = predecessor {
-            record
-                .overlay
-                .anchors
-                .insert(event.id.clone(), predecessor.clone());
-            if record
-                .events
-                .iter()
-                .any(|candidate| candidate.id == predecessor)
-            {
-                record.events.push(event);
+        self.publish_projection_update(&outcome.session.session_id, |record| {
+            let event = Event {
+                id: event_id.clone(),
+                kind: OutboundKind::SessionUpdated {
+                    title: outcome.changes.title.then(|| record.session.title.clone()),
+                    metadata: if outcome.changes.metadata {
+                        record.session.metadata.clone()
+                    } else {
+                        Default::default()
+                    },
+                    agent: outcome
+                        .changes
+                        .agent()
+                        .then(|| record.session.agent.clone()),
+                    budget: outcome
+                        .changes
+                        .budget
+                        .then(|| record.session.budget.clone()),
+                },
+                processed_at: Some(PROCESSED_AT.to_string()),
+            };
+            if let Some(predecessor) = predecessor.as_ref() {
+                record
+                    .overlay
+                    .anchors
+                    .insert(event.id.clone(), predecessor.clone());
+                if record
+                    .events
+                    .iter()
+                    .any(|candidate| candidate.id == *predecessor)
+                {
+                    record.events.push(event);
+                } else {
+                    record
+                        .overlay
+                        .pending_events
+                        .push((event, predecessor.clone()));
+                }
             } else {
-                record.overlay.pending_events.push((event, predecessor));
+                record.events.push(event);
             }
-        } else {
-            record.events.push(event);
-        }
-        record.advance_cache_revision()?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Drive the protocol-neutral update and project its committed result into

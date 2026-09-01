@@ -23,7 +23,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| row.get::<_, i64>(0),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             epoch
                 .map(|epoch| {
                     Ok(RunClaim {
@@ -48,7 +48,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let live: Option<(String, String)> = tx
                 .query_row(
                     &format!("SELECT status, request FROM {p}_dispatch WHERE run_id = ?1"),
@@ -56,14 +56,14 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if let Some((status, stored_json)) = live {
                 let stored: RunDispatch = serde_json::from_str(&stored_json).map_err(json_err)?;
                 let state = DispatchState::from_db(&status).ok_or_else(|| {
                     DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
                 })?;
                 let outcome = classify_live_session_run_reservation(&stored, state, &request);
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(outcome);
             }
             let completed: Option<Option<String>> = tx
@@ -75,13 +75,13 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if let Some(request_fingerprint) = completed {
                 let outcome = classify_completed_session_run_reservation(
                     request_fingerprint.as_deref(),
                     &request,
                 );
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(outcome);
             } else {
                 let options = SubmitOptions {
@@ -97,7 +97,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     Some(crate::clock::db_millis(deadline)),
                 )?;
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(SessionRunReservationOutcome::Reserved)
         })
         .await
@@ -114,7 +114,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(String, String, i64, i64)> = tx
                 .query_row(
                     &format!(
@@ -125,7 +125,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((status, request_json, lease_epoch, cancellation_requested)) = current else {
                 let completed = tx
                     .query_row(
@@ -134,7 +134,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         |_| Ok(()),
                     )
                     .optional()
-                    .map_err(reject)?
+                    .map_err(store_error)?
                     .is_some();
                 let outcome = classify_session_run_reservation_activation(
                     None,
@@ -143,7 +143,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     session_activity_epoch,
                 )?
                 .expect("missing reservation always has a closed outcome");
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(outcome);
             };
             let mut request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
@@ -180,14 +180,14 @@ impl DispatchQueue for SqliteDispatchStore {
                             crate::dispatch_state_db(next.state)
                         ],
                     )
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 if changed == 1 {
                     SessionRunReservationActivation::Activated
                 } else {
                     SessionRunReservationActivation::RecoveryClaimed
                 }
             };
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(outcome)
         })
         .await
@@ -198,7 +198,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(String, i64, i64)> = tx
                 .query_row(
                     &format!(
@@ -209,7 +209,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let removable = if let Some((status, lease_epoch, cancellation_requested)) = current {
                 matches!(
                     crate::persisted_dispatch_transition(
@@ -224,7 +224,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 false
             };
             if !removable {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(false);
             }
             let changed = tx
@@ -232,15 +232,15 @@ impl DispatchQueue for SqliteDispatchStore {
                     &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1 AND status = 'reserved'"),
                     params![run_id.0],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if changed == 1 {
                 tx.execute(
                     &format!("DELETE FROM {p}_pending WHERE run_id = ?1"),
                     params![run_id.0],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(changed == 1)
         })
         .await
@@ -258,7 +258,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(String, i64)> = tx
                 .query_row(
                     &format!(
@@ -270,7 +270,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((request_json, cancellation_requested)) = current else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
@@ -316,7 +316,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             crate::dispatch_state_db(next.state)
                         ],
                     )
-                    .map_err(reject)?
+                    .map_err(store_error)?
                 }
                 SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
                     let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
@@ -343,7 +343,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             crate::dispatch_state_db(next.state)
                         ],
                     )
-                    .map_err(reject)?
+                    .map_err(store_error)?
                 }
                 SessionRunReservationResolution::Rejected => {
                     assert!(matches!(
@@ -359,13 +359,13 @@ impl DispatchQueue for SqliteDispatchStore {
                             ),
                             params![claim.run_id.0, claim.owner, claim_epoch],
                         )
-                        .map_err(reject)?;
+                        .map_err(store_error)?;
                     if changed == 1 {
                         tx.execute(
                             &format!("DELETE FROM {p}_pending WHERE run_id = ?1"),
                             params![claim.run_id.0],
                         )
-                        .map_err(reject)?;
+                        .map_err(store_error)?;
                     }
                     changed
                 }
@@ -374,7 +374,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(SettleOutcome::Applied)
         })
         .await
@@ -388,18 +388,18 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
 
             // A replayed completed run is a no-op before supersession, so it
             // cannot mutate sibling rows on its thread (ADR-0060).
             if exact_run_replay(&tx, p, &request)? {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(());
             }
 
             validate_executable_dispatch_admission(&request)?;
             insert_new_dispatch(&tx, p, &request, &options)?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(())
         })
         .await
@@ -413,9 +413,9 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if exact_run_replay(&tx, p, &request)? {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(());
             }
             let parent = session_child_parent(&request)?.clone();
@@ -425,7 +425,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 known_session_child_threads(&tx, p, &parent)?,
             )?;
             insert_new_dispatch(&tx, p, &request, &SubmitOptions::default())?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(())
         })
         .await
@@ -445,7 +445,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if exact_run_replay(&tx, p, &request)? {
                 let claimed = claim_exact_transaction(
                     &tx,
@@ -456,12 +456,12 @@ impl DispatchQueue for SqliteDispatchStore {
                     None,
                     &capabilities,
                 )?;
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(claimed);
             }
             validate_executable_dispatch_admission(&request)?;
             if !can_claim_locally(&request.placement) {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(None);
             }
             insert_new_dispatch(&tx, p, &request, &SubmitOptions::default())?;
@@ -474,7 +474,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 None,
                 &capabilities,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -492,7 +492,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let owner = worker.identity.lease_owner();
             if exact_run_replay(&tx, p, &request)? {
                 let claimed = claim_exact_transaction(
@@ -504,12 +504,12 @@ impl DispatchQueue for SqliteDispatchStore {
                     Some(&worker),
                     &installed_worker_credential_capabilities(&worker)?,
                 )?;
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(claimed);
             }
             validate_executable_dispatch_admission(&request)?;
             if can_assign(&worker, &request.placement, None, false, now_ms).is_err() {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(None);
             }
             insert_new_dispatch(&tx, p, &request, &SubmitOptions::default())?;
@@ -522,7 +522,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 Some(&worker),
                 &installed_worker_credential_capabilities(&worker)?,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -543,7 +543,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             append_pending_row(&tx, p, &input)?;
             let claimed = claim_exact_transaction(
                 &tx,
@@ -554,7 +554,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 None,
                 &capabilities,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -573,7 +573,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             append_pending_row(&tx, p, &input)?;
             let claimed = claim_exact_transaction(
                 &tx,
@@ -584,7 +584,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 Some(&worker),
                 &installed_worker_credential_capabilities(&worker)?,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -617,7 +617,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
 
             // Priority: recover an expired lease, then wake an awaiting run with
             // pending input, then a fresh pending run. SQLite has no SKIP LOCKED;
@@ -665,7 +665,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     tx.query_row(sql, [], map)
                 }
                 .optional()
-                .map_err(reject)
+                .map_err(store_error)
             };
 
             let picked = match row(&reservation_recovery, true)? {
@@ -691,7 +691,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 None,
                 &capabilities,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -707,7 +707,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let thread_available = thread_available_for_claim(p);
             let sql = format!(
                 "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
@@ -724,7 +724,7 @@ impl DispatchQueue for SqliteDispatchStore {
             );
             let capabilities = installed_worker_credential_capabilities(&worker)?;
             let selected = {
-                let mut stmt = tx.prepare(&sql).map_err(reject)?;
+                let mut stmt = tx.prepare(&sql).map_err(store_error)?;
                 let rows = stmt
                     .query_map(params![crate::clock::db_millis(now_ms)], |row| {
                         Ok((
@@ -737,7 +737,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, i64>(6)?,
                         ))
                     })
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 let mut selected = None;
                 for row in rows {
                     let (
@@ -748,7 +748,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         status,
                         cancellation_requested,
                         lease_epoch,
-                    ) = row.map_err(reject)?;
+                    ) = row.map_err(store_error)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
                     let previous: Option<WorkerAssignment> = previous_json
@@ -779,7 +779,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 selected
             };
             let Some(run_id) = selected else {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(None);
             };
             let claimed = claim_exact_transaction(
@@ -791,7 +791,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 Some(&worker),
                 &capabilities,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -809,7 +809,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let thread_available = thread_available_for_claim(p);
             let sql = format!(
                 "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
@@ -826,7 +826,7 @@ impl DispatchQueue for SqliteDispatchStore {
             );
             let capabilities = installed_worker_credential_capabilities(&requester)?;
             let selected = {
-                let mut stmt = tx.prepare(&sql).map_err(reject)?;
+                let mut stmt = tx.prepare(&sql).map_err(store_error)?;
                 let rows = stmt
                     .query_map(params![crate::clock::db_millis(now_ms)], |row| {
                         Ok((
@@ -839,7 +839,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             row.get::<_, i64>(6)?,
                         ))
                     })
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 let mut selected = None;
                 for row in rows {
                     let (
@@ -850,7 +850,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         status,
                         cancellation_requested,
                         lease_epoch,
-                    ) = row.map_err(reject)?;
+                    ) = row.map_err(store_error)?;
                     let request: RunDispatch =
                         serde_json::from_str(&request_json).map_err(json_err)?;
                     let previous: Option<WorkerAssignment> = previous_json
@@ -895,7 +895,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 Some(&requester),
                 &capabilities,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -915,7 +915,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, _p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &tx,
                 &requested_run,
@@ -925,7 +925,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 None,
                 &capabilities,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -943,7 +943,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, _p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let claimed = claim_exact_transaction_with_mode(
                 &tx,
                 &requested_run,
@@ -954,7 +954,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 &Default::default(),
                 ExactClaimMode::TerminalRecovery,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -987,7 +987,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, _p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &tx,
                 &requested_run,
@@ -997,7 +997,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 Some(&worker),
                 &installed_worker_credential_capabilities(&worker)?,
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(claimed)
         })
         .await
@@ -1026,7 +1026,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         claim_epoch
                     ],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             Ok(n > 0)
         })
         .await
@@ -1049,7 +1049,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     ),
                     params![sandbox_ref, claim.run_id.0, claim.owner, claim_epoch],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             Ok(if changed == 1 {
                 SettleOutcome::Applied
             } else {
@@ -1069,7 +1069,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(Option<String>, Option<String>)> = tx
                 .query_row(
                     &format!(
@@ -1081,7 +1081,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((bindings_json, receipts_json)) = current else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
@@ -1106,7 +1106,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             .to_string(),
                     ));
                 }
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(SettleOutcome::Applied);
             }
             receipts.push(receipt);
@@ -1119,12 +1119,12 @@ impl DispatchQueue for SqliteDispatchStore {
                     ),
                     params![json(&receipts)?, claim.run_id.0, claim.owner, claim_epoch],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if changed != 1 {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(SettleOutcome::Applied)
         })
         .await
@@ -1150,7 +1150,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     params![crate::clock::db_millis(now_ms)],
                     |row| row.get(0),
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             Ok(Some(durable_u64("runnable dispatch depth", depth)?))
         })
         .await
@@ -1166,7 +1166,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(
                 String,
                 Option<String>,
@@ -1194,7 +1194,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     },
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((status, owner, persisted_epoch, lease_until, active_owner, active_epoch)) =
                 current
             else {
@@ -1213,11 +1213,11 @@ impl DispatchQueue for SqliteDispatchStore {
                 (Some(owner), Some(active_epoch))
                     if owner == claim.owner && active_epoch == epoch =>
                 {
-                    tx.commit().map_err(reject)?;
+                    tx.commit().map_err(store_error)?;
                     Ok(AttemptAdmission::AlreadyApplied)
                 }
                 (Some(_), Some(_)) => {
-                    tx.commit().map_err(reject)?;
+                    tx.commit().map_err(store_error)?;
                     Ok(AttemptAdmission::Blocked)
                 }
                 (None, None) => {
@@ -1230,12 +1230,12 @@ impl DispatchQueue for SqliteDispatchStore {
                             ),
                             params![claim.run_id.0, claim.owner, epoch],
                         )
-                        .map_err(reject)?;
+                        .map_err(store_error)?;
                     if changed != 1 {
                         let _ = tx.rollback();
                         return Ok(AttemptAdmission::Blocked);
                     }
-                    tx.commit().map_err(reject)?;
+                    tx.commit().map_err(store_error)?;
                     Ok(AttemptAdmission::Applied)
                 }
                 _ => Err(DispatchError::Rejected(
@@ -1259,7 +1259,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     ),
                     params![claim.run_id.0, claim.owner, epoch],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if changed == 1 {
                 return Ok(SettleOutcome::Applied);
             }
@@ -1273,7 +1273,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| row.get::<_, bool>(0),
                 )
                 .optional()
-                .map_err(reject)?
+                .map_err(store_error)?
                 .unwrap_or(false);
             Ok(if empty {
                 SettleOutcome::Applied
@@ -1290,7 +1290,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(String, Option<String>, i64, i64, Option<i64>)> = tx
                 .query_row(
                     &format!(
@@ -1301,7 +1301,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((status, owner, persisted_epoch, cancellation_requested, active_attempt)) = current else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
@@ -1336,7 +1336,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         crate::dispatch_state_db(next.state)
                     ],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if changed != 1 {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
@@ -1349,7 +1349,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     reason: LeaseLossReason::Relinquished,
                 },
             )?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(SettleOutcome::Applied)
         })
         .await
@@ -1368,7 +1368,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let authority: Option<(String, Option<String>, i64, i64, String, Option<i64>)> = tx
                 .query_row(
                     &format!(
@@ -1388,7 +1388,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     },
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((status, owner, persisted_epoch, cancellation_requested, request_json, active_attempt)) =
                 authority
             else {
@@ -1435,7 +1435,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         ),
                         params![run_id, epoch_i64],
                     )
-                    .map_err(reject)?,
+                    .map_err(store_error)?,
                 awaken_run_ingress_contract::GuardedTransition::Applied(next) => tx
                     .execute(
                         &format!(
@@ -1445,7 +1445,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         ),
                         params![run_id, epoch_i64, crate::dispatch_state_db(next.state)],
                     )
-                    .map_err(reject)?,
+                    .map_err(store_error)?,
                 awaken_run_ingress_contract::GuardedTransition::Fenced => unreachable!(),
             };
             if dispatch_rows == 0 {
@@ -1469,7 +1469,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         request.session_thread_id.as_ref().map(|thread| &thread.0)
                     ],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
             }
             // The fence held; now reconcile the run's pending input.
             match outcome {
@@ -1478,7 +1478,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         &format!("DELETE FROM {p}_pending WHERE run_id = ?1"),
                         params![run_id],
                     )
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                     // Also drop anything else consumed this attempt (e.g. unbound
                     // idle-thread input, ADR-0021).
                     for message_id in &consumed {
@@ -1486,7 +1486,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
                             params![message_id],
                         )
-                        .map_err(reject)?;
+                        .map_err(store_error)?;
                     }
                 }
                 DispatchOutcome::Awaiting => {
@@ -1495,12 +1495,12 @@ impl DispatchQueue for SqliteDispatchStore {
                             &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
                             params![message_id],
                         )
-                        .map_err(reject)?;
+                        .map_err(store_error)?;
                     }
                 }
             }
             insert_operation(&tx, p, &DispatchOperation::Settled { claim, outcome })?;
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(SettleOutcome::Applied)
         })
         .await
@@ -1525,7 +1525,7 @@ impl DispatchQueue for SqliteDispatchStore {
                      FROM {p}_dispatch_completion \
                      WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
                 ))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let rows = statement
                 .query_map(params![after_sequence, limit], |row| {
                     Ok((
@@ -1536,11 +1536,11 @@ impl DispatchQueue for SqliteDispatchStore {
                         row.get::<_, Option<String>>(4)?,
                     ))
                 })
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let mut events = Vec::new();
             for row in rows {
                 let (sequence, run_id, request_fingerprint, thread_id, session_thread_id) =
-                    row.map_err(reject)?;
+                    row.map_err(store_error)?;
                 events.push(DispatchCompletion {
                     sequence: u64::try_from(sequence).map_err(|_| {
                         DispatchError::Rejected(
@@ -1567,7 +1567,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let candidates = {
                 let mut statement = tx
                     .prepare(&format!(
@@ -1577,7 +1577,7 @@ impl DispatchQueue for SqliteDispatchStore {
                          AND attempt_count >= ?2 \
                          AND active_attempt_epoch IS NULL ORDER BY created_at"
                     ))
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 let rows = statement
                     .query_map(
                         params![crate::clock::db_millis(now_ms), max_attempts_i64],
@@ -1591,8 +1591,8 @@ impl DispatchQueue for SqliteDispatchStore {
                             ))
                         },
                     )
-                    .map_err(reject)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
+                    .map_err(store_error)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
             };
             let mut quarantined = 0;
             for (run_id, owner, epoch, attempt_count, cancellation_requested) in candidates {
@@ -1626,7 +1626,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             crate::dispatch_state_db(next.state)
                         ],
                     )
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 if changed == 0 {
                     continue;
                 }
@@ -1653,7 +1653,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 )?;
                 quarantined += 1;
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(quarantined)
         })
         .await
@@ -1674,7 +1674,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_epoch FROM {p}_dispatch \
                      ORDER BY created_at"
                 ))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let rows = stmt
                 .query_map([], |r| {
                     Ok((
@@ -1689,7 +1689,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         r.get::<_, Option<i64>>(8)?.is_some(),
                     ))
                 })
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let mut out = Vec::new();
             for row in rows {
                 let (
@@ -1702,7 +1702,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     sandbox_bound,
                     lease_until,
                     physical_attempt_active,
-                ) = row.map_err(reject)?;
+                ) = row.map_err(store_error)?;
                 let request = serde_json::from_str::<RunDispatch>(&request).map_err(json_err)?;
                 let state = DispatchState::from_db(&status).ok_or_else(|| {
                     DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
@@ -1734,7 +1734,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(String, i64, i64)> = tx
                 .query_row(
                     &format!(
@@ -1745,9 +1745,9 @@ impl DispatchQueue for SqliteDispatchStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let Some((status, lease_epoch, cancellation_requested)) = current else {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(false);
             };
             let Some(next) = crate::persisted_dispatch_transition(
@@ -1756,7 +1756,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 cancellation_requested != 0,
             )?
             .requeue_dead_letter() else {
-                tx.commit().map_err(reject)?;
+                tx.commit().map_err(store_error)?;
                 return Ok(false);
             };
             let n = tx
@@ -1769,8 +1769,8 @@ impl DispatchQueue for SqliteDispatchStore {
                     ),
                     params![run_id, crate::dispatch_state_db(next.state)],
                 )
-                .map_err(reject)?;
-            tx.commit().map_err(reject)?;
+                .map_err(store_error)?;
+            tx.commit().map_err(store_error)?;
             Ok(n > 0)
         })
         .await
@@ -1781,7 +1781,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let current: Option<(String, String, Option<String>, i64, i64)> = tx
                 .query_row(
                     &format!(
@@ -1801,7 +1801,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     },
                 )
                 .optional()
-                .map_err(reject)?;
+                .map_err(store_error)?;
             if let Some((_, status, _, epoch, cancellation_requested)) = &current {
                 let transition = crate::persisted_dispatch_transition(
                     status,
@@ -1813,7 +1813,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     revoked_lease,
                 } = transition.cancel().map_err(crate::transition_error)?
                 else {
-                    tx.commit().map_err(reject)?;
+                    tx.commit().map_err(store_error)?;
                     return Ok(None);
                 };
                 tx.execute(
@@ -1832,7 +1832,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         crate::dispatch_state_db(next.state)
                     ],
                 )
-                .map_err(reject)?;
+                .map_err(store_error)?;
                 if revoked_lease {
                     let (_, _, owner, epoch, _) = current.as_ref().expect("current exists");
                     insert_operation(
@@ -1857,7 +1857,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     )?;
                 }
             }
-            tx.commit().map_err(reject)?;
+            tx.commit().map_err(store_error)?;
             Ok(current.map(|(thread, _, _, _, _)| ThreadId(thread)))
         })
         .await
@@ -1867,7 +1867,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             tx.execute(
                 &format!(
                     "DELETE FROM {p}_pending WHERE run_id IN \
@@ -1875,14 +1875,14 @@ impl DispatchQueue for SqliteDispatchStore {
                 ),
                 [],
             )
-            .map_err(reject)?;
+            .map_err(store_error)?;
             let n = tx
                 .execute(
                     &format!("DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"),
                     [],
                 )
-                .map_err(reject)?;
-            tx.commit().map_err(reject)?;
+                .map_err(store_error)?;
+            tx.commit().map_err(store_error)?;
             Ok(n)
         })
         .await
@@ -1894,7 +1894,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         AND dead_lettered_at <= ?1";
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(reject)?;
+                .map_err(store_error)?;
             tx.execute(
                 &format!(
                     "DELETE FROM {p}_pending WHERE run_id IN \
@@ -1902,14 +1902,14 @@ impl DispatchQueue for SqliteDispatchStore {
                 ),
                 params![crate::clock::db_millis(cutoff_ms)],
             )
-            .map_err(reject)?;
+            .map_err(store_error)?;
             let n = tx
                 .execute(
                     &format!("DELETE FROM {p}_dispatch WHERE {cond}"),
                     params![crate::clock::db_millis(cutoff_ms)],
                 )
-                .map_err(reject)?;
-            tx.commit().map_err(reject)?;
+                .map_err(store_error)?;
+            tx.commit().map_err(store_error)?;
             Ok(n)
         })
         .await

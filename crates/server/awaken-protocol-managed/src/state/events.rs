@@ -35,6 +35,7 @@ pub(super) fn coordinated_child_run_is_terminal(
 
 /// One public inbound event rebuilt from canonical Session/Thread truth. The
 /// batch coordinate is ephemeral ordering metadata, never a second event log.
+#[derive(Clone)]
 struct DurableInboundProjection {
     event: Event,
 }

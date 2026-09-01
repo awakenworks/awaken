@@ -23,6 +23,14 @@ use awaken_session_contract::{
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 
+fn dispatch_admission_error(error: awaken_run_ingress::DispatchError) -> HostError {
+    match error {
+        awaken_run_ingress::DispatchError::Rejected(message) => HostError::bad_request(message),
+        awaken_run_ingress::DispatchError::Conflict(message) => HostError::conflict(message),
+        awaken_run_ingress::DispatchError::Unavailable(message) => HostError::unavailable(message),
+    }
+}
+
 fn coordinated_activation_input(
     session_id: &str,
     thread_id: &ThreadId,
@@ -451,7 +459,9 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         let commit = self.commit_for_read(session_id).await?;
         Ok(commit
-            .latest_run(thread_id)
+            .authoritative_latest_run(thread_id)
+            .await
+            .map_err(HostError::internal)?
             .is_some_and(|run| coordinated_thread_failed(&run.state)))
     }
 
@@ -836,7 +846,7 @@ impl SharedHost {
         store
             .enqueue_session_child(request, admission)
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(dispatch_admission_error)?;
         // Thread disposition, Run commits, and dispatch admission may use
         // different durable adapters. Re-read both existing admission fences
         // after enqueue: whichever side won records cancellation on this exact
@@ -852,9 +862,8 @@ impl SharedHost {
                 .await?;
         if archived || failed {
             // This admission may already be durable, so it is not a definitive
-            // caller rejection until its cancellation has settled. Returning an
-            // unavailable classification preserves the Session activity receipt
-            // across an ambiguous enqueue/response boundary.
+            // caller rejection until cancellation has settled. Once quiescent,
+            // the bad request is safe: no accepted child execution remains.
             self.cancel_and_await_coordinated_thread_quiescence(&session_id, &thread_id)
                 .await?;
             return Err(HostError::bad_request(if archived {
@@ -869,10 +878,9 @@ impl SharedHost {
         Ok(SessionAgentMessageReceipt { thread_id })
     }
 
-    /// Persist one terminal child report through the existing Outbox/Inbox and
-    /// atomically admit the deterministic later coordinator Run. Awaiting child
-    /// state is projected from that child's committed lifecycle and must never
-    /// enter the primary Inbox or sample the coordinator.
+    /// Admit one terminal child report as immutable input of a deterministic
+    /// coordinator Run. The source Thread commit owns the report and the target
+    /// Thread commit owns its consumption; Outbox/Inbox is intentionally absent.
     pub(crate) async fn continue_session_agent_report(
         &self,
         command: SessionAgentReportContinuation,
@@ -889,7 +897,6 @@ impl SharedHost {
                 "coordinated Agent report has inconsistent provenance",
             ));
         }
-        let message_id = command.message.id.0.clone();
         let store = self.dispatch_store()?;
 
         let ctx = self.ctx_for(&command.session_id, None).await?;
@@ -905,7 +912,7 @@ impl SharedHost {
             run_id,
             ThreadId(command.session_id.clone()),
             ctx.config.clone(),
-            Vec::new(),
+            vec![command.message],
         )
         .with_model_ref_override(self.inference_routing.override_for(&command.session_id));
         // The report command itself is durable Session provenance. Do not rely
@@ -916,23 +923,10 @@ impl SharedHost {
             .resolved_dispatch(activation)?
             .for_session(ThreadId(command.session_id.clone()))
             .with_session_activity_epoch(command.session_activity_epoch);
-        let input = PendingInput {
-            message_id,
-            run_id: request.run_id().clone(),
-            thread_id: ThreadId(command.session_id.clone()),
-            correlation_id: String::new(),
-            available_at_ms: None,
-            context_messages: Vec::new(),
-            result: ResumeResult::Input(extract_text(&command.message.content)),
-        };
         store
-            .relay_and_enqueue(
-                input,
-                request,
-                awaken_run_ingress::ContinuationAdmission::Root,
-            )
+            .enqueue(request)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(dispatch_admission_error)?;
         if let Some(pool) = self.dispatch_pool.get() {
             pool.notify().await;
         }
@@ -1225,7 +1219,9 @@ impl SharedHost {
 
         let commit = self.commit_for_read(session_id).await?;
         if commit
-            .latest_run(thread_id)
+            .authoritative_latest_run(thread_id)
+            .await
+            .map_err(HostError::internal)?
             .is_some_and(|run| run.state == RunState::Running)
         {
             return Err(HostError::bad_request(
@@ -1290,6 +1286,28 @@ mod tests {
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_runtime_contract::tool::{ToolOutput, ToolRecoveryPolicy};
     use awaken_session_contract::SessionRuntime as _;
+
+    #[test]
+    fn dispatch_admission_errors_preserve_commit_certainty() {
+        // Cause/effect graph: C1 validation proves no write; C2 an existing
+        // identity has another payload; C3 storage or transport cannot prove
+        // whether the write committed. Effects: E1 caller correction may close
+        // a new activity; E2 the original activity remains recoverable; E3 exact
+        // retry remains mandatory. Decision table: R1=C1->BadRequest/E1,
+        // R2=C2->Conflict/E2, R3=C3->Unavailable/E3.
+        let rejected = dispatch_admission_error(awaken_run_ingress::DispatchError::Rejected(
+            "invalid shape".into(),
+        ));
+        let conflict = dispatch_admission_error(awaken_run_ingress::DispatchError::Conflict(
+            "identity collision".into(),
+        ));
+        let unavailable = dispatch_admission_error(awaken_run_ingress::DispatchError::Unavailable(
+            "response lost".into(),
+        ));
+        assert_eq!(rejected.kind, HostErrorKind::BadRequest, "R1/E1");
+        assert_eq!(conflict.kind, HostErrorKind::Conflict, "R2/E2");
+        assert_eq!(unavailable.kind, HostErrorKind::Unavailable, "R3/E3");
+    }
 
     #[test]
     fn coordinated_message_has_one_target_thread_owner_for_spawn_and_follow_up() {

@@ -153,24 +153,14 @@ impl ManagedState {
         }
     }
 
-    /// Refresh the disposable HTTP projection after the one durable root CAS.
-    /// Every mutation crosses this seam, so realization, update, archive, and
-    /// recovery cannot each invent a second cache-synchronization path.
-    pub(super) fn refresh_cached_projection(
-        &self,
+    /// Apply durable Session-root fields to a private projection candidate.
+    /// Publication belongs exclusively to `publish_projection_candidate`, so
+    /// callers cannot partially mutate the live cache before Thread reads pass.
+    pub(super) fn apply_persisted_session(
+        record: &mut SessionRecord,
         persisted: &PersistedSession,
-    ) -> Result<(), StateError> {
+    ) {
         let mcp_servers = typed_mcp_servers(persisted.configured_mcp_servers());
-        let mut sessions = self.sessions.lock().unwrap();
-        let Some(record) = sessions.get_mut(&persisted.session_id) else {
-            return Ok(());
-        };
-        // A Runtime projection and a root command may finish their reads in the
-        // opposite order. Never let an older root snapshot roll the disposable
-        // DTO backwards; equal revisions are immutable replays and need no write.
-        if persisted.revision <= record.checkpoint.source.session_revision {
-            return Ok(());
-        }
         record.session.status = Self::wire_session_status(persisted.execution);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
@@ -184,8 +174,28 @@ impl ManagedState {
             .map(crate::types::BudgetLimit::from_minor);
         record.resource_state = persisted.resources.clone();
         record.checkpoint.source.session_revision = persisted.revision;
-        record.advance_cache_revision()?;
-        Ok(())
+    }
+
+    /// Publish only Session-root fields after its durable CAS. This is a
+    /// candidate builder, not another writer: full Thread/lifecycle reduction
+    /// and root-only visibility both converge on the sole CAS publisher.
+    pub(super) fn publish_persisted_session(
+        &self,
+        persisted: &PersistedSession,
+    ) -> Result<(), StateError> {
+        let result = self.publish_projection_update(&persisted.session_id, |candidate| {
+            if persisted.revision >= candidate.checkpoint.source.session_revision {
+                Self::apply_persisted_session(candidate, persisted);
+            }
+            Ok(())
+        });
+        match result {
+            // A cold or control-only adapter has no disposable wire row to
+            // update. Durable truth remains committed; rehydration constructs
+            // the initial candidate later.
+            Err(StateError::NotFound) => Ok(()),
+            other => other,
+        }
     }
 
     /// Wire-cache adapter around the Session application's sole root CAS. Every
@@ -204,7 +214,7 @@ impl ManagedState {
             .commit_session_snapshot(owner_scope, session, operation, lifecycle_facts)
             .await
             .map_err(Self::map_application_mutation_error)?;
-        self.refresh_cached_projection(&session)?;
+        self.publish_persisted_session(&session)?;
         Ok(session)
     }
 
@@ -1323,13 +1333,11 @@ impl ManagedState {
         // Do not remove the visible record until the repository has atomically
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
-        let transition = self
+        let _transition = self
             .application
             .delete_session(awaken_session_application::SessionDeleteCommand::new(id))
             .await
             .map_err(Self::map_preparation_error)?;
-        self.refresh_cached_projection(&transition.session)?;
-
         {
             let deleted_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();

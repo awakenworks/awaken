@@ -184,7 +184,7 @@ async fn insert_dispatch_with_state(
         .bind(&request.thread_id().0)
         .fetch_one(&mut **tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         epoch = crate::next_supersession_epoch(max.unwrap_or(0))?;
         let candidates = sqlx::query(&format!(
             "SELECT run_id, status, lease_epoch, cancel_requested FROM {prefix}_dispatch \
@@ -193,13 +193,13 @@ async fn insert_dispatch_with_state(
         .bind(&request.thread_id().0)
         .fetch_all(&mut **tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         validate_session_run_replacement_candidates(
             request,
             candidates
                 .iter()
                 .map(|candidate| {
-                    let status: String = candidate.try_get("status").map_err(reject)?;
+                    let status: String = candidate.try_get("status").map_err(store_error)?;
                     DispatchState::from_db(&status).ok_or_else(|| {
                         DispatchError::Rejected(format!(
                             "unknown persisted dispatch state `{status}`"
@@ -209,11 +209,11 @@ async fn insert_dispatch_with_state(
                 .collect::<Result<Vec<_>, _>>()?,
         )?;
         for candidate in candidates {
-            let run_id: String = candidate.try_get("run_id").map_err(reject)?;
-            let status: String = candidate.try_get("status").map_err(reject)?;
-            let lease_epoch: i64 = candidate.try_get("lease_epoch").map_err(reject)?;
+            let run_id: String = candidate.try_get("run_id").map_err(store_error)?;
+            let status: String = candidate.try_get("status").map_err(store_error)?;
+            let lease_epoch: i64 = candidate.try_get("lease_epoch").map_err(store_error)?;
             let cancellation_requested: i64 =
-                candidate.try_get("cancel_requested").map_err(reject)?;
+                candidate.try_get("cancel_requested").map_err(store_error)?;
             let Some(next) = crate::persisted_dispatch_transition(
                 &status,
                 lease_epoch,
@@ -230,7 +230,7 @@ async fn insert_dispatch_with_state(
             .bind(crate::dispatch_state_db(next.state))
             .execute(&mut **tx)
             .await
-            .map_err(reject)?;
+            .map_err(store_error)?;
         }
     }
 
@@ -253,7 +253,7 @@ async fn insert_dispatch_with_state(
     .bind(lease_until)
     .execute(&mut **tx)
     .await
-    .map_err(reject)?
+    .map_err(store_error)?
     .rows_affected();
     if inserted > 0 {
         return Ok(());
@@ -269,7 +269,7 @@ async fn insert_dispatch_with_state(
         .bind(dedupe_key)
         .fetch_one(&mut **tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if deduped {
             return Ok(());
         }
@@ -291,10 +291,10 @@ async fn admit_session_child(
     let rows = sqlx::query(&format!("SELECT request FROM {prefix}_dispatch"))
         .fetch_all(&mut **tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let mut known = Vec::new();
     for row in rows {
-        let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+        let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
         if let Some(thread) = session_child_thread(&stored, &parent) {
             known.push(thread.clone());
         }
@@ -307,7 +307,7 @@ async fn admit_session_child(
     .bind(&parent.0)
     .fetch_all(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     known.extend(completed.into_iter().map(ThreadId));
     ensure_session_child_capacity(request, admission, known)
 }
@@ -377,12 +377,12 @@ impl PostgresDispatchStore {
         .bind(status)
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         rows.into_iter()
             .map(|row| {
                 row.try_get::<String, _>("run_id")
                     .map(RunId)
-                    .map_err(reject)
+                    .map_err(store_error)
             })
             .collect()
     }
@@ -395,7 +395,7 @@ impl PostgresDispatchStore {
         let p = NS;
         // Keep this transaction alive in the opaque guard. The explicit status
         // keeps repair authority separate from ordinary execution authority.
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as(&format!(
             "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested \
                  FROM {p}_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE"
@@ -404,7 +404,7 @@ impl PostgresDispatchStore {
         .bind(required_status)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let request = match current {
             Some((epoch, owner, expires_ms, Json(request), cancellation_requested))
                 if durable_u64("dispatch lease epoch", epoch)? == claim.epoch
@@ -430,6 +430,6 @@ impl PostgresDispatchStore {
 include!("postgres/dispatch_queue.rs");
 include!("postgres/message_ports.rs");
 include!("postgres/claim.rs");
-fn reject(err: sqlx::Error) -> DispatchError {
-    DispatchError::Rejected(err.to_string())
+fn store_error(err: sqlx::Error) -> DispatchError {
+    DispatchError::unavailable(err)
 }

@@ -62,7 +62,11 @@ impl SharedHost {
         let commit = self.commit_for_read(session_id).await?;
         let mut tickets = Vec::new();
         for thread_id in thread_ids {
-            let Some(latest) = commit.latest_run(&thread_id) else {
+            let Some(latest) = commit
+                .authoritative_latest_run(&thread_id)
+                .await
+                .map_err(HostError::internal)?
+            else {
                 continue;
             };
             let snapshot = commit
@@ -260,8 +264,8 @@ impl SharedHost {
     ) -> Result<Option<Pending>, HostError> {
         // The committed ticket is the lifecycle authority. In particular, an
         // observer on another protocol can see the committed tool-call message
-        // before the foreground caller reaches `finish_step` and updates its
-        // disposable `SessionState`; consulting that cache here would briefly
+        // before the foreground caller reaches `finish_step` and publishes its
+        // process-local step projection; consulting that projection here would briefly
         // misclassify a client-executed call as an ordinary executed tool. Open
         // committed truth before rebuilding derived context: a malformed A2A
         // continuation must not hide its still-authoritative input/auth wait and
@@ -310,7 +314,7 @@ impl SharedHost {
     /// Interrupt the run in flight on `thread`, if any: cancel its token so the
     /// runtime observes it at the next step boundary and ends the run `Cancelled`
     /// (an outcome loop then reports `interrupted`). A no-op when nothing is
-    /// running. Never blocks on the run's own state lock — it only touches the
+    /// running. Never blocks on the run's own execution lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
         // Cancellation is a control-plane operation. Resolve only an already
@@ -555,7 +559,6 @@ impl SharedHost {
         }
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
-        let st = ctx.state.lock().await;
         if ctx
             .commit
             .open_wait_for_thread(&ctx.thread_id)
@@ -595,7 +598,6 @@ impl SharedHost {
         // Run again when the current Run settles on another replica.
         let baseline = self.authoritative_step_snapshot(&ctx, &run_id).await?;
         let before = baseline.messages.len();
-        drop(st);
         activation.run_id = run_id.clone();
         activation.model_ref_override = self.inference_routing.override_for(thread);
         activation.data_subject_id = data_subject_id;
@@ -626,11 +628,10 @@ impl SharedHost {
                 return Err(HostError::internal(error.to_string()));
             }
         };
-        let mut st = ctx.state.lock().await;
+        let _projection = ctx.projection.lock().await;
         let result = self
             .finish_active_step(
                 &ctx,
-                &mut st,
                 run_id,
                 state,
                 StepCommitExpectation {
@@ -1125,11 +1126,10 @@ impl SharedHost {
                 0,
             );
             let state = self.drive_resume(&ctx, activation, command).await?;
-            let mut st = ctx.state.lock().await;
+            let _projection = ctx.projection.lock().await;
             let result = self
                 .finish_active_step(
                     &ctx,
-                    &mut st,
                     run_id,
                     state,
                     StepCommitExpectation {
@@ -1188,11 +1188,10 @@ impl SharedHost {
                 .len();
             let command = ResumeCommand::from_ticket(&ticket, result, 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
-            let mut st = ctx.state.lock().await;
+            let _projection = ctx.projection.lock().await;
             let result = self
                 .finish_active_step(
                     &ctx,
-                    &mut st,
                     run_id,
                     state,
                     StepCommitExpectation {
@@ -1228,11 +1227,10 @@ impl SharedHost {
             .len();
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = self.drive_resume(&ctx, activation, command).await?;
-        let mut st = ctx.state.lock().await;
+        let _projection = ctx.projection.lock().await;
         let result = self
             .finish_active_step(
                 &ctx,
-                &mut st,
                 run_id,
                 state,
                 StepCommitExpectation {
@@ -1255,7 +1253,6 @@ impl SharedHost {
     async fn finish_active_step(
         &self,
         ctx: &SessionCtx,
-        st: &mut SessionState,
         run_id: RunId,
         state: RunState,
         expectation: StepCommitExpectation<'_>,
@@ -1263,7 +1260,7 @@ impl SharedHost {
     ) -> Result<CommittedStepReceipt, HostError> {
         let active_run = run_id.clone();
         let result = self
-            .finish_step(ctx, st, run_id, state, expectation, thread)
+            .finish_step(ctx, run_id, state, expectation, thread)
             .await;
         Self::clear_active_run(ctx, &active_run);
         result
@@ -1295,10 +1292,9 @@ impl SharedHost {
     ) -> Result<CommittedStepReceipt, HostError> {
         let committed = self.authoritative_step_snapshot(ctx, &run_id).await?;
         let messages_before = message_prefix_before_exact_inputs(&committed, input_message_ids)?;
-        let mut local = ctx.state.lock().await;
+        let _projection = ctx.projection.lock().await;
         self.finish_step(
             ctx,
-            &mut local,
             run_id,
             state,
             StepCommitExpectation {
@@ -1321,10 +1317,9 @@ impl SharedHost {
         state: RunState,
         messages_before: usize,
     ) -> Result<CommittedStepReceipt, HostError> {
-        let mut local = ctx.state.lock().await;
+        let _projection = ctx.projection.lock().await;
         self.finish_step(
             ctx,
-            &mut local,
             run_id,
             state,
             StepCommitExpectation {
@@ -1386,12 +1381,11 @@ impl SharedHost {
         }
     }
 
-    /// Project the step's delta, update the awaiting position, and publish the
-    /// delta to the thread hub for any observing protocol.
+    /// Project the step's delta and publish it to the thread hub. Awaiting
+    /// position remains exclusively owned by committed Thread truth.
     async fn finish_step(
         &self,
         ctx: &SessionCtx,
-        st: &mut SessionState,
         run_id: RunId,
         state: RunState,
         expectation: StepCommitExpectation<'_>,
@@ -1413,7 +1407,6 @@ impl SharedHost {
         let delegation_registry = delegation_registry_from_snapshot(&committed, &run_id)?;
         let (pending, awaiting, await_reason) = match &state {
             RunState::Awaiting => {
-                st.awaiting_run = Some(run_id.clone());
                 let ticket = recovery_ticket(&committed, &run_id);
                 let await_reason = ticket.as_ref().map(ResumeTicket::reason);
                 let pending = if let Some(ticket) = ticket {
@@ -1432,10 +1425,7 @@ impl SharedHost {
                 };
                 (pending, true, await_reason)
             }
-            _ => {
-                st.awaiting_run = None;
-                (None, false, None)
-            }
+            _ => (None, false, None),
         };
         if !new_messages.is_empty() {
             self.hub

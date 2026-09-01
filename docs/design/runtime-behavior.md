@@ -521,6 +521,11 @@ consumes the current Run's `ResumeTicket`. A future
 generic `send_message` must use the same Thread-scoped StateCommand/reducer shape
 instead of a server read-then-outbox adapter.
 
+A terminal child report follows the identical ownership rule in the reverse
+direction: the committed child result is projected into one deterministic root
+`RunActivation.input`. Exact retry reuses that Run identity; it never stages a
+second copy in the root pending Inbox or Dispatch Outbox.
+
 Scheduled/background-like work that must resume the current run uses the
 deferred-work path. A selected plugin or tool stages a `ScheduledAction` with a
 correlation/idempotency key, run/thread binding, snapshot, and descriptor

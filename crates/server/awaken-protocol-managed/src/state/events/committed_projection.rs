@@ -868,20 +868,26 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<bool, StateError> {
         // Private Worker realization mutates the same durable Session application
-        // without passing through this protocol adapter. Refresh its disposable
-        // wire projection before reading runtime events so GET cannot retain a
-        // stale preparing/idle status as a parallel lifecycle authority.
+        // without passing through this protocol adapter. Include that root in the
+        // same private candidate as Runtime facts so GET cannot publish a stale
+        // preparing/idle status or a torn cross-source projection.
         let persisted = self
             .application
             .session(session_id)
             .await
             .map_err(StateError::from)?;
         let persisted_status = Self::wire_session_status(persisted.execution);
-        // The Session root is authoritative for its public status even while an
-        // accepted command is waiting for an immutable Runtime projection
-        // anchor. The anchor barrier below withholds only the ordered Event
-        // suffix; it must not also preserve a stale disposable Session DTO.
-        self.refresh_cached_projection(&persisted)?;
+        // Snapshot the complete warm projection and its process-local CAS token
+        // before asynchronous source reads. Every path below builds privately
+        // and publishes through the same compare-and-swap owner.
+        let base_record = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .ok_or(StateError::NotFound)?;
+        let base_cache_revision = base_record.cache_revision;
         if persisted.event_batches.iter().any(|batch| {
             batch
                 .events
@@ -891,15 +897,20 @@ impl ManagedState {
             // Project only root-owned accepted receipts at the end of the issued
             // prefix. Runtime-derived facts remain withheld until the anchor CAS.
             let projections = unanchored_inbound_projections(session_id, &persisted.event_batches);
-            let mut sessions = self.sessions.lock().unwrap();
-            let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-            let start = record.events.len();
-            merge_durable_inbound_projections(record, projections);
-            if record.events.len() != start {
-                record.advance_cache_revision()?;
-            }
-            self.broadcast_committed_from(session_id, record, start);
-            return Ok(true);
+            let mut candidate = base_record;
+            let previous_event_ids = candidate
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<std::collections::HashSet<_>>();
+            Self::apply_persisted_session(&mut candidate, &persisted);
+            merge_durable_inbound_projections(&mut candidate, projections);
+            return self.publish_projection_candidate(
+                session_id,
+                base_cache_revision,
+                candidate,
+                &previous_event_ids,
+            );
         }
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         let budget_reach_projections = persisted
@@ -934,18 +945,6 @@ impl ManagedState {
                 ))
             })
             .collect::<Result<Vec<_>, StateError>>()?;
-        // Snapshot the complete warm projection and its process-local CAS token
-        // before asynchronous source reads. The reducer builds only from this
-        // private value; a concurrent root/overlay/committed update invalidates
-        // the final publish instead of being overwritten by a stale clone.
-        let base_record = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .cloned()
-            .ok_or(StateError::NotFound)?;
-        let base_cache_revision = base_record.cache_revision;
         let initial_cursor = base_record.checkpoint.source.lifecycle_cursor;
         // Read Outcome observation before the root recovery fence. A terminal
         // Outcome projection is derived from that same Thread aggregate and its
@@ -1181,6 +1180,7 @@ impl ManagedState {
         // this process. Durable Session/Runtime facts remain the sole recovery
         // authority; only a fully valid projection replaces the warm cache.
         let mut staged_record = base_record;
+        Self::apply_persisted_session(&mut staged_record, &persisted);
         let previous_event_ids = staged_record
             .events
             .iter()

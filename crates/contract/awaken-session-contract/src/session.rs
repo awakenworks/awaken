@@ -648,8 +648,9 @@ pub trait SessionRuntime: Send + Sync {
         Ok(None)
     }
 
-    /// Persist one Session-approved child report through the primary Thread's
-    /// existing Outbox/Inbox and durable root-Run admission owners.
+    /// Admit one Session-approved child report as immutable input of the
+    /// deterministic primary Run. Implementations must not stage a parallel
+    /// Outbox/Inbox message for this internal Agent-to-Agent transfer.
     async fn continue_session_agent_report(
         &self,
         _command: crate::SessionAgentReportContinuation,

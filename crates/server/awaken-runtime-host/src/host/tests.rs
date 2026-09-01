@@ -12478,11 +12478,11 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 child boundary is terminal; C2 report provenance
     // matches the exact child Run; C3 exact delivery is retried; C4 the child
-    // activity epoch is still active. Effects: E1
-    // stage one input bound to its deterministic primary Run; E2 atomically enqueue one deterministic
-    // primary Run carrying C4; E3 retry is an exact no-op; E4 no Worker constructs
-    // a parent activation. Awaiting is intentionally absent: Managed projects its child
-    // lifecycle directly and SessionApplication never invokes this command.
+    // activity epoch is still active. Effects: E1 freeze the exact report into
+    // the deterministic primary activation; E2 enqueue one deterministic primary
+    // Run carrying C4; E3 retry is an exact no-op; E4 no Outbox/Inbox copy exists.
+    // Awaiting is intentionally absent: Managed projects its child lifecycle
+    // directly and SessionApplication never invokes this command.
     //
     // | Rule | State | Provenance | Replay | Epoch | Effect |
     // | R1 | Ended | exact | no | active | E1+E2+E4 |
@@ -12521,16 +12521,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
         .list(&ThreadId("primary-report".into()))
         .await
         .expect("R1 primary Inbox");
-    assert_eq!(inbox.len(), 1, "R1/R2 one input");
-    assert_eq!(
-        inbox[0].input.message_id,
-        MessageId::agent_thread_report(&child_run).0,
-        "R1 typed provenance"
-    );
-    assert_eq!(
-        inbox[0].input.run_id, rows[0].run_id,
-        "R1/E1 the report cannot be drained by another primary Run"
-    );
+    assert!(inbox.is_empty(), "R1/E4 no parallel Inbox message");
 
     let bad_run = RunId("other-child".into());
     let rejected = host
@@ -12572,6 +12563,16 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
         claimed.request.session_activity_epoch,
         Some(23),
         "R1 activity handoff is owned by the canonical dispatch, not its operational summary"
+    );
+    assert_eq!(
+        claimed.request.activation.input.len(),
+        1,
+        "R1/E1 exact input"
+    );
+    assert_eq!(
+        claimed.request.activation.input[0].id,
+        MessageId::agent_thread_report(&child_run),
+        "R1/E1 typed provenance stays inside the target Run"
     );
 }
 
@@ -13759,8 +13760,8 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1=the Runtime has atomically committed a client-tool
-    // call and its Awaiting ticket; C2=the foreground protocol has not yet copied
-    // that position into disposable SessionState; C3=a peer protocol queries the
+    // call and its Awaiting ticket; C2=the foreground protocol has not yet
+    // published its process-local step projection; C3=a peer protocol queries the
     // pending tool; C4=a fresh user Run races that wait; C5=the exact client
     // result arrives. E1=the exact committed call is returned as client-executed;
     // E2=no pending tool is fabricated when committed truth has no open wait;
@@ -13779,14 +13780,8 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
         .expect("client tool awaits");
     let expected = first.pending.expect("run exposes the pending client tool");
 
-    // Model the small cross-protocol window after the durable commit and before
-    // the foreground adapter finalizes its own in-memory projection.
-    let ctx = host
-        .ctx_for("t-cross-protocol-pending", None)
-        .await
-        .expect("session context");
-    ctx.state.lock().await.awaiting_run = None;
-
+    // The query has no mutable process-local awaiting position to corrupt or
+    // synchronize; committed Thread truth is its only input.
     let observed = host
         .pending_tool("t-cross-protocol-pending")
         .await

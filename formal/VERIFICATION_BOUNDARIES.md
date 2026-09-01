@@ -48,7 +48,9 @@ type checking are valuable executable evidence, but are not formal proofs.
   projection and the list status mapping fails closed for unknown states. The
   separate `ManagedProjectionPublish.tla` model checks two reverse-completing
   refresh writers over independent Session, root/child Thread, lifecycle, and
-  budget source coordinates. It proves result/checkpoint pairing, local cache
+  budget source coordinates, including a source advance between the first and
+  second read. It proves mixed reads cannot build a publishable candidate,
+  result/checkpoint pairing, local cache
   CAS, source non-invention, visible non-regression, failure/rejection
   stuttering, and that equal source coordinates plus equal rendered content
   change neither cache nor broadcast. Equal legacy coordinates with changed
@@ -60,12 +62,13 @@ type checking are valuable executable evidence, but are not formal proofs.
   isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
   or lifecycle-supervisor fairness.
 - Internal Agent messaging has no message store or Dispatch-owned waiting
-  state. `AgentMessageProtocol.tla` models the committed source request,
-  deterministic dispatch, claim handoff, target commit, source receipt, exact
-  replay, payload conflict, and archive/failure closure. It proves that a
-  dispatch follows a durable request, receipts cannot precede durable admission,
-  only one claim is live, active delivery retains Session activity, exact replay
-  and payload conflict stutter, and a closed Thread has no runnable dispatch.
+  state. `AgentMessageProtocol.tla` composes the canonical
+  `SessionActivityKernel` and `RunIngressKernel`, adding only committed source
+  request, admission certainty, target commit, and source receipt. It proves
+  that unavailable admission and identity conflict cannot settle activity
+  before target truth, stale claims remain fenced by the ingress kernel, a
+  receipt cannot precede target commit, and internal delivery never creates
+  pending input.
   Production refinement additionally validates the command against the source
   Run's committed `ActiveToolBatch`; backend conformance tests own atomic
   admission. The model does not prove model intent, Worker availability,

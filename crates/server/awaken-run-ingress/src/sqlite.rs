@@ -123,7 +123,7 @@ fn exact_run_replay(
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(reject)?
+        .map_err(store_error)?
         .map(|stored| serde_json::from_str::<RunDispatch>(&stored).map_err(json_err))
         .transpose()?;
     let completed = if live.is_none() {
@@ -135,7 +135,7 @@ fn exact_run_replay(
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
-        .map_err(reject)?
+        .map_err(store_error)?
     } else {
         None
     };
@@ -179,7 +179,7 @@ fn insert_dispatch_with_state(
                 params![request.thread_id().0],
                 |row| row.get::<_, i64>(0),
             )
-            .map_err(reject)?,
+            .map_err(store_error)?,
         )?;
         let candidates = {
             let mut statement = tx
@@ -187,7 +187,7 @@ fn insert_dispatch_with_state(
                     "SELECT run_id, status, lease_epoch, cancel_requested \
                      FROM {prefix}_dispatch WHERE thread_id = ?1"
                 ))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let rows = statement
                 .query_map(params![request.thread_id().0], |row| {
                     Ok((
@@ -197,8 +197,8 @@ fn insert_dispatch_with_state(
                         row.get::<_, i64>(3)?,
                     ))
                 })
-                .map_err(reject)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
+                .map_err(store_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
         };
         validate_session_run_replacement_candidates(
             request,
@@ -229,7 +229,7 @@ fn insert_dispatch_with_state(
                 ),
                 params![run_id, crate::dispatch_state_db(next.state)],
             )
-            .map_err(reject)?;
+            .map_err(store_error)?;
         }
     }
 
@@ -255,7 +255,7 @@ fn insert_dispatch_with_state(
             lease_until,
         ],
     )
-    .map_err(reject)?;
+    .map_err(store_error)?;
     Ok(())
 }
 
@@ -267,11 +267,11 @@ fn known_session_child_threads(
     let live_requests = {
         let mut statement = tx
             .prepare(&format!("SELECT request FROM {prefix}_dispatch"))
-            .map_err(reject)?;
+            .map_err(store_error)?;
         let rows = statement
             .query_map([], |row| row.get::<_, String>(0))
-            .map_err(reject)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
+            .map_err(store_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
     };
     let mut known = Vec::new();
     for stored in live_requests {
@@ -286,12 +286,12 @@ fn known_session_child_threads(
              WHERE session_thread_id = ?1 AND thread_id IS NOT NULL \
              AND thread_id <> session_thread_id"
         ))
-        .map_err(reject)?;
+        .map_err(store_error)?;
     let rows = statement
         .query_map(params![parent.0], |row| row.get::<_, String>(0))
-        .map_err(reject)?;
+        .map_err(store_error)?;
     for row in rows {
-        known.push(ThreadId(row.map_err(reject)?));
+        known.push(ThreadId(row.map_err(store_error)?));
     }
     Ok(known)
 }
@@ -365,11 +365,11 @@ impl SqliteDispatchStore {
         tokio::task::spawn_blocking(move || {
             let mut guard = conn
                 .lock()
-                .map_err(|_| DispatchError::Rejected("dispatch connection poisoned".to_string()))?;
+                .map_err(|_| DispatchError::unavailable("dispatch connection poisoned"))?;
             f(&mut guard, NS)
         })
         .await
-        .map_err(|err| DispatchError::Rejected(err.to_string()))?
+        .map_err(DispatchError::unavailable)?
     }
 
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
@@ -380,13 +380,13 @@ impl SqliteDispatchStore {
                 .prepare(&format!(
                     "SELECT run_id FROM {p}_dispatch WHERE status = ?1 ORDER BY created_at"
                 ))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let rows = stmt
                 .query_map(params![status], |r| r.get::<_, String>(0))
-                .map_err(reject)?;
+                .map_err(store_error)?;
             let mut ids = Vec::new();
             for row in rows {
-                ids.push(RunId(row.map_err(reject)?));
+                ids.push(RunId(row.map_err(store_error)?));
             }
             Ok(ids)
         })
@@ -419,7 +419,7 @@ impl SqliteDispatchStore {
                     },
                 )
                 .optional()
-                .map_err(reject)
+                .map_err(store_error)
             })
             .await?;
         let request = current
@@ -456,8 +456,8 @@ include!("sqlite/dispatch_queue.rs");
 include!("sqlite/message_ports.rs");
 include!("sqlite/pending_rows.rs");
 
-fn reject(err: rusqlite::Error) -> DispatchError {
-    DispatchError::Rejected(err.to_string())
+fn store_error(err: rusqlite::Error) -> DispatchError {
+    DispatchError::unavailable(err)
 }
 
 #[cfg(test)]

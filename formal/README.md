@@ -481,8 +481,8 @@ graphs with zero invariant violations and zero states left on the queue:
 | SessionDeletion | 67 | 27 | 8 |
 | WorkspacePathProjection | 300 | 70 | 8 |
 | SessionRuntimeProjection | 337 | 33 | 5 |
-| ManagedProjectionPublish | 11,498,962 | 2,330,301 | 19 |
-| AgentMessageProtocol | 430 | 95 | 9 |
+| ManagedProjectionPublish | 75,764,860 | 18,571,810 | 29 |
+| AgentMessageProtocol | 505 | 190 | 13 |
 | ToolPermissionPolicy | 4,097 | 256 | 5 |
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |

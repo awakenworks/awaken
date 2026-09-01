@@ -26,14 +26,14 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         let events = rows
             .into_iter()
             .map(|row| {
-                let sequence = row.try_get::<i64, _>("sequence").map_err(reject)?;
+                let sequence = row.try_get::<i64, _>("sequence").map_err(store_error)?;
                 let recorded_at_ms = row
                     .try_get::<Option<i64>, _>("recorded_at_ms")
-                    .map_err(reject)?
+                    .map_err(store_error)?
                     .map(u64::try_from)
                     .transpose()
                     .map_err(|_| {
@@ -42,7 +42,7 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
                         )
                     })?;
                 let Json(operation): Json<DispatchOperation> =
-                    row.try_get("operation").map_err(reject)?;
+                    row.try_get("operation").map_err(store_error)?;
                 Ok(DispatchOperationalEvent {
                     cursor: DispatchCursor(u64::try_from(sequence).map_err(|_| {
                         DispatchError::Rejected(
@@ -66,9 +66,9 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
 impl Inbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let input = normalize_pending_millis(input);
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let inserted = append_pending_transaction(&mut tx, NS, &input).await?;
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(inserted)
     }
 
@@ -81,21 +81,21 @@ impl Inbox for PostgresDispatchStore {
         .bind(&thread_id.0)
         .fetch_all(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
 
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
-            let message_id: String = row.try_get("message_id").map_err(reject)?;
-            let run_id: String = row.try_get("run_id").map_err(reject)?;
-            let correlation_id: String = row.try_get("correlation_id").map_err(reject)?;
-            let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+            let message_id: String = row.try_get("message_id").map_err(store_error)?;
+            let run_id: String = row.try_get("run_id").map_err(store_error)?;
+            let correlation_id: String = row.try_get("correlation_id").map_err(store_error)?;
+            let Json(result): Json<ResumeResult> = row.try_get("result").map_err(store_error)?;
             let context_messages = row
                 .try_get::<Option<Json<Vec<Message>>>, _>("context_messages")
-                .map_err(reject)?
+                .map_err(store_error)?
                 .map(|Json(messages)| messages)
                 .unwrap_or_default();
-            let revision: i64 = row.try_get("revision").map_err(reject)?;
-            let available_at: Option<i64> = row.try_get("available_at").map_err(reject)?;
+            let revision: i64 = row.try_get("revision").map_err(store_error)?;
+            let available_at: Option<i64> = row.try_get("available_at").map_err(store_error)?;
             records.push(PendingRecord {
                 input: PendingInput {
                     message_id,
@@ -121,7 +121,7 @@ impl Inbox for PostgresDispatchStore {
         expected_revision: u64,
     ) -> Result<CasOutcome, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let outcome = match current_revision(&mut tx, message_id).await? {
             None => CasOutcome::NotFound,
             Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
@@ -130,11 +130,11 @@ impl Inbox for PostgresDispatchStore {
                     .bind(message_id)
                     .execute(&mut *tx)
                     .await
-                    .map_err(reject)?;
+                    .map_err(store_error)?;
                 CasOutcome::Applied
             }
         };
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(outcome)
     }
 
@@ -145,7 +145,7 @@ impl Inbox for PostgresDispatchStore {
         result: ResumeResult,
     ) -> Result<CasOutcome, DispatchError> {
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let outcome = match current_revision(&mut tx, message_id).await? {
             None => CasOutcome::NotFound,
             Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
@@ -158,11 +158,11 @@ impl Inbox for PostgresDispatchStore {
                 .bind(message_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
+                .map_err(store_error)?;
                 CasOutcome::Applied
             }
         };
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(outcome)
     }
 }
@@ -180,7 +180,7 @@ impl Outbox for PostgresDispatchStore {
         .bind(Json(&input))
         .execute(&self.pool)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         if result.rows_affected() > 0 {
             return Ok(true);
         }
@@ -190,13 +190,13 @@ impl Outbox for PostgresDispatchStore {
         .bind(&input.message_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
         .map(|row| {
             row.try_get::<Json<PendingInput>, _>("payload")
                 .map(|value| value.0)
         })
         .transpose()
-        .map_err(reject)?;
+        .map_err(store_error)?;
         match existing {
             Some(existing) if existing == input => Ok(false),
             Some(_) => Err(idempotency_conflict(&input.message_id, "outbox")),
@@ -216,7 +216,7 @@ impl Outbox for PostgresDispatchStore {
     ) -> Result<bool, DispatchError> {
         let input = normalize_pending_millis(input);
         let p = NS;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         let row = sqlx::query(&format!(
             "SELECT request, status, cancel_requested, lease_owner, lease_until \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
@@ -224,14 +224,14 @@ impl Outbox for PostgresDispatchStore {
         .bind(&input.run_id.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
         .ok_or_else(|| {
             DispatchError::Rejected(format!(
                 "Session resume Run `{}` was not found",
                 input.run_id.0
             ))
         })?;
-        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+        let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
         validate_session_resume_target(
             &request,
             &input,
@@ -239,10 +239,10 @@ impl Outbox for PostgresDispatchStore {
             prior_session_activity_epoch,
             session_activity_epoch,
         )?;
-        let status: String = row.try_get("status").map_err(reject)?;
-        let cancel_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
-        let lease_owner: Option<String> = row.try_get("lease_owner").map_err(reject)?;
-        let lease_until: Option<i64> = row.try_get("lease_until").map_err(reject)?;
+        let status: String = row.try_get("status").map_err(store_error)?;
+        let cancel_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
+        let lease_owner: Option<String> = row.try_get("lease_owner").map_err(store_error)?;
+        let lease_until: Option<i64> = row.try_get("lease_until").map_err(store_error)?;
 
         let mut evidence = sqlx::query(&format!(
             "SELECT payload FROM {p}_outbox \
@@ -254,12 +254,12 @@ impl Outbox for PostgresDispatchStore {
         .bind(&input.correlation_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
         .into_iter()
         .map(|row| {
             row.try_get::<Json<PendingInput>, _>("payload")
                 .map(|Json(input)| input)
-                .map_err(reject)
+                .map_err(store_error)
         })
         .collect::<Result<Vec<_>, _>>()?;
         let pending_ids = sqlx::query_scalar::<_, String>(&format!(
@@ -272,7 +272,7 @@ impl Outbox for PostgresDispatchStore {
         .bind(&input.correlation_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         for message_id in pending_ids {
             if let Some(pending) = load_pending_input(&mut *tx, p, &message_id).await? {
                 evidence.push(pending);
@@ -307,7 +307,7 @@ impl Outbox for PostgresDispatchStore {
         .bind(&input.run_id.0)
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(store_error)?;
         sqlx::query(&format!(
             "INSERT INTO {p}_outbox (message_id, payload) VALUES ($1, $2)"
         ))
@@ -315,8 +315,8 @@ impl Outbox for PostgresDispatchStore {
         .bind(Json(&input))
         .execute(&mut *tx)
         .await
-        .map_err(reject)?;
-        tx.commit().await.map_err(reject)?;
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(true)
     }
 
@@ -325,24 +325,24 @@ impl Outbox for PostgresDispatchStore {
         let staged = sqlx::query(&format!("SELECT message_id, payload FROM {p}_outbox"))
             .fetch_all(&self.pool)
             .await
-            .map_err(reject)?;
+            .map_err(store_error)?;
 
         let mut relayed = 0;
         for row in staged {
-            let message_id: String = row.try_get("message_id").map_err(reject)?;
-            let Json(input): Json<PendingInput> = row.try_get("payload").map_err(reject)?;
+            let message_id: String = row.try_get("message_id").map_err(store_error)?;
+            let Json(input): Json<PendingInput> = row.try_get("payload").map_err(store_error)?;
             let input = normalize_pending_millis(input);
 
             // One transaction per message: idempotent target append, then drop
             // the outbox row. A crash before the delete re-appends (a no-op).
-            let mut tx = self.pool.begin().await.map_err(reject)?;
+            let mut tx = self.pool.begin().await.map_err(store_error)?;
             append_pending_transaction(&mut tx, NS, &input).await?;
             sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
                 .bind(&message_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
-            tx.commit().await.map_err(reject)?;
+                .map_err(store_error)?;
+            tx.commit().await.map_err(store_error)?;
             relayed += 1;
         }
         Ok(relayed)
@@ -356,7 +356,7 @@ impl Outbox for PostgresDispatchStore {
     ) -> Result<(), DispatchError> {
         let p = NS;
         let message_id = input.message_id.clone();
-        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         let replay = exact_run_replay(&mut tx, p, &request).await?;
         let staged = sqlx::query(&format!(
@@ -365,10 +365,10 @@ impl Outbox for PostgresDispatchStore {
         .bind(&message_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?
+        .map_err(store_error)?
         .map(|row| row.try_get::<Json<PendingInput>, _>("payload"))
         .transpose()
-        .map_err(reject)?
+        .map_err(store_error)?
         .map(|Json(input)| normalize_pending_millis(input));
         let existing = match staged.clone() {
             Some(input) => Some(input),
@@ -376,7 +376,7 @@ impl Outbox for PostgresDispatchStore {
         };
         let input = normalize_pending_millis(input);
         if existing.as_ref().is_some_and(|existing| existing != &input) {
-            return Err(DispatchError::Rejected(format!(
+            return Err(DispatchError::Conflict(format!(
                 "idempotency key `{message_id}` was reused with another continuation payload"
             )));
         }
@@ -393,9 +393,9 @@ impl Outbox for PostgresDispatchStore {
                 .bind(&message_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(reject)?;
+                .map_err(store_error)?;
         }
-        tx.commit().await.map_err(reject)?;
+        tx.commit().await.map_err(store_error)?;
         Ok(())
     }
 }
@@ -410,7 +410,7 @@ async fn current_revision(
     .bind(message_id)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     revision
         .map(|revision| durable_u64("pending input revision", revision))
         .transpose()
@@ -431,6 +431,6 @@ async fn insert_operation(
     .bind(recorded_at_ms)
     .execute(&mut **tx)
     .await
-    .map_err(reject)?;
+    .map_err(store_error)?;
     Ok(())
 }

@@ -18,7 +18,7 @@ impl Outbox for MemoryDispatchStore {
             return if existing == &input {
                 Ok(false)
             } else {
-                Err(DispatchError::Rejected(format!(
+                Err(DispatchError::Conflict(format!(
                     "idempotency key `{}` was reused with another outbox payload",
                     input.message_id
                 )))
@@ -100,7 +100,7 @@ impl Outbox for MemoryDispatchStore {
                 .find(|pending| pending.input.message_id == input.message_id)
                 && existing.input != *input
             {
-                return Err(DispatchError::Rejected(format!(
+                return Err(DispatchError::Conflict(format!(
                     "idempotency key `{}` was reused with another relayed payload",
                     input.message_id
                 )));
@@ -146,7 +146,7 @@ impl Outbox for MemoryDispatchStore {
                     .map(|pending| pending.input.clone())
             });
         if existing.as_ref().is_some_and(|existing| existing != &input) {
-            return Err(DispatchError::Rejected(format!(
+            return Err(DispatchError::Conflict(format!(
                 "idempotency key `{message_id}` was reused with another continuation payload"
             )));
         }
@@ -167,7 +167,7 @@ impl Outbox for MemoryDispatchStore {
             .find(|pending| pending.input.message_id == input.message_id)
             && existing.input != input
         {
-            return Err(DispatchError::Rejected(format!(
+            return Err(DispatchError::Conflict(format!(
                 "idempotency key `{}` was reused with another pending-input payload",
                 input.message_id
             )));
