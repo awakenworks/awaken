@@ -677,7 +677,7 @@ impl SessionApplication {
                 .into());
             }
             if !mutation_policy.admits_repository_credential_mutation()
-                && repository.repository.authorization_token.is_some()
+                && repository.repository.credential_material.is_some()
             {
                 return Err(RunError::bad_request(
                     "profiled Session Repository credentials must be pre-existing Vault references",

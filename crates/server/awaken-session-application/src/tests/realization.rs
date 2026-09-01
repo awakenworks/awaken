@@ -398,7 +398,10 @@ async fn assert_file_resource_and_credential_policy_rules(
             "resource-files",
             "workspace",
             &awaken_resource_contract::BindingId::from("missing-repository"),
-            awaken_agent_contract::RedactedString::new("never-consumed"),
+            CredentialMaterialInput::opaque(
+                "test",
+                awaken_agent_contract::RedactedString::new("never-consumed"),
+            ),
         )
         .await
         .expect_err("R5/E5");

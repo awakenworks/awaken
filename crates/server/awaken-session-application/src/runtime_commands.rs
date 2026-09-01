@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink;
@@ -17,7 +16,10 @@ use awaken_session_contract::{
     StepOutcome, ToolPermissionDecision,
 };
 
-use crate::{RepositoryCredentialEntry, SessionParticipantProvenance};
+use crate::{
+    CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt, CredentialMaterialInput,
+    SessionParticipantProvenance,
+};
 
 const SESSION_REPOSITORY_OWNER_KIND: &str = "awaken.session_repository.owner_kind";
 const SESSION_REPOSITORY_OWNER_SESSION: &str = "awaken.session_repository.session_id";
@@ -126,7 +128,7 @@ pub struct SessionRepositoryResourceInput {
     pub name: String,
     pub description: String,
     pub remote_url: String,
-    pub authorization_token: Option<RedactedString>,
+    pub credential_material: Option<CredentialMaterialInput>,
     pub credential: Option<awaken_credential_contract::CredentialRef>,
     pub mount_path: String,
     pub initial_branch: Option<String>,
@@ -141,7 +143,7 @@ pub struct ConfiguredSessionRepository {
     pub workspace_id: String,
     pub repository_id: awaken_resource_contract::RepositoryId,
     pub registry_provenance: SessionParticipantProvenance,
-    pub credential: Option<RepositoryCredentialEntry>,
+    pub credential: Option<CredentialMaterialIngressReceipt>,
 }
 
 use crate::SessionApplication;
@@ -381,7 +383,7 @@ impl SessionApplication {
             name,
             description,
             remote_url,
-            authorization_token,
+            credential_material,
             credential,
             mount_path: _,
             initial_branch,
@@ -397,33 +399,30 @@ impl SessionApplication {
                 "Session-owned Repository identity does not match its Managed/Profiled owner",
             ));
         }
-        if authorization_token.is_some() && credential.is_some() {
+        if credential_material.is_some() && credential.is_some() {
             return Err(RunError::bad_request(
-                "repository cannot carry both an authorization token and credential reference",
+                "repository cannot carry both inline credential material and a credential reference",
             ));
         }
         let repository_id = awaken_resource_contract::RepositoryId::from(id);
-        let token_ingress = if let Some(token) = authorization_token {
+        let material_ingress = if let Some(material) = credential_material {
             let credential_target =
                 awaken_session_contract::repository_transport_credential_target(&remote_url)
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
-            let ingress = self
-                .repository_credential_ingress
-                .as_deref()
-                .ok_or_else(|| {
-                    RunError::bad_request(
-                        "repository authorization requires a configured credential Vault",
-                    )
-                })?;
+            let ingress = self.credential_material_ingress.as_deref().ok_or_else(|| {
+                RunError::bad_request(
+                    "repository authorization requires a configured credential Vault",
+                )
+            })?;
             let source_id = awaken_credential_contract::CredentialSourceId(format!(
                 "{}:credential",
                 repository_id.as_str()
             ));
-            Some((ingress, source_id, credential_target, token))
+            Some((ingress, source_id, credential_target, material))
         } else {
             None
         };
-        let credential_binding = if let Some((_, source_id, _, _)) = &token_ingress {
+        let credential_binding = if let Some((_, source_id, _, _)) = &material_ingress {
             Some(source_id.0.clone())
         } else {
             match credential {
@@ -441,7 +440,7 @@ impl SessionApplication {
         let catalog = self.resource_registry.as_ref().ok_or_else(|| {
             RunError::bad_request("repository resources require a configured Resource Registry")
         })?;
-        let initial_state = if token_ingress.is_some() {
+        let initial_state = if material_ingress.is_some() {
             awaken_resource_contract::ResourceState::Suspended
         } else {
             awaken_resource_contract::ResourceState::Active
@@ -501,7 +500,7 @@ impl SessionApplication {
                         "repository resource could not be configured: registered Repository is unavailable in this Workspace",
                     ));
                 };
-                let lifecycle_is_exact = if token_ingress.is_some() {
+                let lifecycle_is_exact = if material_ingress.is_some() {
                     matches!(
                         stored_definition.state,
                         awaken_resource_contract::ResourceState::Suspended
@@ -531,7 +530,7 @@ impl SessionApplication {
             }
             Err(error) => return Err(map_registry_error(error)),
         };
-        let Some((ingress, source_id, credential_target, token)) = token_ingress else {
+        let Some((ingress, source_id, credential_target, material)) = material_ingress else {
             return Ok(ConfiguredSessionRepository {
                 owner,
                 workspace_id: definition.workspace_id,
@@ -541,12 +540,13 @@ impl SessionApplication {
             });
         };
         let credential_entry = match ingress
-            .enter_repository_token(
-                source_id.clone(),
-                &definition.workspace_id,
-                credential_target,
-                token,
-            )
+            .enter_material(CredentialMaterialIngressCommand {
+                source_id: source_id.clone(),
+                workspace_id: definition.workspace_id.clone(),
+                target: credential_target,
+                usage: awaken_session_contract::repository_transport_credential_usage(),
+                material,
+            })
             .await
         {
             Ok(entry) => entry,
