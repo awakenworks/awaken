@@ -288,6 +288,30 @@ adopt; replayed or indeterminate work is preserved. After adoption, terminal
 Session reconciliation invokes the same exact Vault archive/material reclaim
 operation for an owned Repository rather than adding a credential cleanup path.
 
+That compatibility input does not justify a Git-specific credential service.
+The Managed wire adapter translates the GitHub token only into provider
+`github` plus canonical `awaken.http-basic/v1` material (`x-access-token`,
+token). It then calls the application-owned, provider-neutral
+`CredentialMaterialIngress`. The consuming Session command adds the exact
+Workspace, Repository target, and HTTP Basic usage; the existing `VaultState`
+adapter alone owns descriptor construction, sealing, WAL/CAS creation,
+exact-revision rotation, retirement, and material reclamation. Generic Admin
+Credential CRUD and this compatibility command therefore converge on the same
+Credential repository and SecretStore rather than synchronizing two stores or
+services.
+
+Hosted Repository execution carries only the frozen `CredentialAccess` and a
+short-lived, exact Repository capability to the Sandbox. Cloud's existing Egress
+Gateway validates tenant, Workspace, Session, Run/realization authority,
+Worker, Repository/config version, access mode, expiry, and credential revision;
+only that Platform trust domain materializes plaintext and replaces inbound
+authorization with upstream Git HTTP Basic. Gateway unavailability, expiry,
+revision drift, or checkout failure has no direct-token fallback. An Open
+self-hosted deployment may select the existing explicit `Direct` Repository
+transport, whose Session-owned credential helper materializes the same frozen
+access for one Git operation; transport selection is deployment policy and is
+never inferred from a failed hosted route.
+
 An HTTP success for update/archive/delete acknowledges the durable credential
 fence and outbox commit; it is not a claim that every online Session has already
 converged. Busy Sessions keep their old generation and leave the event pending
