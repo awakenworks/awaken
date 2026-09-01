@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import _arch_fitness
@@ -26,6 +27,22 @@ from _crate_boundary_workspace import architecture_fitness_specs, dependency_fit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
+
+# Hosted Cloud placement is foreign configuration, not an Awaken domain.
+# Exactly one CLI composition adapter may decode it and project scoped storage
+# handles; every other crate is mechanically prevented from naming it.
+CLOUD_PLACEMENT_TOKENS = (
+    "DataAuthority",
+    "DataShard",
+    "CellRuntimeIdentity",
+    "data_shard_id",
+    "data_authority_epoch",
+    "data_shard_class",
+    "runtime_cell_id",
+    "runtime_cell_incarnation",
+    "runtime_placement_epoch",
+)
+CLOUD_HOSTING_ACL = Path("crates/bin/awaken-cli/src/config/workspace_data.rs")
 
 NEUTRAL_CRATES = {"awaken-agent-contract", "awaken-runtime-contract", "awaken-runtime"}
 EXTENSION_CRATES = {
@@ -163,7 +180,48 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
+def check_cloud_placement_boundary(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> list[str]:
+    """Keep Cloud DataShard/Cell policy inside the one hosting ACL."""
+    errors: list[str] = []
+    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+        relative = path.relative_to(repo_root)
+        if relative == CLOUD_HOSTING_ACL or path.name.endswith("_test.rs"):
+            continue
+        production = path.read_text(encoding="utf-8", errors="ignore").split(
+            "#[cfg(test)]", 1
+        )[0]
+        leaked = sorted(token for token in CLOUD_PLACEMENT_TOKENS if token in production)
+        if leaked:
+            errors.append(
+                f"{relative}: Cloud placement coordinate(s) {', '.join(leaked)} "
+                "escape the hosted Workspace data anti-corruption adapter"
+            )
+    return errors
+
+
+def selftest_cloud_placement_boundary() -> None:
+    """Cause/effect: product leak rejects; sole hosting ACL admits foreign wire."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        leak = crates / "domain/example/src/lib.rs"
+        leak.parent.mkdir(parents=True)
+        leak.write_text("struct DomainLeak { data_shard_id: String }\n", encoding="utf-8")
+        assert any(
+            "data_shard_id" in error
+            for error in check_cloud_placement_boundary(root, crates)
+        )
+        leak.unlink()
+        adapter = root / CLOUD_HOSTING_ACL
+        adapter.parent.mkdir(parents=True)
+        adapter.write_text("struct ForeignWire { data_shard_id: String }\n", encoding="utf-8")
+        assert not check_cloud_placement_boundary(root, crates)
+
+
 def main() -> int:
+    selftest_cloud_placement_boundary()
     _crate_boundary_workspace.selftest()
     _crate_dependency_fitness.selftest()
     _arch_fitness.selftest()
@@ -182,6 +240,7 @@ def main() -> int:
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()
         + check_tests_are_not_arch_owners()
+        + check_cloud_placement_boundary()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
