@@ -1374,7 +1374,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
 /// | P3d | none | asserted and current expired | none | E4 before projection |
 /// | P4 | complete | exact | wrong | E4 |
 /// | P5 | complete | exact | exact/replay | E5 + E6 + E9 |
-/// | P6 | complete | exact | rejection/replay | E8 + E6 + E9 |
+/// | P6 | complete | exact successor of expired Resident affinity | rejection/replay | E8 + E6 + E9 |
 fn repository_publication_terminal_session(
     session_id: &str,
     child: Option<&str>,
@@ -1458,6 +1458,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         generation: None,
         idle_since_unix_ms: None,
     };
+    rejected.realization = Some(expired_cold_lease.clone());
     rejected.resources = awaken_session_contract::SessionResourceState::from_active(resources);
     rejected
         .terminal_cleanup

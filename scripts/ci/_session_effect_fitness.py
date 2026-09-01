@@ -62,6 +62,10 @@ SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
 POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
 RUNTIME_HOST = "crates/server/awaken-runtime-host/src/lib.rs"
 RUNTIME_HOST_APPLICATION = "crates/server/awaken-runtime-host/src/application.rs"
+RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE = (
+    "crates/server/awaken-runtime-host/src/application/"
+    "realization_control_deadline.rs"
+)
 RUNTIME_REPOSITORY_PUBLICATION = (
     "crates/server/awaken-runtime-host/src/terminal_repository_publication.rs"
 )
@@ -145,7 +149,7 @@ REQUIRED = {
     ),
     SESSION_REPOSITORY_PUBLICATION: (
         "verified_repository_publication_outcome",
-        "pub fn verify_for(&self, session_id: &str)",
+        "pub(crate) fn verify_for(&self, session_id: &str)",
         "pub fn repository_publication_receipt(",
         "receipt.verify(&command)?",
         "pub fn repository_publication_rejection(",
@@ -253,9 +257,12 @@ REQUIRED = {
         "async fn acknowledge_terminal_cleanup_disposal",
         "async fn acknowledge_completed_terminal_cleanup",
     ),
-    RUNTIME_HOST_APPLICATION: (
-        "drive_session_terminal_cleanup(",
-        "record_terminal_repository_publication_rejection",
+    RUNTIME_HOST_APPLICATION: ("drive_session_terminal_cleanup(",),
+    RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE: (
+        "async fn record_terminal_repository_publication_receipt(",
+        ".record_terminal_repository_publication_receipt(",
+        "async fn record_terminal_repository_publication_rejection(",
+        ".record_terminal_repository_publication_rejection(",
     ),
     RUNTIME_REPOSITORY_PUBLICATION: (
         "RepositoryPublicationActivationError::Rejected(",
@@ -372,6 +379,8 @@ def _require_ordered_function(
     function: str,
     markers: tuple[str, ...],
     ownership: str,
+    *,
+    require_tail_result: bool = False,
 ) -> list[str]:
     body = _rust_function(sources.get(relative, ""), function)
     if body is None:
@@ -384,6 +393,11 @@ def _require_ordered_function(
                 f"{relative}: {ownership} must contain {marker!r} in canonical order"
             ]
         cursor = position + len(marker)
+    if require_tail_result and body[cursor:].strip() != "}":
+        return [
+            f"{relative}: {ownership} must return its awaited Control result as "
+            "the function tail expression"
+        ]
     return []
 
 
@@ -576,6 +590,60 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "permanent Repository rejection before successful replay",
         )
     )
+    for function, effect, ownership in (
+        (
+            "session_repository_publication_poll",
+            ".terminal_repository_publication_command(",
+            "authenticated Worker Repository publication polling",
+        ),
+        (
+            "session_repository_publication_complete",
+            ".record_terminal_repository_publication_receipt(",
+            "authenticated Worker Repository publication receipt",
+        ),
+        (
+            "session_repository_publication_reject",
+            ".record_terminal_repository_publication_rejection(",
+            "authenticated Worker Repository publication rejection",
+        ),
+    ):
+        errors.extend(
+            _require_ordered_function(
+                sources,
+                WORKER_PUBLICATION_ROUTE,
+                function,
+                (
+                    "verify_terminal_cleanup_authority(",
+                    "session_control(&service)",
+                    effect,
+                ),
+                ownership,
+            )
+        )
+    for function, operation, forwarding, ownership in (
+        (
+            "record_terminal_repository_publication_receipt",
+            '"record_terminal_repository_publication"',
+            ".record_terminal_repository_publication_receipt(",
+            "deadline-bounded hosted Repository publication receipt",
+        ),
+        (
+            "record_terminal_repository_publication_rejection",
+            '"record_terminal_repository_publication_rejection"',
+            ".record_terminal_repository_publication_rejection(",
+            "deadline-bounded hosted Repository publication rejection",
+        ),
+    ):
+        errors.extend(
+            _require_ordered_function(
+                sources,
+                RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE,
+                function,
+                ("self.call(", operation, forwarding, ".await"),
+                ownership,
+                require_tail_result=True,
+            )
+        )
     errors.extend(
         _require_ordered_function(
             sources,
@@ -967,9 +1035,38 @@ pub async fn delete_session(
 event_type: "session.deleted"
 """
     canonical[RUNTIME_HOST_APPLICATION] = """
-fn record_terminal_repository_publication_rejection() {}
 fn reconcile_terminal_cleanup_for_lease() {
     drive_session_terminal_cleanup(session_id, lease, control, runtime);
+}
+"""
+    canonical[WORKER_PUBLICATION_ROUTE] = """
+async fn session_repository_publication_poll() {
+    verify_terminal_cleanup_authority(...).await;
+    session_control(&service).terminal_repository_publication_command(...);
+}
+async fn session_repository_publication_complete() {
+    verify_terminal_cleanup_authority(...).await;
+    session_control(&service).record_terminal_repository_publication_receipt(...);
+}
+async fn session_repository_publication_reject() {
+    verify_terminal_cleanup_authority(...).await;
+    session_control(&service).record_terminal_repository_publication_rejection(...);
+}
+"""
+    canonical[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE] = """
+async fn record_terminal_repository_publication_receipt() {
+    self.call(
+        "record_terminal_repository_publication",
+        self.inner.record_terminal_repository_publication_receipt(...),
+    )
+    .await
+}
+async fn record_terminal_repository_publication_rejection() {
+    self.call(
+        "record_terminal_repository_publication_rejection",
+        self.inner.record_terminal_repository_publication_rejection(...),
+    )
+    .await
 }
 """
     canonical[RUNTIME_HOST_TERMINAL_PREPARATION] = """
@@ -1045,8 +1142,10 @@ fn recover_terminal_receipts() {
     # G48 cause/effect rules: C1 one expected-prior declaration reaches the
     # sole local Git writer under an exact ref lease; C2 the shared cleanup
     # driver records its typed outcome through the one Session-root CAS before
-    # projecting root preparation/disposal. E1 accepts C1+C2. Removing an edge,
-    # reordering a durable outcome, or adding a second writer produces E2.
+    # projecting root preparation/disposal; C3 the Host deadline decorator
+    # forwards both outcomes without becoming another outcome owner. E1 accepts
+    # C1+C2+C3. Removing an edge, reordering a durable outcome, or adding a
+    # second writer produces E2.
     for rule, owner, marker in (
         (
             "expected-prior contract",
@@ -1117,9 +1216,14 @@ fn recover_terminal_receipts() {
             '"/v1/worker/session/cleanup/repository-publication/reject"',
         ),
         (
+            "hosted receipt forwarding",
+            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE,
+            ".record_terminal_repository_publication_receipt(",
+        ),
+        (
             "hosted rejection forwarding",
-            RUNTIME_HOST_APPLICATION,
-            "record_terminal_repository_publication_rejection",
+            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE,
+            ".record_terminal_repository_publication_rejection(",
         ),
         (
             "typed hosted rejection effect",
@@ -1130,6 +1234,74 @@ fn recover_terminal_receipts() {
         mutant = dict(canonical)
         mutant[owner] = mutant[owner].replace(marker, "", 1)
         assert session_effect_violations(mutant), f"removed {rule} rejected"
+
+    # G48 authority/deadline removal rules: C1 each destructive Worker route
+    # verifies the authenticated cleanup generation in its own function before
+    # reaching Control; C2 each Host forwarding method enters the one deadline
+    # decorator and returns the awaited Control result unchanged as its tail
+    # expression. E1 accepts C1+C2. E2 rejects a route that relies on a sibling's
+    # marker, bypasses its deadline, or swallows the Control outcome, even though
+    # the same file still contains every broad marker.
+    for rule, function in (
+        ("Worker publication poll authority", "session_repository_publication_poll"),
+        ("Worker publication receipt authority", "session_repository_publication_complete"),
+        ("Worker publication rejection authority", "session_repository_publication_reject"),
+    ):
+        mutant = dict(canonical)
+        guarded = (
+            f"async fn {function}() {{\n"
+            "    verify_terminal_cleanup_authority(...).await;\n"
+        )
+        assert guarded in mutant[WORKER_PUBLICATION_ROUTE], f"canonical {rule} fixture"
+        mutant[WORKER_PUBLICATION_ROUTE] = mutant[WORKER_PUBLICATION_ROUTE].replace(
+            guarded,
+            f"async fn {function}() {{\n",
+            1,
+        )
+        assert session_effect_violations(mutant), f"removed {rule} rejected"
+
+    for rule, function, operation, forwarding in (
+        (
+            "hosted receipt deadline",
+            "record_terminal_repository_publication_receipt",
+            "record_terminal_repository_publication",
+            "record_terminal_repository_publication_receipt",
+        ),
+        (
+            "hosted rejection deadline",
+            "record_terminal_repository_publication_rejection",
+            "record_terminal_repository_publication_rejection",
+            "record_terminal_repository_publication_rejection",
+        ),
+    ):
+        mutant = dict(canonical)
+        bounded = (
+            f"    self.call(\n"
+            f'        "{operation}",\n'
+            f"        self.inner.{forwarding}(...),\n"
+            "    )\n"
+            "    .await"
+        )
+        direct = f"    self.inner.{forwarding}(...).await"
+        assert bounded in mutant[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE], (
+            f"canonical {function} deadline fixture"
+        )
+        mutant[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE] = mutant[
+            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE
+        ].replace(bounded, direct, 1)
+        assert session_effect_violations(mutant), f"removed {rule} rejected"
+
+        swallowed = dict(canonical)
+        swallowed_call = (
+            bounded.replace("    self.call(", "    let _ = self.call(", 1)
+            + ";\n    Ok(())"
+        )
+        swallowed[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE] = swallowed[
+            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE
+        ].replace(bounded, swallowed_call, 1)
+        assert session_effect_violations(swallowed), (
+            f"swallowed {rule} Control outcome rejected"
+        )
 
     for rule, owner, earlier, later in (
         (

@@ -69,7 +69,7 @@ fn catalog_pairs_each_execution_family_with_its_only_legal_descriptor_kind() {
 #[test]
 fn builtin_catalog_is_the_exact_non_overlapping_command_surface() {
     // Cause/effect graph: C1 native delegation uses `agent_run`; C2 Managed
-    // coordination uses `list_agents`/`send_to_agent`; C3 the abandoned Task
+    // coordination uses `list_agents`/`send_message`; C3 the abandoned Task
     // model commands name overlapping ingress/control/recovery effects.
     // Effects: E1 C1/C2 remain in the one closed catalog; E2 C3 and every
     // Git/repository-specific command are absent because Bash is their sole owner.
@@ -94,7 +94,7 @@ fn builtin_catalog_is_the_exact_non_overlapping_command_surface() {
         "grep",
         "list_agents",
         "read",
-        "send_to_agent",
+        "send_message",
         "write",
     ]
     .into_iter()

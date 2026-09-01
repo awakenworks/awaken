@@ -77,10 +77,17 @@ pub(super) fn terminal_cleanup_worker_requirements(
         .active_generation()
         .1
         .compatibility_facts();
-    let pending_publication = session
+    let publication_outcome_is_durable = session
         .terminal_cleanup
-        .repository_publication_receipt()
-        .is_none()
+        .repository_publication_receipt(&session.session_id)
+        .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
+        .is_some()
+        || session
+            .terminal_cleanup
+            .repository_publication_rejection(&session.session_id)
+            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
+            .is_some();
+    let pending_publication = (!publication_outcome_is_durable)
         .then(|| session.terminal_cleanup.repository_publication_intent())
         .flatten();
     if pending_publication.is_some()

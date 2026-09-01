@@ -525,7 +525,7 @@ async function main() {
 
       // Runtime pin rules extend R2 from representation to asynchronous Managed
       // behavior. Cause graph: coordinator publication time freezes the roster
-      // revision -> list_agents exposes that roster -> send_to_agent admits a
+      // revision -> list_agents exposes that roster -> send_message admits a
       // child Thread -> the child reply reflects only the frozen publication.
       // The send receipt must not synchronously contain the child payload.
       //

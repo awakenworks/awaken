@@ -515,6 +515,7 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         _lease: &awaken_session_contract::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
         self.repository_publication_rejections
             .lock()
             .unwrap()
@@ -1588,19 +1589,21 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "K2 foreign completion lease"
     );
 
-    // Publication transport cause/effect table. P1 current identity + exact
+    // Publication transport cause/effect table. C1 the identity and cleanup
+    // lease are current or foreign; C2 the route polls, completes, or rejects;
+    // C3 Control has one command or no command. P1 current identity + exact
     // lease projects the one canonical command; P2 the same authority records
     // its canonical receipt; P3 it forwards the command-bound typed rejection;
-    // P4 a foreign lease is rejected before Control; P5 no projected command
-    // stays pending without inventing work. Exact retries use the same signed
-    // routes and outcomes; aggregate idempotency remains in
+    // P4 every C2 edge with a foreign lease is rejected before Control; P5 no
+    // projected command stays pending without inventing work. Exact retries use
+    // the same signed routes and outcomes; aggregate idempotency remains in
     // SessionCleanupOperation rather than this stateless transport.
     //
-    // | Rule | Worker/lease | Control command | Effect |
+    // | Rule | Worker/lease | Route/Control state | Effect |
     // | P1 | current/exact | canonical | return exact command |
     // | P2 | current/exact | canonical | forward exact receipt |
     // | P3 | current/exact | canonical rejection | forward exact rejection |
-    // | P4 | current/foreign | any | reject before Control |
+    // | P4 | current/foreign | poll/complete/reject | reject before Control |
     // | P5 | current/exact | none | return pending None |
     let publication_intent: awaken_session_contract::SessionRepositoryPublicationIntent =
         serde_json::from_value(serde_json::json!({
@@ -1680,7 +1683,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .lock()
             .unwrap()
             .as_slice(),
-        &[publication_receipt],
+        std::slice::from_ref(&publication_receipt),
         "P2"
     );
     let publication_rejection =
@@ -1706,9 +1709,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .lock()
             .unwrap()
             .as_slice(),
-        &[publication_rejection],
+        std::slice::from_ref(&publication_rejection),
         "P3"
     );
+    let calls_before_foreign_publication = session_control
+        .terminal_control_calls
+        .load(Ordering::SeqCst);
     assert!(
         client
             .terminal_repository_publication_command(
@@ -1718,7 +1724,38 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             )
             .await
             .is_err(),
-        "P4"
+        "P4 foreign publication poll"
+    );
+    assert!(
+        client
+            .record_terminal_repository_publication_receipt(
+                &registered.snapshot.identity,
+                "signed-thread",
+                &foreign_cleanup_lease,
+                publication_receipt,
+            )
+            .await
+            .is_err(),
+        "P4 foreign publication completion"
+    );
+    assert!(
+        client
+            .record_terminal_repository_publication_rejection(
+                &registered.snapshot.identity,
+                "signed-thread",
+                &foreign_cleanup_lease,
+                publication_rejection,
+            )
+            .await
+            .is_err(),
+        "P4 foreign publication rejection"
+    );
+    assert_eq!(
+        session_control
+            .terminal_control_calls
+            .load(Ordering::SeqCst),
+        calls_before_foreign_publication,
+        "P4 every publication route rejects before Control"
     );
     *session_control
         .repository_publication_projection
@@ -2373,6 +2410,15 @@ async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
             "receipt_fingerprint": "receipt"
         }))
         .unwrap();
+    let publication_rejection: awaken_session_contract::SessionRepositoryPublicationRejection =
+        serde_json::from_value(serde_json::json!({
+            "command_fingerprint": "command",
+            "effect_rejection": {
+                "reason": "remote_ref_absent"
+            },
+            "rejection_fingerprint": "rejection"
+        }))
+        .unwrap();
     let target = awaken_session_contract::SessionRealizationTarget {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
@@ -2423,6 +2469,16 @@ async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
                 "session_id": "any-session",
                 "lease": &lease,
                 "receipt": publication_receipt,
+            }),
+        ),
+        (
+            "publication-reject",
+            "/v1/worker/session/cleanup/repository-publication/reject",
+            serde_json::json!({
+                "identity": &identity,
+                "session_id": "any-session",
+                "lease": &lease,
+                "rejection": publication_rejection,
             }),
         ),
     ];

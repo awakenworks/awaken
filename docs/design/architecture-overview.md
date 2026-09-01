@@ -274,7 +274,7 @@ StateKey / effect staging
 The runtime core does not ship concrete model-callable tool ids. Official
 first-party tools are runtime extensions, with `awaken-ext-builtin-tools`
 providing Hand tools, the single native `agent_run` delegation tool, and the
-fixed Managed `list_agents`/`send_to_agent` coordination pair. There is no
+fixed Managed `list_agents`/`send_message` coordination pair. There is no
 generic builtin Task command family.
 The core owns descriptor, registry, resolver, permission, execution, and commit
 semantics; extension packages own concrete tool ids and any environment-specific

@@ -53,11 +53,11 @@ EXTENSION_CRATES = {
 FORBIDDEN_NEUTRAL_TERMS = {"managed"}
 ACTIVE_BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
-    "agent_run", "list_agents", "send_to_agent",
+    "agent_run", "list_agents", "send_message",
 }
 RETIRED_BUILTIN_TOOL_IDS = {
     "move", "delete", "repository_inspect", "repository_commit",
-    "send_message", "cancel_task", "recover_failed_messages",
+    "send_to_agent", "cancel_task", "recover_failed_messages",
 }
 FORBIDDEN_BUILTIN_TOOL_ID_PREFIXES = ("git_", "repository_")
 BUILTIN_TOOL_IDS = ACTIVE_BUILTIN_TOOL_IDS | RETIRED_BUILTIN_TOOL_IDS
@@ -74,11 +74,12 @@ FORBIDDEN_NEUTRAL_PHRASES = {
 }
 ACTIVE_BUILTIN_SYMBOLS = {
     "AgentRun", "Bash", "Edit", "Glob", "Grep", "ListAgents", "Read",
-    "SendToAgent", "WebFetch", "WebSearch", "Write",
+    "SendMessageArgs", "SendMessageTool", "WebFetch", "WebSearch", "Write",
 }
 RETIRED_BUILTIN_SYMBOLS = {
     "CancelTask", "DeleteTool", "MoveTool", "RecoverFailedMessages",
     "RepositoryCommitTool", "RepositoryInspectTool", "SendMessage",
+    "SendToAgent", "SendToAgentArgs", "SendToAgentTool",
 }
 FORBIDDEN_NEUTRAL_SYMBOLS = {
     **{name: f"{name} is a concrete active builtin owned by awaken-ext-builtin-tools"
@@ -105,12 +106,23 @@ def _patterns(words: set[str] | dict[str, str], *, ignore_case: bool = False) ->
     return {word: re.compile(rf"\b{re.escape(word)}\b", flags) for word in words}
 
 
+def _forbidden_neutral_symbol_errors(rel: Path, content: str) -> list[str]:
+    errors: list[str] = []
+    for name, pattern in _patterns(FORBIDDEN_NEUTRAL_SYMBOLS).items():
+        allowed = str(rel) in NEUTRAL_SYMBOL_ALLOWLIST.get(name, set())
+        if pattern.search(content) and not allowed:
+            errors.append(
+                f"{rel}: forbidden neutral symbol {name!r}; "
+                f"{FORBIDDEN_NEUTRAL_SYMBOLS[name]}"
+            )
+    return errors
+
+
 def check_neutral_code_boundaries() -> list[str]:
     errors: list[str] = []
     terms = _patterns(FORBIDDEN_NEUTRAL_TERMS, ignore_case=True)
     tools = {tool: re.compile(rf'"{re.escape(tool)}"') for tool in BUILTIN_TOOL_IDS}
     types = _patterns(FORBIDDEN_NEUTRAL_TYPE_NAMES)
-    symbols = _patterns(FORBIDDEN_NEUTRAL_SYMBOLS)
     phrases = _patterns(FORBIDDEN_NEUTRAL_PHRASES, ignore_case=True)
     impls = {
         trait: re.compile(rf"\bimpl(?:\s*<[^>]+>)?\s+(?:[\w:<>]+\s+for\s+)?{trait}\s+for\b")
@@ -131,10 +143,7 @@ def check_neutral_code_boundaries() -> list[str]:
             for name, pattern in types.items():
                 if pattern.search(content):
                     errors.append(f"{rel}: forbidden neutral type {name!r}; {FORBIDDEN_NEUTRAL_TYPE_NAMES[name]}")
-            for name, pattern in symbols.items():
-                allowed = str(rel) in NEUTRAL_SYMBOL_ALLOWLIST.get(name, set())
-                if pattern.search(content) and not allowed:
-                    errors.append(f"{rel}: forbidden neutral symbol {name!r}; {FORBIDDEN_NEUTRAL_SYMBOLS[name]}")
+            errors.extend(_forbidden_neutral_symbol_errors(rel, content))
             for phrase, pattern in phrases.items():
                 if pattern.search(content):
                     errors.append(f"{rel}: forbidden neutral phrase {phrase!r}; {FORBIDDEN_NEUTRAL_PHRASES[phrase]}")
@@ -171,20 +180,37 @@ def _forbidden_builtin_source_errors(rel: Path, content: str) -> list[str]:
 
 def selftest_builtin_tool_ownership() -> None:
     # Cause/effect decision table: C1=safe Bash/protocol wording => E1 accepted;
-    # C2=retired exact ID, C3=Git/repository ID, C4=retired tool type => E2 rejected.
-    # Rules S1=C1=>E1; S2=C2|C3|C4=>E2. This tests the same helper used on source.
+    # C2=retired exact ID, C3=Git/repository ID, C4=retired Tool/Args/bare alias
+    # in the builtin owner, C5=active or retired concrete/bare alias in neutral
+    # code => E2 rejected.
+    # Rules S1=C1=>E1; S2=C2|C3|C4|C5=>E2. These mutation probes call the same
+    # helpers used on source, so a compatibility alias cannot satisfy the gate.
     rel = Path("crates/runtime/awaken-ext-builtin-tools/src/example.rs")
     assert not _forbidden_builtin_source_errors(
         rel,
         'const ID: &str = "bash"; async fn cancel_task() {}',
     ), "S1/E1"
     for forbidden in (
-        'const ID: &str = "send_message";',
+        'const ID: &str = "send_to_agent";',
         'const ID: &str = "git_status";',
         'const ID: &str = "repository_apply";',
         "struct RepositoryInspectTool;",
+        "struct SendMessage;",
+        "struct SendToAgent;",
+        "struct SendToAgentArgs;",
+        "struct SendToAgentTool;",
     ):
         assert _forbidden_builtin_source_errors(rel, forbidden), f"S2/E2: {forbidden}"
+    neutral_rel = Path("crates/runtime/awaken-runtime-contract/src/example.rs")
+    for forbidden in (
+        "struct SendMessage;",
+        "struct SendMessageArgs;",
+        "struct SendMessageTool;",
+        "struct SendToAgent;",
+    ):
+        assert _forbidden_neutral_symbol_errors(neutral_rel, forbidden), (
+            f"S2/E2: {forbidden}"
+        )
 
 
 def check_builtin_tool_ownership() -> list[str]:

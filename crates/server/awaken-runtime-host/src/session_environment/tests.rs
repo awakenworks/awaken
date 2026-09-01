@@ -1648,7 +1648,8 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
 
 #[tokio::test]
 async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
-    // Cause/effect graph: C2=resident Hand belongs to the Session Pod;
+    // Cause/effect graph: C1=tool demand has opened the lazy resident channel;
+    // C2=resident Hand belongs to the Session Pod;
     // C3=checkpoint-and-release requests process quiescence; C4=the same
     // durable operation retries; C5=terminal disposal follows. C2+C3 ->
     // E1=first attempt has no proof while the resident binding and sandbox
@@ -1669,6 +1670,15 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
     .create(&spec())
     .await
     .unwrap();
+    environment
+        .tool_executor()
+        .invoke(&ToolCall {
+            call_id: "bind-resident-checkpoint-hand".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
 
     assert!(environment.quiesce().await.is_err(), "QR1/E1");
     let SessionEnvironment::Container { hand, .. } = &environment else {

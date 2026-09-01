@@ -27,59 +27,7 @@ use purge_guard::resource_targets;
 use repository_reference::{
     session_resources_reference_repository, session_resources_reference_repository_generation,
 };
-
-fn terminal_restore_target_for_thread(
-    workspace_id: &str,
-    session: &PersistedSession,
-    thread_id: &str,
-) -> Option<awaken_session_contract::SandboxRestoreRequest> {
-    (thread_id == session.session_id)
-        .then(|| {
-            session
-                .environment
-                .restoring_request(workspace_id, &session.session_id)
-        })
-        .flatten()
-}
-
-fn bind_terminal_restore_target(
-    workspace_id: &str,
-    session: &PersistedSession,
-    action: awaken_session_contract::SessionTerminalCleanupAction,
-) -> Result<awaken_session_contract::SessionTerminalCleanupAction, SessionRealizationControlFailure>
-{
-    match action {
-        awaken_session_contract::SessionTerminalCleanupAction::Prepare { mut commands } => {
-            if let Some(root) = commands
-                .iter_mut()
-                .find(|command| command.thread_id == session.session_id)
-                && let Some(request) =
-                    terminal_restore_target_for_thread(workspace_id, session, &root.thread_id)
-            {
-                *root = root.clone().with_restore_target(request).map_err(|error| {
-                    SessionRealizationControlFailure::Invalid(error.to_string())
-                })?;
-            }
-            Ok(awaken_session_contract::SessionTerminalCleanupAction::Prepare { commands })
-        }
-        awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => {
-            let command = match terminal_restore_target_for_thread(
-                workspace_id,
-                session,
-                &session.session_id,
-            ) {
-                Some(request) => command.with_restore_target(request).map_err(|error| {
-                    SessionRealizationControlFailure::Invalid(error.to_string())
-                })?,
-                None => command,
-            };
-            Ok(awaken_session_contract::SessionTerminalCleanupAction::Dispose { command })
-        }
-        awaken_session_contract::SessionTerminalCleanupAction::Waiting => {
-            Ok(awaken_session_contract::SessionTerminalCleanupAction::Waiting)
-        }
-    }
-}
+use terminal_cleanup::{bind_terminal_restore_target, terminal_restore_target_for_thread};
 
 #[derive(Clone)]
 enum ResourceSettlement {

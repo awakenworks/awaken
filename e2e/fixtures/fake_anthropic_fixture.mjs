@@ -218,10 +218,10 @@ const tool = (id, name, input) => ({ tool: { id, name, input } });
 const toolBatch = (tools) => ({ tools });
 
 // One canonical fake-wire implementation of the fixed Managed coordinator
-// choreography. `send_to_agent` returns only an admission receipt; the child
+// choreography. `send_message` returns only an admission receipt; the child
 // Agent's eventual response is projected independently on its Thread.
 function managedCoordinationReply(parsed, agentId, message) {
-  if (!hasTool(parsed, 'list_agents') || !hasTool(parsed, 'send_to_agent')) return null;
+  if (!hasTool(parsed, 'list_agents') || !hasTool(parsed, 'send_message')) return null;
   // A completed child is delivered to the coordinator as a later internal User
   // message. The Anthropic wire shape does not retain Awaken's typed Message id,
   // so this fake-provider port recognizes the stable text envelope produced by
@@ -237,12 +237,12 @@ function managedCoordinationReply(parsed, agentId, message) {
     if (lastUserText(parsed) === 'follow up with the same child') {
       const sessionThreadId = latestCoordinatedThreadId(parsed);
       if (!sessionThreadId) throw new Error('follow-up has no prior coordinated Thread receipt');
-      return tool(`send-agent-${runOrdinal}`, 'send_to_agent', {
+      return tool(`send-agent-${runOrdinal}`, 'send_message', {
         session_thread_id: sessionThreadId,
         message: 'confirm the previous research result from your retained history',
       });
     }
-    return tool(`send-agent-${runOrdinal}`, 'send_to_agent', { agent_id: agentId, message });
+    return tool(`send-agent-${runOrdinal}`, 'send_message', { agent_id: agentId, message });
   }
   const result = results.at(-1);
   return text(`coordination ${result.is_error ? 'failed' : 'accepted'}: ${toolResultText(result)}`);

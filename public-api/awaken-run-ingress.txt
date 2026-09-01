@@ -330,16 +330,6 @@ pub fn awaken_run_ingress::ManualClock::new(u64) -> Self
 pub fn awaken_run_ingress::ManualClock::set(&self, u64)
 impl awaken_run_ingress::Clock for awaken_run_ingress::ManualClock
 pub fn awaken_run_ingress::ManualClock::now_ms(&self) -> u64
-pub struct awaken_run_ingress::MessageSendRequest
-pub awaken_run_ingress::MessageSendRequest::content: alloc::string::String
-pub awaken_run_ingress::MessageSendRequest::idempotency_key: core::option::Option<alloc::string::String>
-pub awaken_run_ingress::MessageSendRequest::operation_id: alloc::string::String
-pub awaken_run_ingress::MessageSendRequest::source_run_id: alloc::string::String
-pub awaken_run_ingress::MessageSendRequest::target_thread: alloc::string::String
-pub struct awaken_run_ingress::OutboxMessageSender<S>
-impl<S: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Outbox> awaken_run_ingress::OutboxMessageSender<S>
-pub fn awaken_run_ingress::OutboxMessageSender<S>::new(alloc::sync::Arc<S>) -> Self
-pub async fn awaken_run_ingress::OutboxMessageSender<S>::send_fresh_continuation(&self, awaken_run_ingress::MessageSendRequest, awaken_run_ingress_contract::run_dispatch::RunDispatch, awaken_run_ingress_contract::dispatch::ContinuationAdmission) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
 pub struct awaken_run_ingress::PgNotifyWake
 impl awaken_run_ingress::PgNotifyWake
 pub fn awaken_run_ingress::PgNotifyWake::new(sqlx_postgres::PgPool, impl core::convert::Into<alloc::string::String>) -> Self

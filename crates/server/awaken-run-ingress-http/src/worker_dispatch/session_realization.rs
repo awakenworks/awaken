@@ -11,9 +11,9 @@ pub(super) struct SessionResumeReq {
 
 #[derive(Deserialize)]
 pub(super) struct SessionCleanupPollReq {
-    identity: WorkerIdentity,
-    session_id: String,
-    lease: awaken_session_contract::SessionRealizationLease,
+    pub(super) identity: WorkerIdentity,
+    pub(super) session_id: String,
+    pub(super) lease: awaken_session_contract::SessionRealizationLease,
 }
 
 #[derive(Deserialize)]
@@ -94,7 +94,7 @@ pub(super) async fn session_cleanup_claim_next(
     respond_realization(result)
 }
 
-async fn verify_terminal_cleanup_authority(
+pub(super) async fn verify_terminal_cleanup_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
@@ -507,7 +507,7 @@ async fn session_work_ownership(
         .map_err(|error| HostError::internal(error.to_string()))
 }
 
-fn session_control(
+pub(super) fn session_control(
     service: &WorkerDispatchService,
 ) -> Result<&Arc<dyn awaken_session_contract::SessionRealizationControl>, HostError> {
     service

@@ -293,9 +293,10 @@ mod tests {
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
 
     fn completed_publication(
-        session_id: &str,
+        mut session: awaken_session_contract::PersistedSession,
         rejected: bool,
-    ) -> awaken_session_contract::SessionCleanupOperation {
+    ) -> awaken_session_contract::PersistedSession {
+        let session_id = session.session_id.clone();
         let intent: awaken_session_contract::SessionRepositoryPublicationIntent =
             serde_json::from_value(serde_json::json!({
                 "input": {
@@ -319,20 +320,39 @@ mod tests {
                 }
             }))
             .unwrap();
-        let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
-        cleanup
-            .request_with_publication(session_id, intent)
+        session.resources = awaken_session_contract::SessionResourceState::from_active(
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![intent.input.clone()],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        session.environment.set_resident("codec-publication-source");
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "codec-worker".into(),
+            runtime_incarnation: "codec-worker:boot".into(),
+            epoch: 7,
+            expires_at_unix_ms: u64::MAX,
+        };
+        session.realization = Some(lease.clone());
+        session
+            .archive_with_repository_publication("2026-09-01T00:00:00Z", intent)
             .unwrap();
-        cleanup.freeze_targets(session_id, [], 3, 5).unwrap();
-        let command = cleanup.publication_command(session_id).unwrap().unwrap();
+        session.freeze_terminal_cleanup_targets([], 3, 5).unwrap();
+        let command = session
+            .terminal_cleanup
+            .publication_command(&session_id)
+            .unwrap()
+            .unwrap();
         if rejected {
             let rejection = awaken_session_contract::SessionRepositoryPublicationRejection::new(
                 &command,
                 awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
             )
             .unwrap();
-            cleanup
-                .record_repository_publication_rejection(session_id, rejection)
+            session
+                .terminal_cleanup
+                .record_repository_publication_rejection(&session_id, rejection)
                 .unwrap();
         } else {
             let receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
@@ -344,20 +364,55 @@ mod tests {
                     commit: command.intent.expectation.commit.clone(),
                 },
             );
-            cleanup
-                .record_repository_publication_receipt(session_id, receipt)
+            session
+                .terminal_cleanup
+                .record_repository_publication_receipt(&session_id, receipt)
                 .unwrap();
         }
-        let root = cleanup.command_for(session_id, session_id).unwrap();
-        cleanup
-            .record_completion(
-                session_id,
-                awaken_session_contract::SessionCleanupCompletion::new(&root, Vec::new()),
+        let Some(awaken_session_contract::SessionTerminalCleanupAction::Prepare { mut commands }) =
+            session.terminal_cleanup_work_action().unwrap()
+        else {
+            panic!("publication outcome exposes root preparation");
+        };
+        assert_eq!(commands.len(), 1, "fixture has only the root target");
+        let command = commands.pop().unwrap();
+        let effect =
+            awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+        let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
+            &effect,
+            effect.sandbox_effect_fence().unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let repository_preparation =
+            awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+                &session_id,
+                "default",
+                &session.resources,
             )
             .unwrap();
-        let receipts = cleanup.recorded_receipts(session_id).unwrap();
-        cleanup.complete(session_id, &receipts).unwrap();
-        cleanup
+        session
+            .record_terminal_cleanup_preparation(
+                "default",
+                &lease,
+                preparation,
+                Some(repository_preparation),
+            )
+            .unwrap();
+        let Some(awaken_session_contract::SessionTerminalCleanupAction::Dispose { command }) =
+            session.terminal_cleanup_work_action().unwrap()
+        else {
+            panic!("durable root preparation exposes physical disposal");
+        };
+        let receipt = awaken_session_contract::SessionCleanupDisposalReceipt::new(&command);
+        session
+            .record_terminal_cleanup_disposal("default", &lease, receipt, "codec fixture released")
+            .unwrap();
+        assert!(
+            session.verified_terminal_cleanup().unwrap().is_completed(),
+            "disposal receipt completes the aggregate-owned cleanup"
+        );
+        session
     }
 
     #[tokio::test]
@@ -433,15 +488,28 @@ mod tests {
 
     #[test]
     fn aggregate_codec_rejects_foreign_completed_publication_outcomes() {
-        // Cause/effect matrix: receipt/rejection × encode/decode. Exact outer
-        // Session binding passes; rewriting only the outer id leaves a
-        // self-consistent intent-local outcome but must fail before storage or
-        // normalization can absorb it.
+        // Causes: C1 outcome is Published or Rejected; C2 outer Session id is
+        // exact or foreign; C3 admission boundary is encode or decode. Effects:
+        // E1 exact Completed aggregates encode and decode; E2 foreign bindings
+        // fail before storage or normalization. Rules:
+        // R1=C1(any)+C2(exact)+C3(encode/decode)->E1;
+        // R2=C1(any)+C2(foreign)+C3(encode/decode)->E2. Constraint: each
+        // Completed outcome is produced only through the public aggregate
+        // request -> freeze -> prepare -> dispose transitions, so rewriting the
+        // outer id leaves otherwise self-consistent outcome/disposal receipts.
         for (label, rejected) in [("receipt", false), ("rejection", true)] {
             let session_id = format!("codec-{label}");
-            let mut session = sample(&session_id);
-            session.terminal_cleanup = completed_publication(&session_id, rejected);
+            let session = completed_publication(sample(&session_id), rejected);
             let encoded = super::encode(&session).expect("exact aggregate encodes");
+            assert_eq!(
+                super::decode(super::EncodedSessionRow {
+                    aggregate_json: encoded.clone(),
+                    revision: i64::try_from(session.revision.0).unwrap(),
+                })
+                .expect("exact aggregate decodes"),
+                session,
+                "{label}: exact completed outcome round trips"
+            );
 
             let foreign_id = format!("foreign-{label}");
             let mut foreign = session.clone();

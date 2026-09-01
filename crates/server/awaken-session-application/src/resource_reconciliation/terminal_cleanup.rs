@@ -4,13 +4,64 @@
 use std::{future::Future, pin::Pin};
 
 use awaken_session_contract::{
-    PersistedSession, RenewSessionRealization, RunError, SessionRealizationControlFailure,
-    SessionRealizationDriveError, SessionRuntime, SessionTerminalCleanupAssignment,
+    PersistedSession, RenewSessionRealization, RunError, SandboxRestoreRequest,
+    SessionRealizationControlFailure, SessionRealizationDriveError, SessionRuntime,
+    SessionTerminalCleanupAction, SessionTerminalCleanupAssignment,
     SessionTerminalCleanupDriveOutcome,
 };
 
 use super::{internal, mutation_failure, repository_preparation};
 use crate::{SessionApplication, SessionPreparationError};
+
+pub(super) fn terminal_restore_target_for_thread(
+    workspace_id: &str,
+    session: &PersistedSession,
+    thread_id: &str,
+) -> Option<SandboxRestoreRequest> {
+    (thread_id == session.session_id)
+        .then(|| {
+            session
+                .environment
+                .restoring_request(workspace_id, &session.session_id)
+        })
+        .flatten()
+}
+
+pub(super) fn bind_terminal_restore_target(
+    workspace_id: &str,
+    session: &PersistedSession,
+    action: SessionTerminalCleanupAction,
+) -> Result<SessionTerminalCleanupAction, SessionRealizationControlFailure> {
+    match action {
+        SessionTerminalCleanupAction::Prepare { mut commands } => {
+            if let Some(root) = commands
+                .iter_mut()
+                .find(|command| command.thread_id == session.session_id)
+                && let Some(request) =
+                    terminal_restore_target_for_thread(workspace_id, session, &root.thread_id)
+            {
+                *root = root.clone().with_restore_target(request).map_err(|error| {
+                    SessionRealizationControlFailure::Invalid(error.to_string())
+                })?;
+            }
+            Ok(SessionTerminalCleanupAction::Prepare { commands })
+        }
+        SessionTerminalCleanupAction::Dispose { command } => {
+            let command = match terminal_restore_target_for_thread(
+                workspace_id,
+                session,
+                &session.session_id,
+            ) {
+                Some(request) => command.with_restore_target(request).map_err(|error| {
+                    SessionRealizationControlFailure::Invalid(error.to_string())
+                })?,
+                None => command,
+            };
+            Ok(SessionTerminalCleanupAction::Dispose { command })
+        }
+        SessionTerminalCleanupAction::Waiting => Ok(SessionTerminalCleanupAction::Waiting),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TerminalCleanupPath {

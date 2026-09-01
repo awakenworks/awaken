@@ -19,9 +19,9 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + 'static,
 {
-    // One test-only executor owns the larger stack required by the two deeply
-    // composed Event-batch recovery futures. The cases remain ordinary async
-    // functions, so this changes neither their authority nor their oracle.
+    // One test-only executor owns the larger stack required by deeply composed
+    // Session-application futures. The cases remain ordinary async functions,
+    // so this changes neither their authority nor their oracle.
     let test = std::thread::Builder::new()
         .name("session-application-composed-test".into())
         .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)

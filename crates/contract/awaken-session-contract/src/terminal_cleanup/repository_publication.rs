@@ -136,10 +136,11 @@ impl SessionCleanupOperation {
     /// Rebind a persisted publication sidecar to its outer Session identity.
     ///
     /// The sidecar decoder can verify intent-local fingerprints, but the
-    /// Session id is deliberately owned by crate::PersistedSession. Every
-    /// aggregate/store/application boundary must call this method before a
-    /// Completed phase can suppress work or authorize a tombstone.
-    pub fn verify_for(&self, session_id: &str) -> Result<(), SessionCleanupError> {
+    /// Session id is deliberately owned by crate::PersistedSession. The public
+    /// aggregate boundary is `PersistedSession::verified_terminal_cleanup`;
+    /// crate-internal projections reuse this kernel before a Completed phase
+    /// can suppress work or authorize a tombstone.
+    pub(crate) fn verify_for(&self, session_id: &str) -> Result<(), SessionCleanupError> {
         let envelope = self.progress_inner();
         let SessionCleanupState::RepositoryPublication(publication) = envelope.state() else {
             return Ok(());
@@ -727,6 +728,7 @@ impl<'de> Deserialize<'de> for SessionRepositoryPublicationCleanup {
 
 #[cfg(test)]
 mod tests {
+    use super::super::completion::SessionCleanupCompletion;
     use super::*;
     use awaken_provisioning_contract::RepositoryPublicationExpectation;
     use awaken_resource_contract::ResourceAccess;

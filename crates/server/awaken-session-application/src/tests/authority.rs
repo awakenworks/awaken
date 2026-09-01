@@ -1496,8 +1496,17 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
 /// | R7 | exact | exact | rejected replay | stale prior | E8 |
 /// | R8 | exact | exact | no | unavailable | E9 |
 /// | R9 | exact | exact | retry | exact | E10 |
-#[tokio::test]
-async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup() {
+#[test]
+fn profiled_archive_publishes_one_selected_repository_before_root_cleanup() {
+    // Coverage rationale: the async case below remains the sole R1-R9 oracle.
+    // The shared composed-test executor changes stack placement only and adds
+    // no Session authority, Repository publication path, or cleanup outcome.
+    run_composed_async_test(
+        profiled_archive_publishes_one_selected_repository_before_root_cleanup_case,
+    );
+}
+
+async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_case() {
     // Constraint: the Session root and its SessionCleanupOperation are the only
     // intent/receipt authority; selector resolution is repeated from each CAS
     // winner and the archived replay uses that same frozen intent.

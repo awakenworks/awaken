@@ -4790,14 +4790,39 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     );
 }
 
+async fn settle_profiled_session(
+    state: &std::sync::Arc<ManagedState>,
+    workspace_id: &str,
+    session_id: &str,
+) -> awaken_session_contract::PersistedSession {
+    // Fixture boundary decision table: C1 an accepted profiled root is still
+    // Preparing; C2 the exact owner is present/foreign. Effects: E1 C1+exact C2
+    // enters the canonical execution-admission recovery once and returns the
+    // same root after Resource/realization convergence; E2 foreign C2 is
+    // rejected by that owner. This wrapper owns no retry, state, or physical
+    // effect; it only asserts the existing application boundary used by Runs.
+    let recovered = state
+        .session_application()
+        .recover_session_projection(session_id, Some(workspace_id))
+        .await
+        .expect("profiled Session projection recovers")
+        .expect("profiled Session root exists");
+    assert_eq!(recovered.owner_scope, workspace_id, "E1 exact owner");
+    assert_eq!(
+        recovered.session.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "E1 canonical realization converges"
+    );
+    recovered.session
+}
+
 async fn persist_profiled_publication_source(
+    state: &std::sync::Arc<ManagedState>,
     sessions: &std::sync::Arc<SqliteManagedSessionRepository>,
+    workspace_id: &str,
     session_id: &str,
 ) {
-    let before = sessions
-        .get(session_id)
-        .await
-        .expect("profiled Session root");
+    let before = settle_profiled_session(state, workspace_id, session_id).await;
     let realization = before
         .realization
         .clone()
@@ -4879,7 +4904,7 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry()),
     );
-    let app = profiled_router(state, "default");
+    let app = profiled_router(state.clone(), "default");
     let request = json!({
         "session_id": "profiled-durable-accept",
         "mode": "work_unit",
@@ -4980,6 +5005,12 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
         .create("default", failed.clone(), receipt, Vec::new())
         .await
         .expect("seed failed root and atomic receipt");
+    // The repository, not the pre-admission candidate, owns the canonical
+    // revision used by an exact replay oracle.
+    let failed = sessions
+        .get("profiled-failed-replay")
+        .await
+        .expect("durable failed root");
     let runtime = AcceptingFake::default();
     runtime
         .stall_projection_install
@@ -4989,7 +5020,7 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry()),
     );
-    let app = profiled_router(state, "default");
+    let app = profiled_router(state.clone(), "default");
     let replay = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         call(&app, "POST", "/v1/awaken/sessions", Some(request)),
@@ -5034,7 +5065,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry()),
     );
-    let app = profiled_router(state, "default");
+    let app = profiled_router(state.clone(), "default");
     let historical_create = json!({
         "session_id": "profiled-historical-binding",
         "mode": "work_unit",
@@ -5058,13 +5089,19 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         "profiled:profiled-historical-binding:repository:",
         "profiled:profiled-historical-binding:repository:0"
     );
+    persist_profiled_publication_source(
+        &state,
+        &sessions,
+        "default",
+        "profiled-historical-binding",
+    )
+    .await;
     let durable = sessions.get("profiled-historical-binding").await.unwrap();
     assert_eq!(
         durable.resources.active.inputs()[0].binding_id.as_str(),
         historical_binding,
         "B1 exact former generated identity"
     );
-    persist_profiled_publication_source(&sessions, "profiled-historical-binding").await;
     let (status, released) = call(
         &app,
         "POST",
@@ -5143,15 +5180,13 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
             .with_session_repo(seed_sessions.clone())
             .with_resource_registry(resource_registry()),
     );
-    let seed_app = profiled_router(seed_state, "default");
+    let seed_app = profiled_router(seed_state.clone(), "default");
     let mut current_wire = legacy_wire.clone();
     current_wire["repositories"][0]["mount_path"] = json!("/workspace/repository");
     let (status, body) = call(&seed_app, "POST", "/v1/awaken/sessions", Some(current_wire)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "H1 seed: {body}");
-    let mut historical = seed_sessions
-        .get("profiled-legacy-path-replay")
-        .await
-        .expect("seed aggregate");
+    let mut historical =
+        settle_profiled_session(&seed_state, "default", "profiled-legacy-path-replay").await;
     let (mut inputs, skills) = historical.resources.active.clone().into_parts();
     inputs[0].mount_path = "/repo".into();
     // Replay must use the storage-only decoder: public construction deliberately
@@ -5224,12 +5259,14 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     // Workspace and frozen binding are exact/foreign; C3 the expectation is
     // first, an exact replay, or a mismatch; C4 the Runtime returns canonical
     // evidence; C5 the canonical Environment receipt has durably established
-    // one live source without changing the Resource generation. Effects: E1
+    // one live source without changing the Resource generation; C6 the same
+    // canonical recovery has made the accepted root exactly Idle. Effects: E1
     // legacy release archives without publication; E2 an exact request returns
     // the provisioning receipt only after it is durable in the Session root;
     // E3 exact replay returns the same response and performs no second effect;
     // E4 wrong scope is 404; E5 wrong binding is 400; E6 changed expectation is
-    // 409. Rules: P1=!C1=>E1; P2=C1+exact C2+first C3+C4+C5=>E2;
+    // 409. Rules: P1=!C1+C6=>E1;
+    // P2=C1+exact C2+first C3+C4+C5+C6=>E2;
     // P3=C1+exact C2+replay C3=>E3; P4=foreign C2=>E4; P5=wrong binding C2=>E5;
     // P6=mismatch C3=>E6.
     let runtime = AcceptingFake::default();
@@ -5263,7 +5300,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "P2 create: {created}");
-    persist_profiled_publication_source(&sessions, "profiled-publication").await;
+    persist_profiled_publication_source(&state, &sessions, "default", "profiled-publication").await;
 
     let request = json!({
         "repository_publication": {
@@ -5374,6 +5411,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "P1 create: {created}");
+    settle_profiled_session(&state, "default", "profiled-legacy-release").await;
     let (status, released) = call(
         &app,
         "POST",
