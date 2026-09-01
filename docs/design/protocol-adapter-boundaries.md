@@ -58,6 +58,12 @@ Every public adapter must name the following mapping before implementation:
 | Error mapping | public error code and message | neutral error classified by source domain |
 | Unsupported API | explicit rejection for management/product endpoints | no runtime call |
 
+Protocol extensions stay adapter-owned and must use the host protocol's
+extension point. In particular, AI SDK pre-uploaded logical Files use the
+closed `data-awaken-file` custom data part; standard `FileUIPart` keeps its
+hosted/data-URL meaning. The adapter may emit only a neutral File identity, and
+attempt-bound Workspace authorization/materialization remains downstream.
+
 The adapter boundary is crossed only by neutral runtime values. Public DTO structs,
 public event enums, route state, auth claims, tenant objects, beta-header flags,
 and public error types must not enter runtime core.

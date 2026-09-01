@@ -188,11 +188,18 @@ pub enum UIMessagePart {
     Text {
         text: String,
     },
-    /// AI SDK v5 file part: `{ type: "file", mediaType, url }`, where `url` is a
+    /// AI SDK v6 file part: `{ type: "file", mediaType, url }`, where `url` is a
     /// `data:` URI or a remote link.
     File {
         media_type: String,
         url: String,
+    },
+    /// Awaken's typed AI SDK data-part extension for a pre-uploaded logical File.
+    /// The id is not authority: attempt-bound materialization re-resolves it in
+    /// the authenticated Workspace before any provider request.
+    AwakenFile {
+        file_id: String,
+        kind: AwakenFileKind,
     },
     Tool(ToolDecisionPart),
     /// A valid UI part without neutral input semantics (`reasoning`, `step-start`,
@@ -201,6 +208,58 @@ pub enum UIMessagePart {
     Other {
         kind: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AwakenFileKind {
+    Image,
+    Document,
+}
+
+fn awaken_file_part(value: &Value) -> Result<UIMessagePart, String> {
+    let part = value
+        .as_object()
+        .ok_or_else(|| "data-awaken-file part must be an object".to_string())?;
+    if part.len() != 2 || !part.contains_key("type") || !part.contains_key("data") {
+        return Err("data-awaken-file part accepts only `type` and `data`".into());
+    }
+    let data = part
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "data-awaken-file requires object `data`".to_string())?;
+    if data.len() != 3
+        || !data.contains_key("object")
+        || !data.contains_key("fileRef")
+        || !data.contains_key("kind")
+    {
+        return Err("data-awaken-file data accepts only `object`, `fileRef`, and `kind`".into());
+    }
+    if data.get("object").and_then(Value::as_str) != Some("awaken.file_reference") {
+        return Err("data-awaken-file object must be `awaken.file_reference`".into());
+    }
+    let file_id = data
+        .get("fileRef")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "data-awaken-file requires string `fileRef`".to_string())?;
+    let suffix = file_id
+        .strip_prefix("file_")
+        .filter(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "data-awaken-file fileRef is not a canonical File id".to_string())?;
+    debug_assert_eq!(suffix.len(), 32);
+    let kind = match data.get("kind").and_then(Value::as_str) {
+        Some("image") => AwakenFileKind::Image,
+        Some("document") => AwakenFileKind::Document,
+        _ => return Err("data-awaken-file kind must be `image` or `document`".into()),
+    };
+    Ok(UIMessagePart::AwakenFile {
+        file_id: file_id.to_string(),
+        kind,
+    })
 }
 
 impl<'de> Deserialize<'de> for UIMessagePart {
@@ -236,6 +295,7 @@ impl<'de> Deserialize<'de> for UIMessagePart {
                     url: url.into(),
                 })
             }
+            "data-awaken-file" => awaken_file_part(&value).map_err(serde::de::Error::custom),
             _ if kind.starts_with("tool-") => serde_json::from_value(value)
                 .map(Self::Tool)
                 .map_err(serde::de::Error::custom),
@@ -287,44 +347,79 @@ pub fn text_parts(content: &[ContentBlock]) -> Vec<Value> {
         .collect()
 }
 
-/// Project citation-capable neutral search results into standard AI SDK source
-/// parts. Search content remains runtime-owned; this adapter exposes only the
-/// committed source identity and title required by the public wire.
+fn replayable_history_part(block: &ContentBlock) -> Option<Value> {
+    match block {
+        ContentBlock::Text { text } => Some(serde_json::json!({ "type": "text", "text": text })),
+        ContentBlock::Image {
+            source: awaken_agent_contract::agent::content::ImageSource::File { file_id },
+        } => Some(serde_json::json!({
+            "type": "data-awaken-file",
+            "data": {
+                "object": "awaken.file_reference",
+                "fileRef": file_id,
+                "kind": "image"
+            }
+        })),
+        ContentBlock::Document {
+            source: awaken_agent_contract::agent::content::DocumentSource::File { file_id },
+            ..
+        } => Some(serde_json::json!({
+            "type": "data-awaken-file",
+            "data": {
+                "object": "awaken.file_reference",
+                "fileRef": file_id,
+                "kind": "document"
+            }
+        })),
+        _ => None,
+    }
+}
+
+fn citation_part(block: &ContentBlock) -> Option<Value> {
+    match block {
+        ContentBlock::SearchResult {
+            source,
+            title,
+            citations,
+            ..
+        } if citations.enabled
+            && (source.starts_with("https://") || source.starts_with("http://")) =>
+        {
+            Some(serde_json::json!({
+                "type": "source-url",
+                "sourceId": source,
+                "url": source,
+                "title": title,
+            }))
+        }
+        ContentBlock::SearchResult {
+            source,
+            title,
+            citations,
+            ..
+        } if citations.enabled => Some(serde_json::json!({
+            "type": "source-document",
+            "sourceId": source,
+            "mediaType": "text/plain",
+            "title": title,
+        })),
+        _ => None,
+    }
+}
+
+/// Project replayable user-visible content. Standard text stays standard AI SDK;
+/// logical File identities use the same closed custom data part accepted inbound.
+pub fn history_parts(content: &[ContentBlock]) -> Vec<Value> {
+    content.iter().filter_map(replayable_history_part).collect()
+}
+
+/// Project assistant history without choosing between citations and logical Files.
+/// Search content remains runtime-owned; only committed source identity/title and
+/// canonical File references cross the public wire.
 pub fn assistant_parts(content: &[ContentBlock]) -> Vec<Value> {
     content
         .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => {
-                Some(serde_json::json!({ "type": "text", "text": text }))
-            }
-            ContentBlock::SearchResult {
-                source,
-                title,
-                citations,
-                ..
-            } if citations.enabled
-                && (source.starts_with("https://") || source.starts_with("http://")) =>
-            {
-                Some(serde_json::json!({
-                    "type": "source-url",
-                    "sourceId": source,
-                    "url": source,
-                    "title": title,
-                }))
-            }
-            ContentBlock::SearchResult {
-                source,
-                title,
-                citations,
-                ..
-            } if citations.enabled => Some(serde_json::json!({
-                "type": "source-document",
-                "sourceId": source,
-                "mediaType": "text/plain",
-                "title": title,
-            })),
-            _ => None,
-        })
+        .filter_map(|block| replayable_history_part(block).or_else(|| citation_part(block)))
         .collect()
 }
 
@@ -341,6 +436,7 @@ mod wire_tests {
         // | discriminator       | required payload     | result             |
         // | text                | string text          | typed Text         |
         // | file                | mediaType + url      | typed File         |
+        // | data-awaken-file    | exact logical ref    | typed AwakenFile   |
         // | tool-<dynamic>      | optional state/id    | typed Tool         |
         // | data-*/reasoning    | provider-defined     | explicit Other     |
         // | known + bad payload | —                    | reject whole body  |
@@ -353,6 +449,22 @@ mod wire_tests {
         assert!(
             matches!(tool, UIMessagePart::Tool(ToolDecisionPart { kind, .. }) if kind == "tool-any-runtime-name")
         );
+        let file: UIMessagePart = serde_json::from_value(json!({
+            "type":"data-awaken-file",
+            "data": {
+                "object":"awaken.file_reference",
+                "fileRef":"file_0123456789abcdef0123456789abcdef",
+                "kind":"document"
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            file,
+            UIMessagePart::AwakenFile {
+                file_id,
+                kind: AwakenFileKind::Document
+            } if file_id == "file_0123456789abcdef0123456789abcdef"
+        ));
         let other: UIMessagePart =
             serde_json::from_value(json!({"type":"data-weather","data":{"c":20}})).unwrap();
         assert!(matches!(other, UIMessagePart::Other { kind } if kind == "data-weather"));
@@ -360,6 +472,19 @@ mod wire_tests {
             json!({"text":"missing discriminator"}),
             json!({"type":"text","text":7}),
             json!({"type":"file","mediaType":"image/png"}),
+            json!({
+                "type":"data-awaken-file",
+                "data": {"object":"awaken.file_reference","fileRef":"file_short","kind":"document"}
+            }),
+            json!({
+                "type":"data-awaken-file",
+                "data": {
+                    "object":"awaken.file_reference",
+                    "fileRef":"file_0123456789abcdef0123456789abcdef",
+                    "kind":"document",
+                    "downloadUrl":"https://example.test/private"
+                }
+            }),
         ] {
             assert!(serde_json::from_value::<UIMessagePart>(invalid).is_err());
         }
@@ -571,5 +696,25 @@ mod wire_tests {
         ]);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0], json!({ "type": "text", "text": "hi" }));
+    }
+
+    #[test]
+    fn history_parts_preserves_only_canonical_logical_file_identity() {
+        // One text plus image/document logical ids become replayable UI parts;
+        // inline/remote bytes remain outside this reference-only extension.
+        let parts = history_parts(&[
+            ContentBlock::text("inspect"),
+            ContentBlock::image_file("file_0123456789abcdef0123456789abcdef"),
+            ContentBlock::document_file("file_fedcba9876543210fedcba9876543210"),
+            ContentBlock::image_url("https://example.test/image.png"),
+        ]);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1]["type"], "data-awaken-file");
+        assert_eq!(parts[1]["data"]["kind"], "image");
+        assert_eq!(
+            parts[2]["data"]["fileRef"],
+            "file_fedcba9876543210fedcba9876543210"
+        );
+        assert!(parts.iter().all(|part| part.get("url").is_none()));
     }
 }

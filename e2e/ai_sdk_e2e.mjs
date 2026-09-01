@@ -68,6 +68,57 @@ async function main() {
     pass('ai-sdk multimodal (image reached the model)');
   });
 
+  // --- pre-uploaded File: the official Chat preserves a custom data part; Awaken
+  // resolves its opaque logical id in the Run Workspace before model I/O. ---
+  await withRealServer('vision', 38144, async (base) => {
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from(RED_PNG_DATA_URI.split(',')[1], 'base64')], {
+      type: 'image/png',
+    }), 'red.png');
+    const uploaded = await fetch(`${base}/v1/files?beta=true`, {
+      method: 'POST',
+      headers: { 'anthropic-beta': 'files-api-2025-04-14' },
+      body: form,
+    });
+    const uploadedBody = await uploaded.text();
+    assert.equal(uploaded.status, 200, uploadedBody);
+    const receipt = JSON.parse(uploadedBody);
+    assert.match(receipt.id, /^file_[0-9a-f]{32}$/u);
+
+    const chat = newChat(base, 'sdk-file-ref');
+    await chat.sendMessage({
+      parts: [
+        {
+          type: 'data-awaken-file',
+          data: {
+            object: 'awaken.file_reference',
+            fileRef: receipt.id,
+            kind: 'image',
+          },
+        },
+        { type: 'text', text: 'inspect the pre-uploaded file' },
+      ],
+    });
+    assert.ok(
+      replyText(chat).includes('image/png'),
+      `logical File did not reach the model: ${replyText(chat)}`,
+    );
+    const history = await fetch(`${base}/v1/ai-sdk/threads/sdk-file-ref/messages`);
+    assert.equal(history.status, 200);
+    const replay = await history.json();
+    const filePart = replay.items[0].parts.find((part) => part.type === 'data-awaken-file');
+    assert.deepEqual(filePart, {
+      type: 'data-awaken-file',
+      data: {
+        object: 'awaken.file_reference',
+        fileRef: receipt.id,
+        kind: 'image',
+      },
+    });
+    assert.equal(JSON.stringify(filePart).includes('url'), false);
+    pass('ai-sdk pre-uploaded logical File (reference-only request and history)');
+  });
+
   // --- HITL: a tool needing approval awaits; `Chat.addToolApprovalResponse` submits the
   // decision and (via sendAutomaticallyWhen) auto-resends, completing the run ---
   await withScenarioServer('management-probe', 'probe', 38143, async (base) => {
@@ -120,7 +171,7 @@ async function main() {
   });
 
   console.log(
-    'E2E PASS: AI SDK multi-turn + multimodal + HITL via the native Chat API.',
+    'E2E PASS: AI SDK multi-turn + multimodal + logical File + HITL via the native Chat API.',
   );
 }
 

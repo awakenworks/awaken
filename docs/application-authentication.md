@@ -157,6 +157,37 @@ const chat = useChat({
 Keep the application token in memory. Never put a service API key in browser
 source, browser storage, a mobile bundle, or a public environment variable.
 
+### Pre-uploaded Files
+
+AI SDK `FileUIPart` is reserved for a hosted URL or a data URL. It is not
+reinterpreted as an Awaken Files API id. A browser that has already uploaded a
+File uses the typed custom data-part extension below instead:
+
+```json
+{
+  "type": "data-awaken-file",
+  "data": {
+    "object": "awaken.file_reference",
+    "fileRef": "file_0123456789abcdef0123456789abcdef",
+    "kind": "document"
+  }
+}
+```
+
+The part and nested data object are closed. `fileRef` is exactly `file_` plus a
+lowercase 32-hex UUID; `kind` is `image` or `document`. No URL, bytes, filename,
+MIME type, credential, Workspace id, or provider id crosses this wire. The AI
+SDK adapter maps the part to a neutral logical File source, and the
+attempt-bound content materializer re-resolves its metadata and bytes in the
+authenticated Workspace before provider I/O. The reference alone grants no
+read authority. Committed history emits the same reference-only data part, so
+reload does not manufacture a browser-download URL.
+
+This is an AI SDK custom data part, not a second upload protocol or a Product
+resource type. Unknown `data-*` parts remain non-content; malformed
+`data-awaken-file` parts fail the whole request before Run admission instead of
+being silently dropped or downgraded to text.
+
 ## Dynamic enforcement and failures
 
 For every application request, the guard authenticates the token, classifies an
