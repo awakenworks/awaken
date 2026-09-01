@@ -14,6 +14,37 @@ fn test_model_binding() -> awaken_runtime_contract::resolved::ModelBinding {
     awaken_runtime_contract::resolved::ModelBinding::new("test", "model", "native")
 }
 
+fn awaiting_tool_batch_state(
+    run_id: &RunId,
+    ticket: &ResumeTicket,
+) -> awaken_agent_contract::agent::state::Command {
+    let awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+        reason,
+        call_id,
+        tool,
+    } = ticket.target()
+    else {
+        panic!("awaiting tool-batch fixture requires a tool ticket")
+    };
+    let mut batch = awaken_runtime_contract::ToolBatch::for_step(
+        run_id.clone(),
+        0,
+        [(
+            awaken_runtime_contract::llm::ToolCall {
+                call_id: call_id.clone(),
+                tool_id: tool.tool_id.clone(),
+                arguments: tool.arguments.clone(),
+            },
+            awaken_runtime_contract::ToolRecoveryPolicy::default(),
+        )],
+    )
+    .expect("valid awaiting tool-batch fixture");
+    batch
+        .mark_awaiting(call_id, (*reason).into(), ticket.correlation_id.clone())
+        .expect("ticket and tool batch enter one exact wait");
+    awaken_runtime_contract::ActiveToolBatch::write(&Some(batch))
+}
+
 /// Approval-state tests name their precondition explicitly. Managed Agent
 /// members default to always-allow; this exact test override asks only for
 /// `write` while leaving unrelated follow-up effects unchanged.
@@ -12669,7 +12700,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             RunDisposition::awaiting(ticket.clone()),
             true,
             Vec::new(),
-            Vec::new(),
+            vec![awaiting_tool_batch_state(&child_run, &ticket)],
             Vec::new(),
         ))
         .await
@@ -13086,16 +13117,19 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 target is Primary; C2 committed ticket is the exact
     // ExternalEvent Run/correlation/tool; C3 the generic result is normal/error;
-    // C4 expected Run/correlation is exact/stale. Effects: E1 the existing root
+    // C4 expected Run/correlation is exact/stale; C5 the committed ToolBatch
+    // payload agrees/conflicts with the ticket. Effects: E1 the existing root
     // dispatch activity rotates and one client ToolOutput is staged; E2 normal
     // content and is_error survive unchanged; E3 stale admission coordinates
-    // fail before Outbox mutation. Child confirmation coverage lives in the
+    // fail before Outbox mutation; E4 a C5 conflict also fails before Outbox
+    // mutation. Child confirmation coverage lives in the
     // sibling decision table above; both targets use this same Host boundary.
     //
     // | Rule | Target | Ticket | Result | Effect |
     // |---|---|---|---|---|
     // | PR1 | Primary | exact | normal generic | E1+E2 |
     // | PR2 | Primary | stale Run/correlation | normal generic | E3 |
+    // | PR3 | Primary | exact ticket/conflicting batch | normal generic | E4 |
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
@@ -13149,7 +13183,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             RunDisposition::awaiting(ticket.clone()),
             true,
             Vec::new(),
-            Vec::new(),
+            vec![awaiting_tool_batch_state(&run_id, &ticket)],
             Vec::new(),
         ))
         .await
@@ -13214,6 +13248,62 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
         0,
         "PR2/E3"
     );
+
+    let mut conflicting_batch = awaken_runtime_contract::ToolBatch::for_step(
+        run_id.clone(),
+        0,
+        [(
+            awaken_runtime_contract::llm::ToolCall {
+                call_id: "primary-reply-tool-use".into(),
+                tool_id: "client_lookup".into(),
+                arguments: serde_json::json!({"query": "another request"}),
+            },
+            awaken_runtime_contract::ToolRecoveryPolicy::default(),
+        )],
+    )
+    .expect("PR3 internally valid conflicting batch");
+    conflicting_batch
+        .mark_awaiting(
+            "primary-reply-tool-use",
+            awaken_runtime_contract::ToolWaitKind::ExternalResult,
+            ticket.correlation_id.clone(),
+        )
+        .expect("PR3 conflicting batch awaits");
+    commit
+        .commit(ThreadCommit::assemble(
+            parent.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            vec![awaken_runtime_contract::ActiveToolBatch::write(&Some(
+                conflicting_batch,
+            ))],
+            Vec::new(),
+        ))
+        .await
+        .expect("PR3 commit conflicting batch projection");
+    assert!(
+        host.session_thread_tool_reply_fence(&command)
+            .await
+            .is_err(),
+        "PR3/E4"
+    );
+    assert_eq!(
+        dispatch.relay().await.expect("PR3 no delivery"),
+        0,
+        "PR3/E4"
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            parent.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            vec![awaiting_tool_batch_state(&run_id, &ticket)],
+            Vec::new(),
+        ))
+        .await
+        .expect("restore exact PR1 batch fixture");
 
     let fence = host
         .session_thread_tool_reply_fence(&command)

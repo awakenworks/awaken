@@ -78,6 +78,23 @@ pub(super) async fn drive_resumed(
     );
     transcript.extend(fresh_context.iter().cloned());
     let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
+    // A tool resume has exactly one durable execution authority. Validate every
+    // ticket/batch axis before permission pre-commit or any tool/delegation
+    // effect; non-tool pauses keep the direct resume path.
+    let waiting_call_id = ticket.tool_call().map(|(call_id, _)| call_id.to_string());
+    let mut waiting_batch = if waiting_call_id.is_some() {
+        let batch = ActiveToolBatch::load(&store)
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .ok_or_else(|| {
+                Error::Execution("tool resume is missing its committed tool batch".to_string())
+            })?;
+        batch
+            .validate_awaiting_ticket(thread_id, ticket)
+            .map_err(|error| Error::Execution(format!("incoherent tool resume: {error}")))?;
+        Some(batch)
+    } else {
+        None
+    };
     let approved = matches!(
         &result,
         ResumeResult::Permission(PermissionDecision::Allow { .. })
@@ -119,10 +136,10 @@ pub(super) async fn drive_resumed(
         ticket.reason(),
         AwaitReason::ToolPermission | AwaitReason::ScheduledAction
     ) && let Some((call_id, pending)) = ticket.tool_call()
-        && let Some(mut batch) = ActiveToolBatch::load(&store)
-            .map_err(|error| Error::Execution(error.to_string()))?
-            .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)
     {
+        let batch = waiting_batch.as_mut().ok_or_else(|| {
+            Error::Execution("approved tool resume lost its committed tool batch".to_string())
+        })?;
         let wait_kind = match ticket.reason() {
             AwaitReason::ToolPermission => ToolWaitKind::ToolPermission,
             AwaitReason::ScheduledAction => ToolWaitKind::ScheduledAction,
@@ -131,7 +148,7 @@ pub(super) async fn drive_resumed(
         batch
             .resume_executing(call_id, wait_kind, &ticket.correlation_id)
             .map_err(|error| Error::Execution(error.to_string()))?;
-        let command = ActiveToolBatch::write(&Some(batch));
+        let command = ActiveToolBatch::write(&Some(batch.clone()));
         let mut approval_state = Vec::new();
         let call = ToolCall {
             call_id: call_id.to_string(),
@@ -224,13 +241,11 @@ pub(super) async fn drive_resumed(
                     &call,
                     ToolAwaitReason::Delegation,
                 );
-                let mut batch = ActiveToolBatch::load(&store)
-                    .map_err(|error| Error::Execution(error.to_string()))?
-                    .ok_or_else(|| {
-                        Error::Execution(
-                            "approved delegation is missing its committed tool batch".to_string(),
-                        )
-                    })?;
+                let batch = waiting_batch.as_mut().ok_or_else(|| {
+                    Error::Execution(
+                        "approved delegation is missing its committed tool batch".to_string(),
+                    )
+                })?;
                 batch
                     .mark_awaiting(
                         &call.call_id,
@@ -238,7 +253,7 @@ pub(super) async fn drive_resumed(
                         next_ticket.correlation_id.clone(),
                     )
                     .map_err(|error| Error::Execution(error.to_string()))?;
-                delegation_state.push(ActiveToolBatch::write(&Some(batch)));
+                delegation_state.push(ActiveToolBatch::write(&Some(batch.clone())));
                 return finish(
                     runtime,
                     context,
@@ -314,15 +329,10 @@ pub(super) async fn drive_resumed(
     // that call but stays behind the batch publication barrier. Recovery of the
     // batch below will finish any remaining calls and publish all results in the
     // original model order. A no-tool pause/input keeps the historic direct path.
-    let resumed_new_messages = if let Some(mut batch) = ActiveToolBatch::load(&store)
-        .map_err(|error| Error::Execution(error.to_string()))?
-        .filter(|batch| batch.run_id() == run_id && batch.phase() == ToolBatchPhase::Open)
-        && let Some(call_id) = ticket.call_id()
-        && batch
-            .calls()
-            .iter()
-            .any(|entry| entry.call.call_id == call_id)
-    {
+    let resumed_new_messages = if let Some(mut batch) = waiting_batch.take() {
+        let call_id = waiting_call_id
+            .as_deref()
+            .expect("a validated waiting batch always has one ticket call");
         let output = resumed_output.ok_or_else(|| {
             Error::Execution("tool wait resumed without a tool output".to_string())
         })?;

@@ -103,38 +103,27 @@ pub(crate) async fn interrupt_awaiting_tools(
         }
     }
     let store = store_from_commands(reader.committed_state(&thread_id), &run_id);
-    let ticket_is_coherent = reader.resume_ticket(&run_id).is_none_or(|ticket| {
-        ticket.run_id == run_id
-            && ticket.thread_id == thread_id
-            && matches!(
-                ticket.reason(),
-                AwaitReason::ToolPermission | AwaitReason::ExternalEvent
-            )
-    });
+    let ticket = reader.resume_ticket(&run_id);
     let batch = ActiveToolBatch::load(&store);
-    let batch_is_coherent = batch.as_ref().is_ok_and(|batch| {
-        batch.as_ref().is_some_and(|batch| {
-            batch.run_id() == &run_id
-                && batch.phase() == ToolBatchPhase::Open
-                && batch.calls().iter().any(|entry| {
-                    matches!(
-                        entry.phase,
-                        ToolCallPhase::Awaiting { ref wait }
-                            if matches!(
-                                wait.kind,
-                                ToolWaitKind::ToolPermission | ToolWaitKind::ExternalResult
-                            )
-                    )
+    let coherence = match (&batch, ticket.as_ref()) {
+        (Err(error), _) => Err(format!("unreadable ActiveToolBatch: {error}")),
+        (Ok(None), _) => Err("missing ActiveToolBatch".to_string()),
+        (Ok(Some(_)), None) => Err("missing ResumeTicket".to_string()),
+        (Ok(Some(batch)), Some(ticket)) => batch
+            .validate_awaiting_ticket(&thread_id, ticket)
+            .map_err(|error| format!("incoherent ResumeTicket: {error}"))
+            .and_then(|_| {
+                matches!(
+                    ticket.reason(),
+                    AwaitReason::ToolPermission | AwaitReason::ExternalEvent
+                )
+                .then_some(())
+                .ok_or_else(|| {
+                    "ResumeTicket does not describe an interruptible external wait".to_string()
                 })
-        })
-    });
-    if !ticket_is_coherent || !batch_is_coherent {
-        let detail = match &batch {
-            Err(error) => format!("unreadable ActiveToolBatch: {error}"),
-            Ok(None) => "missing ActiveToolBatch".to_string(),
-            Ok(Some(_)) if !ticket_is_coherent => "incoherent ResumeTicket".to_string(),
-            Ok(Some(_)) => "ActiveToolBatch does not contain the current external wait".to_string(),
-        };
+            }),
+    };
+    if let Err(detail) = coherence {
         tracing::error!(
             awaken.run.id = %run_id.0,
             awaken.thread.id = %thread_id.0,

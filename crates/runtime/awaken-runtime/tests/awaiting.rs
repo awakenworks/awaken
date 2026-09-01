@@ -8,8 +8,11 @@ use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -26,6 +29,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput, ToolOutputSpiller};
+use awaken_runtime_contract::{ActiveToolBatch, ToolBatch};
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_latest_state};
 
 /// Calls `echo` once, then ends with text on the next inference.
@@ -323,6 +327,70 @@ async fn resume_with_wrong_fingerprint_fails_closed() {
             .resume_ticket_for(&RunId("run-1".to_string()))
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn resume_rejects_a_ticket_batch_payload_conflict_before_tool_execution() {
+    // Cause/effect graph: C1 ResumeCommand matches the committed ticket; C2 the
+    // active batch is present/readable; C3 its Run/Thread/call/kind/correlation/
+    // tool payload all match the ticket. Effects: E1 C1+C2+C3 resumes; E2 an
+    // independently valid but payload-conflicting batch fails before any tool
+    // effect or resume commit and leaves the Run Awaiting. Rules RB1=all true
+    // (covered by the allow test), RB2=C1+C2+!C3=>E2.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = runtime(ran.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    suspend(&commit, &runtime).await;
+
+    let run_id = RunId("run-1".into());
+    let thread_id = ThreadId("thread-1".into());
+    let ticket = commit
+        .resume_ticket_for(&run_id)
+        .expect("RB2 durable ticket");
+    let state = Store::rebuild(&commit.committed_state(&thread_id));
+    let batch = ActiveToolBatch::load(&state)
+        .expect("RB2 readable batch")
+        .expect("RB2 present batch");
+    let mut value = serde_json::to_value(batch).expect("RB2 encode fixture");
+    value["calls"][0]["call"]["tool_id"] = serde_json::json!("another-tool");
+    let mismatched: ToolBatch =
+        serde_json::from_value(value).expect("RB2 mismatch remains internally valid");
+    commit
+        .commit(
+            awaken_agent_contract::thread::commit::staged::ThreadCommit::assemble(
+                thread_id.clone(),
+                awaken_agent_contract::thread::commit::staged::RunDisposition::awaiting(
+                    ticket.clone(),
+                ),
+                true,
+                Vec::new(),
+                vec![ActiveToolBatch::write(&Some(mismatched))],
+                Vec::new(),
+            ),
+        )
+        .await
+        .expect("RB2 commit conflicting durable projection");
+    let commits_before = commit.commit_count();
+
+    let error = runtime
+        .resume(
+            resume_command(ResumeResult::allow()),
+            commit.as_ref(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect_err("RB2 ticket/batch conflict must fail closed");
+    assert!(
+        error.to_string().contains("incoherent tool resume"),
+        "RB2/E2"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "RB2/E2 no tool effect");
+    assert_eq!(
+        commit.commit_count(),
+        commits_before,
+        "RB2/E2 no resume commit"
+    );
+    assert_eq!(commit.run_state(&run_id), Some(RunState::Awaiting));
 }
 
 #[tokio::test]

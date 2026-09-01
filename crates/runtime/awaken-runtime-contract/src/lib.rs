@@ -146,6 +146,7 @@ pub use tool::{
     ToolTaskPoll, ToolTaskStart,
 };
 pub use tool_batch::{
-    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,
+    ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolBatchWaitError, ToolCallPhase,
+    ToolWait, ToolWaitKind,
 };
 pub use tool_discovery::{ToolSearchInput, ToolSearchLimit, ToolSearchLimitError};

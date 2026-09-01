@@ -30,8 +30,8 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     FlakyDispatchStore, activation, activation_on, blocking_tool_runtime,
-    blocking_tool_runtime_with_entry_signal, concurrency_tracking_tool_runtime, text_runtime,
-    tool_runtime,
+    blocking_tool_runtime_with_entry_signal, concurrency_tracking_tool_runtime,
+    multi_tool_blocking_runtime, text_runtime, tool_runtime,
 };
 
 type MemWorker = DispatchWorker<MemoryDispatchStore>;
@@ -1704,18 +1704,23 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
     pool.shutdown().await;
 }
 
-/// Concurrency > 1 drives DISTINCT runs in parallel: with two drain tasks and two
-/// runs on two threads, both runs must be in-flight *simultaneously*. Each run's tool
-/// blocks on a shared gate, so both counters can only both reach 1 if two drives run
-/// at once — a single drain would deadlock (the first drive blocks forever, so the
-/// second run is never claimed).
+/// Concurrency > 1 drives two Threads in parallel while each Run retains one
+/// authoritative multi-call ToolBatch.
 #[tokio::test]
 async fn concurrency_drives_distinct_runs_in_parallel() {
     use std::sync::atomic::Ordering;
 
+    // Cause/effect graph: C1 pool capacity is two; C2 Runs own distinct Threads;
+    // C3 each model response contains two calls; C4 one call per Run remains
+    // blocked. Effects: E1 both Runs enter concurrently; E2 all four calls enter
+    // exactly once; E3 each Thread commits one finalized two-call batch; E4 no
+    // Run/call state crosses the Thread boundary. Decision rule MT1=C1+C2+C3+C4
+    // =>E1+E2; releasing C4=>E3+E4. The sibling same-Thread test negates C2 and
+    // proves the physical-attempt fence serializes Runs without disabling
+    // within-batch tool parallelism.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let (rt_a, ran_a) = blocking_tool_runtime(release.clone());
-    let (rt_b, ran_b) = blocking_tool_runtime(release.clone());
+    let (rt_a, ran_a) = multi_tool_blocking_runtime(release.clone(), 2);
+    let (rt_b, ran_b) = multi_tool_blocking_runtime(release.clone(), 2);
     let store = Arc::new(MemoryDispatchStore::new());
     let commit_a = Arc::new(MemoryCommitCoordinator::new());
     let commit_b = Arc::new(MemoryCommitCoordinator::new());
@@ -1748,16 +1753,42 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
     // parallel drains. (Distinct claims: no double-claim, since each thread's run
     // landed on its own runtime.)
     assert!(
-        wait_for(|| ran_a.load(Ordering::SeqCst) >= 1 && ran_b.load(Ordering::SeqCst) >= 1).await,
-        "both runs were driven in parallel (concurrency = 2)"
+        wait_for(|| ran_a.load(Ordering::SeqCst) == 2 && ran_b.load(Ordering::SeqCst) == 2).await,
+        "MT1/E1+E2 both two-call batches entered in parallel"
     );
 
     // Release both blocked tools; both drives complete on their own boundaries.
     release.add_permits(2);
     assert!(
-        wait_for(|| commit_a.commit_count() >= 1 && commit_b.commit_count() >= 1).await,
-        "both parallel runs settled"
+        wait_for(|| {
+            CommittedThreadView::run(commit_a.as_ref(), &RunId("run-a".into()))
+                .is_some_and(|run| matches!(run.state, RunState::Ended(_)))
+                && CommittedThreadView::run(commit_b.as_ref(), &RunId("run-b".into()))
+                    .is_some_and(|run| matches!(run.state, RunState::Ended(_)))
+        })
+        .await,
+        "MT1/E3 both parallel Runs settled"
     );
+    for (rule, commit, thread) in [
+        ("thread-a", &commit_a, ThreadId("thread-a".into())),
+        ("thread-b", &commit_b, ThreadId("thread-b".into())),
+    ] {
+        let state =
+            awaken_agent_contract::agent::state::Store::rebuild(&commit.committed_state(&thread));
+        let batch = <awaken_runtime_contract::ActiveToolBatch as awaken_agent_contract::agent::state::StateKey>::load(&state)
+            .expect("MT1 readable batch")
+            .expect("MT1 retained batch");
+        assert_eq!(batch.calls().len(), 2, "MT1/E3 {rule}");
+        assert_eq!(
+            batch.phase(),
+            awaken_runtime_contract::ToolBatchPhase::Finalized,
+            "MT1/E3 {rule}"
+        );
+        assert!(
+            batch.calls().iter().all(|call| call.phase.is_terminal()),
+            "MT1/E3+E4 {rule}"
+        );
+    }
 
     pool.shutdown().await;
 }
