@@ -505,6 +505,17 @@ reference through the lifecycle repository. `FileStore` computes the BLAKE3
 `blob_id`; equal bytes may share that blob while distinct uploads retain distinct
 logical `FileId` values. Knowing either id is never authority.
 
+Public multipart upload accepts an optional standard `Idempotency-Key` header.
+The key is scoped by Workspace and binds the complete logical effect: immutable
+bytes, filename, MIME type, download policy, expiry and scope. An exact replay
+returns the original `FileId`; reuse with any changed effect returns `409` and
+never creates a second logical File. Omitting the header preserves the Files API
+rule that every upload is an independent logical File. Relative
+`expires_in_seconds` is deliberately incompatible with an idempotency key because
+its wall-clock-derived expiry is not a stable replay fingerprint; clients needing
+replayable uploads omit relative expiry. The key remains internal catalog data and
+is not projected by list or metadata responses.
+
 ### Bind and resolve
 
 Agent and Session bindings carry the logical `FileId`. Resolution checks the

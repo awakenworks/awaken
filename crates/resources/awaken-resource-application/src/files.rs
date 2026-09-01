@@ -11,7 +11,7 @@ use awaken_resource_contract::{
     ArtifactPublication, CreateFileRecordOutcome, FileApplicationService, FileCatalog,
     FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES,
     ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository,
-    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, content_id,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
@@ -110,6 +110,9 @@ impl FileApplication {
                 .find(|record| record.harvest_key.as_deref() == Some(key))
             {
                 if let Some(scope) = artifact_idempotency_scope.as_deref() {
+                    if !same_file_effect_ignoring_lifecycle(&existing, &command) {
+                        return Err(ResourcePurgeError::IdempotencyConflict(key.to_owned()));
+                    }
                     // `create_file` is the single CAS owner for terminal
                     // association. Reusing its existing row here keeps the
                     // decision ahead of quota/blob/reference effects, including
@@ -122,7 +125,11 @@ impl FileApplication {
                         .map(|outcome| outcome.record().clone())
                         .map_err(file_catalog_error);
                 }
-                return Ok(existing);
+                return if same_file_effect(&existing, &command) {
+                    Ok(existing)
+                } else {
+                    Err(ResourcePurgeError::IdempotencyConflict(key.to_owned()))
+                };
             }
         }
 
@@ -157,7 +164,7 @@ impl FileApplication {
         self.reclamation
             .add_reference(candidate_reference.clone())
             .await?;
-        let outcome = match self.catalog.create_file(candidate).await {
+        let outcome = match self.catalog.create_file(candidate.clone()).await {
             Ok(outcome) => outcome,
             Err(error) => {
                 let _ = self
@@ -173,6 +180,16 @@ impl FileApplication {
                 self.reclamation
                     .remove_reference(&candidate_reference)
                     .await?;
+                let same_effect = if candidate.artifact_idempotency_scope.is_some() {
+                    same_file_record_effect_ignoring_lifecycle(&record, &candidate)
+                } else {
+                    same_file_record_effect(&record, &candidate)
+                };
+                if !same_effect {
+                    return Err(ResourcePurgeError::IdempotencyConflict(
+                        candidate.harvest_key.unwrap_or_default(),
+                    ));
+                }
                 if !record.deleted {
                     self.reclamation
                         .add_reference(logical_file_reference(&record))
@@ -202,6 +219,26 @@ impl FileApplication {
         bytes: &[u8],
         expires_at: Option<String>,
     ) -> Result<FileRecord, ResourcePurgeError> {
+        self.create_uploaded_file_with_expiry_and_idempotency(
+            workspace_id,
+            filename,
+            mime_type,
+            bytes,
+            expires_at,
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_uploaded_file_with_expiry_and_idempotency(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        expires_at: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> Result<FileRecord, ResourcePurgeError> {
         self.create(CreateFileCommand {
             workspace_id,
             filename,
@@ -211,7 +248,7 @@ impl FileApplication {
             expires_at,
             scope_id: None,
             logical_path: None,
-            idempotency_key: None,
+            idempotency_key,
         })
         .await
     }
@@ -343,21 +380,23 @@ impl FileApplicationService for FileApplication {
         FileApplication::list_including_deleted(self, workspace_id, scope_id).await
     }
 
-    async fn create_uploaded_file_with_expiry(
+    async fn create_uploaded_file_with_expiry_and_idempotency(
         &self,
         workspace_id: &str,
         filename: String,
         mime_type: String,
         bytes: &[u8],
         expires_at: Option<String>,
+        idempotency_key: Option<String>,
     ) -> Result<FileRecord, ResourcePurgeError> {
-        FileApplication::create_uploaded_file_with_expiry(
+        FileApplication::create_uploaded_file_with_expiry_and_idempotency(
             self,
             workspace_id,
             filename,
             mime_type,
             bytes,
             expires_at,
+            idempotency_key,
         )
         .await
     }
@@ -404,6 +443,46 @@ impl FileApplicationService for FileApplication {
     ) -> Result<Option<FileRecord>, ResourcePurgeError> {
         FileApplication::delete(self, workspace_id, file_id, requested_at_unix_ms).await
     }
+}
+
+fn same_file_effect(existing: &FileRecord, command: &CreateFileCommand<'_>) -> bool {
+    !existing.deleted && same_file_effect_ignoring_lifecycle(existing, command)
+}
+
+fn same_file_effect_ignoring_lifecycle(
+    existing: &FileRecord,
+    command: &CreateFileCommand<'_>,
+) -> bool {
+    existing.workspace_id == command.workspace_id
+        && existing.blob_id == content_id(command.bytes)
+        && existing.filename == command.filename
+        && existing.mime_type == command.mime_type
+        && existing.size_bytes == command.bytes.len() as u64
+        && existing.downloadable == command.downloadable
+        && existing.expires_at == command.expires_at
+        && existing.scope_id == command.scope_id
+        && existing.logical_path == command.logical_path
+        && existing.harvest_key == command.idempotency_key
+}
+
+fn same_file_record_effect(existing: &FileRecord, candidate: &FileRecord) -> bool {
+    !existing.deleted && same_file_record_effect_ignoring_lifecycle(existing, candidate)
+}
+
+fn same_file_record_effect_ignoring_lifecycle(
+    existing: &FileRecord,
+    candidate: &FileRecord,
+) -> bool {
+    existing.workspace_id == candidate.workspace_id
+        && existing.blob_id == candidate.blob_id
+        && existing.filename == candidate.filename
+        && existing.mime_type == candidate.mime_type
+        && existing.size_bytes == candidate.size_bytes
+        && existing.downloadable == candidate.downloadable
+        && existing.expires_at == candidate.expires_at
+        && existing.scope_id == candidate.scope_id
+        && existing.logical_path == candidate.logical_path
+        && existing.harvest_key == candidate.harvest_key
 }
 
 fn logical_file_reference(record: &FileRecord) -> ResourceReferenceRecord {
@@ -508,9 +587,10 @@ mod tests {
     async fn decision_table_keeps_one_logical_file_per_idempotency_key() {
         // Cause/effect design:
         // C1 same Workspace/scope/key retried -> E1 return the original logical File;
-        // C2 same bytes with a different key -> E2 create a distinct logical File
+        // C2 same bytes with a different key -> E2 create a distinct logical File;
+        // C3 same key with changed effect facts -> E3 fail with an idempotency conflict
         // while the FileStore may still deduplicate its immutable blob.
-        // These two rules cover command replay versus content deduplication without
+        // These three rules cover command replay versus content deduplication without
         // creating a second idempotency registry.
         let app = application();
         let command = || CreateFileCommand {
@@ -537,6 +617,18 @@ mod tests {
             .unwrap();
         assert_ne!(distinct.id, first.id, "E2");
         assert_eq!(distinct.blob_id, first.blob_id, "E2");
+
+        let conflict = app
+            .create(CreateFileCommand {
+                bytes: b"changed report",
+                ..command()
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(conflict, ResourcePurgeError::IdempotencyConflict(_)),
+            "E3 {conflict}"
+        );
     }
 
     #[tokio::test]
