@@ -1,6 +1,6 @@
 {
   "name": "@awaken/ui",
-  "version": "0.3.0-awaken.1",
+  "version": "0.3.0-awaken.2",
   "description": "Pinned Awaken UI distributable for cross-platform console builds.",
   "license": "MIT",
   "type": "module",

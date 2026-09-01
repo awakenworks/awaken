@@ -219,50 +219,6 @@ a {
   color: var(--fg3);
   font-size: 14px;
 }
-.suite-menu {
-  width: min(330px, calc(100vw - 32px));
-  padding: 6px;
-}
-.suite-menu__current,
-.suite-menu > a {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  border-radius: var(--r-md);
-}
-.suite-menu__current {
-  margin-block-end: 5px;
-  padding: 8px;
-  border-bottom: 1px solid var(--line);
-  border-end-start-radius: 0;
-  border-end-end-radius: 0;
-}
-.suite-menu > a {
-  padding: 10px;
-  color: var(--fg);
-  text-decoration: none;
-  transition: background 140ms ease, transform 140ms ease;
-}
-.suite-menu > a:hover,
-.suite-menu > a:focus-visible {
-  background: var(--soft);
-  transform: translateY(-1px);
-}
-.suite-menu__current > span,
-.suite-menu > a > span {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-.suite-menu small {
-  color: var(--fg3);
-  font-size: 10px;
-  line-height: 1.35;
-}
-.suite-menu strong { font-size: 12px; }
-.suite-menu__mark .awaken-mark { width: 30px; height: 30px; }
 .identity-menu {
   display: grid;
   gap: 5px;
@@ -277,17 +233,6 @@ a {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 700;
-}
-.suite-grid-icon {
-  width: 30px;
-  height: 30px;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--r-md);
-  background: var(--soft);
-  color: var(--spark);
-  font: 700 12px/8px var(--font-mono);
-  letter-spacing: 2px;
 }
 .awaken-mark {
   width: 27px;

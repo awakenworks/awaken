@@ -4,6 +4,8 @@ import {
   hostedBootstrapDecision,
   hostedSessionEntry,
   suiteHubUrl,
+  suiteCloudUrl,
+  suiteProductEntryUrl,
 } from "./suite-navigation";
 
 describe("suite navigation projection", () => {
@@ -23,6 +25,30 @@ describe("suite navigation projection", () => {
     );
     expect(suiteHubUrl({ hub_url: null }, false)).toBeNull();
     expect(suiteHubUrl({ hub_url: "https://cloud.example/products" }, true)).toBeNull();
+  });
+
+  /**
+   * Sibling-selection causal table:
+   * exact deployment hub + Flow intent -> same hub with one product request;
+   * any stale continuation -> removed, because sibling selection requests its
+   * authorized default Workspace rather than leaking an Awaken deep link.
+   * Cloud remains the sole authority that may turn the request into a launch.
+   */
+  it("requests a sibling only through the exact suite hub", () => {
+    expect(suiteProductEntryUrl(
+      "https://cloud.example/entry?continue=https%3A%2F%2Fagents.example%2Fw%2Fsecret",
+      "flow",
+    )).toBe("https://cloud.example/entry?product=flow");
+  });
+
+  it("derives account destinations only from the projected Cloud origin", () => {
+    // Causal design: exact projected hub + closed destination enum -> same
+    // Cloud origin and exact account path; product continuation/query/fragment
+    // cannot leak into Billing, Settings, Products or global logout.
+    expect(suiteCloudUrl(
+      "https://cloud.example/entry?continue=secret#fragment",
+      "/usage-billing",
+    )).toBe("https://cloud.example/usage-billing");
   });
 
   /**
