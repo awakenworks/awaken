@@ -546,18 +546,23 @@ only after realization. The receipt, not mutable Session metadata, owns
 profiled create replay.
 
 ```text
-hosted product profile
+profiled product intent
   -> required WorkUnit/Interactive mode
+  -> select the existing completion policy
+     hosted HTTP edge ---------------------------------> AcceptDurableRoot
+     historical in-process caller --------------------> AwaitRealization
   -> atomic repository receipt preflight
      exact live receipt -------------------------------> return durable aggregate
-     exact ActivationFailed/tombstone -----------------> typed HTTP 409
+     exact ActivationFailed + AcceptDurableRoot ------> return failed aggregate
+     exact ActivationFailed + AwaitRealization -------> Tombstoned
      absent receipt and identity ----------------------> continue
   -> one complete CreateProfiledSessionCommand
   -> resolve published defaults + direct inputs + Repository/MCP candidates
   -> SessionCreationIntent::finalize
   -> repository create(root revision 1 + idempotency receipt)
      Applied -> realization -> activation -> eligible WorkQueue projection
-     Replayed -> return repository durable aggregate; perform none of those effects
+     Replayed -> apply the same completion policy to the durable aggregate;
+                 perform none of those effects
 ```
 
 `ManagedSessionRepository::create` owns the concurrent race and returns
@@ -569,12 +574,16 @@ repeating any effect. The atomic `replay_create` preflight uses the same owner,
 receipt, identity, and tombstone classification; it is an optimization, not a
 second replay authority.
 
-An exact replay whose durable aggregate is `ActivationFailed` returns
-`SessionCreationError::Tombstoned`, projected as HTTP 409, and never attempts to
-resurrect, replace, realize, activate, or dispatch it. Conflict, tombstone, and
-payload mismatch retain typed conflict outcomes; unavailable storage remains
-unavailable, while dangling or otherwise corrupt durable identity becomes the
-typed internal error. No case falls back to the locally compiled candidate.
+The completion policy changes only the replay result, not durable ownership or
+effects. Historical `AwaitRealization` callers reject an exact
+`ActivationFailed` replay as `SessionCreationError::Tombstoned`. The hosted HTTP
+edge uses `AcceptDurableRoot`, so the same replay returns the failed asynchronous
+operation root with HTTP 202 and lets ordinary Session reads expose its durable
+failure reason. Neither policy resurrects, replaces, realizes, activates, or
+dispatches the replayed root. Conflict, tombstone, and payload mismatch retain
+typed conflict outcomes; unavailable storage remains unavailable, while dangling
+or otherwise corrupt durable identity becomes the typed internal error. No case
+falls back to the locally compiled candidate.
 
 The creation cause/effect table is:
 
@@ -583,7 +592,8 @@ The creation cause/effect table is:
 | C1 | receipt and identity absent | `Applied` | revision-1 complete desired truth | realize, activate, and project eligible Work exactly once |
 | C2 | exact receipt | not called | live/current | return that durable aggregate; no lowering or external effect |
 | C3 | absent before a concurrent winner | `Replayed` | live/current | return that durable aggregate; no realization, activation, cleanup, lifecycle wake, or Work dispatch |
-| C4 | exact receipt or `Replayed` | any | `ActivationFailed` | `Tombstoned` / HTTP 409; no external effect |
+| C4a | exact receipt or `Replayed` | any | `ActivationFailed` + `AwaitRealization` | `Tombstoned`; no external effect |
+| C4b | exact receipt or `Replayed` | any | `ActivationFailed` + `AcceptDurableRoot` | return the failed durable aggregate / hosted HTTP 202; no external effect |
 | C5 | occupied/tombstoned identity or mismatched receipt | conflict | any | typed HTTP 409; no insertion or external effect |
 | C6 | dangling, ahead, or double identity | corrupt | any | typed internal failure; no insertion or external effect |
 

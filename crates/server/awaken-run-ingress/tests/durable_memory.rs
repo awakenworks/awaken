@@ -2157,13 +2157,16 @@ async fn a_recovered_scheduled_action_is_performed() {
 
 #[tokio::test]
 async fn fresh_continuation_identity_is_stable_without_a_parallel_message_command() {
-    // Cause/effect graph: C1 the same canonical PendingInput and fresh dispatch
+    // Cause/effect graph: C0 the continuation has no inline input, so
+    // PendingInput is the sole message owner; C1 the same canonical PendingInput and fresh dispatch
     // are replayed; C2 their canonical message/Run identities differ; C3 one
-    // message identity is reused with changed payload. Effects: E1 C1 dedupes to
+    // message identity is reused with changed payload. Effects: E0 C0 admits
+    // the canonical atomic shape; E1 C1 dedupes to
     // one pending input and dispatch; E2 C2 remains distinct; E3 C3 fails with
     // an idempotency conflict before mutating either aggregate.
     //
     // | Rule | message/Run identity | payload | effect |
+    // | R0 | canonical + no inline input | any | E0 |
     // | R1 | same | same | E1 |
     // | R2 | different | any | E2 |
     // | R3 | same | changed | E3 |
@@ -2187,6 +2190,7 @@ async fn fresh_continuation_identity_is_stable_without_a_parallel_message_comman
     };
 
     let stable_run = continuation("fresh-stable");
+    assert!(stable_run.activation.input.is_empty(), "R0/E0");
     let stable_input = input("fresh-stable-message", "fresh-stable", "retry");
     store
         .relay_and_enqueue(

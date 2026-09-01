@@ -11,7 +11,6 @@ pub fn awaken_store_sqlite::SqliteCommitCoordinator::commit_count(&self) -> u64
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::open(&str) -> core::result::Result<Self, awaken_store_sqlite::StoreError>
-pub fn awaken_store_sqlite::SqliteCommitCoordinator::open_wait_for_thread(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::awaiting::ResumeTicket)>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::resume_ticket_for(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 impl awaken_agent_contract::thread::commit::coordinator::Coordinator for awaken_store_sqlite::SqliteCommitCoordinator
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -23,6 +22,7 @@ impl awaken_agent_contract::thread::read::committed_thread_view::CommittedThread
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub fn awaken_store_sqlite::SqliteCommitCoordinator::open_wait_for_thread(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::awaiting::ResumeTicket)>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_store_sqlite::SqliteCommitCoordinator::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>

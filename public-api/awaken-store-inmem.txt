@@ -25,6 +25,7 @@ impl awaken_agent_contract::thread::read::committed_thread_view::CommittedThread
 pub fn awaken_store_inmem::MemoryCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_store_inmem::MemoryCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_store_inmem::MemoryCommitCoordinator::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub fn awaken_store_inmem::MemoryCommitCoordinator::open_wait_for_thread(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::awaiting::ResumeTicket)>
 pub fn awaken_store_inmem::MemoryCommitCoordinator::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub fn awaken_store_inmem::MemoryCommitCoordinator::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 impl awaken_agent_contract::thread::read::recovery::RunRecoverySource for awaken_store_inmem::MemoryCommitCoordinator

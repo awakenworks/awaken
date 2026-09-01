@@ -354,6 +354,12 @@ mod tests {
         fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
             None
         }
+
+        fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+            // This terminal-only projection intentionally carries no awaiting
+            // ticket, so it has no open wait to expose.
+            None
+        }
     }
 
     struct CountingTerminalObserver(Arc<AtomicUsize>);

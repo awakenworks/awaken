@@ -117,6 +117,62 @@ pub awaken_eval::compact_eval::CompactReport::total_cases: usize
 pub awaken_eval::compact_eval::CompactReport::unexpected_observation_ids: alloc::vec::Vec<alloc::string::String>
 pub async fn awaken_eval::compact_eval::run_acp(&awaken_eval::compact_eval::CompactDataset, alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> alloc::vec::Vec<awaken_eval::compact_eval::CompactObservation>
 pub fn awaken_eval::compact_eval::score(&awaken_eval::compact_eval::CompactDataset, &[awaken_eval::compact_eval::CompactObservation]) -> awaken_eval::compact_eval::CompactReport
+pub mod awaken_eval::memory_agent_bench
+pub enum awaken_eval::memory_agent_bench::MemoryAgentBenchCategory
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCategory::AccurateRetrieval
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCategory::ConflictResolution
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCategory::LongRangeUnderstanding
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCategory::TestTimeLearning
+impl awaken_eval::memory_agent_bench::MemoryAgentBenchCategory
+pub fn awaken_eval::memory_agent_bench::MemoryAgentBenchCategory::parse(&str) -> core::result::Result<Self, alloc::string::String>
+pub enum awaken_eval::memory_agent_bench::MemoryAgentBenchMetric
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchMetric::ExactMatch
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchMetric::RecallAt5
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchMetric::SubstringAny
+pub struct awaken_eval::memory_agent_bench::MemoryAgentBenchCase
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCase::category: awaken_eval::memory_agent_bench::MemoryAgentBenchCategory
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCase::context: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCase::id: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCase::questions: alloc::vec::Vec<awaken_eval::memory_agent_bench::MemoryAgentBenchQuestion>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchCase::source: alloc::string::String
+pub struct awaken_eval::memory_agent_bench::MemoryAgentBenchDataset
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchDataset::cases: alloc::vec::Vec<awaken_eval::memory_agent_bench::MemoryAgentBenchCase>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchDataset::name: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchDataset::version: u32
+impl awaken_eval::memory_agent_bench::MemoryAgentBenchDataset
+pub fn awaken_eval::memory_agent_bench::MemoryAgentBenchDataset::question_count(&self) -> usize
+pub fn awaken_eval::memory_agent_bench::MemoryAgentBenchDataset::validate(&self) -> core::result::Result<(), alloc::string::String>
+pub struct awaken_eval::memory_agent_bench::MemoryAgentBenchObservation
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchObservation::error: core::option::Option<alloc::string::String>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchObservation::latency_ms: u64
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchObservation::output: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchObservation::question_id: alloc::string::String
+pub struct awaken_eval::memory_agent_bench::MemoryAgentBenchQuestion
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestion::ground_truths: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestion::id: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestion::metric: awaken_eval::memory_agent_bench::MemoryAgentBenchMetric
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestion::prompt: alloc::string::String
+pub struct awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore::category: awaken_eval::memory_agent_bench::MemoryAgentBenchCategory
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore::metric: awaken_eval::memory_agent_bench::MemoryAgentBenchMetric
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore::observed: bool
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore::passed: bool
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore::question_id: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore::source: alloc::string::String
+pub struct awaken_eval::memory_agent_bench::MemoryAgentBenchReport
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::accuracy: awaken_eval::public_benchmark::BinomialMetrics
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::by_category: alloc::collections::btree::map::BTreeMap<awaken_eval::memory_agent_bench::MemoryAgentBenchCategory, awaken_eval::public_benchmark::BinomialMetrics>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::by_source: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_eval::public_benchmark::BinomialMetrics>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::dataset: alloc::string::String
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::duplicate_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::mean_latency_ms: f64
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::observed: usize
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::provider_errors: usize
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::questions: alloc::vec::Vec<awaken_eval::memory_agent_bench::MemoryAgentBenchQuestionScore>
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::total: usize
+pub awaken_eval::memory_agent_bench::MemoryAgentBenchReport::unexpected_observation_ids: alloc::vec::Vec<alloc::string::String>
+pub fn awaken_eval::memory_agent_bench::import_rows(&serde_json::value::Value, awaken_eval::memory_agent_bench::MemoryAgentBenchCategory, usize) -> core::result::Result<awaken_eval::memory_agent_bench::MemoryAgentBenchDataset, alloc::string::String>
+pub fn awaken_eval::memory_agent_bench::score(&awaken_eval::memory_agent_bench::MemoryAgentBenchDataset, &[awaken_eval::memory_agent_bench::MemoryAgentBenchObservation]) -> awaken_eval::memory_agent_bench::MemoryAgentBenchReport
 pub mod awaken_eval::memory_eval
 pub struct awaken_eval::memory_eval::ExtractionCase
 pub awaken_eval::memory_eval::ExtractionCase::expected_term_groups: alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
