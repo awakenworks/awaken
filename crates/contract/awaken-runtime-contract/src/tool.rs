@@ -684,6 +684,85 @@ impl ToolConcurrency {
     }
 }
 
+/// One stable contiguous interval in a model step's tool-call order.
+///
+/// Fields stay private so callers can consume the exact range but cannot
+/// construct overlapping, empty, or out-of-order waves outside the canonical
+/// scheduler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolExecutionWave {
+    start: usize,
+    end: usize,
+}
+
+/// The exact one-step admission kernel for extending a wave. Sequence
+/// construction calls this function for every candidate; Kani proves the
+/// complete guard while the bounded schedule model proves composition.
+#[must_use]
+const fn tool_wave_can_extend(
+    first_is_serial: bool,
+    current_len: usize,
+    max_parallel_tools: usize,
+    has_next: bool,
+    all_compatible: bool,
+) -> bool {
+    let positive_limit = if max_parallel_tools == 0 {
+        1
+    } else {
+        max_parallel_tools
+    };
+    has_next && !first_is_serial && current_len < positive_limit && all_compatible
+}
+
+impl ToolExecutionWave {
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.end - self.start
+    }
+
+    #[must_use]
+    pub const fn range(self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+}
+
+/// Partition calls into the largest stable contiguous compatible waves within
+/// the configured bound. A later call never jumps over a conflicting
+/// predecessor, so concurrency changes elapsed time but not observable order.
+/// A zero configured bound is normalized to one and therefore cannot suppress
+/// a call or create an empty wave.
+#[must_use]
+pub fn tool_execution_waves(
+    claims: &[ToolConcurrency],
+    max_parallel_tools: usize,
+) -> Vec<ToolExecutionWave> {
+    let limit = max_parallel_tools.max(1);
+    let mut waves = Vec::new();
+    let mut start = 0;
+    while start < claims.len() {
+        let mut end = start + 1;
+        while end < claims.len() {
+            let all_compatible = claims[start..end]
+                .iter()
+                .all(|existing| existing.compatible_with(&claims[end]));
+            if tool_wave_can_extend(
+                matches!(claims[start], ToolConcurrency::Serial),
+                end - start,
+                limit,
+                true,
+                all_compatible,
+            ) {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        waves.push(ToolExecutionWave { start, end });
+        start = end;
+    }
+    waves
+}
+
 /// Opaque lifetime guard returned by the host's one cross-Run tool admission
 /// authority. Dropping it releases the exact concurrency claim.
 pub trait ToolExecutionPermit: Send {}
@@ -1274,6 +1353,46 @@ mod recovery_tests {
             ToolConcurrency::Serial
         );
     }
+
+    #[test]
+    fn execution_waves_follow_the_complete_scheduling_decision_table() {
+        // Cause/effect graph:
+        // C1 empty input; C2 zero limit; C3 compatible prefix; C4 conflict;
+        // C5 Serial claim; C6 remaining compatible suffix.
+        // Effects: E1 empty output; E2 zero normalizes to one; E3 compatible
+        // calls share one bounded wave; E4 the conflicting call starts the next
+        // stable interval; E5 Serial is a singleton; E6 every input index occurs
+        // exactly once in original order.
+        // Decision rules: R1=C1->E1; R2=C2+nonempty->E2+E6;
+        // R3=C3+within-limit->E3; R4=C4->E4; R5=C5->E5;
+        // R6=C6->E3+E6. Constraints: waves are nonempty and contiguous.
+        assert!(tool_execution_waves(&[], 4).is_empty(), "R1");
+        assert_eq!(
+            tool_execution_waves(&[ToolConcurrency::Parallel], 0),
+            vec![ToolExecutionWave { start: 0, end: 1 }],
+            "R2"
+        );
+
+        let resource = ToolResource::new("filesystem", "/workspace/a");
+        let claims = vec![
+            ToolConcurrency::Parallel,
+            ToolConcurrency::Resources(vec![ToolResourceAccess::Read(resource.clone())]),
+            ToolConcurrency::Resources(vec![ToolResourceAccess::Write(resource.clone())]),
+            ToolConcurrency::Serial,
+            ToolConcurrency::Parallel,
+            ToolConcurrency::Resources(vec![ToolResourceAccess::Read(resource)]),
+        ];
+        assert_eq!(
+            tool_execution_waves(&claims, 3),
+            vec![
+                ToolExecutionWave { start: 0, end: 2 },
+                ToolExecutionWave { start: 2, end: 3 },
+                ToolExecutionWave { start: 3, end: 4 },
+                ToolExecutionWave { start: 4, end: 6 },
+            ],
+            "R3-R6"
+        );
+    }
 }
 
 #[cfg(kani)]
@@ -1297,4 +1416,38 @@ fn same_resource_conflict_is_symmetric_and_exactly_one_write_or_more() {
 
     assert_eq!(left.conflicts_with(right), right.conflicts_with(left));
     assert_eq!(left.conflicts_with(right), left_writes || right_writes);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn tool_wave_extension_requires_every_exact_guard() {
+    let first_is_serial: bool = kani::any();
+    let current_len: usize = kani::any();
+    let configured_limit: usize = kani::any();
+    let has_next: bool = kani::any();
+    let all_compatible: bool = kani::any();
+    let admitted = tool_wave_can_extend(
+        first_is_serial,
+        current_len,
+        configured_limit,
+        has_next,
+        all_compatible,
+    );
+    assert_eq!(
+        admitted,
+        has_next && !first_is_serial && current_len < configured_limit.max(1) && all_compatible
+    );
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial() {
+    let first_is_serial: bool = kani::any();
+    let current_len: usize = kani::any();
+    let configured_limit: usize = kani::any();
+    let admitted = tool_wave_can_extend(first_is_serial, current_len, configured_limit, true, true);
+    if admitted {
+        assert!(!first_is_serial);
+        assert!(current_len < configured_limit.max(1));
+    }
 }

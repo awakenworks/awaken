@@ -212,12 +212,18 @@ def main() -> None:
     used_obligations: set[str] = set()
     used_assumptions: set[str] = set()
     incomplete_requirements: list[str] = []
+    feature_obligations: dict[str, set[str]] = {}
+    feature_assumptions: dict[str, set[str]] = {}
+    feature_has_executable: dict[str, bool] = {}
 
     for feature in raw_features:
         feature_id = str(feature.get("id", ""))
         if not feature_id or feature_id in feature_ids:
             fail(f"duplicate or empty feature id {feature_id!r}")
         feature_ids.add(feature_id)
+        feature_obligations[feature_id] = set()
+        feature_assumptions[feature_id] = set()
+        feature_has_executable[feature_id] = False
         area = str(feature.get("requirement_area", ""))
         if not area:
             fail(f"{feature_id} has no requirement_area")
@@ -272,22 +278,91 @@ def main() -> None:
                     fail(f"{requirement_id} prefix {prefix!r} matches no formalizable obligation")
                 matched.update(prefix_matches)
             used_obligations.update(matched)
+            feature_obligations[feature_id].update(matched)
 
             for assumption_id in references:
                 assumption_id = str(assumption_id)
                 if assumption_id not in assumptions:
                     fail(f"{requirement_id} names missing assumption {assumption_id}")
                 used_assumptions.add(assumption_id)
+                feature_assumptions[feature_id].add(assumption_id)
 
             executable = requirement.get("executable_evidence", [])
             if not isinstance(executable, list):
                 fail(f"{requirement_id} executable_evidence must be a list")
             for item in executable:
                 require_executable_evidence(item, requirement_id)
+            feature_has_executable[feature_id] |= bool(executable)
 
             has_verification = bool(matched or executable)
             if requirement["repository_controlled"] and not has_verification:
                 incomplete_requirements.append(requirement_id)
+
+    # Product journeys form an end-to-end assurance graph over the canonical
+    # feature denominator. They add no second requirements ledger: every stage
+    # names one existing feature and every anchor names a formal obligation
+    # already consumed by a requirement in that journey.
+    raw_journeys = feature_data.get("product_journeys")
+    if not isinstance(raw_journeys, list) or not raw_journeys:
+        fail("formal/features.json must define a non-empty product_journeys assurance graph")
+    journey_ids: set[str] = set()
+    journey_features: set[str] = set()
+    journey_obligations: set[str] = set()
+    journey_assumptions: set[str] = set()
+    for journey in raw_journeys:
+        if not isinstance(journey, dict):
+            fail("product journey must be an object")
+        journey_id = str(journey.get("id", ""))
+        if not journey_id or journey_id in journey_ids:
+            fail(f"duplicate or empty product journey id {journey_id!r}")
+        journey_ids.add(journey_id)
+        if not str(journey.get("objective", "")).strip():
+            fail(f"{journey_id} has no objective")
+        stages = journey.get("stages")
+        if not isinstance(stages, list) or len(stages) < 2:
+            fail(f"{journey_id} must connect at least two product stages")
+        if len(stages) != len(set(stages)):
+            fail(f"{journey_id} repeats a product stage")
+        unknown_stages = sorted(set(stages) - feature_ids)
+        if unknown_stages:
+            fail(f"{journey_id} names unknown product stages: {unknown_stages}")
+        journey_features.update(str(stage) for stage in stages)
+
+        anchors = journey.get("formal_anchors")
+        if not isinstance(anchors, list) or not anchors:
+            fail(f"{journey_id} must name at least one formal composition anchor")
+        stage_obligations = set().union(
+            *(feature_obligations[str(stage)] for stage in stages)
+        )
+        journey_obligations.update(stage_obligations)
+        journey_assumptions.update(
+            set().union(*(feature_assumptions[str(stage)] for stage in stages))
+        )
+        for anchor in anchors:
+            anchor = str(anchor)
+            obligation = obligations_by_id.get(anchor)
+            if obligation is None or not obligation["formalizable"]:
+                fail(f"{journey_id} names missing or external formal anchor {anchor}")
+            if anchor not in stage_obligations:
+                fail(
+                    f"{journey_id} formal anchor {anchor} is not consumed by any journey stage"
+                )
+
+        for stage in stages:
+            stage = str(stage)
+            if not (
+                feature_obligations[stage]
+                or feature_assumptions[stage]
+                or feature_has_executable[stage]
+            ):
+                fail(f"{journey_id} stage {stage} has no assurance evidence")
+
+    disconnected_features = sorted(feature_ids - journey_features)
+    if disconnected_features:
+        fail(
+            "product features are disconnected from every assurance journey: "
+            + ", ".join(disconnected_features)
+        )
 
     matrix = functional_coverage_rows(str(feature_data.get("coverage_matrix", "")))
     if len(requirement_areas) != len(set(requirement_areas)):
@@ -302,6 +377,18 @@ def main() -> None:
         for obligation_id, obligation in obligations_by_id.items()
         if obligation["formalizable"]
     }
+    disconnected_obligations = sorted(formalizable_obligations - journey_obligations)
+    if disconnected_obligations:
+        fail(
+            "formal obligations are disconnected from every product journey: "
+            + ", ".join(disconnected_obligations)
+        )
+    disconnected_assumptions = sorted(set(assumptions) - journey_assumptions)
+    if disconnected_assumptions:
+        fail(
+            "external assumptions are disconnected from every product journey: "
+            + ", ".join(disconnected_assumptions)
+        )
     orphan_obligations = sorted(formalizable_obligations - used_obligations)
     orphan_assumptions = sorted(set(assumptions) - used_assumptions)
     if orphan_obligations:
@@ -321,6 +408,10 @@ def main() -> None:
     summary = {
         "features": len(feature_ids),
         "requirements": len(requirement_ids),
+        "product_journeys": len(journey_ids),
+        "journey_connected_features": len(journey_features),
+        "journey_linked_obligations": len(journey_obligations),
+        "journey_linked_assumptions": len(journey_assumptions),
         "formalizable_obligations": len(formalizable_obligations),
         "linked_obligations": len(used_obligations),
         "external_assumptions": len(assumptions),

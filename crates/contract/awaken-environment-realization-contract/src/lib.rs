@@ -82,6 +82,52 @@ pub enum EnvironmentImageBuildState {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnvironmentImageBuildClaimDecision {
+    Blocked,
+    Claim {
+        attempt: u64,
+        lease_expires_at_ms: u64,
+    },
+    AttemptExhausted,
+    DeadlineExhausted,
+}
+
+/// The scalar claim kernel used by every Environment image-build store. State
+/// shape decides eligibility; this function alone owns epoch and deadline
+/// advancement so adapters cannot disagree or wrap authority.
+const fn environment_image_build_claim_decision(
+    eligible: bool,
+    attempt: u64,
+    now_ms: u64,
+    lease_ms: u64,
+) -> EnvironmentImageBuildClaimDecision {
+    if !eligible {
+        return EnvironmentImageBuildClaimDecision::Blocked;
+    }
+    let Some(attempt) = attempt.checked_add(1) else {
+        return EnvironmentImageBuildClaimDecision::AttemptExhausted;
+    };
+    let Some(lease_expires_at_ms) = now_ms.checked_add(lease_ms) else {
+        return EnvironmentImageBuildClaimDecision::DeadlineExhausted;
+    };
+    EnvironmentImageBuildClaimDecision::Claim {
+        attempt,
+        lease_expires_at_ms,
+    }
+}
+
+/// One exact authority predicate gates every mutation made by a claimed image
+/// build. Completion additionally requires an admissible image; failure passes
+/// `command_admitted=true` because an empty diagnostic is still a valid retry.
+const fn environment_image_build_claim_mutation_admitted(
+    owner_matches: bool,
+    epoch_matches: bool,
+    command_admitted: bool,
+) -> bool {
+    owner_matches && epoch_matches && command_admitted
+}
+
 impl Default for EnvironmentImageBuildState {
     fn default() -> Self {
         Self::Pending { attempt: 0 }
@@ -105,28 +151,38 @@ impl EnvironmentImageBuildState {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<Option<Self>, EnvironmentImageBuildError> {
-        let attempt = match self {
-            Self::Pending { attempt } => *attempt,
+        let (eligible, attempt) = match self {
+            Self::Pending { attempt } => (true, *attempt),
             Self::Failed {
                 retry_at_ms,
                 attempt,
                 ..
-            } if *retry_at_ms <= now_ms => *attempt,
+            } => (*retry_at_ms <= now_ms, *attempt),
             Self::Building {
                 lease_expires_at_ms,
                 attempt,
                 ..
-            } if *lease_expires_at_ms <= now_ms => *attempt,
-            Self::Failed { .. } | Self::Building { .. } | Self::Ready { .. } => return Ok(None),
+            } => (*lease_expires_at_ms <= now_ms, *attempt),
+            Self::Ready { attempt, .. } => (false, *attempt),
         };
-        let next_attempt = attempt.checked_add(1).ok_or_else(|| {
-            EnvironmentImageBuildError::AuthorityExhausted(
-                "image build attempt and lease epoch".to_string(),
-            )
-        })?;
-        let lease_expires_at_ms = now_ms.checked_add(lease_ms).ok_or_else(|| {
-            EnvironmentImageBuildError::AuthorityExhausted("image build lease deadline".to_string())
-        })?;
+        let (next_attempt, lease_expires_at_ms) =
+            match environment_image_build_claim_decision(eligible, attempt, now_ms, lease_ms) {
+                EnvironmentImageBuildClaimDecision::Blocked => return Ok(None),
+                EnvironmentImageBuildClaimDecision::Claim {
+                    attempt,
+                    lease_expires_at_ms,
+                } => (attempt, lease_expires_at_ms),
+                EnvironmentImageBuildClaimDecision::AttemptExhausted => {
+                    return Err(EnvironmentImageBuildError::AuthorityExhausted(
+                        "image build attempt and lease epoch".to_string(),
+                    ));
+                }
+                EnvironmentImageBuildClaimDecision::DeadlineExhausted => {
+                    return Err(EnvironmentImageBuildError::AuthorityExhausted(
+                        "image build lease deadline".to_string(),
+                    ));
+                }
+            };
         Ok(Some(Self::Building {
             owner: owner.to_owned(),
             lease_epoch: next_attempt,
@@ -149,9 +205,11 @@ impl EnvironmentImageBuildState {
                 lease_epoch: current_epoch,
                 attempt,
                 ..
-            } if current_owner == owner
-                && *current_epoch == lease_epoch
-                && !image.trim().is_empty() =>
+            } if environment_image_build_claim_mutation_admitted(
+                current_owner == owner,
+                *current_epoch == lease_epoch,
+                !image.trim().is_empty(),
+            ) =>
             {
                 Some(Self::Ready {
                     image: image.to_owned(),
@@ -178,11 +236,18 @@ impl EnvironmentImageBuildState {
                 lease_epoch: current_epoch,
                 attempt,
                 ..
-            } if current_owner == owner && *current_epoch == lease_epoch => Some(Self::Failed {
-                message: message.to_owned(),
-                retry_at_ms: now_ms.saturating_add(retry_ms),
-                attempt: *attempt,
-            }),
+            } if environment_image_build_claim_mutation_admitted(
+                current_owner == owner,
+                *current_epoch == lease_epoch,
+                true,
+            ) =>
+            {
+                Some(Self::Failed {
+                    message: message.to_owned(),
+                    retry_at_ms: now_ms.saturating_add(retry_ms),
+                    attempt: *attempt,
+                })
+            }
             _ => None,
         }
     }
@@ -387,6 +452,28 @@ mod tests {
     }
 
     #[test]
+    fn image_build_claim_mutation_authority_decision_table() {
+        // Cause/effect graph: C1 owner matches; C2 epoch matches; C3 command is
+        // admissible. Effect E1 permits the claimed mutation; E2 is an atomic
+        // stutter. The complete 2^3 table has exactly one E1 rule, C1+C2+C3;
+        // every stale, torn, or invalid combination is E2.
+        for owner_matches in [false, true] {
+            for epoch_matches in [false, true] {
+                for command_admitted in [false, true] {
+                    assert_eq!(
+                        environment_image_build_claim_mutation_admitted(
+                            owner_matches,
+                            epoch_matches,
+                            command_admitted,
+                        ),
+                        owner_matches && epoch_matches && command_admitted,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn image_recipe_identity_ignores_authoring_only_changes() {
         // FMECA: F1 metadata/revision/id-only change duplicates a recipe build
         // (S4 O7 D2, RPN56);
@@ -467,5 +554,56 @@ mod tests {
         )
         .unwrap();
         assert!(!first.same_recipe(&base), "I4");
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert() {
+        let eligible = kani::any::<bool>();
+        let attempt = kani::any::<u64>();
+        let now_ms = kani::any::<u64>();
+        let lease_ms = kani::any::<u64>();
+        let decision = environment_image_build_claim_decision(eligible, attempt, now_ms, lease_ms);
+
+        if !eligible {
+            assert_eq!(decision, EnvironmentImageBuildClaimDecision::Blocked);
+            return;
+        }
+        match (attempt.checked_add(1), now_ms.checked_add(lease_ms)) {
+            (None, _) => assert_eq!(
+                decision,
+                EnvironmentImageBuildClaimDecision::AttemptExhausted
+            ),
+            (Some(_), None) => assert_eq!(
+                decision,
+                EnvironmentImageBuildClaimDecision::DeadlineExhausted
+            ),
+            (Some(expected_attempt), Some(expected_deadline)) => assert_eq!(
+                decision,
+                EnvironmentImageBuildClaimDecision::Claim {
+                    attempt: expected_attempt,
+                    lease_expires_at_ms: expected_deadline,
+                }
+            ),
+        }
+    }
+
+    #[kani::proof]
+    fn environment_image_build_mutation_requires_exact_claim_and_admissible_command() {
+        let owner_matches = kani::any::<bool>();
+        let epoch_matches = kani::any::<bool>();
+        let command_admitted = kani::any::<bool>();
+        assert_eq!(
+            environment_image_build_claim_mutation_admitted(
+                owner_matches,
+                epoch_matches,
+                command_admitted,
+            ),
+            owner_matches && epoch_matches && command_admitted,
+        );
     }
 }

@@ -141,9 +141,9 @@ pub use snapshot_builder::{DEFAULT_MAX_STEPS, ExecutableAgentSnapshotBuilder};
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{
     RawTool, RawToolRegistry, Tool, ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit,
-    ToolExecutionTarget, ToolExecutor, ToolOperationToken, ToolOutput, ToolRecoveryCapability,
-    ToolRecoveryMode, ToolRecoveryPolicy, ToolResource, ToolResourceAccess, ToolTaskHandle,
-    ToolTaskPoll, ToolTaskStart,
+    ToolExecutionTarget, ToolExecutionWave, ToolExecutor, ToolOperationToken, ToolOutput,
+    ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
+    ToolTaskHandle, ToolTaskPoll, ToolTaskStart, tool_execution_waves,
 };
 pub use tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,

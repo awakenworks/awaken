@@ -41,6 +41,8 @@ The named harnesses in the strict gate invoke production pure functions directly
   - ended outcomes carry the only failure authority and no pending tool.
   - only queued WorkQueue items are claimable;
   - only active WorkQueue items accept lease extension;
+  - Work mutations require a present row, exact owner/epoch authority, and the
+    matching command condition through one kernel used by all three backends;
   - stopping a WorkQueue item is absorbing.
   - the first heartbeat receipt is authorized once and every later heartbeat
     requires the matching receipt.
@@ -54,6 +56,17 @@ The named harnesses in the strict gate invoke production pure functions directly
     cleanup together; Deleting/Deleted replays are inert.
   - a Session tombstone is admitted only for a hidden, terminal aggregate with
     verified cleanup completion.
+  - Session realization reuses only one exact live owner/incarnation; every
+    restart or authorized reassignment advances the epoch exactly once and
+    exhaustion fails closed.
+- `awaken-dispatch-contract`
+  - the physical-attempt slot installs only for an empty current claim, clears
+    only for its exact owner/epoch, never normalizes a torn persisted pair, and
+    is the reducer called by Memory, SQLite, and PostgreSQL.
+- `awaken-worker-contract`
+  - Worker replacement and heartbeat share one non-resurrection boundary: a
+    replaceable slot cannot accept a late heartbeat, and an applied heartbeat
+    requires exact live incarnation plus a newer sequence.
 - `awaken-runtime-contract`
   - an anchored compaction window grows with the transcript and therefore never
     moves past the prefix represented by summary plus bridge;
@@ -136,7 +149,7 @@ The named harnesses in the strict gate invoke production pure functions directly
   - `NeverReplace` rejects every replacement;
   - sandbox-continuity replacement is authorized exactly when a binding exists;
   - the same incarnation never spends replacement authority.
-  - sandbox-tool recovery is a hard claim axis, manifest recovery matches the
+- sandbox-tool recovery is a hard claim axis, manifest recovery matches the
     installed executor, readiness is probe-independent, and unpublished dynamic
     evidence can only restrict admission.
 - `awaken-authorization-contract`
@@ -146,12 +159,19 @@ The named harnesses in the strict gate invoke production pure functions directly
   - only non-interactive collection projection and terminal cleanup may use a
     frozen baseline when an Agent publication is unavailable; interactive
     recovery remains fail-closed. MCP
-    credential realization preserves the authored target exactly.
+  credential realization preserves the authored target exactly.
   - a Session Hand can become ready only through a tracked `Starting` phase;
     cancellation of the waiting request does not transfer process ownership.
   - a container read-only tree is publishable only after its safe staging tree
     is complete and restricted; the external filesystem rename and rollback
     behavior remains an adapter assumption.
+- `awaken-environment-realization-contract`
+  - image-build claim/reclaim advances one exact non-wrapping attempt/lease
+    epoch only when the current phase is eligible;
+  - completion and failure require the exact current owner and epoch, and an
+    invalid completion payload cannot publish Ready;
+  - memory, SQLite, and PostgreSQL consume the same aggregate transition; live
+    PostgreSQL concurrency and reconnect tests supply adapter evidence.
 - `awaken-provider-genai`
   - neutral content categories project exactly per provider dialect: Anthropic
     retains each opaque thinking text/signature pair in order while other
@@ -678,7 +698,16 @@ in the canonical functional coverage matrix has exactly one machine-readable
 feature, entrypoint list, criticality, and requirement classification. The
 feature gate rejects orphaned formal obligations and external assumptions, so a
 high claim-oriented ratio cannot hide a product area that was omitted from the
-denominator. `formal/assumptions.json` records the environmental contracts that
+denominator. The same file owns the ordered product-assurance journeys that
+compose those features into managed execution, multi-agent/background
+recovery, Control publication, extension/protocol, and storage/evidence paths.
+The gate requires every feature, formal obligation, and external assumption to
+be reachable from at least one journey and requires every declared formal
+anchor to be consumed by a journey stage. This is the product-wide composition
+contract: local proofs remain small and independently checkable, while the
+journey graph makes their end-to-end coverage and every environmental cut
+explicit. It is not a claim that a single monolithic state space or theorem
+proves third-party systems. `formal/assumptions.json` records the environmental contracts that
 repository-owned proofs consume, including their integration and runtime
 evidence. An `evidenced` external assumption means its boundary has executable
 or operational detection evidence; it does not promote third-party correctness
@@ -699,6 +728,13 @@ authority snapshot cannot combine an owner, epoch, or expiry from different
 claims. SQLite/PostgreSQL queue mutations instead use database row transactions;
 their interleavings remain in `WorkQueue.tla` plus backend conformance and
 contention tests.
+
+Kani additionally exhausts the production-consumed Worker replacement/
+heartbeat table, Work owner/epoch/condition table, Session realization
+assignment table, and Dispatch physical-attempt slot reducer. These proofs own
+the decisions, not the lock implementations: Loom explores the instrumented
+in-memory critical sections, while database and Tokio behavior remains covered
+by transaction/concurrency tests and explicit assumptions.
 
 ## Honest boundary
 

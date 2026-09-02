@@ -62,8 +62,8 @@ use awaken_runtime_contract::runtime_context::{
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::{
     RawTool, ToolConcurrency, ToolError, ToolExecutionFacts, ToolExecutionFactsResolver,
-    ToolExecutionTarget, ToolExecutor, ToolOperationContext, ToolOutput, with_tool_execution_facts,
-    with_tool_operation_context, with_tool_state_context,
+    ToolExecutionTarget, ToolExecutionWave, ToolExecutor, ToolOperationContext, ToolOutput,
+    with_tool_execution_facts, with_tool_operation_context, with_tool_state_context,
 };
 use awaken_runtime_contract::tool::{
     ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle, ToolTaskPoll,

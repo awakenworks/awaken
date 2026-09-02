@@ -26,10 +26,11 @@ pub(crate) fn register(
             }
             return Ok((current.clone(), false));
         }
-        let replaceable = matches!(
+        let replaceable = awaken_worker_contract::worker_slot_is_replaceable(
             current.snapshot.state,
-            WorkerState::Quiesced | WorkerState::Dead
-        ) || current.snapshot.expires_at_ms <= now_ms;
+            current.snapshot.expires_at_ms,
+            now_ms,
+        );
         if !replaceable {
             return Err(RegistryError::SlotOccupied {
                 worker_id: registration.worker_id,
@@ -93,27 +94,29 @@ pub(crate) fn heartbeat(
     ttl_ms: u64,
 ) -> (Option<RegisteredWorker>, RegistryMutation) {
     let Some(current) = current else {
-        return (None, RegistryMutation::NotFound);
+        return (
+            None,
+            awaken_worker_contract::worker_heartbeat_admission(
+                false,
+                false,
+                false,
+                false,
+                WorkerState::Dead,
+            ),
+        );
     };
-    if !identity_matches(current, identity) {
-        return (None, RegistryMutation::StaleIncarnation);
-    }
-    // Expiry is an authority boundary, not a late-renewal grace period. Once
-    // other stores may reclaim this Worker's leases, reviving the same
-    // generation would let registry placement and Session ownership disagree.
-    // Report lost authority so the Worker drains and its supervisor registers a
-    // fresh incarnation/generation.
-    if current.snapshot.expires_at_ms <= now_ms {
-        return (None, RegistryMutation::StaleIncarnation);
-    }
-    if heartbeat.sequence <= current.heartbeat_sequence {
-        return (None, RegistryMutation::StaleSequence);
-    }
-    if matches!(
+    // Expiry is an authority boundary, not a late-renewal grace period. The
+    // contract table is shared with replacement admission, so a record can
+    // never be both replaceable and heartbeat-mutable.
+    let admission = awaken_worker_contract::worker_heartbeat_admission(
+        true,
+        identity_matches(current, identity),
+        current.snapshot.expires_at_ms > now_ms,
+        heartbeat.sequence > current.heartbeat_sequence,
         current.snapshot.state,
-        WorkerState::Quiesced | WorkerState::Dead
-    ) {
-        return (None, RegistryMutation::InvalidTransition);
+    );
+    if admission != RegistryMutation::Applied {
+        return (None, admission);
     }
     let observations_changed = current.snapshot.credential_observations
         != heartbeat.credential_observations

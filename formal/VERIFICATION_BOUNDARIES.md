@@ -24,6 +24,31 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- The canonical product denominator now carries five end-to-end assurance
+  journeys. Strict feature coverage requires every product feature to appear in
+  at least one journey and every journey to cite formal anchors actually
+  consumed by its stages. This connects the obligation families into complete
+  managed-execution, multi-agent/background recovery, Control publication,
+  extension/protocol, and storage/evidence paths without pretending that one
+  monolithic model proves external systems. A mutation that disconnects a
+  feature from every journey must fail the gate.
+- Tool-call concurrency now has one production scheduler beside the canonical
+  `ToolConcurrency` algebra. Runtime consumes its stable contiguous wave plan;
+  Kani proves the production one-step extension guard and positive bound while
+  `ToolSchedule.tla` exhausts every four-call claim assignment and bound to
+  check exact stable partition, serial singleton behavior, pairwise
+  compatibility, and the maximal-prefix/no-bypass composition rules.
+- Product process Role, service-startup Role, migration ownership, and local
+  Managed mounting no longer maintain separate role tables. CLI re-exports the
+  lifecycle-owned `ProcessRole`, and Kani proves its exact projection including
+  the Worker's absence of service-startup authority.
+- Commit backends retain their existing ports and shared conformance suite. The
+  new `StoreHistory` model composes dense commit order, terminal fencing,
+  operation receipts, exact retry/rejection stuttering, and one CAS winner per
+  Thread version. Memory, filesystem, SQLite, and PostgreSQL are linked to this
+  one abstract history; database/driver durability and a mechanically checked
+  Rust-to-model trace remain explicit adapter boundaries.
+
 - Workspace path projection now has one provider-independent logical root.
   `WorkspacePathProjection.tla` proves that only path-fidelitous providers may
   satisfy Repository admission and that read/edit/bash/Git observations cannot
@@ -66,9 +91,11 @@ type checking are valuable executable evidence, but are not formal proofs.
   `SessionActivityKernel` and `RunIngressKernel`, adding only committed source
   request, admission certainty, target commit, and source receipt. It proves
   that unavailable admission and identity conflict cannot settle activity
-  before target truth, stale claims remain fenced by the ingress kernel, a
-  receipt cannot precede target commit, and internal delivery never creates
-  pending input.
+  before target truth and stale claims remain fenced by the ingress kernel.
+  After durable admission, source receipt and target commit are independent:
+  either may win the crash/recovery race, while only the committed target
+  boundary may settle Session activity. Internal delivery never creates pending
+  input.
   Production refinement additionally validates the command against the source
   Run's committed `ActiveToolBatch`; backend conformance tests own atomic
   admission. The model does not prove model intent, Worker availability,
@@ -110,9 +137,20 @@ type checking are valuable executable evidence, but are not formal proofs.
   stable effect identity, single fact emission, and tombstone ordering. Database
   engine atomicity and the truth of remote cleanup/retirement effects remain
   adapter claims.
-- Worker observations require an exact verified fact and the complete half-open
-  lease interval. This does not prove TLS, DNS, WebPKI, the remote process, or
-  the orchestrator.
+- Worker replacement and heartbeat now consume one non-resurrection kernel:
+  an expired/quiesced/dead slot is replaceable and cannot simultaneously accept
+  a heartbeat, while only an exact live incarnation with a newer sequence may
+  mutate it. The real registry adapters share one transition and the in-memory
+  adapter is explored by Loom. Database locking/durability, TLS, DNS, WebPKI,
+  the remote process, and the orchestrator are not proved.
+- Environment image-build claim, expiry reclaim, completion, and failure now
+  consume one aggregate-owned decision kernel. Kani proves exact non-wrapping
+  epoch/deadline advancement and exact owner/epoch mutation admission; memory,
+  SQLite, and PostgreSQL reuse those methods, while the durable stores share one
+  version-CAS loop. A live PostgreSQL race/restart test checks one winner at
+  epochs 1 and 2 and rejects the predecessor. PostgreSQL locking/durability,
+  builder/container effects, registries, clocks, and image availability remain
+  adapter or environmental evidence rather than direct proofs.
 - Settled Runtime steps and scoped tool-catalog membership now consume closed
   projection kernels: Running cannot cross the settled boundary and only the
   reserved scope can observe admin tools.
@@ -126,6 +164,12 @@ type checking are valuable executable evidence, but are not formal proofs.
   converts it with its store-owned clock, so a caller clock cannot pre-expire or
   extend admission authority. The shared conformance table checks this mapping;
   real database-clock accuracy remains environmental evidence.
+  Their physical-attempt owner/epoch columns now consume the same proved slot
+  reducer for begin and finish: only an empty current-claim slot installs, only
+  the exact claim clears, a predecessor blocks/fences, and a torn nullable pair
+  fails closed. Row locks/transactions and the Runtime's Tokio per-Thread mutex
+  remain trusted implementation/environment boundaries rather than being
+  mislabeled as Kani proofs.
   SQL still owns row locking, compare-and-set predicates, pending-input writes,
   timestamps, and transaction durability; those adapter properties are checked
   by the shared backend conformance suite rather than proved by Kani.
@@ -135,10 +179,14 @@ type checking are valuable executable evidence, but are not formal proofs.
 - A published Memory plugin remains satisfiable when recall is disabled, but
   the proved selector contributes no recall hook or state authority. Memory
   store durability and extraction effects remain external adapter boundaries.
-- Session realization failures now consume a closed seven-variant disposition
-  table and one shared Worker-effect kernel: terminal truth is absorbed rather
-  than relinquished, while renewal retires it. Database commits, transport,
-  cross-process cleanup, and remote execution remain adapter/external claims.
+- Session realization failures consume a closed seven-variant disposition
+  table and one shared Worker-effect kernel. Initial/replacement ownership also
+  consumes one proved assignment kernel: a live foreign owner cannot be shared,
+  a restart/reassignment advances exactly one epoch, and exhaustion fails
+  closed. The aggregate applies that decision through its existing root CAS;
+  the Host retains one Tokio mutex per Session. Database commits, Tokio
+  scheduling/fairness, transport, cross-process cleanup, and remote execution
+  remain adapter/external claims.
 - GenAI transcript replay consumes closed dialect, part-category, row-admission,
   opaque signed-thinking, and reasoning-fold kernels. Anthropic retains the
   ordered text/signature pair while other dialects use normalized reasoning;
