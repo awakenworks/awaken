@@ -319,6 +319,274 @@ fn resource_mount(logical: &str) -> pc::MountRequirement {
     }
 }
 
+#[test]
+fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
+    // Cause/effect graph for the private projected-layout command: C1 an
+    // ordinary Resource mount is present; C2 the frozen baseline contributes a
+    // second mount and one env value; C3 SemanticTools suppresses only the
+    // baseline MemoryStore mount; C4 the frozen Environment denies network but
+    // the selected provider cannot enforce network isolation; C5 a Repository
+    // path is present. Effects: E1 the non-Memory mounts are merged exactly
+    // once; E2 the baseline env is retained; E3 tool egress remains denied while
+    // the provider-visible network falls back to unrestricted; E4 Repository
+    // path fidelity raises the effective isolation to Namespace. Constraint:
+    // every cause is supplied in one ephemeral projection input and the helper
+    // owns no retained Session or Sandbox authority. Decision rule L1:
+    // C1+C2+C3+C4+C5 => E1+E2+E3+E4.
+    let host = host();
+    let resource = resource_mount("resource.txt");
+    let baseline = resource_mount("baseline.txt");
+    let memory = pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "memory".into(),
+            materialization_reference: None,
+            write_consistency: Default::default(),
+        },
+        mount_path: ".mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    };
+    let baseline_mounts = [baseline.clone(), memory];
+    let baseline_env = [pc::EnvVar {
+        name: "PROJECT".into(),
+        value: pc::EnvValue::Inline {
+            value: "awaken".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    }];
+    let mut environment = frozen_projection_with_model_override(
+        "workspace",
+        awaken_session_contract::SessionEnvironmentState::default(),
+        None,
+    )
+    .baseline
+    .environment;
+    environment.network = awaken_session_contract::SessionNetworkPolicy::None;
+    let environment = project_environment(&environment);
+
+    let spec = host.sandbox_spec_for_projected_layout(
+        "complete-layout",
+        ProjectedSandboxLayout {
+            resource_mounts: vec![resource.clone()],
+            has_repositories: true,
+            baseline_mounts: Some(&baseline_mounts),
+            baseline_env: Some(&baseline_env),
+            content_delivery: Some(crate::session_slot::ManagedContentDelivery::SemanticTools),
+            environment: Some(&environment),
+            network_isolation: false,
+        },
+    );
+
+    assert_eq!(spec.mounts, vec![resource, baseline], "L1/E1");
+    assert_eq!(spec.env, baseline_env, "L1/E2");
+    assert!(spec.deny_tool_egress, "L1/E3");
+    assert_eq!(spec.network, pc::NetworkPolicy::Unrestricted, "L1/E3");
+    assert_eq!(spec.isolation, pc::IsolationClass::Namespace, "L1/E4");
+}
+
+#[tokio::test]
+async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
+    // Cause/effect graph: C1 retention is Resident/CheckpointAndRelease; C2 a
+    // Memory input is RO/RW; C3 projection is effectful fresh materialization or
+    // pure cold adoption; C4 a File is a late-attached Resource; C5 the remote
+    // Run materialization reference is present/absent. Effects: E1 ProviderDefault;
+    // E2 WriteThroughRequired; E3 only create-time Memory enters the substrate;
+    // E4 fresh/cold immutable fingerprints agree. Decision rules:
+    // | Rule | C1 checkpoint | C2 RW | C3 cold | C4 File | C5 Run ref | Effect |
+    // | M1   | no            | yes   | any     | any     | any        | E1     |
+    // | M2   | yes           | no    | any     | any     | any        | E1     |
+    // | M3   | yes           | yes   | no      | yes     | yes        | E2+E3 |
+    // | M4   | yes           | yes   | yes     | yes     | no         | E2+E3+E4 |
+    // Constraint: the Environment policy is the only consistency cause; File
+    // bytes remain governed by Resource reconciliation and never re-enter the
+    // provider substrate fingerprint during adoption.
+    fn memory_mount(access: pc::MountAccess, reference: Option<&str>) -> pc::MountRequirement {
+        pc::MountRequirement {
+            mount_id: "memory-binding".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "memory-store".into(),
+                materialization_reference: reference.map(str::to_owned),
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/mnt/memory".into(),
+            access,
+            lifetime: pc::MountLifetime::PerRun,
+            required: true,
+        }
+    }
+
+    fn consistency(spec: &pc::SandboxSpec) -> pc::MemoryWriteConsistency {
+        let pc::MountSource::MemoryStore {
+            write_consistency, ..
+        } = &spec.mounts[0].source
+        else {
+            panic!("expected one typed Memory substrate mount")
+        };
+        *write_consistency
+    }
+
+    let host = Arc::new(host());
+    let mut environment = frozen_projection_with_model_override(
+        "workspace",
+        awaken_session_contract::SessionEnvironmentState::default(),
+        None,
+    )
+    .baseline
+    .environment;
+    environment.idle_retention = awaken_session_contract::EnvironmentIdleRetentionPolicy {
+        mode: awaken_session_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+        checkpoint_after_secs: 1,
+        retention_secs: 60,
+        expiry_behavior: Default::default(),
+        max_checkpoint_bytes: 1_024,
+        max_checkpoint_duration_secs: 30,
+        checkpoint_format: "awaken-fs-tar-v1".into(),
+    };
+    host.install_environment_projection("checkpoint-memory", &environment)
+        .expect("install exact frozen Environment");
+
+    let file_mount = pc::MountRequirement {
+        mount_id: "file-a".into(),
+        source: pc::MountSource::InlineBytes {
+            contents: b"immutable file".to_vec(),
+            content_hash: Some(awaken_resource_contract::content_id(b"immutable file")),
+        },
+        mount_path: "/mnt/session/uploads/file-a".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    };
+    host.register_thread_resources(
+        "checkpoint-memory",
+        StagedResources {
+            mounts: vec![
+                file_mount,
+                memory_mount(pc::MountAccess::ReadWrite, Some("run-v1-reference")),
+            ],
+            ..Default::default()
+        },
+    );
+    let fresh =
+        host.sandbox_substrate_spec_for_provider("checkpoint-memory", &host.session_provider);
+    assert_eq!(fresh.mounts.len(), 1, "M3/E3");
+    assert_eq!(
+        consistency(&fresh),
+        pc::MemoryWriteConsistency::WriteThroughRequired,
+        "M3/E2"
+    );
+
+    let resolved = awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![
+            awaken_session_contract::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::from("file-binding"),
+                source: awaken_session_contract::ResolvedInputSource::File {
+                    file_id: awaken_resource_contract::FileId::from("file-a"),
+                },
+                mount_path: "/file-a".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            },
+            awaken_session_contract::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::from("memory-binding"),
+                source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
+                    config: awaken_resource_contract::MemoryStoreConfigVersion {
+                        memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                            "memory-store",
+                        ),
+                        version: awaken_resource_contract::ConfigVersion(1),
+                        retention_policy: Default::default(),
+                    },
+                },
+                mount_path: "/memory".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                instructions: None,
+            },
+        ],
+        Vec::new(),
+    )
+    .expect("resolved File+Memory manifest");
+    let strict_projection = project_environment(&environment);
+    let effectful = crate::ManagedHost::new(host.clone())
+        .with_resource_validator(crate::host::test_resource_validator())
+        .stage_resolved_input(
+            "workspace",
+            &resolved.inputs()[1],
+            None,
+            Some(&strict_projection),
+        )
+        .await
+        .expect("effectful Memory staging");
+    let pc::MountSource::MemoryStore {
+        write_consistency, ..
+    } = &effectful.mounts[0].source
+    else {
+        panic!("effectful staging must preserve typed Memory")
+    };
+    assert_eq!(
+        *write_consistency,
+        pc::MemoryWriteConsistency::WriteThroughRequired,
+        "M3/E2 effectful"
+    );
+    let cold = host.sandbox_spec_for_resolved_resources_and_provider(
+        "checkpoint-memory",
+        &resolved,
+        &host.session_provider,
+    );
+    assert_eq!(cold.mounts.len(), 1, "M4/E3");
+    assert_eq!(
+        consistency(&cold),
+        pc::MemoryWriteConsistency::WriteThroughRequired,
+        "M4/E2"
+    );
+    assert_eq!(
+        pc::SandboxRealizationFingerprint::from_spec(&fresh),
+        pc::SandboxRealizationFingerprint::from_spec(&cold),
+        "M4/E4"
+    );
+
+    let readonly = host.sandbox_spec_for_projected_layout(
+        "readonly-memory",
+        ProjectedSandboxLayout {
+            resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
+            has_repositories: false,
+            baseline_mounts: None,
+            baseline_env: None,
+            content_delivery: None,
+            environment: Some(&strict_projection),
+            network_isolation: true,
+        },
+    );
+    assert_eq!(
+        consistency(&readonly),
+        pc::MemoryWriteConsistency::ProviderDefault,
+        "M2/E1"
+    );
+
+    let mut resident_environment = environment;
+    resident_environment.idle_retention = Default::default();
+    let resident_projection = project_environment(&resident_environment);
+    let resident = host.sandbox_spec_for_projected_layout(
+        "resident-memory",
+        ProjectedSandboxLayout {
+            resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
+            has_repositories: false,
+            baseline_mounts: None,
+            baseline_env: None,
+            content_delivery: None,
+            environment: Some(&resident_projection),
+            network_isolation: true,
+        },
+    );
+    assert_eq!(
+        consistency(&resident),
+        pc::MemoryWriteConsistency::ProviderDefault,
+        "M1/E1"
+    );
+}
+
 fn repository_activation(logical: &str) -> RepositoryActivation {
     RepositoryActivation {
         plan: pc::RepositoryRealizationPlan {
@@ -467,6 +735,134 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
             .message
             .contains("backend isolation is weaker than requested"),
         "W1/E2: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
+    // Cause/effect graph: C1 the immutable Agent publication contains/does not
+    // contain an ACP candidate whose process is projected into the Session
+    // Sandbox; C2 the provider does/does not preserve one sandbox-absolute path
+    // for arbitrary processes. E1 the exact published candidate set is the only
+    // opaque-process cause; E2 a split-path Workdir provider is rejected before
+    // environment creation; E3 cooperative Native execution keeps Workdir.
+    //
+    // | Rule | Published execution | Provider path contract | Effect |
+    // |---|---|---|---|
+    // | A1 | projected ACP | split Workdir paths | rejected before create |
+    // | A2 | Native | split Workdir paths | admitted (covered by W2 above) |
+    // | A3 | projected ACP | transparent/fidelitous | admitted (Namespace provider suite) |
+    // Constraint: Repository absence must not mask the independent opaque-process
+    // cause, and realization must consume the same candidate predicate as Worker
+    // placement instead of reconstructing it from backend text.
+    let host = host();
+    let publication = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
+        .resolved_model(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new(
+                    "provider", "model", "acp:test",
+                ),
+            ),
+        )
+        .build();
+    host.retain_session_publication("projected-acp", Some(&publication))
+        .expect("install exact immutable Agent publication");
+
+    let root = tempfile::tempdir().unwrap();
+    let local = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let spec = host.sandbox_spec("projected-acp");
+    assert_eq!(
+        spec.isolation,
+        pc::IsolationClass::Workdir,
+        "A1 precondition"
+    );
+    let error = match host.create_session_environment(&local, &spec).await {
+        Ok(_) => panic!("A1/E2 projected ACP cannot run with split paths"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .message
+            .contains("one sandbox-absolute workspace path"),
+        "A1/E2: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn model_override_only_acp_candidate_rejects_split_process_paths() {
+    // Cause/effect graph: C1 the frozen baseline has a complete model-override
+    // publication; C2 no Agent publication is retained; C3 ACP appears only as
+    // a fallback candidate, not the primary. E1 the complete override route is
+    // the effective frozen model set; E2 every candidate contributes its opaque
+    // process requirement; E3 Workdir is rejected before environment creation.
+    //
+    // | Rule | Override publication | Agent publication | ACP location | Effect |
+    // |---|---|---|---|---|
+    // | M1 | complete | absent | fallback | E1+E2+E3 |
+    // | M2 | complete | present | any override candidate | override wins (canonical resolver) |
+    // | M3 | absent | present | Agent candidate | Agent set wins (A1 above) |
+    // Constraint: the override is durable baseline truth. Realization must not
+    // substitute a mutable catalog lookup or collapse an absent Agent snapshot
+    // into a Native/non-opaque default.
+    let host = host();
+    let model_override = awaken_session_contract::SessionModelOverride {
+        publication: Some(Box::new(awaken_session_contract::SessionModelPublication {
+            primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new(
+                    "provider", "primary", "native",
+                ),
+            ),
+            candidates: vec![
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    awaken_runtime_contract::resolved::ModelBinding::new(
+                        "provider", "fallback", "acp:test",
+                    ),
+                ),
+            ],
+        })),
+        inference: Default::default(),
+    };
+    host.install_frozen_session_projection(
+        "model-override-acp",
+        frozen_projection_with_model_override(
+            "test",
+            awaken_session_contract::SessionEnvironmentState::default(),
+            Some(model_override),
+        ),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("install exact model-override-only frozen projection");
+    assert!(
+        host.session_slots
+            .read("model-override-acp", |slot| slot
+                .published_snapshot
+                .is_none())
+            .unwrap_or(false),
+        "M1/C2"
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    let local = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let spec = host.sandbox_spec("model-override-acp");
+    assert_eq!(
+        spec.isolation,
+        pc::IsolationClass::Workdir,
+        "M1 precondition"
+    );
+    let error = match host.create_session_environment(&local, &spec).await {
+        Ok(_) => panic!("M1/E3 override ACP fallback cannot run with split paths"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .message
+            .contains("one sandbox-absolute workspace path"),
+        "M1/E3: {}",
         error.message
     );
 }
@@ -841,6 +1237,75 @@ async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, wor
 }
 
 #[tokio::test]
+async fn live_container_artifact_harvest_reads_one_complete_batch() {
+    // Cause/effect graph: C1 one live Container owns the canonical `/outputs`
+    // root; C2 that root contains three binary-safe files; C3 one ordinary
+    // harvest is requested. Effects: E1 the backend captures the complete tree
+    // exactly once, independent of file count; E2 the ArtifactHarvester publishes
+    // three exact path/content records; E3 no per-Artifact Container read port is
+    // consulted. Decision rule B1: C1+C2+C3 => E1+E2+E3. The batch is ephemeral:
+    // Files/ArtifactPublisher remains the sole durable output authority.
+    let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let files = vec![
+        awaken_sandbox_container::EnvironmentFile {
+            path: "a.txt".into(),
+            bytes: b"alpha".to_vec(),
+        },
+        awaken_sandbox_container::EnvironmentFile {
+            path: "nested/b.bin".into(),
+            bytes: vec![0, 0xff],
+        },
+        awaken_sandbox_container::EnvironmentFile {
+            path: "c.json".into(),
+            bytes: br#"{"ok":true}"#.to_vec(),
+        },
+    ];
+    let provider = Arc::new(BatchArtifactContainerProvider {
+        files,
+        scans: scans.clone(),
+    });
+    let storage = tempfile::tempdir().unwrap();
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .with_store_dir(storage.path())
+            .with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            ),
+    );
+    let thread = "container-artifact-batch";
+    install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
+
+    let harvested = host
+        .harvest_thread_artifacts(thread)
+        .await
+        .expect("B1 harvest one batch");
+
+    assert_eq!(
+        scans.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "B1/E1 one complete tree capture"
+    );
+    assert_eq!(harvested.receipts.len(), 3, "B1/E2");
+    assert_eq!(
+        harvested
+            .receipts
+            .iter()
+            .map(|receipt| receipt.record.logical_path.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["a.txt", "nested/b.bin", "c.json"],
+        "B1/E2 exact logical paths"
+    );
+    let records = host
+        .file_application()
+        .expect("B1 File application")
+        .list("workspace-a", Some(thread))
+        .await
+        .expect("B1 list durable Files");
+    assert_eq!(records.len(), 3, "B1/E2 durable records");
+}
+
+#[tokio::test]
 async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
@@ -985,6 +1450,118 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     );
 }
 
+#[tokio::test]
+async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_environment() {
+    // Cause/effect decision table: H1 ordinary harvest then terminal harvest
+    // of identical Session/path/content => one File id with a durable terminal
+    // association; H2 terminal publication committed but its response/slot
+    // Environment is lost => root Workspace + File evidence reconstruct the
+    // exact receipt; H3 later logical delete => tombstone readback still
+    // reconstructs that same creation receipt; H4 env absent under ordinary
+    // Run semantics => empty, never a broad catalog recovery.
+    let storage = tempfile::tempdir().unwrap();
+    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path()));
+    host.register_thread_workspace("artifact-response-loss", "workspace-a");
+    install_terminal_artifact_projection_before_environment(
+        host.as_ref(),
+        "artifact-response-loss",
+        "workspace-a",
+    )
+    .await;
+    let lease = terminal_cleanup_test_lease();
+    let spec = host.sandbox_spec("artifact-response-loss");
+    let create_fence = lease
+        .sandbox_effect_fence("artifact-response-loss-create")
+        .unwrap();
+    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+        host.provider
+            .create_sandbox_for_effect(&spec, &create_fence, None)
+            .await
+            .unwrap(),
+    ));
+    install_terminal_artifact_environment(
+        host.as_ref(),
+        "artifact-response-loss",
+        "workspace-a",
+        environment,
+    );
+    let output = storage
+        .path()
+        .join("sandboxes")
+        .join("artifact-response-loss")
+        .join(spec.outputs_path.trim_start_matches('/'))
+        .join("receipt.txt");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    std::fs::write(&output, b"committed before response loss").unwrap();
+
+    let ordinary = host
+        .artifact_harvester()
+        .harvest("artifact-response-loss")
+        .await
+        .expect("H1 ordinary");
+    let (_cleanup, effect) =
+        root_terminal_cleanup_effect(host.as_ref(), "artifact-response-loss", lease).await;
+    let terminal = host
+        .artifact_harvester()
+        .harvest_with_fence(
+            "artifact-response-loss",
+            Some(awaken_dispatch::ArtifactPublicationFence::Terminal(
+                effect.clone(),
+            )),
+        )
+        .await
+        .expect("H1 terminal");
+    assert_eq!(
+        ordinary.receipts[0].record.id, terminal.receipts[0].record.id,
+        "H1"
+    );
+
+    host.session_slots.update("artifact-response-loss", |slot| {
+        slot.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
+    });
+    let recovered = host
+        .artifact_harvester()
+        .harvest_with_fence(
+            "artifact-response-loss",
+            Some(awaken_dispatch::ArtifactPublicationFence::Terminal(
+                effect.clone(),
+            )),
+        )
+        .await
+        .expect("H2 readback");
+    assert_eq!(recovered.receipts, terminal.receipts, "H2");
+
+    host.file_application()
+        .expect("File application")
+        .delete(
+            "workspace-a",
+            &terminal.receipts[0].record.id,
+            crate::terminal_repository_publication::runtime_unix_now_ms(),
+        )
+        .await
+        .expect("H3 logical delete");
+    let after_delete = host
+        .artifact_harvester()
+        .harvest_with_fence(
+            "artifact-response-loss",
+            Some(awaken_dispatch::ArtifactPublicationFence::Terminal(
+                effect,
+            )),
+        )
+        .await
+        .expect("H3 tombstone readback");
+    assert_eq!(after_delete.receipts, terminal.receipts, "H3");
+    assert!(
+        host.artifact_harvester()
+            .harvest("artifact-response-loss")
+            .await
+            .expect("H4 ordinary absent")
+            .receipts
+            .is_empty(),
+        "H4"
+    );
+}
+
 #[derive(Default)]
 struct RecordingArtifactRecovery {
     publish_calls: std::sync::atomic::AtomicUsize,
@@ -1024,6 +1601,158 @@ impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublic
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Vec::new())
     }
+}
+
+#[tokio::test]
+async fn receipt_only_terminal_harvest_skips_a_present_container() {
+    // Cause/effect graph: C1 an exact terminal fence is present; C2 cleanup
+    // evidence selects ReceiptOnly; C3 a cleanup-only Container Environment is
+    // still installed; C4 durable publication receipts may already exist.
+    // Effects: E1 no live output batch or per-file port is called; E2 no new
+    // publication is attempted; E3 the one ArtifactHarvester owner invokes
+    // publisher recovery exactly once. Rule B2: C1+C2+C3+C4 => E1+E2+E3.
+    // Complement B3: ordinary Run + absent Environment => empty and zero
+    // additional recovery. B4: ReceiptOnly without a terminal fence is rejected
+    // before output or catalog I/O; it never broadens non-terminal authority.
+    let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = Arc::new(BatchArtifactContainerProvider {
+        files: vec![awaken_sandbox_container::EnvironmentFile {
+            path: "must-not-be-read.txt".into(),
+            bytes: b"already durable".to_vec(),
+        }],
+        scans: scans.clone(),
+    });
+    let publisher = Arc::new(RecordingArtifactRecovery::default());
+    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").with_session_container_provider(
+        provider,
+        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+    );
+    raw_host.artifact_publisher = publisher.clone();
+    let host = Arc::new(raw_host);
+    let thread = "container-artifact-receipt-only";
+    install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
+
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(cleanup.request(thread), "B2 terminal request");
+    cleanup
+        .freeze_targets(thread, [], 0, 0)
+        .expect("B2 freeze root target");
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        cleanup
+            .command_for(thread, thread)
+            .expect("B2 root command"),
+        terminal_cleanup_test_lease(),
+    );
+    let recovered = host
+        .artifact_harvester()
+        .harvest_with_fence_mode(
+            thread,
+            Some(awaken_dispatch::ArtifactPublicationFence::Terminal(
+                effect,
+            )),
+            ArtifactCaptureMode::ReceiptOnly,
+        )
+        .await
+        .expect("B2 receipt-only recovery");
+
+    assert!(recovered.receipts.is_empty(), "B2 fixture receipt set");
+    assert_eq!(
+        scans.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "B2/E1 zero live capture"
+    );
+    assert_eq!(
+        publisher
+            .publish_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "B2/E2"
+    );
+    assert_eq!(
+        publisher
+            .recover_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "B2/E3"
+    );
+
+    assert!(
+        host.artifact_harvester()
+            .harvest("ordinary-absent")
+            .await
+            .expect("B3 ordinary absence")
+            .receipts
+            .is_empty(),
+        "B3 empty result"
+    );
+    assert_eq!(
+        publisher
+            .recover_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "B3 zero additional recovery"
+    );
+    let error = host
+        .artifact_harvester()
+        .harvest_with_fence_mode("ordinary-absent", None, ArtifactCaptureMode::ReceiptOnly)
+        .await
+        .expect_err("B4 non-terminal receipt-only must fail closed");
+    assert!(error.to_string().contains("terminal fence"), "B4");
+    assert_eq!(
+        publisher
+            .recover_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "B4 zero catalog I/O"
+    );
+}
+
+#[tokio::test]
+async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_io() {
+    // Cause/effect decision table: H5 a child terminal command is exact but
+    // its root Session projection is missing. E5 fail before any recovery
+    // read and never substitute the process-local Workspace. This is the
+    // fail-closed complement to H2/H3 above; the root assignment is the
+    // only tenant authority for both live publication and readback.
+    let mut operation = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(operation.request("missing-root"));
+    operation
+        .freeze_targets("missing-root", ["missing-child".to_string()], 0, 0)
+        .unwrap();
+    let command = operation
+        .command_for("missing-root", "missing-child")
+        .unwrap();
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        command,
+        terminal_cleanup_test_lease(),
+    );
+    let publisher = Arc::new(RecordingArtifactRecovery::default());
+    let harvester = ArtifactHarvester {
+        session_slots: Default::default(),
+        local_workspace: "must-not-be-used".into(),
+        publisher: publisher.clone(),
+    };
+
+    let error = harvester
+        .harvest_with_fence(
+            "missing-child",
+            Some(awaken_dispatch::ArtifactPublicationFence::Terminal(
+                effect,
+            )),
+        )
+        .await
+        .expect_err("H5/E5");
+    assert!(
+        error.to_string().contains("root Session Workspace"),
+        "H5/E5"
+    );
+    assert_eq!(
+        publisher
+            .recover_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "H5/E5 zero catalog reads"
+    );
 }
 
 #[tokio::test]
@@ -1206,6 +1935,61 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         "R4 exact terminal owner remains hidden and retryable"
     );
     assert_eq!(std::fs::read(output).unwrap(), b"retry me");
+}
+
+#[tokio::test]
+async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
+    // Cause/effect decision table (ADR-0036 D8): C1 an Agent writes a valid
+    // Skill under the writable run root; C2 no external PromotionGate has
+    // published it. R1 C1+C2 => E1 the live Sandbox scan discovers the
+    // Agent-created Skill, E2 the shared catalog remains unchanged, and E3
+    // disposing the Sandbox cannot promote it as a cleanup side effect.
+    // Constraint: explicit control-plane publication is covered separately
+    // by the durable-catalog test below and is the only route to that store.
+    let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
+    let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
+
+    // A real sandbox env with a skill authored under the workspace `skills/` dir.
+    let base = dir.join("sbx");
+    let env = crate::session_environment::SessionEnvironment::workdir(
+        LocalProvider::new(&base)
+            .create_sandbox(&agent_run_sandbox_spec("t"))
+            .await
+            .unwrap(),
+    );
+    let skill_dir = base.join("t").join("skills").join("notes");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: authored this run\n---\nremember to hydrate",
+    )
+    .unwrap();
+
+    assert!(
+        host.skills
+            .definitions(host.local_workspace())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let authored = env
+        .scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR)
+        .unwrap();
+    assert!(
+        authored.iter().any(|skill| skill.id == "notes"),
+        "R1/E1: the authored Skill remains visible inside its originating run"
+    );
+
+    env.dispose().await.unwrap();
+    assert!(
+        host.skills
+            .definitions(host.local_workspace())
+            .await
+            .unwrap()
+            .is_empty(),
+        "R1/E2-E3: cleanup must not self-promote an Agent-authored Skill"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

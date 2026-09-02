@@ -1258,6 +1258,166 @@ mod tests {
         assert_ne!(spawn[0].id, next[0].id, "M3/E3");
     }
 
+    #[tokio::test]
+    async fn coordinated_child_admission_uses_the_canonical_dispatch_resource_generation() {
+        // Cause/effect graph: C1 a prepared Session has no active manifest or a
+        // stale active A; C2 its aggregate transition desires B, or is absent
+        // for a legacy Session. Effects: E1 production coordinated admission
+        // queues desired B before physical publication; E2 desired B wins over
+        // stale A; E3 legacy admission falls back to A; E4 the queued manifest
+        // owns exact Workspace scope and Worker capability; E5 selection never
+        // publishes or replaces active.
+        //
+        // | Rule | Active | Transition | Queued | Active after | Effects    |
+        // | C1   | none   | 0->B       | B      | none         | E1,E4,E5  |
+        // | C2   | A      | A->B       | B      | A            | E2,E4,E5  |
+        // | C3   | A      | none       | A      | A            | E3,E4,E5  |
+        use awaken_dispatch::DispatchQueue as _;
+
+        let manifest = |revision| {
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                revision,
+                awaken_session_contract::ResolvedSessionResources::default(),
+            )
+        };
+        for (rule, active_revision, desired_revision, expected_revision) in [
+            ("C1", None, Some(7), 7),
+            ("C2", Some(4), Some(7), 7),
+            ("C3", Some(4), None, 4),
+        ] {
+            let session_id = format!("coordinated-resource-{rule}");
+            let child_thread = ThreadId(format!("coordinated-resource-child-{rule}"));
+            let child_run = RunId(format!("coordinated-resource-run-{rule}"));
+            let active = active_revision.map(manifest);
+            let transition = desired_revision.map(|revision| {
+                awaken_session_contract::SessionResourceTransition::new(
+                    active.clone().unwrap_or_else(|| manifest(0)),
+                    manifest(revision),
+                )
+                .expect("test transition belongs to one Workspace")
+            });
+            let baseline = awaken_session_contract::SessionBaseline::compile(
+                awaken_session_contract::SessionBaselineInputs {
+                    environment: awaken_session_contract::EnvironmentSnapshot {
+                        environment_id: format!("coordinated-resource-environment-{rule}"),
+                        revision: awaken_session_contract::EnvironmentRevision(1),
+                        self_hosted: false,
+                        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                            format!("coordinated-resource-environment-{rule}-v1"),
+                        ),
+                        sandbox: Default::default(),
+                        sandbox_provisioning: Default::default(),
+                        idle_retention: Default::default(),
+                        packages: Default::default(),
+                        prepared_image: None,
+                        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                        credential_realization:
+                            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                    },
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                    mcp_authoring: Default::default(),
+                    agent_id: "agent-a".into(),
+                    agent_revision: Some(1),
+                    model: "model-a".into(),
+                    model_override: None,
+                    runtime: Some("native".into()),
+                    delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    prompts: Vec::new(),
+                    transcript_prefix: None,
+                },
+            );
+            let dispatch = Arc::new(
+                awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+                    .expect("coordinated Resource dispatch store"),
+            );
+            let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                .with_dispatch_store(dispatch.clone());
+            host.session_slots.update(&session_id, |slot| {
+                slot.session_dispatch = true;
+                slot.baseline = Some(baseline);
+                slot.manifest = active.clone();
+                slot.resource_transition = transition;
+            });
+            let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+                .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                    "test", "model-a", "native",
+                ))
+                .build();
+            snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
+            snapshot.metadata.source.revision = 1;
+            snapshot
+                .recompute_fingerprint()
+                .expect("published child snapshot");
+
+            let receipt = host
+                .admit_coordinated_run(CoordinatedRunCommand {
+                    intent: CoordinatedRunIntent::Spawn,
+                    session_id: session_id.clone(),
+                    thread_id: child_thread.clone(),
+                    run_id: child_run.clone(),
+                    parent_run_id: RunId(format!("coordinated-resource-parent-{rule}")),
+                    parent_call_id: format!("coordinated-resource-call-{rule}"),
+                    operation_id: format!("coordinated-resource-operation-{rule}"),
+                    snapshot,
+                    message: format!("coordinate Resource rule {rule}"),
+                    session_activity_epoch: 1,
+                    max_unarchived_threads: 24,
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{rule} production child admission: {error}"));
+            assert_eq!(receipt.thread_id, child_thread, "{rule} child identity");
+
+            let claimed = dispatch
+                .claim_run(
+                    &child_run,
+                    "resource-inspector",
+                    30_000,
+                    1,
+                    &Default::default(),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{rule} inspect queued child: {error}"))
+                .unwrap_or_else(|| panic!("{rule} queued child is claimable"));
+            let carried = claimed
+                .request
+                .session_resources
+                .as_ref()
+                .unwrap_or_else(|| panic!("{rule} child Resource envelope"))
+                .decode_manifest()
+                .unwrap_or_else(|error| panic!("{rule} decode child Resource envelope: {error}"));
+            assert_eq!(carried.revision, expected_revision, "{rule} generation");
+            assert_eq!(
+                carried,
+                manifest(expected_revision),
+                "{rule} exact manifest"
+            );
+            assert_eq!(
+                claimed.request.execution_scope,
+                Some(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from("workspace-a")
+                )),
+                "{rule}/E4 exact scope",
+            );
+            assert!(
+                claimed
+                    .request
+                    .placement
+                    .required_capabilities
+                    .contains(awaken_dispatch::SESSION_RESOURCES_CAPABILITY),
+                "{rule}/E4 eligible Worker capability",
+            );
+            assert_eq!(
+                host.thread_resource_manifest(&session_id),
+                active,
+                "{rule}/E5 admission must not publish active",
+            );
+        }
+    }
+
     #[test]
     fn advisor_call_identity_is_one_thread_per_consultation_and_idempotent_per_replay() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries

@@ -219,4 +219,76 @@ pub(super) async fn push(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Container Repository crash-cut cause/effect decision table. C1 final is
+    /// absent/exact/non-exact occupied; C2 the random stage name is absent or
+    /// collided before this attempt owns it; C3 clone/verification succeeds;
+    /// C4 the atomic publisher succeeds or loses a name race. Effects: E1 exact
+    /// is an idempotent success; E2 non-exact final is rejected and never
+    /// removed; E3 a stage collision is preserved; E4 only a stage created by
+    /// this attempt is cleaned on ordinary failure; E5 successful publication
+    /// is post-verified; E6 publisher capability comes from the configured Hand
+    /// binary. Rules: C1=exact=>E1; C1=occupied-nonexact=>E2; absent+C2=collision
+    /// =>E3; absent+C2=absent+!C3=>E4; absent+C3+C4=success=>E5+E6;
+    /// absent+C3+C4=lost=>recheck exact for E1, otherwise E2. The real syscall
+    /// collision is covered by `awaken-sandbox`'s primitive test.
+    #[test]
+    fn repository_import_command_owns_only_its_random_stage_and_never_clobbers_final() {
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repository".into(),
+            mount_path: "/workspace/source/repository".into(),
+            source_remote_url: "https://example.invalid/repository".into(),
+            transport_url: "https://example.invalid/repository".into(),
+            initial_branch: Some("main".into()),
+            initial_commit: None,
+            access: pc::MountAccess::ReadWrite,
+        };
+        let command = repository_import_command(
+            &plan,
+            "/opt/custom/awaken-sandbox",
+            "/tmp/repository.bundle".into(),
+            uuid::Uuid::nil(),
+        )
+        .expect("valid import command");
+        let script = &command.argv[2];
+
+        assert_eq!(command.argv[6], "/workspace/source", "shared parent");
+        assert_eq!(
+            command.argv[7],
+            "/workspace/source/.awaken-repository-00000000000000000000000000000000.stage",
+            "per-attempt stage identity"
+        );
+        assert_eq!(
+            command.argv[11], "/opt/custom/awaken-sandbox",
+            "E6 configured binary is the sole publisher capability"
+        );
+        assert!(
+            script.contains("if test \"$stage_owned\" = 1; then rm -rf -- \"$stage\"; fi"),
+            "E4 cleanup is gated by successful current-attempt ownership"
+        );
+        assert!(
+            script.contains("mkdir -m 700 -- \"$stage\"; stage_owned=1"),
+            "E3 a colliding unknown stage is never claimed or removed"
+        );
+        assert_eq!(
+            script.matches("rm -rf --").count(),
+            1,
+            "E2/E3 no final or unknown-stage deletion path exists"
+        );
+        assert!(!script.contains("rm -rf -- \"$destination\""));
+        assert!(!script.contains("mv --"), "no check-then-rename fallback");
+        assert!(
+            script.contains(
+                "\"$publisher\" repository-publish-noreplace \"$stage\" \"$destination\""
+            )
+        );
+        assert!(
+            script.contains("stage_owned=0; is_exact \"$destination\""),
+            "E5 successful publish is post-verified"
+        );
+        assert!(
+            script.contains("git -C \"$candidate\" rev-parse --verify 'HEAD^{commit}'"),
+            "E1 exact requires a complete checkout"
+        );
+    }
 }

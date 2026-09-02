@@ -1314,6 +1314,596 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     );
 }
 
+#[tokio::test]
+async fn live_file_replacement_requires_the_exact_resource_transition() {
+    let storage = tempfile::tempdir().expect("storage");
+    let mut raw_host =
+        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    // Cause/effect decision table. Causes: C1 the Session is physically empty;
+    // C2 the complete Dispatch projection supplies the exact Empty->desired
+    // transition; C3 a following desired-only manifest is exact/different; C4
+    // the aggregate supplies the exact previous->desired transition; C5 an
+    // Environment is resident. Effects: E1 the canonical projection stages
+    // cold requirements and exact desired-only replay does not publish an
+    // active manifest; E2 physical create publishes generation 0; E3 a
+    // desired-only replacement fails with no logical/physical change; E4 the
+    // exact transition removes the File before publishing generation 2.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    // | F1 | T | yes | exact | n/a | F | E1 |
+    // | F2 | T | yes | exact | yes | T | E2 |
+    // | F3 | F | n/a | different | no | T | E3 |
+    // | F4 | F | n/a | n/a | yes | T | E4 |
+    // Workdir remains correctly ineligible for F1's immutability requirement.
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            storage.path().join("sandboxes"),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
+    let host = Arc::new(raw_host);
+    let managed = managed_test_host(host.clone());
+    let bytes = b"frozen worker input".to_vec();
+    let file_id = host
+        .file_application()
+        .expect("test startup installs File application")
+        .create_uploaded_file(
+            "workspace-a",
+            "input.bin".into(),
+            "application/octet-stream".into(),
+            &bytes,
+        )
+        .await
+        .expect("create file")
+        .id;
+    let manifest = awaken_session_contract::SessionResourceManifest::new(
+        "workspace-a",
+        awaken_session_contract::ResolvedSessionResources::try_new(
+            vec![awaken_session_contract::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::new("file-binding"),
+                source: awaken_session_contract::ResolvedInputSource::File {
+                    file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
+                },
+                mount_path: "/uploads/input.bin".to_string(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            }],
+            Vec::new(),
+        )
+        .unwrap(),
+    );
+
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        "thread-cold-resource",
+        frozen_projection_for_manifest(
+            ordinary_frozen_projection().baseline.environment,
+            &manifest,
+        ),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("F1 install the complete projection and proven Empty->desired transition");
+    host.install_dispatched_resources("thread-cold-resource", &manifest, None)
+        .await
+        .expect("F1 revalidate the exact desired manifest without republishing");
+    assert!(
+        host.thread_resource_manifest("thread-cold-resource")
+            .is_none(),
+        "F1 desired-only staging is not completion evidence"
+    );
+    let activation = test_activation("thread-cold-resource", "run-cold-resource");
+    host.ctx_for_snapshot(
+        "thread-cold-resource",
+        Some("agent-a"),
+        Some(activation.snapshot),
+    )
+    .await
+    .expect("open environment after resource install");
+
+    let mount = host
+        .sandbox_spec("thread-cold-resource")
+        .mounts
+        .into_iter()
+        .find(|mount| mount.mount_id == file_id)
+        .expect("frozen File mount");
+    assert_eq!(mount.mount_path, "/mnt/session/uploads/uploads/input.bin");
+    assert_eq!(
+        mount.access,
+        awaken_provisioning_contract::MountAccess::ReadOnly
+    );
+    let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = mount.source
+    else {
+        panic!("frozen File uses the binary-safe carried source")
+    };
+    assert_eq!(contents, bytes);
+    assert_eq!(
+        host.thread_resource_manifest("thread-cold-resource"),
+        Some(manifest.clone())
+    );
+
+    let cleared = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        2,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+    let error = host
+        .install_dispatched_resources("thread-cold-resource", &cleared, None)
+        .await
+        .expect_err("F3 desired-only replacement must fail closed");
+    assert_eq!(error.code, "session_resource_transition_conflict", "F3");
+    assert_eq!(
+        host.thread_resource_manifest("thread-cold-resource"),
+        Some(manifest.clone()),
+        "F3 retains the active manifest"
+    );
+    assert!(
+        !host
+            .session_environment("thread-cold-resource")
+            .await
+            .expect("F3 resident environment")
+            .list_frozen_mount_files("/mnt/session/uploads")
+            .await
+            .expect("F3 list live files")
+            .is_empty(),
+        "F3 does not remove the live File"
+    );
+
+    let transition =
+        awaken_session_contract::SessionResourceTransition::new(manifest.clone(), cleared.clone())
+            .expect("F4 exact aggregate transition");
+    host.apply_dispatched_resource_transition("thread-cold-resource", &transition, None)
+        .await
+        .expect("F4 exact live replacement");
+    assert!(
+        host.session_environment("thread-cold-resource")
+            .await
+            .expect("resident environment")
+            .list_frozen_mount_files("/mnt/session/uploads")
+            .await
+            .expect("list live files")
+            .is_empty(),
+        "F4 removes the stale physical projection"
+    );
+    assert!(
+        host.sandbox_spec("thread-cold-resource").mounts.is_empty(),
+        "F4 publishes the empty staged projection"
+    );
+    assert_eq!(
+        host.thread_resource_manifest("thread-cold-resource"),
+        Some(cleared),
+        "F4 publishes generation 2 only after realization"
+    );
+}
+
+#[tokio::test]
+async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
+    // Producer/consumer cause/effect table: C1 the complete-projection producer
+    // has installed an exact rev1→rev1 or rev1→rev2 transition; C2 active is
+    // absent or equals the transition's previous generation; C3 the carried
+    // desired-only manifest is exact or differs only by revision. Effects: E1
+    // the consumer reuses the existing transition without publishing desired
+    // as active; E2 a mismatch rejects before changing any correlated Resource
+    // projection.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | R1 | rev1→rev1 | absent | exact rev1 | E1, active absent |
+    // | R2 | rev1→rev2 | active rev1 | exact rev2 | E1, active rev1 |
+    // | R3 | rev1→rev1 | absent | rev2 | E2 |
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let managed = managed_test_host(host.clone());
+    let revision_one = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        1,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+    let revision_two = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        2,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+
+    for thread in ["exact-cold-transition", "mismatched-cold-transition"] {
+        let mut projection = frozen_projection_for_manifest(deferred_environment(), &revision_one);
+        projection.previous_resource_manifest = Some(revision_one.clone());
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &managed,
+            thread,
+            projection,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{thread}: complete projection producer: {error}"));
+        assert!(
+            host.thread_resource_manifest(thread).is_none(),
+            "{thread}: C2 active truth remains absent"
+        );
+    }
+    let active_thread = "active-previous-transition";
+    host.register_thread_resource_manifest(active_thread, revision_one.clone());
+    let mut active_projection =
+        frozen_projection_for_manifest(deferred_environment(), &revision_two);
+    active_projection.previous_resource_manifest = Some(revision_one.clone());
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        active_thread,
+        active_projection,
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("R2 complete projection producer");
+
+    let exact_before = host
+        .session_slots
+        .read("exact-cold-transition", |slot| {
+            slot.resource_transition.clone()
+        })
+        .flatten()
+        .expect("R1 exact transition projection");
+    assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
+    assert_eq!(exact_before.desired(), &revision_one, "R1/C1 desired");
+    host.install_dispatched_resources("exact-cold-transition", &revision_one, None)
+        .await
+        .expect("R1/E1 exact desired-only consumer");
+    assert_eq!(
+        host.session_slots
+            .read("exact-cold-transition", |slot| slot
+                .resource_transition
+                .clone())
+            .flatten(),
+        Some(exact_before),
+        "R1/E1 retains the exact producer transition"
+    );
+    assert!(
+        host.thread_resource_manifest("exact-cold-transition")
+            .is_none(),
+        "R1/E1 staging does not publish active truth"
+    );
+
+    let active_transition = host
+        .session_slots
+        .read(active_thread, |slot| slot.resource_transition.clone())
+        .flatten()
+        .expect("R2 exact transition projection");
+    assert_eq!(
+        active_transition.previous(),
+        &revision_one,
+        "R2/C1 previous"
+    );
+    assert_eq!(active_transition.desired(), &revision_two, "R2/C1 desired");
+    host.install_dispatched_resources(active_thread, &revision_two, None)
+        .await
+        .expect("R2/E1 exact desired consumer with active previous");
+    assert_eq!(
+        host.session_slots
+            .read(active_thread, |slot| slot.resource_transition.clone())
+            .flatten(),
+        Some(active_transition),
+        "R2/E1 retains the exact producer transition"
+    );
+    assert_eq!(
+        host.thread_resource_manifest(active_thread),
+        Some(revision_one.clone()),
+        "R2/E1 staging does not publish desired as active"
+    );
+
+    let mismatched_thread = "mismatched-cold-transition";
+    let before_mismatch = host
+        .session_slots
+        .read(mismatched_thread, |slot| {
+            (
+                slot.resource_transition.clone(),
+                slot.staged_resource_effect_key.clone(),
+                slot.workspace.clone(),
+                slot.manifest.clone(),
+            )
+        })
+        .expect("R3 producer slot");
+    let error = host
+        .install_dispatched_resources(mismatched_thread, &revision_two, None)
+        .await
+        .expect_err("R3/E2 mismatched desired-only consumer");
+    assert_eq!(error.code, "session_resource_transition_conflict", "R3/E2");
+    assert_eq!(
+        host.session_slots.read(mismatched_thread, |slot| {
+            (
+                slot.resource_transition.clone(),
+                slot.staged_resource_effect_key.clone(),
+                slot.workspace.clone(),
+                slot.manifest.clone(),
+            )
+        }),
+        Some(before_mismatch),
+        "R3/E2 rejects without mutating correlated Resource state"
+    );
+}
+
+/// Desired-only versus exact-transition cause/effect decision table.
+/// Causes: C0 a complete Dispatch projection supplies the initial exact
+/// Empty->desired transition; C1 an active process-local generation exists; C2
+/// desired-only input is exact/different; C3 the aggregate supplies exact
+/// previous+desired.
+/// Effects: E1 exact input revalidates cold requirements without republishing;
+/// E2 every desired-only change rejects and retains the active generation; E3
+/// exact transition advances physical/logical state. Rules:
+/// R0=C0+!C1+exact=>E1; R1=C1+exact=>E1; R2=C1+different+!C3=>E2;
+/// R3=C1+different+C3=>E3. Revision ordering and Workspace alone never
+/// substitute for the aggregate transition.
+#[tokio::test]
+async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let managed = managed_test_host(host.clone());
+    let claim = awaken_dispatch::RunClaim {
+        run_id: RunId("run-generation-fence".into()),
+        owner: "worker-generation-fence".into(),
+        epoch: 1,
+    };
+    let revision_four = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        4,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        "thread-generation-fence",
+        frozen_projection_for_manifest(
+            ordinary_frozen_projection().baseline.environment,
+            &revision_four,
+        ),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("install the complete initial projection and exact transition");
+    host.install_dispatched_resources("thread-generation-fence", &revision_four, None)
+        .await
+        .expect("revalidate the exact desired manifest without republishing");
+    host.ctx_for_snapshot(
+        "thread-generation-fence",
+        Some("agent-a"),
+        Some(test_activation("thread-generation-fence", "open-generation-fence").snapshot),
+    )
+    .await
+    .expect("physically publish initial generation");
+
+    host.install_dispatched_resources("thread-generation-fence", &revision_four, Some(&claim))
+        .await
+        .expect("R1 exact replay revalidation");
+
+    for rejected in [
+        awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            3,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        ),
+        awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            4,
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                Vec::new(),
+                vec![awaken_session_contract::ResolvedSkillBinding {
+                    kind: awaken_agent_contract::AgentSkillKind::Custom,
+                    skill_id: "different-same-generation".into(),
+                    version: 1,
+                    bundle_sha256: "sha256-different".into(),
+                }],
+            )
+            .unwrap(),
+        ),
+        awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-b",
+            5,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        ),
+    ] {
+        let result = host
+            .install_dispatched_resources("thread-generation-fence", &rejected, Some(&claim))
+            .await;
+        assert!(
+            result.is_err(),
+            "R2 rejects desired-only replacement: {rejected:?}"
+        );
+        assert_eq!(
+            host.thread_resource_manifest("thread-generation-fence"),
+            Some(revision_four.clone())
+        );
+    }
+
+    let revision_five = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        5,
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+    host.install_dispatched_resources("thread-generation-fence", &revision_five, Some(&claim))
+        .await
+        .expect_err("R2 newer desired-only generation still lacks previous");
+    let transition = awaken_session_contract::SessionResourceTransition::new(
+        revision_four,
+        revision_five.clone(),
+    )
+    .expect("R3 exact transition");
+    host.apply_dispatched_resource_transition("thread-generation-fence", &transition, Some(&claim))
+        .await
+        .expect("R3 exact transition advances generation");
+    assert_eq!(
+        host.thread_resource_manifest("thread-generation-fence"),
+        Some(revision_five),
+        "R3 publishes only after exact physical transition"
+    );
+}
+
+#[tokio::test]
+async fn complete_projection_resource_guard_excludes_desired_only_staging() {
+    // Lock cause/effect table. C1 the complete projection owner holds the
+    // `resource_projection` suffix guard; C2 desired-only cold staging races;
+    // C3 the guard is released. Effects: E1 C1+C2 blocks before requirements,
+    // transition, or active-manifest publication; E2 C2+C3 stages the proven
+    // Empty->desired command and still leaves active completion absent.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | L1 | T | T | F | E1 |
+    // | L2 | F | T | T | E2 |
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let thread = "resource-projection-guard";
+    let manifest = awaken_session_contract::SessionResourceManifest::new(
+        host.local_workspace(),
+        awaken_session_contract::ResolvedSessionResources::default(),
+    );
+    let resource_projection = host
+        .session_slots
+        .update(thread, |slot| slot.resource_projection.clone());
+    let guard = resource_projection.lock().await;
+    let mut staging = tokio::spawn({
+        let host = host.clone();
+        let manifest = manifest.clone();
+        async move {
+            host.install_dispatched_resources(thread, &manifest, None)
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut staging)
+            .await
+            .is_err(),
+        "L1 desired-only staging must wait for the complete projection guard"
+    );
+    assert!(
+        host.session_slots
+            .read(thread, |slot| {
+                slot.resource_transition.is_none()
+                    && slot.staged_resource_effect_key.is_none()
+                    && slot.manifest.is_none()
+            })
+            .unwrap_or(false),
+        "L1 no correlated Resource fact is published while the guard is held"
+    );
+
+    drop(guard);
+    staging
+        .await
+        .expect("L2 staging task")
+        .expect("L2 cold staging succeeds after guard release");
+    assert!(
+        host.session_slots
+            .read(thread, |slot| {
+                slot.resource_transition.is_some()
+                    && slot.staged_resource_effect_key.is_some()
+                    && slot.manifest.is_none()
+            })
+            .unwrap_or(false),
+        "L2 cold requirements and command stage without active completion"
+    );
+}
+
+#[tokio::test]
+async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_adoption() {
+    // Exact-staging cause/effect table. C1 resident active is previous/desired/
+    // foreign; C2 no Environment is resident; C3 a current or prospective
+    // durable binding exists; C4 desired File bytes are unavailable. Effects:
+    // E1 foreign active rejects before any File read or slot write; E2 C2+C3
+    // defers all compilation until adoption; E3 previous/desired without C3
+    // may compile (covered by the live replacement and cold File tests).
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // | P1 | foreign | any | any | T | E1 |
+    // | P2 | none | T | T | T | E2 |
+    // | P3 | previous/desired | any | F | F | E3 |
+    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let missing_resources = awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::new("missing-file-binding"),
+            source: awaken_session_contract::ResolvedInputSource::File {
+                file_id: awaken_resource_contract::FileId::from("missing-file"),
+            },
+            mount_path: "/missing.txt".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+        }],
+        Vec::new(),
+    )
+    .expect("valid missing-File projection");
+    let previous = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        1,
+        Default::default(),
+    );
+    let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        2,
+        missing_resources,
+    );
+    let transition =
+        awaken_session_contract::SessionResourceTransition::new(previous.clone(), desired.clone())
+            .expect("exact transition");
+
+    let foreign_thread = "foreign-active-resource";
+    let foreign = awaken_session_contract::SessionResourceManifest::at_revision(
+        "workspace-a",
+        9,
+        Default::default(),
+    );
+    host.register_thread_resource_manifest(foreign_thread, foreign.clone());
+    host.session_slots.update(foreign_thread, |slot| {
+        slot.workspace = Some("sentinel-workspace".into());
+        slot.staged_resource_effect_key = Some("sentinel-key".into());
+    });
+    let resource_projection = host
+        .session_slots
+        .update(foreign_thread, |slot| slot.resource_projection.clone());
+    let _guard = resource_projection.lock().await;
+    let error = host
+        .stage_prevalidated_dispatched_resource_transition_under_resource_projection(
+            foreign_thread,
+            &transition,
+            None,
+            false,
+        )
+        .await
+        .expect_err("P1 foreign active generation must fail closed");
+    assert_eq!(error.code, "session_resource_transition_conflict", "P1");
+    assert!(
+        host.session_slots
+            .read(foreign_thread, |slot| {
+                slot.manifest.as_ref() == Some(&foreign)
+                    && slot.workspace.as_deref() == Some("sentinel-workspace")
+                    && slot.staged_resource_effect_key.as_deref() == Some("sentinel-key")
+                    && slot.resources.mounts.is_empty()
+            })
+            .unwrap_or(false),
+        "P1 rejects before compilation or any correlated slot write"
+    );
+    drop(_guard);
+
+    let bound_thread = "prospective-bound-resource";
+    let resource_projection = host
+        .session_slots
+        .update(bound_thread, |slot| slot.resource_projection.clone());
+    let _guard = resource_projection.lock().await;
+    host.stage_prevalidated_dispatched_resource_transition_under_resource_projection(
+        bound_thread,
+        &transition,
+        None,
+        true,
+    )
+    .await
+    .expect("P2 prospective binding defers missing File compilation");
+    assert!(
+        host.session_slots
+            .read(bound_thread, |slot| {
+                slot.manifest.is_none()
+                    && slot.resource_transition.is_none()
+                    && slot.staged_resource_effect_key.is_none()
+                    && slot.resources.mounts.is_empty()
+            })
+            .unwrap_or(false),
+        "P2 adoption remains the first Resource effect edge"
+    );
+}
+
 /// Cause/effect decision table for Worker-side File staging:
 /// | Rule | Worker File source | exact claim | local File DB entry | Effect |
 /// |---|---|---|---|---|
@@ -1451,6 +2041,100 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
         )
         .await
         .is_err()
+    );
+}
+
+#[tokio::test]
+async fn recovery_mode_controls_the_production_adoption_seam() {
+    // Fixture rule: C0 an executable Session first owns the canonical Runtime
+    // composition and exact empty Resource transition; E0 its durable handle
+    // can then exercise continuity/rebuild adoption without a partial slot path.
+    //
+    // Adoption cause/effect decision table:
+    // | rule | provider observation | recovery policy | resident | effect |
+    // | A1 | Ready exact handle | continuity | absent | adopt exact binding |
+    // | A2 | definitively unavailable | rebuild | absent | RebuildRequired |
+    // | A3 | definitively unavailable | continuity | absent | fail, zero mutation |
+    // The dead-resident companion test covers A2 with a resident Arc: only the
+    // exact observed Arc is discarded before rebuild is projected. Parameter
+    // aggregation must preserve these existing typed observations and effects.
+    let storage = tempfile::tempdir().expect("storage");
+    let thread = "thread-adoption";
+    let first =
+        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let projection = empty_frozen_projection(first.local_workspace(), eager_environment());
+    let encoded = available_local_environment_binding(&first, thread, &projection).await;
+    let handle: awaken_provisioning_contract::SandboxHandle =
+        serde_json::from_str(&encoded).expect("A1 exact ready handle");
+    drop(first);
+
+    let replacement =
+        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let _replacement_managed = managed_test_host(replacement.clone());
+    replacement
+        .install_frozen_session_projection(thread, projection, None, true, None)
+        .await
+        .expect("A1 install exact consumer projection");
+    let run_id = RunId("run-adoption".into());
+    let adopted = adopt_bound_sandbox(
+        &replacement,
+        Some(&encoded),
+        thread,
+        &run_id,
+        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+    )
+    .await
+    .expect("continuity mode adopts the durable handle");
+    assert_eq!(
+        adopted,
+        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready
+    );
+    assert_eq!(
+        replacement
+            .session_environment_handle(thread)
+            .await
+            .expect("published adopted handle"),
+        handle
+    );
+
+    let missing_thread = "thread-missing";
+    let missing_projection = super::test_support::empty_frozen_projection(
+        replacement.local_workspace(),
+        super::test_support::eager_environment(),
+    );
+    let missing = super::test_support::unavailable_local_environment_binding(
+        &replacement,
+        missing_thread,
+        &missing_projection,
+    )
+    .await;
+    let adopted = adopt_bound_sandbox(
+        &replacement,
+        Some(&missing),
+        missing_thread,
+        &run_id,
+        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+        awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+    )
+    .await
+    .expect("rebuild mode may replace a missing sandbox from committed truth");
+    assert_eq!(
+        adopted,
+        crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired
+    );
+    assert!(
+        adopt_bound_sandbox(
+            &replacement,
+            Some(&missing),
+            missing_thread,
+            &run_id,
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+            awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+        )
+        .await
+        .is_err(),
+        "continuity mode fails closed when the bound sandbox is gone"
     );
 }
 

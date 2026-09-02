@@ -277,6 +277,130 @@ fn restoring_owner_is_only_an_exact_request_fence_until_durable_adoption() {
     ));
 }
 
+#[test]
+fn closed_pending_adoption_discards_only_the_pre_observation_identity() {
+    // Cause/effect table: C1 pending durable owner A is captured before a
+    // provider observation; C2 same-binding identity B replaces A; C3 closed
+    // evidence returns for A. E1 stale A cannot clear B. With C1 still current,
+    // E2 the same evidence clears only A so rebuild can proceed.
+    // | Rule | Current owner | Observed identity | Effect |
+    // | P1 | B, same binding | A | retain B |
+    // | P2 | A | A | Vacant |
+    let thread = "closed-pending-adoption-fence";
+    let binding = "exact-binding";
+    let observed = identity(thread);
+    let replacement = BoundSessionEnvironmentIdentity::Durable {
+        effect_id: "replacement-effect".into(),
+        generation: generation(thread),
+    };
+    let mut owner = SessionEnvironmentOwner::Vacant;
+    owner
+        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+            identity: replacement.clone(),
+            binding: binding.into(),
+        })
+        .expect("P1 replacement projection");
+    assert!(
+        !owner.discard_closed_pending_adoption(&observed, binding),
+        "P1/E1"
+    );
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
+            identity,
+            binding: current,
+        }) if identity == &replacement && current == binding
+    ));
+
+    owner = SessionEnvironmentOwner::Vacant;
+    owner
+        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+            identity: observed.clone(),
+            binding: binding.into(),
+        })
+        .expect("P2 observed projection");
+    assert!(
+        owner.discard_closed_pending_adoption(&observed, binding),
+        "P2/E2"
+    );
+    assert!(matches!(owner, SessionEnvironmentOwner::Vacant), "P2/E2");
+}
+
+#[tokio::test]
+async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() {
+    // Resident reservation cause/effect graph. Causes: C1 a durable Resident
+    // retains one exact Arc, identity and V2 binding; C2 the provider Arc has
+    // actually reserved a superset of owned paths; C3 the root projection keeps
+    // the same durable generation; C4 the projected handle names the same or a
+    // different substrate. Effects: E1 C1+C2+C3+same substrate atomically
+    // advances identity+binding on that one owner while retaining the Arc; E2 a
+    // foreign substrate is rejected with the owner unchanged. Exact replay is
+    // already covered by ordinary projection tests, and the provisioning
+    // contract owns path-loss/legacy/different-effect negatives.
+    //
+    // | Rule | Arc reserved | generation | substrate | Effect |
+    // | P1 | yes | same | same | E1 |
+    // | P2 | yes | same | different | E2 |
+    let thread = "resident-resource-reservation";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let resident_environment = environment(&provider, thread).await;
+    let initial_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let initial_identity = identity(thread);
+    let mut owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+        identity: initial_identity,
+        binding: initial_binding,
+        environment: resident_environment.clone(),
+    });
+
+    resident_environment
+        .reserve_owned_path("/workspace/live.txt")
+        .expect("P1 reserve provider-owned path");
+    let reserved_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let reserved_identity = BoundSessionEnvironmentIdentity::Durable {
+        effect_id: "resource-reservation-effect".into(),
+        generation: generation(thread),
+    };
+    owner
+        .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+            identity: reserved_identity.clone(),
+            binding: reserved_binding.clone(),
+        })
+        .expect("P1 absorb exact root reservation");
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Resident(owned)
+            if owned.identity == reserved_identity
+                && owned.binding == reserved_binding
+                && Arc::ptr_eq(&owned.environment, &resident_environment)
+    ));
+
+    let foreign = environment(&provider, "foreign-resource-reservation").await;
+    foreign
+        .reserve_owned_path("/workspace/foreign.txt")
+        .expect("P2 reserve foreign path");
+    let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
+    assert!(
+        owner
+            .install_projection(ProjectedEnvironmentOwner::AwaitingAdoption {
+                identity: BoundSessionEnvironmentIdentity::Durable {
+                    effect_id: "foreign-resource-reservation-effect".into(),
+                    generation: generation(thread),
+                },
+                binding: foreign_binding,
+            })
+            .is_err(),
+        "P2 foreign substrate remains fenced"
+    );
+    assert!(matches!(
+        &owner,
+        SessionEnvironmentOwner::Resident(owned)
+            if owned.identity == reserved_identity
+                && owned.binding == reserved_binding
+                && Arc::ptr_eq(&owned.environment, &resident_environment)
+    ));
+}
+
 fn retry_input_mount() -> awaken_provisioning_contract::MountRequirement {
     awaken_provisioning_contract::MountRequirement {
         mount_id: "retry-input".into(),
@@ -611,6 +735,28 @@ async fn terminal_takeover_is_highest_priority_and_other_causes_cannot_overwrite
     }
 }
 
+#[tokio::test]
+async fn legacy_revocation_rebuild_consumes_only_exact_typed_observation() {
+    // Legacy rebuild cause/effect table: C1 an aggregate-Unowned LegacyDirect
+    // owner is Retiring after realization revocation; C2 the caller has no
+    // claimed-realization authority; C3 the exact provider observation is Ready
+    // or DefinitivelyUnavailable. Effects: E1 C2 retains the exact Retiring
+    // owner and performs no I/O; E2 Ready disposes the exact old root and clears
+    // only that owner; E3 Unavailable consumes its exact closed evidence and
+    // clears only that owner. Rules CP1=C1+C2=>E1, CP2=C1+Ready=>E2,
+    // CP3=C1+Unavailable=>E3. The claimed end-to-end creation edge is owned by
+    // `claimed_rebuild_disposes_legacy_v1_before_projection_install`; this table
+    // deliberately tests only the reusable typed-observation owner. Provisioning,
+    // incompatible, indeterminate, and foreign-incarnation rows remain
+    // fail-closed under the provider observation/closed-evidence tables.
+    for (thread, preclosed) in [
+        ("claimed-legacy-revocation-ready", false),
+        ("claimed-legacy-revocation-absent", true),
+    ] {
+        assert_legacy_rebuild_observation(thread, preclosed).await;
+    }
+}
+
 async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, install_complete_projection_for_snapshot, test_activation,
@@ -853,6 +999,136 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
 }
 
 #[tokio::test]
+async fn recovery_status_returns_the_canonical_adoption_disposition() {
+    use crate::host::worker_resolver::test_support::AdoptionModel;
+
+    // Cause/effect decision table: C1 an exact ordinary Direct Resident is
+    // recovered through its explicitly selected provider with rebuild enabled;
+    // C2 provider observation is Ready; C3 it is Terminal. Effects: E1 C1+C2
+    // returns Ready and reuses the same Environment owner and Runtime Arcs with
+    // zero Candidate, binding persistence, or publication; E2 C1+C3 returns RebuildRequired,
+    // clears the exact closed owner, records its binding as rebuild input, and
+    // never restores the Runtime. Rules R21: Ready=>E1; Terminal=>E2. Provider
+    // selection is an input to this canonical API, so the removed historical
+    // frozen-provider present/absent rows are no longer separate decisions.
+    // Fixture constraint: executable context construction uses the production
+    // DispatchSessionRuntime composition; no test-only context path is restored.
+    let ready_thread = "ordinary-ready-recovery";
+    let ready_storage = tempfile::tempdir().unwrap();
+    let ready_host = Arc::new(
+        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(ready_storage.path()),
+    );
+    let _ready_managed =
+        crate::ManagedHost::new(ready_host.clone()).install_dispatch_session_runtime();
+    let ready_runtime = ready_host
+        .ctx_for(ready_thread, None)
+        .await
+        .expect("R21/C1 ordinary direct Runtime");
+    let ready = ready_runtime.env.clone().expect("R21/C2 Ready Environment");
+    let ready_binding = serde_json::to_string(&ready.handle()).unwrap();
+    let ready_owner = ready_host
+        .session_slots
+        .read(ready_thread, |slot| slot.environment_owner.clone())
+        .expect("R21/C1 exact Resident owner");
+    assert!(
+        ready_host
+            .session_slots
+            .read(ready_thread, |slot| slot.published_snapshot.is_none())
+            .unwrap_or(false),
+        "R21/C5 ordinary direct Runtime has no frozen provider projection"
+    );
+    let disposition = ready_host
+        .adopt_bound_session_environment(
+            ready_thread,
+            Some(&ready_binding),
+            &ready_host.session_provider,
+            None,
+            true,
+        )
+        .await
+        .expect("R21/E1 Ready direct owner reactivates");
+    assert_eq!(
+        disposition,
+        SessionEnvironmentAdoptionDisposition::Ready,
+        "R21/E1"
+    );
+    let resident = ready_host
+        .session_environment(ready_thread)
+        .await
+        .expect("R21/E1 Resident restored");
+    assert!(Arc::ptr_eq(&resident, &ready), "R21/E1 exact Arc reused");
+    assert!(
+        matches!(
+            (
+                &ready_owner,
+                ready_host
+                    .session_slots
+                    .read(ready_thread, |slot| slot.environment_owner.clone())
+                    .as_ref(),
+            ),
+            (
+                SessionEnvironmentOwner::Resident(expected),
+                Some(SessionEnvironmentOwner::Resident(current)),
+            ) if current.exact_matches(expected)
+        ),
+        "R21/E1 exact identity is not republished"
+    );
+    let restored_runtime = ready_host
+        .session_slots
+        .read(ready_thread, |slot| slot.runtime.clone())
+        .flatten()
+        .expect("R21/E1 Runtime restored");
+    assert!(
+        Arc::ptr_eq(&restored_runtime, &ready_runtime),
+        "R21/E1 exact Runtime Arc reused"
+    );
+
+    let missing_thread = "terminated-recovery-missing-provider";
+    let missing_storage = tempfile::tempdir().unwrap();
+    let missing_host = Arc::new(
+        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(missing_storage.path()),
+    );
+    let _missing_managed =
+        crate::ManagedHost::new(missing_host.clone()).install_dispatch_session_runtime();
+    let missing_runtime = missing_host
+        .ctx_for(missing_thread, None)
+        .await
+        .expect("R21/C1 missing-provider Runtime");
+    let terminated = missing_runtime
+        .env
+        .clone()
+        .expect("R21/C3 terminated Environment");
+    let terminated_binding = serde_json::to_string(&terminated.handle()).unwrap();
+    terminated.dispose().await.expect("C3 terminated provider");
+    let disposition = missing_host
+        .adopt_bound_session_environment(
+            missing_thread,
+            Some(&terminated_binding),
+            &missing_host.session_provider,
+            None,
+            true,
+        )
+        .await
+        .expect("R21/E2 Terminal owner requests rebuild");
+    assert_eq!(
+        disposition,
+        SessionEnvironmentAdoptionDisposition::RebuildRequired,
+        "R21/E2"
+    );
+    assert!(
+        missing_host.session_environment_owner_is_vacant(missing_thread),
+        "R21/E2 exact closed owner cleared"
+    );
+    assert!(
+        missing_host
+            .session_slots
+            .read(missing_thread, |slot| slot.runtime.is_none())
+            .unwrap_or(false),
+        "R21/E2 Terminal owner never restores its Runtime"
+    );
+}
+
+#[tokio::test]
 async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // Cause/effect graph: C1 two wrappers carry the same durable identity,
     // handle, and binding; C2 their Arc identities differ; C3 stale owner
@@ -912,6 +1188,94 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
             .unwrap(),
         "R17/E2"
     );
+}
+
+#[tokio::test]
+async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner() {
+    // Cause/effect graph: C1 Preparation retains a durable G1 source; C2 the
+    // later physical Disposal asserts G2 for the same binding; C3 its typed
+    // provider authorization is otherwise closed. Effects: E1 Disposal fails
+    // before provider I/O; E2 the exact G1 identity, binding, and Arc remain
+    // Retiring under their original Preparation. Decision rule R19/R20:
+    // C1+C2+C3 => E1+E2 zero physical effect. Cold source reconstruction is
+    // separately covered by the canonical end-to-end source Preparation test
+    // `source_release_preparation_is_withheld_for_an_absent_pod_with_live_claim`.
+    let thread = "checkpoint-owner-fence";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let environment = environment(&provider, thread).await;
+    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    host.session_slots.update(thread, |slot| {
+        // Test fixture write remains inside the sole lifecycle-owner module.
+        slot.environment_owner = resident(thread, environment.clone());
+    });
+    let prepared_generation = generation(thread);
+    let prepared_operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace",
+        thread,
+        "suspend",
+        &prepared_generation,
+        7,
+        None,
+        None,
+    );
+    host.retain_checkpoint_source_environment_for_disposal(
+        thread,
+        &prepared_operation,
+        &prepared_generation,
+        &binding,
+        &environment,
+    )
+    .expect("C1 exact Preparation owner");
+    let asserted_generation = awaken_session_contract::SandboxGeneration::new(
+        thread,
+        2,
+        u64::MAX,
+        "other-environment",
+        "other-image",
+    );
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace",
+        thread,
+        "suspend",
+        &asserted_generation,
+        7,
+        None,
+        None,
+    );
+    let authorization = source_disposal_authorization(&prepared_operation.effect_id);
+
+    let error = host
+        .dispose_prepared_checkpoint_source_environment(
+            thread,
+            &operation,
+            &asserted_generation,
+            &binding,
+            &authorization,
+        )
+        .await
+        .expect_err("R19/E1 mismatched identity is denied");
+    assert!(error.to_string().contains("retained Preparation owner"));
+    let retained = host
+        .session_slots
+        .read(thread, |slot| match &slot.environment_owner {
+            SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                cause:
+                    SessionEnvironmentRetirementCause::CheckpointSource {
+                        operation,
+                        generation,
+                    },
+                owned: RetiringEnvironmentOwner::Bound(owned),
+            }) if operation == &prepared_operation && generation == &prepared_generation => {
+                Some(owned.clone())
+            }
+            _ => None,
+        })
+        .flatten()
+        .expect("R20/E2 exact owner remains in its Preparation");
+    assert_eq!(retained.identity, identity(thread), "R20/E2");
+    assert!(Arc::ptr_eq(&retained.environment, &environment), "R20/E2");
 }
 
 #[test]
@@ -1623,6 +1987,50 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E4 owner removed after ack"
         );
     }
+}
+
+#[tokio::test]
+async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
+    // Cause/effect rule: C1 a durable source tuple is exact; C2 the local owner
+    // is Vacant because no aggregate-approved Preparation retained it; C3 a
+    // typed provider authorization is supplied to the physical-only boundary.
+    // Effects: E1 Disposal fails before provider I/O; E2 the owner stays Vacant
+    // and no adoption/pending identity is fabricated. R20: C1+C2+C3=>E1+E2.
+    // Cold adoption belongs exclusively to the preceding source Preparation
+    // phase and is covered end-to-end by the canonical Host continuation tests.
+    let thread = "cold-checkpoint-source";
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let generation = generation(thread);
+    let binding = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
+        "non-resumable",
+        thread,
+    ))
+    .unwrap();
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace",
+        thread,
+        "suspend",
+        &generation,
+        9,
+        None,
+        None,
+    );
+    let authorization = source_disposal_authorization(&operation.effect_id);
+    let error = host
+        .dispose_prepared_checkpoint_source_environment(
+            thread,
+            &operation,
+            &generation,
+            &binding,
+            &authorization,
+        )
+        .await
+        .expect_err("R20/E1 physical Disposal requires retained Preparation");
+    assert!(
+        error.to_string().contains("no retained Preparation owner"),
+        "R20/E1: {error}"
+    );
+    assert!(host.session_environment_owner_is_vacant(thread), "R20/E2");
 }
 
 #[tokio::test]
