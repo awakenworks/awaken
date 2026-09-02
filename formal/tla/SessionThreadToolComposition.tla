@@ -1,7 +1,7 @@
 ------------------- MODULE SessionThreadToolComposition -------------------
 EXTENDS Naturals, FiniteSets
 
-\* A bounded composition scenario over the canonical RustCommitSystem
+\* A bounded composition scenario over the canonical ThreadCommitProjection
 \* transition relation. One Session owns a root Thread and a child Thread; two
 \* child Runs share the child Thread, and every Run owns a two-call ToolBatch.
 \* The scenario explores all cross-Run interleavings while preserving the
@@ -20,7 +20,7 @@ VARIABLES toolState, physicalRuns, invokedAttempt, crashedRuns
 
 vars == <<toolState, physicalRuns, invokedAttempt, crashedRuns>>
 
-ToolKernel == INSTANCE RustCommitSystem WITH
+ToolKernel == INSTANCE ThreadCommitProjection WITH
     Calls <- Calls,
     AgentCalls <- {},
     NoCall <- NoCall,

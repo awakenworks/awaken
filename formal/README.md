@@ -228,7 +228,7 @@ production logic.
   results, executor-entry ordering, replay-safe and fail-closed recovery,
   cancellation, and the whole-batch publication barrier.
 - `SessionThreadToolComposition.tla` composes the canonical
-  `RustCommitSystem` relation across a root Thread and two child Runs sharing a
+  `ThreadCommitProjection` relation across a root Thread and two child Runs sharing a
   child Thread. Each Run owns two calls; TLC checks all interleavings of the
   per-Thread physical-attempt fence, an external wait, crash recovery through
   `NeverReplay -> Indeterminate`, and replay-safe retry to completion. It adds
@@ -239,10 +239,10 @@ production logic.
   prepare/apply protocol. A crash may discard a prepared operation; prepare and
   crash refine to stuttering, while every apply/invoke step refines to one
   `RuntimeSystem` action.
-- `RustCommitSystem.tla` is the durable projection reconstructible from actual
+- `ThreadCommitProjection.tla` is the durable projection reconstructible from actual
   production `ThreadCommit`s: Run state/ticket, `ActiveToolBatch`, and
   `RunDelegations`. Its binary `NextState(s, t)` relation is also the checker for
-  executable Rust traces.
+  executable implementation traces.
 - `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, `AggregateCAS.tla`,
   `ManagedProjectionPublish.tla`, `AgentMessageProtocol.tla`, and
   `DeploymentCAS.tla` cover durable operation
@@ -250,6 +250,11 @@ production logic.
   reverse-completing projection publication, Thread-owned Agent-message replay,
   transactionally bounded scheduled capacity, and revision-fenced
   scheduled-occurrence claims.
+  `AgentMessageProtocol` keeps the parent tool receipt independent of the target
+  Thread commit after durable admission: only a target Run boundary settles the
+  Session activity. Its two reachability configurations prove both the ordinary
+  receipt-before-target path and crash recovery where the child settles before
+  the parent commits its missing receipt.
 - `RemoteAttempt.tla` covers the A2A root-attempt boundary: stable replay message
   identity across the external-send/local-commit crash window, durable task and
   endpoint pinning, reattachment without resend after the reference commit,
@@ -306,7 +311,7 @@ into a second mega-state machine.
 
 A tool call is likewise decomposed into durable call lifecycle, approval/input
 availability, and replay policy. `ToolBatch.tla` checks their legal product and
-whole-batch publication barrier; `RustCommitSystem.tla` plus the executable Rust
+whole-batch publication barrier; `ThreadCommitProjection.tla` plus executable
 trace bridge checks the committed Thread projection. `RunIngress.tla` does not
 repeat either region: it treats ThreadCommit disposition as an external fact and
 models only dispatch ownership and settlement. This is assume-guarantee
@@ -440,7 +445,7 @@ models from inventing incompatible aliases for the same lifecycle state.
 `RuntimeImplementation!Spec => RuntimeSystem!Spec` under the explicit
 projection that forgets the prepared-operation buffer.
 
-`RustCommitSystemProof.tla` proves the production-commit projection's `Safety`
+`ThreadCommitProjectionProof.tla` proves the production-commit projection's `Safety`
 invariant inductive for arbitrary constants satisfying its assumptions. This
 includes ticket/call coherence, the publication barrier, attempt bounds,
 delegation ownership, and terminal sealing.
@@ -453,7 +458,7 @@ At the current source revision TLAPS discharges all obligations:
 
 - Runtime system safety: 143/143.
 - Implementation refinement: 108/108.
-- Rust commit projection safety: 49/49.
+- ThreadCommit projection safety: 49/49.
 - Managed WorkQueue safety: 35/35.
 - Session activity receipt safety: 26/26.
 - Session root creation and realization safety: 41/41.
@@ -484,7 +489,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ToolBatch | 1,414 | 979 | 12 |
 | RuntimeSystem | 110,923 | 12,896 | 13 |
 | RuntimeImplementation | 1,323,147 | 619,008 | 24 |
-| RustCommitSystem | 4,943 | 1,397 | 9 |
+| ThreadCommitProjection | 4,943 | 1,397 | 9 |
 | RemoteTool | 421 | 200 | 10 |
 | RemoteAttempt | 701 | 356 | 16 |
 | AuthzKernel | 180 | 18 | 1 |
@@ -493,7 +498,9 @@ graphs with zero invariant violations and zero states left on the queue:
 | WorkspacePathProjection | 300 | 70 | 8 |
 | SessionRuntimeProjection | 337 | 33 | 5 |
 | ManagedProjectionPublish | 75,764,860 | 18,571,810 | 29 |
-| AgentMessageProtocol | 505 | 190 | 13 |
+| AgentMessageProtocol | 629 | 276 | 14 |
+| AgentMessageProtocol early receipt | 10 | 10 | 10 |
+| AgentMessageProtocol late receipt recovery | 10 | 10 | 10 |
 | ToolPermissionPolicy | 4,097 | 256 | 5 |
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |
@@ -553,7 +560,7 @@ assert that the corresponding `Executing` call is already committed; delegated
 dispatch also asserts that its stable child relationship is already `Open`.
 
 The renderer converts these production traces to TLA+ values. TLC then evaluates
-`RustCommitSystem!TraceIsRefinement`, requiring the formal initial state, `Safety`
+`ThreadCommitProjection!TraceIsRefinement`, requiring the formal initial state, `Safety`
 at every point, and one exact `NextState` transition between every adjacent pair.
 The checked scenarios are:
 
@@ -630,7 +637,7 @@ silently omitted or mislabeled as model-linked merely to raise the percentage.
 evidence are traceably associated; it is not a claim that every execution of
 that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
-emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
+emits a trace checked by `ThreadCommitProjection!TraceIsRefinement`.
 
 The formalizable-obligation denominator is not derived from all source code: it
 is the number of manually enumerated rows marked `formalizable` in that ledger.

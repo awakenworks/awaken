@@ -433,22 +433,24 @@ async fn open_run_single_writer_is_uniform(store: &dyn DispatchQueue, ns: &str) 
 /// no-op; E3 reject without a row; E4 archive evidence releases one
 /// distinct-Thread slot; E5 root self-affinity never consumes a child slot.
 /// Cancellation and completion alone retain a child slot through live rows and
-/// completion tombstones.
+/// completion tombstones. The tombstone also owns permanent Run identity: an
+/// exact retry after completion is a no-op, while a changed payload conflicts.
 ///
-/// | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
-/// |---|---|---|---|---|---|---|---|
-/// | SC1 | N | - | absent | - | - | - | E3 invalid child |
-/// | SC2 | Y | N | absent | - | - | - | E3 invalid child |
-/// | SC3 | Y | Y | exact | - | N | - | E2 replay at cap |
-/// | SC4 | Y | Y | conflict | - | N | - | E3 identity conflict |
-/// | SC5 | Y | Y | absent | N | Y | - | E1 new child Thread |
-/// | SC6 | Y | Y | absent | N | N | - | E3 capacity reached |
-/// | SC7 | Y | Y | absent | Y | N | - | E1 follow-up, no new slot |
-/// | SC8 | Y | Y | absent | N | N | cancel/Done only | E3, slot retained |
-/// | SC9 | Y | Y | two absent | N | one slot | - | exactly one E1 |
-/// | SC10 | Y | Y | absent | N | N | archived evidence | E4 then E1 |
-/// | SC11 | root self-affinity | - | completed | - | - | - | E5 |
-/// | SC12 | advisor affinity | - | completed | - | - | exempt evidence | E5 |
+/// | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | Effect |
+/// |---|---|---|---|---|---|---|---|---|---|
+/// | SC1 | N | - | absent | - | - | - | N | N | E3 invalid child |
+/// | SC2 | Y | N | absent | - | - | - | N | N | E3 invalid child |
+/// | SC3 | Y | Y | exact | - | N | - | N | N | E2 replay at cap |
+/// | SC4 | Y | Y | conflict | - | N | - | N | N | E3 identity conflict |
+/// | SC5 | Y | Y | absent | N | Y | - | N | N | E1 new child Thread |
+/// | SC6 | Y | Y | absent | N | N | - | N | N | E3 capacity reached |
+/// | SC7 | Y | Y | absent | Y | N | - | N | N | E1 follow-up, no new slot |
+/// | SC8 | Y | Y | absent | N | N | N (cancel/Done only) | N | N | E3, slot retained |
+/// | SC9 | Y | Y | two absent | N | one slot | - | N | N | exactly one E1 |
+/// | SC10 | Y | Y | absent | N | N | Y | N | N | E4 then E1 |
+/// | SC11 | - | - | completed | - | - | - | Y | N | E5 |
+/// | SC12 | - | - | completed | - | - | - | N | Y | E5 |
+/// | SC13 | Y | Y | exact/conflict after Done | - | N | N | N | N | E2/E3 |
 async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue, ns: &str) {
     let parent = thread_id(ns, "managed-parent");
     let advisor_thread = thread_id(ns, "managed-advisor-thread");
@@ -698,6 +700,46 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
             .expect("SC8 settle child Done"),
         SettleOutcome::Applied,
         "SC8"
+    );
+
+    // SC13 models the send_message crash gap: the target child completed and
+    // its live Dispatch row disappeared before the parent committed the tool
+    // receipt. Exact parent recovery must observe the permanent completion
+    // identity without recreating claimable work; a changed activation must
+    // fail rather than reuse that receipt for another payload.
+    store
+        .enqueue_session_child(admitted[1].clone(), admission())
+        .await
+        .expect("SC13 exact replay after Done is a no-op");
+    assert!(
+        store
+            .claim_run(
+                admitted[1].run_id(),
+                "managed-completed-replay-owner",
+                LEASE_MS,
+                91_000,
+                &Default::default(),
+            )
+            .await
+            .expect("SC13 completed replay claim probe")
+            .is_none(),
+        "SC13/E2 completion replay must not recreate physical work"
+    );
+    let mut completed_collision = admitted[1].clone();
+    completed_collision.activation.input =
+        vec![awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id("managed-completed-collision-message".into()),
+            awaken_agent_contract::agent::message::Role::User,
+            "changed payload",
+        )];
+    assert!(
+        matches!(
+            store
+                .enqueue_session_child(completed_collision, admission())
+                .await,
+            Err(DispatchError::Conflict(_))
+        ),
+        "SC13/E3 completion tombstone rejects changed payload"
     );
     let after_done =
         dispatch(ns, "managed-after-done", "managed-after-done").for_session(parent.clone());

@@ -55,11 +55,11 @@
     },
     {
       "name": "usage_and_stop_metadata",
-      "reason": "Accounting payload values are outside RustCommitSystem's lifecycle projection."
+      "reason": "Accounting payload values are outside ThreadCommitProjection's lifecycle projection."
     },
     {
       "name": "state_commands_outside_active_batch_and_delegations",
-      "reason": "RustCommitSystem projects only ActiveToolBatch and RunDelegations. Every other typed state command is covered by the separate ThreadState model, the production state kernels consumed by ThreadCommit validation/materialization, Kani proofs, and the real MemoryCommitCoordinator atomicity/replay trace."
+      "reason": "ThreadCommitProjection projects only ActiveToolBatch and RunDelegations. Every other typed state command is covered by the separate ThreadState model, the production state kernels consumed by ThreadCommit validation/materialization, Kani proofs, and the real MemoryCommitCoordinator atomicity/replay trace."
     },
     {
       "name": "delegation_identity_except_parent_call_and_status",
