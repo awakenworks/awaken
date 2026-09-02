@@ -660,6 +660,155 @@ fn effective_resources(
     .unwrap()
 }
 
+#[tokio::test]
+async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
+    struct Rule {
+        id: &'static str,
+        previous_revision: u64,
+        desired_revision: u64,
+        previous_nonempty: bool,
+        desired_nonempty: bool,
+        claimed: bool,
+        accepted: bool,
+    }
+
+    // Missing-projection cause/effect decision table:
+    // C1 no dispatch claim; C2 no Managed dispatch marker; C3 no frozen
+    // baseline; C4 previous == desired; C5 desired revision is zero; C6 both
+    // endpoint Resource sets are empty. E1 admits the direct no-op into the
+    // canonical apply path; E2 rejects before File/Skill/Repository compilation.
+    // C2+C3 are fixed true for every row because an installed Managed marker or
+    // baseline already uses the ordinary projection branch. Explicit fixture
+    // branches materialize each C6 endpoint without obscuring its empty/nonempty
+    // cause behind boolean combinators.
+    //
+    // | Rule | C1 | C4 | C5 | C6 | Effect |
+    // | D1 | T | T | T | T | E1 |
+    // | D2 | F | T | T | T | E2 |
+    // | D3 | T | F | F | T | E2 |
+    // | D4 | T | T | F | T | E2 |
+    // | D5 | T | T | T | F | E2 |
+    // | D6 | T | F | T | F | E2 |
+    let rules = [
+        Rule {
+            id: "D1-direct-empty-rev0-noop",
+            previous_revision: 0,
+            desired_revision: 0,
+            previous_nonempty: false,
+            desired_nonempty: false,
+            claimed: false,
+            accepted: true,
+        },
+        Rule {
+            id: "D2-claimed",
+            previous_revision: 0,
+            desired_revision: 0,
+            previous_nonempty: false,
+            desired_nonempty: false,
+            claimed: true,
+            accepted: false,
+        },
+        Rule {
+            id: "D3-advancing-empty",
+            previous_revision: 0,
+            desired_revision: 1,
+            previous_nonempty: false,
+            desired_nonempty: false,
+            claimed: false,
+            accepted: false,
+        },
+        Rule {
+            id: "D4-nonzero-noop",
+            previous_revision: 1,
+            desired_revision: 1,
+            previous_nonempty: false,
+            desired_nonempty: false,
+            claimed: false,
+            accepted: false,
+        },
+        Rule {
+            id: "D5-nonempty-noop",
+            previous_revision: 0,
+            desired_revision: 0,
+            previous_nonempty: true,
+            desired_nonempty: true,
+            claimed: false,
+            accepted: false,
+        },
+        Rule {
+            id: "D6-nonempty-replacement",
+            previous_revision: 0,
+            desired_revision: 0,
+            previous_nonempty: false,
+            desired_nonempty: true,
+            claimed: false,
+            accepted: false,
+        },
+    ];
+
+    let nonempty = effective_resources(vec![TestInput {
+        kind: "file".into(),
+        id: "guard-must-not-read-this-file".into(),
+        mount_path: "/guarded.txt".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    for rule in rules {
+        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+        let _runtime = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let thread = format!("direct-resource-guard-{}", rule.id);
+        let previous = if rule.previous_nonempty {
+            nonempty.clone()
+        } else {
+            Default::default()
+        };
+        let desired = if rule.desired_nonempty {
+            nonempty.clone()
+        } else {
+            Default::default()
+        };
+        let transition = resource_transition(
+            host.local_workspace(),
+            rule.previous_revision,
+            previous,
+            rule.desired_revision,
+            desired,
+        );
+        let claim = rule.claimed.then(|| awaken_dispatch::RunClaim {
+            run_id: awaken_agent_contract::agent::run::Id(format!("run-{}", rule.id)),
+            owner: "claimed-worker".into(),
+            epoch: 1,
+        });
+        assert_eq!(
+            host.session_slots
+                .read(&thread, |slot| (
+                    slot.baseline.is_some(),
+                    slot.session_dispatch
+                ))
+                .unwrap_or((false, false)),
+            (false, false),
+            "{} keeps C2+C3 fixed",
+            rule.id
+        );
+
+        let result = host
+            .apply_dispatched_resource_transition(&thread, &transition, claim.as_ref())
+            .await;
+        if rule.accepted {
+            result.unwrap_or_else(|error| panic!("{} must admit E1: {error}", rule.id));
+        } else {
+            let error = result.expect_err("all non-direct rows must fail closed");
+            assert_eq!(
+                error.code, "session_resource_projection_not_staged",
+                "{} must reject at E2 before compiling the synthetic File",
+                rule.id
+            );
+        }
+    }
+}
+
 fn effective_repository(
     id: &str,
     url: &str,
@@ -2537,6 +2686,89 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
         result.state
     );
     gate.notify_waiters();
+}
+
+#[tokio::test]
+async fn live_only_durable_control_never_materializes_a_cold_session() {
+    use awaken_dispatch::DispatchQueue as _;
+
+    // Cause/effect table for the Host boundary: C1 typed durable capability is
+    // enabled; C2 a process-resident Session context exists; C3 the Runtime owns
+    // the exact active attempt. Effects: E1 reject with the capability error;
+    // E2 reject as NoSubscriber; E3 deliver through the existing live-control
+    // service; E4 create no Session/Environment/dispatch fact.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | W0 | F | any | any | E1 + E4 |
+    // | W1 | T | F | F | E2 + E4 |
+    // | W2 | T | T | F | E2 (LiveRunControlService test) |
+    // | W3 | T | T | T | E3 (Runtime active-attempt test) |
+    //
+    // This test owns W0/W1, where the regression previously called `ctx_for`
+    // and surfaced an unrelated Environment failure. The cited lower-owner
+    // tests retain W2/W3, so this Host test adds no parallel attempt registry.
+    let cold_thread = "cold-live-only-control";
+    let run_id = "cold-live-only-run";
+    let direct = SharedHost::new(Arc::new(OkModel), "stub");
+    let unsupported = direct
+        .wake_durable(cold_thread, run_id)
+        .await
+        .expect_err("W0 direct ingress rejects durable control");
+    assert_eq!(unsupported.kind, HostErrorKind::BadRequest, "W0/E1");
+    assert!(
+        unsupported.message.contains("durable ingress not enabled"),
+        "W0/E1: {}",
+        unsupported.message
+    );
+    assert!(
+        direct.session_slots.read(cold_thread, |_| ()).is_none(),
+        "W0/E4 direct control must not create a Session slot"
+    );
+
+    let dispatch = Arc::new(
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("live-control dispatch store"),
+    );
+    let durable = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    let wake = durable
+        .wake_durable(cold_thread, run_id)
+        .await
+        .expect_err("W1 cold wake has no subscriber");
+    assert_eq!(wake.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(
+        wake.message,
+        format!("no live subscriber for run: {run_id}"),
+        "W1/E2"
+    );
+
+    let explicit_pause = durable
+        .pause_durable(cold_thread, Some(run_id))
+        .await
+        .expect_err("W1 cold explicit pause has no subscriber");
+    assert_eq!(explicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(explicit_pause.message, wake.message, "W1/E2");
+    let implicit_pause = durable
+        .pause_durable(cold_thread, None)
+        .await
+        .expect_err("W1 cold implicit pause has no active attempt");
+    assert_eq!(implicit_pause.kind, HostErrorKind::BadRequest, "W1/E2");
+    assert_eq!(
+        implicit_pause.message, "thread has no locally owned active run",
+        "W1/E2"
+    );
+    assert!(
+        durable.session_slots.read(cold_thread, |_| ()).is_none(),
+        "W1/E4 live-only control must not materialize a Session or Environment"
+    );
+    assert!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("W1 inspect dispatch authority")
+            .is_empty(),
+        "W1/E4 live-only control must not create a dispatch fact"
+    );
 }
 
 #[tokio::test]
@@ -4829,6 +5061,149 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         host.session_environment_handle("t-attach").await,
         Some(handle_after_attach),
         "detachment retains conservative path evidence for crash recovery"
+    );
+}
+
+/// Live invalid-layout decision rule: L1 an installed File generation and
+/// resident Namespace environment exist; L2 the next durable generation carries
+/// a historical `/repo` Repository. L1+L2 => reject before verifier, Skill/File
+/// compilation, projection transaction, or Git; keep the old manifest, mounts,
+/// resident bytes, environment handle, and cached Runtime atomically unchanged.
+#[tokio::test]
+async fn invalid_repository_live_replacement_preserves_the_installed_generation() {
+    use awaken_session_contract::SessionRuntime;
+
+    let storage = tempfile::tempdir().unwrap();
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            storage.path().join("sandboxes"),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
+    let host = Arc::new(raw_host);
+    let verifier = Arc::new(SequencedRepositoryTransport(AtomicUsize::new(0)));
+    let managed = managed_with_resource_source(host.clone())
+        .with_repository_binding_verifier(verifier.clone())
+        .install_dispatch_session_runtime();
+    let file_id = host
+        .file_application()
+        .expect("File application")
+        .create_uploaded_file(
+            host.local_workspace(),
+            "retained.txt".into(),
+            "text/plain".into(),
+            b"retained-generation",
+        )
+        .await
+        .unwrap()
+        .id;
+    let installed = effective_resources(vec![TestInput {
+        kind: "file".into(),
+        id: file_id,
+        mount_path: "/retained.txt".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    let mut init = bare_session("agent", host.local_workspace());
+    init.resources = installed;
+    install_complete_test_session_for_realization(&managed, "invalid-live-repository", init)
+        .await
+        .unwrap();
+    run_prepared_session_messages(
+        &managed,
+        "agent",
+        "invalid-live-repository",
+        vec![Message::text(
+            MessageId("initial-generation".into()),
+            Role::User,
+            "open the environment",
+        )],
+    )
+    .await
+    .unwrap();
+    let environment = host
+        .session_environment("invalid-live-repository")
+        .await
+        .expect("resident environment");
+    let before_handle = environment.handle();
+    let before_manifest = host
+        .thread_resource_manifest("invalid-live-repository")
+        .expect("installed manifest");
+    let before_spec = host.sandbox_spec("invalid-live-repository");
+    let before_files = environment
+        .list_frozen_mount_files("/mnt/session/uploads")
+        .await
+        .unwrap();
+
+    let canonical = effective_resources(vec![TestInput {
+        kind: "github_repository".into(),
+        id: "https://github.com/awaken/invalid-live.git".into(),
+        mount_path: "/workspace/repo".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    // L2 is historical durable input: new commands cannot construct `/repo`,
+    // while the canonical replay decoder retains the exact legacy bytes so the
+    // Runtime guard can reject them without silently relocating the path.
+    let mut durable = serde_json::to_value(canonical).unwrap();
+    durable["inputs"][0]["mount_path"] = serde_json::Value::String("/repo".into());
+    let invalid = serde_json::from_value(durable).expect("decode historical Resource manifest");
+    let error = managed
+        .apply_session_inputs(
+            "invalid-live-repository",
+            &resource_transition(
+                &before_manifest.workspace_id,
+                before_manifest.revision,
+                before_manifest.resources.clone(),
+                before_manifest.revision + 1,
+                invalid,
+            ),
+        )
+        .await
+        .expect_err("L2 fails before projection mutation");
+    assert!(error.message.contains("/repo"), "L1/L2: {error:?}");
+    assert_eq!(verifier.0.load(Ordering::SeqCst), 0, "L1/L2 verifier");
+    assert_eq!(
+        host.thread_resource_manifest("invalid-live-repository"),
+        Some(before_manifest),
+        "L1/L2 manifest"
+    );
+    assert_eq!(
+        host.sandbox_spec("invalid-live-repository"),
+        before_spec,
+        "L1/L2 mounts"
+    );
+    assert_eq!(
+        host.session_environment_handle("invalid-live-repository")
+            .await,
+        Some(before_handle),
+        "L1/L2 environment"
+    );
+    assert_eq!(
+        environment
+            .list_frozen_mount_files("/mnt/session/uploads")
+            .await
+            .unwrap(),
+        before_files,
+        "L1/L2 physical files"
+    );
+    assert!(
+        host.session_slots
+            .read("invalid-live-repository", |slot| slot.runtime.is_some())
+            .unwrap_or(false),
+        "L1/L2 cached Runtime"
+    );
+    assert!(
+        host.thread_repository_activations("invalid-live-repository")
+            .is_empty(),
+        "L1/L2 Git activation"
     );
 }
 
@@ -7126,6 +7501,118 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
 }
 
 #[tokio::test]
+async fn root_response_loss_is_read_back_without_recreating_the_environment() {
+    // Cause/effect table: C1 provider creation succeeds; C2 root CAS commits;
+    // C3 its response is lost; C4 exact authorize readback returns the committed
+    // binding. R1 C1+C2+C3 retains the hidden Candidate and returns retryable;
+    // R2=R1+C4 retries the same idempotent persist, publishes the Store-read
+    // identity with no second provider effect, and later context lookup is pure
+    // slot reuse.
+    use awaken_session_contract::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(ResponseLossBindingSink::default());
+    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+
+    let first_error = match host.ctx_for("binding-response-loss", None).await {
+        Err(error) => error,
+        Ok(_) => panic!("R1 lost response must remain retryable"),
+    };
+    assert_eq!(first_error.kind, HostErrorKind::Unavailable, "R1");
+    assert!(
+        host.session_environment("binding-response-loss")
+            .await
+            .is_none(),
+        "R1 hidden Candidate is not published"
+    );
+    let candidate = host
+        .prepared_session_environment("binding-response-loss")
+        .expect("R1 exact hidden Candidate");
+    let first = host
+        .ctx_for("binding-response-loss", None)
+        .await
+        .expect("R2 exact retry reads back committed identity");
+    let first_handle = first.env.as_ref().expect("R1 Environment").handle();
+    assert_eq!(
+        first_handle,
+        candidate.environment.handle(),
+        "R2 no recreate"
+    );
+    let second = host
+        .ctx_for("binding-response-loss", None)
+        .await
+        .expect("R1 slot replay");
+    assert!(Arc::ptr_eq(&first, &second), "R1 no context recreation");
+    assert_eq!(
+        second.env.as_ref().expect("R1 Environment").handle(),
+        first_handle,
+        "R1 immutable physical identity"
+    );
+    assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2, "R1+R2");
+    assert_eq!(sink.persist_calls.load(Ordering::SeqCst), 2, "R1+R2");
+}
+
+#[tokio::test]
+async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
+    // Cause/effect table: C1 root already committed this exact Create effect;
+    // C2 the process-local slot is cold; C3 the physical handle is a Ready V2
+    // realization created from the complete frozen projection and its exact
+    // provider-effective spec; C4 the committed intent carries that projection's
+    // immutable Environment fingerprint. R1 C1+C2+C3+C4 adopts and publishes
+    // under the one lifecycle lock without a second create, receipt mutation,
+    // or recursive lock acquisition; one idempotent Store read returns the
+    // aggregate-generated Resident identity. The shared fixture owns
+    // projection/spec/fence construction; this row varies only response loss.
+    use awaken_session_contract::SessionRuntime;
+    let storage = tempfile::tempdir().unwrap();
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()));
+    let thread = "binding-already-applied";
+    let activation =
+        crate::host::worker_resolver::test_support::test_activation(thread, "binding-applied");
+    let projection =
+        crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            crate::host::worker_resolver::test_support::eager_environment(),
+            &activation.snapshot,
+        );
+    let binding = crate::host::worker_resolver::test_support::available_local_environment_binding(
+        &host,
+        thread,
+        &projection,
+    )
+    .await;
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+        thread,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        None,
+    )
+    .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
+    let sink = Arc::new(ResponseLossBindingSink {
+        committed: std::sync::Mutex::new(Some((intent.effect_id().to_string(), binding.clone()))),
+        ..Default::default()
+    });
+    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+
+    let context = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        host.ctx_for(thread, None),
+    )
+    .await
+    .expect("R1 lifecycle owner must not re-enter its mutex")
+    .expect("R1 exact committed binding is adopted");
+    assert_eq!(
+        serde_json::to_string(&context.env.as_ref().expect("R1 Environment").handle()).unwrap(),
+        binding,
+        "R1 root identity"
+    );
+    assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1, "R1");
+    assert_eq!(
+        sink.persist_calls.load(Ordering::SeqCst),
+        1,
+        "R1 Store-read identity"
+    );
+}
+
+#[tokio::test]
 async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
@@ -7288,6 +7775,49 @@ async fn missing_durable_environment_adoption_never_creates_a_substitute() {
     };
     assert!(error.to_string().contains("was not adopted"));
     assert!(host.session_environment("binding-corrupt").await.is_none());
+}
+
+#[tokio::test]
+async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment() {
+    // Definite-failure decision table: C1 authorize succeeds; C2 persistence
+    // fails before durable commit; C3 the caller retries. R1=C1+C2 retains one
+    // hidden Candidate and returns Unavailable; R2=R1+C3 reuses that exact
+    // Candidate, repeats only authorize/persist, and still publishes nothing.
+    use awaken_session_contract::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        authorize_calls: AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: true,
+        require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
+    });
+    install_test_dispatch_runtime(&host).install_environment_binding_sink(sink.clone());
+
+    let error = match host.ctx_for("binding-failure", None).await {
+        Ok(_) => panic!("binding failure must not publish a context"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("binding store unavailable"));
+    assert_eq!(error.kind, HostErrorKind::Unavailable);
+    let candidate = host
+        .prepared_session_environment("binding-failure")
+        .expect("R1 exact hidden Candidate");
+    let retry = match host.ctx_for("binding-failure", None).await {
+        Err(error) => error,
+        Ok(_) => panic!("a definite failure must retry the retained Candidate"),
+    };
+    assert!(retry.to_string().contains("binding store unavailable"));
+    let retried = host
+        .prepared_session_environment("binding-failure")
+        .expect("R2 retained Candidate");
+    assert!(candidate.exact_matches(&retried), "R2 no provider recreate");
+    assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
+    assert!(host.session_environment("binding-failure").await.is_none());
 }
 
 /// L3/L4: concurrent first Hand calls join one creator and only observe the
@@ -8065,6 +8595,73 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
     assert_eq!(
         repositories[0].plan.mount_path, "/workspace/repo",
         "the realization plan carries the same Agent-visible path as the frozen input"
+    );
+}
+
+/// Repository mount-path cause/effect rule: C1 a new command names the canonical
+/// `/workspace/repo` child; C2 no Environment exists yet. C1+C2 stages exactly
+/// one Repository activation without relocating the path, and keeps the active
+/// manifest absent until the physical transition completes.
+#[tokio::test]
+async fn complete_projection_preserves_the_canonical_repository_path_without_relocation() {
+    use awaken_session_contract::SessionInit;
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let verifier = Arc::new(FixedRepositoryTransport(
+        awaken_resource_contract::RepositoryTransport::Direct,
+    ));
+    let managed = managed_with_resource_source(host.clone())
+        .with_repository_binding_verifier(verifier)
+        .install_dispatch_session_runtime();
+    let resources = effective_resources(vec![TestInput {
+        kind: "github_repository".into(),
+        id: "https://github.com/awaken/example.git".into(),
+        mount_path: "/workspace/repo".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    managed
+        .install_complete_test_session(
+            "canonical-repository-path",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "a".into(),
+                delegate_ids: Vec::new(),
+                tools: None,
+                resource_revision: 0,
+                resources: resources.clone(),
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .expect("canonical Repository path stages through the complete projection");
+    managed
+        .apply_session_inputs(
+            "canonical-repository-path",
+            &resource_transition(host.local_workspace(), 0, Default::default(), 0, resources),
+        )
+        .await
+        .expect("compile the exact cold Repository transition");
+    let activations = host.thread_repository_activations("canonical-repository-path");
+    assert_eq!(activations.len(), 1, "one exact Repository activation");
+    assert_eq!(activations[0].plan.mount_path, "/workspace/repo");
+    assert!(
+        host.thread_resource_manifest("canonical-repository-path")
+            .is_none(),
+        "staging is not physical completion"
+    );
+    assert!(
+        host.sandbox_spec("canonical-repository-path")
+            .mounts
+            .is_empty(),
+        "Repository stays on its sole activation path"
     );
 }
 
@@ -16166,6 +16763,119 @@ impl pc::MemoryMounter for RecordingTerminalMemoryMounter {
     }
 }
 
+#[tokio::test]
+async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_claim() {
+    /* Host continuation table HS1. Causes: C1 aggregate binding carries exact
+     * V2 Pod UID A plus retained claim UID P; C2 A is absent while P remains
+     * live; C3 the current realization lease authorizes source disposal.
+     * Effects: E1 provider rejects before mutation because no Pod finalizer can
+     * serialize P against Rebuild; E2 Host emits no preparation receipt and
+     * retains the exact binding for explicit recovery. Rule HS1
+     * C1+C2+C3=>E1+E2. A/P total absence is the separate effect-fenced
+     * response-loss row and does not fabricate a cleanup Environment. */
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::OrphanClaim,
+        fence_refresh_probe: None,
+    });
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        ),
+    );
+    let managed = install_test_dispatch_runtime(&host);
+    install_test_session_application(&host);
+    let thread = "absent-auxiliary-source";
+    let projection = remote_terminal_cleanup_projection();
+    let source_manifest = projection
+        .previous_resource_manifest
+        .clone()
+        .expect("HS1 frozen source manifest");
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        projection,
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("HS1 install frozen source projection");
+    host.register_thread_resource_manifest(thread, source_manifest);
+
+    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+    let source_binding = serde_json::to_string(&handle).unwrap();
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "source-cleanup-worker".into(),
+        runtime_incarnation: "source-cleanup-worker:incarnation".into(),
+        epoch: 1,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    };
+    host.install_session_environment_owner_projection(
+        thread,
+        "terminal-workspace",
+        &awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: source_binding.clone(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        },
+    )
+    .expect("HS1 project the exact durable source binding");
+    host.session_slots.update(thread, |slot| {
+        slot.realization_lease = Some(lease.clone());
+    });
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        thread,
+        1,
+        u64::MAX,
+        "environment-a",
+        "image-a",
+    );
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "terminal-workspace",
+        thread,
+        "dispose-source",
+        &generation,
+        1,
+        Some(lease.clone()),
+        None,
+    );
+    let preparation: awaken_session_contract::SourceReleasePreparationEffect =
+        serde_json::from_value(serde_json::json!({
+            "operation": operation,
+            "lease": lease,
+        }))
+        .expect("HS1 decode the aggregate-owned preparation transport");
+
+    let error = awaken_session_contract::SessionRuntime::prepare_checkpoint_source_disposal(
+        &managed,
+        thread,
+        &preparation,
+        &generation,
+        &source_binding,
+    )
+    .await
+    .expect_err("HS1 orphan claim cannot produce a preparation receipt");
+    assert!(error.message.contains("cleanup gate"), "HS1/E1: {error:?}");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["observe-orphan-claim"],
+        "HS1/E1 zero preparation/disposal"
+    );
+    assert_eq!(
+        host.session_slots
+            .read(thread, |slot| {
+                slot.environment_owner.durable_binding().map(str::to_owned)
+            })
+            .flatten()
+            .as_deref(),
+        Some(source_binding.as_str()),
+        "HS1/E2 binding retained"
+    );
+    assert!(host.session_environment(thread).await.is_none(), "HS1/E2");
+}
+
 struct RecordingTerminalArtifactRecovery {
     events: Arc<Mutex<Vec<&'static str>>>,
     receipt: awaken_resource_contract::ArtifactPublicationReceipt,
@@ -16472,6 +17182,302 @@ fn terminal_disposal_effect(
     awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(command, current_lease)
 }
 
+#[test]
+fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
+    // Cause/effect graph: C1 a terminal effect was admitted more than 20s ago
+    // and its asserted expiry elapsed; C2 the local slot either has a live
+    // monotonic renewal, no renewal, or a successor epoch; C3 the boundary is
+    // preparation or destructive disposal. Effects: E1 a same-generation live
+    // renewal authorizes both boundaries and projects its current expiry into
+    // the provider fence; E2 an expired current generation fails closed; E3 a
+    // successor epoch rejects the predecessor effect. The aggregate's durable
+    // disposal preparation remains unchanged; no provider timer authority is
+    // introduced.
+    //
+    // | Rule | asserted effect | slot current | boundary | Effect |
+    // |---|---|---|---|---|
+    // | R1 | expired >20s | same generation renewed/live | prepare + dispose | E1 |
+    // | R2 | expired >20s | same expired lease | prepare + dispose | E2 |
+    // | R3 | expired >20s | successor epoch/live | prepare + dispose | E3 |
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let session_id = "terminal-renewed-provider-fence";
+    let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
+    let expired_lease = awaken_session_contract::SessionRealizationLease {
+        owner: "terminal-worker".into(),
+        runtime_incarnation: "terminal-worker:boot".into(),
+        epoch: 12,
+        expires_at_unix_ms: now_unix_ms.saturating_sub(20_001),
+    };
+    let renewed_lease = awaken_session_contract::SessionRealizationLease {
+        expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
+        ..expired_lease.clone()
+    };
+    let projection = remote_terminal_cleanup_projection();
+    let asserted_session = terminal_test_session(
+        session_id,
+        &projection,
+        expired_lease.clone(),
+        std::iter::empty(),
+        None,
+    );
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        asserted_session
+            .terminal_cleanup
+            .command_for(session_id, session_id)
+            .expect("R1 canonical terminal command"),
+        expired_lease.clone(),
+    );
+    let disposal = terminal_disposal_effect(
+        awaken_session_contract::SessionCleanupPreparation::try_new(
+            &effect,
+            effect.sandbox_effect_fence().unwrap(),
+            Vec::new(),
+        )
+        .unwrap(),
+        expired_lease.clone(),
+        &projection,
+    );
+
+    host.session_slots.update(session_id, |slot| {
+        slot.realization_lease = Some(renewed_lease.clone());
+    });
+    assert_eq!(
+        host.terminal_cleanup_effect_fence(&effect)
+            .expect("R1/E1 preparation fence")
+            .expires_at_unix_ms,
+        renewed_lease.expires_at_unix_ms,
+        "R1/E1 preparation projects current expiry"
+    );
+    assert_eq!(
+        host.terminal_cleanup_disposal_authorization(&disposal)
+            .expect("R1/E1 disposal fence")
+            .effect_fence()
+            .expires_at_unix_ms,
+        renewed_lease.expires_at_unix_ms,
+        "R1/E1 disposal projects current expiry"
+    );
+
+    host.session_slots.update(session_id, |slot| {
+        slot.realization_lease = Some(expired_lease.clone());
+    });
+    assert!(
+        host.terminal_cleanup_effect_fence(&effect).is_err(),
+        "R2/E2"
+    );
+    assert!(
+        host.terminal_cleanup_disposal_authorization(&disposal)
+            .is_err(),
+        "R2/E2"
+    );
+
+    let successor = awaken_session_contract::SessionRealizationLease {
+        epoch: expired_lease.epoch + 1,
+        expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
+        ..expired_lease
+    };
+    host.session_slots.update(session_id, |slot| {
+        slot.realization_lease = Some(successor);
+    });
+    assert!(
+        host.terminal_cleanup_effect_fence(&effect).is_err(),
+        "R3/E3"
+    );
+    assert!(
+        host.terminal_cleanup_disposal_authorization(&disposal)
+            .is_err(),
+        "R3/E3"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
+    // Cause/effect graph: C1 one terminal preparation starts under lease L0;
+    // C2 Artifact capture is a long I/O and Control installs same-generation
+    // renewal L1 before the next physical boundary; C3 Memory acknowledgement
+    // starts with L1, then blocks while Control installs L2; C4 checkpoint
+    // cleanup starts with L2, then blocks while Control installs L3. Effects:
+    // E1 Memory receives L1, not the pre-I/O L0 fence; E2 checkpoint receives
+    // L2, not L0/L1; E3 provider preparation receives L3, not any predecessor;
+    // E4 the receipt keeps work assertion L0 and separately binds provider P=L3.
+    // The slot remains the single lease projection: this test adds no queue,
+    // lock, timer, or independently advancing provider authority.
+    //
+    // | Rule | prior long I/O | current slot at boundary | Effect |
+    // |---|---|---|---|
+    // | R1 | Artifact under L0 | L1 | Memory receives L1 (E1) |
+    // | R2 | Memory under L1 | L2 | checkpoint receives L2 (E2) |
+    // | R3 | checkpoint under L2 | L3 | provider receives and receipt binds L3 (E3/E4) |
+    let thread = "terminal-fence-refresh-between-effects";
+    let (lease, effect) = terminal_recovery_effect(thread, "terminal-refresh-worker");
+    let renewed = |expires_at_unix_ms| awaken_session_contract::SessionRealizationLease {
+        expires_at_unix_ms,
+        ..lease.clone()
+    };
+    let renewal_1 = renewed(lease.expires_at_unix_ms + 10_000);
+    let renewal_2 = renewed(lease.expires_at_unix_ms + 20_000);
+    let renewal_3 = renewed(lease.expires_at_unix_ms + 30_000);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let probe = Arc::new(TerminalFenceRefreshProbe::default());
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::LiveMemory,
+        fence_refresh_probe: Some(probe.clone()),
+    });
+    let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
+            "http://coordinator.invalid",
+        ))
+        .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
+            events: events.clone(),
+        }))
+        .with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        )
+        .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+            events: events.clone(),
+            expected_id: "unused-pending-checkpoint-id".into(),
+        }));
+    raw_host.install_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
+        events: events.clone(),
+    }));
+    let host = Arc::new(raw_host);
+    let managed = managed_with_resource_source(host.clone());
+
+    let idle_retention = awaken_session_contract::EnvironmentIdleRetentionPolicy {
+        mode: awaken_session_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+        checkpoint_after_secs: 1,
+        retention_secs: 3_600,
+        expiry_behavior: Default::default(),
+        max_checkpoint_bytes: 4_096,
+        max_checkpoint_duration_secs: 30,
+        checkpoint_format: "awaken-fs-tar-v1".into(),
+    };
+    let mut projection = terminal_memory_projection_with_idle_retention(idle_retention);
+    let run_claim = awaken_dispatch::RunClaim {
+        run_id: awaken_agent_contract::agent::run::Id("terminal-refresh-run".into()),
+        owner: "terminal-refresh-run-worker".into(),
+        epoch: 1,
+    };
+    host.install_frozen_session_projection(
+        thread,
+        projection.clone(),
+        Some(&run_claim),
+        true,
+        None,
+    )
+    .await
+    .expect("install the exact frozen Memory/checkpoint projection");
+    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+        .with_memory_materializations(vec![terminal_memory_evidence()])
+        .expect("install exact writable Memory evidence");
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        thread,
+        1,
+        u64::MAX,
+        "terminal-refresh-environment",
+        "terminal-refresh-image",
+    );
+    let checkpoint_operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "terminal-workspace",
+        thread,
+        "suspend",
+        &generation,
+        7,
+        Some(lease.clone()),
+        None,
+    );
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Suspending {
+        operation: checkpoint_operation,
+        source_effect_id: Box::new("terminal-source-effect".into()),
+        source_binding: serde_json::to_string(&handle)
+            .expect("encode the exact terminal source binding"),
+        generation,
+        suspend_phase: awaken_session_contract::SuspendPhase::Uploading,
+        checkpoint: None,
+        source_release_preparation: None,
+    };
+    host.install_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: thread.into(),
+            projection: projection.clone(),
+            lease: lease.clone(),
+        },
+    )
+    .await
+    .expect("install the exact terminal generation");
+
+    let authorization = terminal_preparation_authorization(&effect, &projection);
+    let asserted_effect = effect.clone();
+    let mut preparation = tokio::spawn(async move {
+        managed
+            .prepare_terminal_cleanup_for_effect(effect, authorization)
+            .await
+    });
+    await_terminal_fence_refresh_gate(
+        &probe.artifact_entered,
+        &mut preparation,
+        "Artifact capture",
+    )
+    .await;
+    host.install_session_realization_lease(thread, renewal_1.clone());
+    probe.artifact_release.notify_one();
+
+    await_terminal_fence_refresh_gate(
+        &probe.memory_entered,
+        &mut preparation,
+        "Memory acknowledgement",
+    )
+    .await;
+    host.install_session_realization_lease(thread, renewal_2.clone());
+    probe.memory_release.notify_one();
+
+    await_terminal_fence_refresh_gate(
+        &probe.checkpoint_entered,
+        &mut preparation,
+        "checkpoint cleanup",
+    )
+    .await;
+    host.install_session_realization_lease(thread, renewal_3.clone());
+    probe.checkpoint_release.notify_one();
+    let receipt = tokio::time::timeout(std::time::Duration::from_secs(2), preparation)
+        .await
+        .expect("terminal preparation completes after all boundary releases")
+        .expect("terminal preparation task joins")
+        .expect("same-generation renewals keep the preparation authorized");
+    assert_eq!(
+        receipt.effect, asserted_effect,
+        "R3/E4 work assertion remains L0"
+    );
+    assert_eq!(
+        receipt.provider_prepared_effect_fence(),
+        &renewal_3
+            .sandbox_effect_fence(asserted_effect.operation_id())
+            .unwrap(),
+        "R3/E4 provider predecessor is actual L3",
+    );
+
+    let fences = probe.fences.lock().unwrap();
+    assert_eq!(fences.len(), 3, "R1-R3 one fence per physical boundary");
+    for ((boundary, fence), (expected_boundary, expected_lease)) in fences.iter().zip([
+        ("memory", &renewal_1),
+        ("checkpoint", &renewal_2),
+        ("provider", &renewal_3),
+    ]) {
+        assert_eq!(boundary, &expected_boundary, "R1-R3 boundary order");
+        assert_eq!(
+            fence.expires_at_unix_ms, expected_lease.expires_at_unix_ms,
+            "{expected_boundary} receives the latest current fence",
+        );
+        assert_eq!(fence.owner, expected_lease.owner, "same owner generation");
+        assert_eq!(
+            fence.runtime_incarnation, expected_lease.runtime_incarnation,
+            "same runtime generation",
+        );
+        assert_eq!(fence.epoch, expected_lease.epoch, "same epoch generation");
+    }
+}
+
 fn terminal_recovery_receipt(
     thread: &str,
     effect: &awaken_session_contract::SessionTerminalCleanupEffect,
@@ -16530,6 +17536,712 @@ async fn install_terminal_recovery_projection(
     .await
     .expect("install exact terminal recovery assignment");
     projection
+}
+
+#[tokio::test]
+async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
+    /* Host terminal recovery table HS2. Causes: C1 exact V2 source and every
+     * typed physical participant are absent after disposal response loss; C2
+     * the aggregate terminal effect remains live; C3 Resources already owns a
+     * durable Artifact publication receipt. Effects: E1 provider returns no
+     * Environment, so Host performs no live output read; E2 the existing
+     * ArtifactHarvester invokes publisher.recover under the exact terminal
+     * fence; E3 preparation carries that receipt without physical deletion; E4
+     * a later aggregate-derived disposal returns exact absence evidence with no
+     * live/source-dependent I/O. Rule HS2 C1+C2+C3=>E1->E2->E3; durable
+     * preparation=>E4. No cleanup-only Sandbox or second receipt registry exists. */
+    let thread = "total-absence-artifact-recovery";
+    let (lease, effect) = terminal_recovery_effect(thread, "total-absence-worker");
+    let receipt = terminal_recovery_receipt(thread, &effect, "file_total_absence_receipt");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::TotalAbsence,
+        fence_refresh_probe: None,
+    });
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
+        provider,
+        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+    );
+    raw_host.artifact_publisher = Arc::new(RecordingTerminalArtifactRecovery {
+        events: events.clone(),
+        receipt: receipt.clone(),
+    });
+    let host = Arc::new(raw_host);
+    let managed = install_test_dispatch_runtime(&host);
+    install_test_session_application(&host);
+    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+    let binding = serde_json::to_string(&handle).unwrap();
+    let terminal_projection = install_terminal_recovery_projection(
+        &host,
+        &managed,
+        thread,
+        lease.clone(),
+        awaken_session_contract::SessionEnvironmentState::Resident {
+            binding,
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        },
+    )
+    .await;
+
+    let preparation_authorization =
+        terminal_preparation_authorization(&effect, &terminal_projection);
+    let preparation = managed
+        .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
+        .await
+        .expect("HS2 total-absence terminal preparation");
+    assert_eq!(preparation.artifact_receipts, vec![receipt], "HS2/E3");
+    assert_eq!(
+        preparation.provider_prepared_effect_fence(),
+        &effect.sandbox_effect_fence().unwrap(),
+        "HS2/E3 no provider boundary uses the final current fence",
+    );
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &[
+            "observe-total-absence",
+            "prepare-total-absence",
+            "recover-artifacts",
+        ],
+        "HS2/E1->E2"
+    );
+    assert!(
+        host.session_slots.contains(thread),
+        "HS2 preparation is not disposal"
+    );
+
+    events.lock().unwrap().clear();
+    let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
+    let disposal = managed
+        .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+        .await
+        .expect("HS2 total-absence physical-disposal proof");
+    assert_eq!(disposal.effect_id, disposal_effect.command.effect_id);
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["observe-total-absence", "prepare-total-absence"],
+        "HS2 disposal performs only effect-free reconstruction and exact absence proof",
+    );
+}
+
+#[tokio::test]
+async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal() {
+    /* Host terminal I/O table HS3. Causes: C1 the exact V2 realization is
+     * observed Disposing, which is provider evidence that every required
+     * source-durability effect preceded its cleanup gate without asserting a
+     * terminal-scoped Artifact association; C2 the aggregate terminal fence
+     * remains live; C3 Resources owns an already-durable source-operation File
+     * with no terminal idempotency scope; C4 aggregate state carries a committed
+     * checkpoint object. Effects: E1 Host discards any executable owner and
+     * preserves the continuation's exact provider preparation A without
+     * replaying raw terminal preparation T; E2 it does zero
+     * live artifact/container/checkpoint I/O, preserves C3, and does not invent
+     * a terminal receipt association; E3 it
+     * deletes C4 through the existing checkpoint store without reading the Pod;
+     * E4 only an aggregate-derived typed authorization then resumes exact
+     * physical disposal; E5 preparation carries no fabricated receipt. Ordinary Ready/Terminal observations use
+     * Live I/O (existing terminal tests); total absence is HS2; incompatible
+     * orphan state is HS1.
+     *
+     * | Rule | observation | receipt/checkpoint | live I/O | dispose | Effect |
+     * | H1 | Ready/Terminal | any | allowed | after durable effects | existing Live path |
+     * | H2 | Disposing with durable continuation A | prior unscoped/exact | forbidden | receipt recovery, then A/fpA + live successor disposal | E1+E2+E3+E4+E5 |
+     * | H3 | absent | exact/any | forbidden | none | HS2 |
+     * | H4 | incompatible | any | forbidden | none | HS1 | */
+    let thread = "disposing-artifact-recovery";
+    let (lease, effect) = terminal_recovery_effect(thread, "disposing-worker");
+    let mut source_file =
+        terminal_recovery_receipt(thread, &effect, "file_disposing_source").record;
+    source_file.artifact_idempotency_scope = None;
+    let source_records = Arc::new(Mutex::new(vec![source_file.clone()]));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::Disposing,
+        fence_refresh_probe: None,
+    });
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
+        provider,
+        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+    );
+    raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
+        events: events.clone(),
+        records: source_records.clone(),
+    });
+    let checkpoint_id = "checkpoint-disposing".to_string();
+    raw_host =
+        raw_host.with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+            events: events.clone(),
+            expected_id: checkpoint_id.clone(),
+        }));
+    let host = Arc::new(raw_host);
+    let managed = install_test_dispatch_runtime(&host);
+    install_test_session_application(&host);
+    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+    let (disposing_environment, source_preparation, source_preparation_receipt) =
+        disposing_terminal_environment(thread, &lease, &handle, &checkpoint_id);
+    let terminal_projection = install_terminal_recovery_projection(
+        &host,
+        &managed,
+        thread,
+        lease.clone(),
+        disposing_environment,
+    )
+    .await;
+
+    let preparation_authorization =
+        terminal_preparation_authorization(&effect, &terminal_projection);
+    let preparation = managed
+        .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
+        .await
+        .expect("HS3 prepare exact disposing cleanup");
+    assert!(
+        preparation.artifact_receipts.is_empty(),
+        "HS3/E2 terminal recovery cannot associate an unscoped source File"
+    );
+    assert_eq!(
+        source_records.lock().unwrap().as_slice(),
+        std::slice::from_ref(&source_file),
+        "HS3/E2 prior source publication remains durable"
+    );
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &[
+            "observe-disposing",
+            "prepare-disposing",
+            "recover-terminal-scope",
+            "delete-checkpoint",
+        ],
+        "HS3/E1->E2->E3; preparation must not physically dispose"
+    );
+    assert!(
+        !events.lock().unwrap().contains(&"dispose-physical"),
+        "HS3 physical disposal waits for the aggregate preparation CAS",
+    );
+
+    let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
+    assert_eq!(
+        disposal_effect
+            .command
+            .provider_disposal
+            .prepared_effect_fence(),
+        &source_preparation.sandbox_effect_fence().unwrap(),
+        "HS3/E1 physical disposal inherits continuation A exactly",
+    );
+    assert_eq!(
+        disposal_effect
+            .command
+            .provider_disposal
+            .preparation_fingerprint(),
+        source_preparation_receipt.receipt_fingerprint(),
+        "HS3/E1 physical disposal inherits continuation fpA exactly",
+    );
+    let disposal = managed
+        .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+        .await
+        .expect("HS3 resume exact physical disposal");
+    assert_eq!(disposal.effect_id, disposal_effect.command.effect_id);
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &[
+            "observe-disposing",
+            "prepare-disposing",
+            "recover-terminal-scope",
+            "delete-checkpoint",
+            "observe-disposing",
+            "dispose-physical",
+        ],
+        "HS3/E1->E2->E3->E4; disposal repeats no source-dependent effect",
+    );
+}
+
+#[tokio::test]
+async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
+    /* Host continuation-takeover table HS3b. Causes: C1 the aggregate root
+     * carries a verified Disposing source receipt and inherited provider
+     * preparation A; C2 the provider now proves the physical source totally
+     * absent after response loss; C3 the durable handle/frozen transition join
+     * names exact writable Copy evidence; C4 Artifact publication and the
+     * committed checkpoint are independently durable. Effects: E1 the closed
+     * root authorization, not provider observation, selects AlreadyPrepared;
+     * E2 Host performs receipt-only Artifact recovery and checkpoint deletion,
+     * but zero live Memory read, acknowledgement, or raw terminal provider
+     * preparation; E3 aggregate disposal inherits A/fpA and treats exact total
+     * absence as physical response-loss success.
+     *
+     * | Rule | aggregate A | provider observation | RW evidence | Effect |
+     * | A1 | exact | DefinitivelyUnavailable | exact | E1 -> E2 -> E3 |
+     * | A2 | none | DefinitivelyUnavailable+aux | exact | HM0 fail closed |
+     * | A3 | exact | Disposing | exact/RO | HS3 recover and exact re-ack |
+     * | A4 | none | Ready/Terminal | exact | HM1 live reconciliation |
+     *
+     * Thus neither observation nor a naked boolean is a second preparation
+     * authority; only Control's effect-bound closed value can override A2. */
+    let thread = "disposing-absent-writable-memory";
+    let (lease, effect) = terminal_recovery_effect(thread, "disposing-absent-worker");
+    let mut source_file =
+        terminal_recovery_receipt(thread, &effect, "file_disposing_absent_source").record;
+    source_file.artifact_idempotency_scope = None;
+    let source_records = Arc::new(Mutex::new(vec![source_file.clone()]));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::TotalAbsence,
+        fence_refresh_probe: None,
+    });
+    let checkpoint_id = "checkpoint-disposing-absent";
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        )
+        .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+            events: events.clone(),
+            expected_id: checkpoint_id.into(),
+        }));
+    raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
+        events: events.clone(),
+        records: source_records.clone(),
+    });
+    let host = Arc::new(raw_host);
+    let managed = managed_with_resource_source(host.clone());
+
+    let mut projection = terminal_memory_projection();
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        projection.clone(),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("A1 install frozen writable Memory input");
+    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+        .with_memory_materializations(vec![terminal_memory_evidence()])
+        .expect("A1 durable handle carries exact writable Copy evidence");
+    let (disposing_environment, source_preparation, source_preparation_receipt) =
+        disposing_terminal_environment(thread, &lease, &handle, checkpoint_id);
+    projection.environment = disposing_environment;
+    host.install_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: thread.into(),
+            projection: projection.clone(),
+            lease: lease.clone(),
+        },
+    )
+    .await
+    .expect("A1 install exact Disposing assignment");
+
+    let authorization = terminal_preparation_authorization(&effect, &projection);
+    let expected_provider_preparation =
+        awaken_provisioning_contract::SandboxDisposalPreparation::new(
+            source_preparation.sandbox_effect_fence().unwrap(),
+            source_preparation_receipt.receipt_fingerprint(),
+        )
+        .unwrap();
+    assert_eq!(
+        authorization.inherited_provider_disposal(),
+        Some(&expected_provider_preparation),
+        "A1/E1 closed authorization carries exact continuation A/fpA",
+    );
+    let preparation = managed
+        .prepare_terminal_cleanup_for_effect(effect, authorization)
+        .await
+        .expect("A1 exact inherited preparation closes physical response loss");
+    assert!(preparation.artifact_receipts.is_empty(), "A1/E2");
+    assert_eq!(
+        source_records.lock().unwrap().as_slice(),
+        std::slice::from_ref(&source_file),
+        "A1/E2 preserves the unscoped source publication",
+    );
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        [
+            "observe-total-absence",
+            "prepare-total-absence",
+            "recover-terminal-scope",
+            "delete-checkpoint",
+        ],
+        "A1/E2 zero live Memory/ack/raw provider preparation/physical disposal",
+    );
+
+    events.lock().unwrap().clear();
+    let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
+    assert_eq!(
+        disposal_effect.command.provider_disposal, expected_provider_preparation,
+        "A1/E3 aggregate disposal keeps exact A/fpA",
+    );
+    managed
+        .dispose_terminal_cleanup_for_effect(disposal_effect)
+        .await
+        .expect("A1/E3 total absence is exact physical response-loss success");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        ["observe-total-absence", "prepare-total-absence"],
+        "A1/E3 physical phase performs observation/reconstruction only",
+    );
+}
+
+#[tokio::test]
+async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
+    /* Host unavailable-Memory table HM0. Causes: C1 provider proves the primary
+     * Sandbox definitively absent but reconstructs an exact auxiliary owner;
+     * C2 the durable V2 handle carries one writable Copy materialization; C3
+     * the frozen Resource transition names that same RW MemoryStore; C4 no
+     * prior provider disposal preparation/gate exists. Effects: E1 the shared
+     * Option-aware Memory join recognizes the exact writable intent; E2 Host
+     * fails closed before Artifact publication/recovery, Memory acknowledgement,
+     * checkpoint cleanup, provider preparation, or physical disposal; E3 the
+     * reconstructed exact auxiliary owner remains available for retry/takeover.
+     *
+     * | Rule | primary | auxiliary | Memory | prior prep | Effect |
+     * | M0 | absent | exact | RW Copy | none | E1 -> E2 + E3 |
+     * | M1 | absent | none | none/RO | none | HS2 receipt-only recovery |
+     * | M2 | Disposing gate | exact | exact evidence | yes | HS3 recovery/ack |
+     * | M3 | Ready/Terminal | live | RW Copy | none | HM1 live reconciliation |
+     *
+     * Observation and effect-free reconstruction are provider evidence reads,
+     * not source effects; the exact event list therefore contains only C1. */
+    let thread = "unavailable-auxiliary-writable-memory";
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::UnavailableAuxiliaryMemory,
+        fence_refresh_probe: None,
+    });
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        ),
+    );
+    let managed = managed_with_resource_source(host.clone());
+
+    let mut projection = terminal_memory_projection();
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        projection.clone(),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("M0 install frozen writable Memory input");
+
+    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+        .with_memory_materializations(vec![terminal_memory_evidence()])
+        .expect("M0 durable handle carries exact writable Copy evidence");
+    let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding,
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    let (lease, effect) = terminal_recovery_effect(thread, "unavailable-memory-worker");
+    host.install_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: thread.into(),
+            projection: projection.clone(),
+            lease,
+        },
+    )
+    .await
+    .expect("M0 install exact terminal assignment");
+
+    let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
+    let error = managed
+        .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
+        .await
+        .expect_err("M0 unavailable writable Memory must fail before source effects");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "M0/E2",
+    );
+    assert_eq!(error.code, "session_terminal_memory_source_absent", "M0/E2");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        [
+            "observe-unavailable-memory",
+            "reconstruct-unavailable-memory"
+        ],
+        "M0/E2 publish/ack/checkpoint/provider-prep/dispose are all zero",
+    );
+    assert!(
+        host.session_slots
+            .read(thread, |slot| {
+                slot.environment_owner
+                    .terminal_bound_environment()
+                    .is_some()
+            })
+            .unwrap_or(false),
+        "M0/E3 exact auxiliary owner remains Retiring for retry/takeover"
+    );
+}
+
+#[tokio::test]
+async fn legacy_missing_memory_evidence_fails_before_terminal_effects() {
+    /* Host legacy-Memory table HM0b. Causes: C1 frozen inputs contain RW
+     * MemoryStore; C2 the aggregate has no Environment binding and therefore
+     * no durable handle; C3 `None` means legacy/unknown, unlike current
+     * `Some([])` WTR/FUSE evidence. Effects: E1 Host delegates C1+C2 unchanged
+     * to the one Option-aware contract join; E2 it returns the typed ambiguous
+     * evidence failure before Artifact recovery or any provider boundary; E3
+     * the exact terminal projection remains installed. Rule HM0b
+     * C1+C2+C3=>E1->E2+E3. `Some([])+RW` and exact RO/RW partitions are owned
+     * by the shared join's adjacent decision table and HM0/HM1 exercise its
+     * Host effect ordering. */
+    let thread = "legacy-missing-terminal-memory-evidence";
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
+        events: events.clone(),
+        records: Arc::new(Mutex::new(Vec::new())),
+    });
+    let host = Arc::new(raw_host);
+    let managed = managed_with_resource_source(host.clone());
+
+    let projection = terminal_memory_projection();
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        projection.clone(),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("HM0b install frozen writable Memory input");
+    let (lease, effect) = terminal_recovery_effect(thread, "legacy-memory-worker");
+    host.install_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: thread.into(),
+            projection: projection.clone(),
+            lease,
+        },
+    )
+    .await
+    .expect("HM0b install exact terminal assignment");
+
+    let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
+    let error = managed
+        .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
+        .await
+        .expect_err("HM0b missing handle evidence must remain ambiguous");
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "HM0b/E2",
+    );
+    assert_eq!(
+        error.code, "session_terminal_memory_evidence_unreconciled",
+        "HM0b/E2",
+    );
+    assert!(
+        events.lock().unwrap().is_empty(),
+        "HM0b/E2 zero Artifact effects"
+    );
+    assert!(host.session_slots.contains(thread), "HM0b/E3");
+}
+
+#[tokio::test]
+async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
+    /* Host terminal Memory table HM1. Provider tests own fresh Copy-guard
+     * creation and exact acknowledgement semantics; this table owns the Host
+     * caller shared by a resident same-process Environment and a cold
+     * reconstruction after Worker loss. Causes: C1 the V2 binding carries one
+     * complete writable Copy evidence M; C2 the frozen aggregate input exactly
+     * joins M; C3 the Environment is resident/cold; C4 the Host is an upstream
+     * Worker whose frozen input was materialized under an exact Run claim and
+     * whose resulting RunV1 reference would be expired at terminal time.
+     * Effects: E1 one live Artifact batch precedes Memory; E2 the Sandbox copy
+     * is read once; E3 only SessionTerminalMemoryIntent is encoded and
+     * reconciled; E4 the exact complete evidence is acknowledged after E3 and
+     * provider preparation returns without deletion; E5 only a separately
+     * aggregate-derived authorization physically disposes. A Disposing retry instead uses HS3's
+     * ReceiptOnly/zero-live-I/O row, while foreign evidence and takeover are
+     * owned by NM2 and the shared acknowledgement kernel.
+     *
+     * | Rule | M/input | owner | encoded reference | Effect |
+     * | H1 | exact RW | resident | terminal-v2 only | E1->E2->E3->E4->E5 |
+     * | H2 | exact RW | cold | terminal-v2 only | prepare->E1->E2->E3->E4->E5 |
+     * | H3 | missing/foreign | any | none | fail closed (contract tests) |
+     * | H4 | Disposing | cleanup-only | none | HS3 | */
+    #[derive(Clone, Copy)]
+    struct Rule {
+        name: &'static str,
+        resident: bool,
+    }
+
+    for rule in [
+        Rule {
+            name: "resident",
+            resident: true,
+        },
+        Rule {
+            name: "cold",
+            resident: false,
+        },
+    ] {
+        let thread = format!("terminal-memory-{}", rule.name);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(TerminalRecoveryProvider {
+            events: events.clone(),
+            scenario: TerminalRecoveryScenario::LiveMemory,
+            fence_refresh_probe: None,
+        });
+        let raw_host = SharedHost::new(Arc::new(OkModel), "stub")
+            .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
+                "http://coordinator.invalid",
+            ))
+            .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
+                events: events.clone(),
+            }))
+            .with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            );
+        raw_host.install_memory_mounter(Arc::new(RecordingTerminalMemoryMounter {
+            events: events.clone(),
+        }));
+        let host = Arc::new(raw_host);
+        let managed = managed_with_resource_source(host.clone());
+
+        let mut projection = terminal_memory_projection();
+        let resources = projection.resources.clone();
+        let run_claim = awaken_dispatch::RunClaim {
+            run_id: awaken_agent_contract::agent::run::Id(format!(
+                "terminal-memory-{}-run",
+                rule.name
+            )),
+            owner: "terminal-memory-run-worker".into(),
+            epoch: 1,
+        };
+        host.install_frozen_session_projection(
+            &thread,
+            projection.clone(),
+            Some(&run_claim),
+            true,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{} installs frozen Memory input: {error}", rule.name));
+
+        let evidence = terminal_memory_evidence();
+        let handle = terminal_fixture_container_handle(&thread, &host.sandbox_spec(&thread))
+            .with_memory_materializations(vec![evidence])
+            .expect("HM1 current V2 handle carries exact Memory evidence");
+        let binding = serde_json::to_string(&handle).expect("HM1 encode terminal binding");
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+            binding: binding.clone(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+        let (lease, effect) = terminal_recovery_effect(&thread, "terminal-memory-worker");
+        host.install_terminal_cleanup_projection(
+            &awaken_session_contract::SessionTerminalCleanupAssignment {
+                session_id: thread.clone(),
+                projection: projection.clone(),
+                lease: lease.clone(),
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{} installs terminal assignment: {error}", rule.name));
+
+        if rule.resident {
+            let warm_fence = lease
+                .sandbox_effect_fence("resident-terminal-memory-preparation")
+                .expect("HM1 live resident preparation fence");
+            host.prepare_bound_environment_for_effect_under_lifecycle(
+                &thread,
+                &binding,
+                &warm_fence,
+                Some(&resources),
+                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
+            assert!(
+                host.session_slots
+                    .read(&thread, |slot| {
+                        slot.environment_owner
+                            .terminal_bound_environment()
+                            .is_some()
+                    })
+                    .unwrap_or(false),
+                "H1/C3 exact same-process owner is retained behind Preparation"
+            );
+        } else {
+            assert!(host.session_environment(&thread).await.is_none(), "H2/C3");
+        }
+        events.lock().unwrap().clear();
+
+        let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
+        let preparation = managed
+            .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
+            .await
+            .unwrap_or_else(|error| panic!("{} terminal Memory cleanup: {error}", rule.name));
+        assert!(preparation.artifact_receipts.is_empty(), "HM1/E1");
+        let preparation_events = if rule.resident {
+            vec![
+                "observe-live-memory",
+                "capture-artifacts",
+                "read-terminal-memory",
+                "encode-terminal-v2",
+                "reconcile-terminal-v2",
+                "ack-memory",
+                "prepare-source",
+            ]
+        } else {
+            vec![
+                "observe-live-memory",
+                "prepare-live-memory",
+                "capture-artifacts",
+                "read-terminal-memory",
+                "encode-terminal-v2",
+                "reconcile-terminal-v2",
+                "ack-memory",
+                "prepare-source",
+            ]
+        };
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            preparation_events,
+            "HM1 {} preparation",
+            rule.name,
+        );
+        assert!(
+            !events.lock().unwrap().contains(&"dispose-physical"),
+            "HM1/E5 aggregate preparation must precede physical disposal",
+        );
+        assert!(
+            !events.lock().unwrap().contains(&"encode-run-v1"),
+            "HM1/E3 old RunV1 reference is never reused"
+        );
+        assert!(
+            host.session_slots
+                .read(&thread, |slot| {
+                    slot.environment_owner
+                        .terminal_bound_environment()
+                        .is_some()
+                })
+                .unwrap_or(false),
+            "HM1/E4 exact owner remains Retiring until Disposal"
+        );
+
+        let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
+        let disposal = managed
+            .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{} terminal physical disposal: {error}", rule.name));
+        assert_eq!(disposal.effect_id, disposal_effect.command.effect_id);
+        assert_eq!(
+            events.lock().unwrap().last(),
+            Some(&"dispose-physical"),
+            "HM1/E5 physical disposal is the final effect",
+        );
+        assert!(host.session_environment(&thread).await.is_none(), "HM1/E5");
+    }
 }
 
 /// Terminal cleanup prepares every durability participant before the aggregate
@@ -16775,6 +18487,253 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         missing_error.kind,
         awaken_session_contract::RunErrorKind::Unavailable
     );
+}
+
+#[tokio::test]
+async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
+    // Terminal restore-target table TR1. Causes: C1 the frozen aggregate is
+    // Restoring and names exact unpublished target R; C2 Preparation has
+    // deleted the committed checkpoint and is durably admitted; C3 Disposal
+    // physically removes R but its receipt is lost; C4 the same Disposal is
+    // replayed; C5 aggregate acknowledgement arrives. Effects: E1 Preparation
+    // performs no restore/ordinary Environment observation and retains the
+    // exact hidden Restoring request; E2 both Disposal calls use the provider's
+    // idempotent exact-target port; E3 response loss retains the same request
+    // fence; E4 acknowledgement alone retires the terminal projection. Rules:
+    // TR1=C1+C2=>E1; TR2=TR1+C3+C4=>E2+E3; TR3=TR2+C5=>E4. There is no
+    // Disposal-local Vacant completion or second receipt registry.
+    let thread = "restoring-terminal-response-loss";
+    let (lease, base_effect) = terminal_recovery_effect(thread, "restoring-terminal-worker");
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        thread,
+        lease.epoch,
+        lease.expires_at_unix_ms,
+        "restoring-terminal-environment",
+        "restoring-terminal-image",
+    );
+    let suspend = awaken_session_contract::SessionEnvironmentOperation::new(
+        "terminal-workspace",
+        thread,
+        "suspend",
+        &generation,
+        6,
+        Some(lease.clone()),
+        None,
+    );
+    let checkpoint = awaken_session_contract::SandboxCheckpointRef {
+        id: "restoring-terminal-checkpoint".into(),
+        format: "awaken-fs-v1".into(),
+        digest: "restoring-terminal-checkpoint-digest".into(),
+        size_bytes: 1,
+        created_at_unix_ms: 1,
+        expires_at_unix_ms: u64::MAX,
+        environment_fingerprint: generation.environment_fingerprint.clone(),
+        base_image_fingerprint: generation.base_image_fingerprint.clone(),
+        excluded_mounts: Vec::new(),
+        suspend_effect_id: suspend.effect_id,
+    };
+    let restore = awaken_session_contract::SessionEnvironmentOperation::new(
+        "terminal-workspace",
+        thread,
+        "restore",
+        &generation,
+        7,
+        Some(lease.clone()),
+        Some(&checkpoint),
+    );
+    let restoring = awaken_session_contract::SessionEnvironmentState::Restoring {
+        operation: restore,
+        checkpoint: checkpoint.clone(),
+        generation,
+    };
+    let restore_target = restoring
+        .restoring_request("terminal-workspace", thread)
+        .expect("TR1 exact aggregate restore target");
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        base_effect
+            .command
+            .with_restore_target(restore_target.clone())
+            .expect("TR1 root command owns R"),
+        lease.clone(),
+    );
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(TerminalRecoveryProvider {
+        events: events.clone(),
+        scenario: TerminalRecoveryScenario::Restoring,
+        fence_refresh_probe: None,
+    });
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            )
+            .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+                events: events.clone(),
+                expected_id: checkpoint.id,
+            })),
+    );
+    let managed = install_test_dispatch_runtime(&host);
+    install_test_session_application(&host);
+    let projection =
+        install_terminal_recovery_projection(&host, &managed, thread, lease.clone(), restoring)
+            .await;
+
+    let preparation = managed
+        .prepare_terminal_cleanup_for_effect(
+            effect.clone(),
+            terminal_preparation_authorization(&effect, &projection),
+        )
+        .await
+        .expect("TR1 prepare the exact restoring target");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["delete-checkpoint"],
+        "TR1/E1"
+    );
+    assert!(matches!(
+        host.session_slots
+            .read(thread, |slot| slot.environment_owner.clone()),
+        Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
+            crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
+        )) if request == restore_target
+    ));
+
+    let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
+    let first = managed
+        .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+        .await
+        .expect("TR2 dispose exact restore target");
+    let replay = managed
+        .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+        .await
+        .expect("TR2 replay after disposal receipt loss");
+    assert_eq!(first, replay, "TR2/E2 deterministic receipt");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &["delete-checkpoint", "dispose-restored", "dispose-restored"],
+        "TR2/E2 exact provider port handles absence replay"
+    );
+    assert!(
+        matches!(
+            host.session_slots
+                .read(thread, |slot| slot.environment_owner.clone()),
+            Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
+                crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
+            )) if request == restore_target
+        ),
+        "TR2/E3 response-loss fence"
+    );
+
+    managed
+        .acknowledge_terminal_cleanup_disposal(&disposal_effect)
+        .await;
+    assert!(!host.session_slots.contains(thread), "TR3/E4");
+}
+
+#[tokio::test]
+async fn terminal_projection_retirement_requires_generation_tag_and_durable_absence() {
+    // Cause/effect graph: C1 root lease generation is exact; C2 child c1 has
+    // one durably accepted exact preparation; C3 child c2 remains pending; C4
+    // the same opaque child id has a foreign
+    // replacement tag; C5 a child/root preparation is acknowledged; C6 Control
+    // reports aggregate completion. Effects: E1 retire c1 only; E2 retain root+c2;
+    // E3 never remove the foreign replacement; E4 root preparation acknowledgement
+    // is non-retiring; E5 completed readback retires the exact tree children-first.
+    // Constraint: this edge forgets process-local projection only and performs
+    // no provider, Resource, or aggregate mutation.
+    // Decision table:
+    // | Rule | exact gen | root tag | prep target | complete | Effect |
+    // | P1 | T | T | exact child | F | E1 |
+    // | P2 | T | T | another child | F | E2 |
+    // | P3 | T | F | child | F | E3 |
+    // | P4 | T | T | root | F | E4 |
+    // | P5 | T | T | none | T | E5 |
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let session_id = "terminal-retire-root";
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "terminal-retire-worker".into(),
+        runtime_incarnation: "terminal-retire-worker:incarnation".into(),
+        epoch: 7,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    };
+    host.install_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: session_id.into(),
+            projection: remote_terminal_cleanup_projection(),
+            lease: lease.clone(),
+        },
+    )
+    .await
+    .expect("P1-P4 install the aggregate-derived root projection");
+    for child in ["terminal-retire-done", "terminal-retire-pending"] {
+        host.register_thread_workspace(child, "terminal-retire-workspace");
+        host.session_slots.update(child, |slot| {
+            slot.terminal_cleanup_root = Some(session_id.into());
+        });
+    }
+    let foreign = "terminal-retire-foreign";
+    host.register_thread_workspace(foreign, "foreign-workspace");
+    host.session_slots.update(foreign, |slot| {
+        slot.terminal_cleanup_root = Some("replacement-root".into());
+    });
+
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(cleanup.request(session_id));
+    cleanup
+        .freeze_targets(
+            session_id,
+            [
+                "terminal-retire-done".to_string(),
+                "terminal-retire-pending".to_string(),
+                foreign.to_string(),
+            ],
+            0,
+            0,
+        )
+        .unwrap();
+    let completed_child = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        cleanup
+            .command_for(session_id, "terminal-retire-done")
+            .unwrap(),
+        lease.clone(),
+    );
+    host.acknowledge_terminal_cleanup_preparation(&completed_child)
+        .await;
+    assert!(
+        !host.session_slots.contains("terminal-retire-done"),
+        "P1/E1"
+    );
+    assert!(host.session_slots.contains(session_id), "P2/E2");
+    assert!(
+        host.session_slots.contains("terminal-retire-pending"),
+        "P2/E2"
+    );
+    assert!(host.session_slots.contains(foreign), "P3/E3");
+
+    let stale_foreign = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        cleanup.command_for(session_id, foreign).unwrap(),
+        lease.clone(),
+    );
+    host.acknowledge_terminal_cleanup_preparation(&stale_foreign)
+        .await;
+    assert!(host.session_slots.contains(foreign), "P3/E3");
+
+    let root = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        cleanup.command_for(session_id, session_id).unwrap(),
+        lease,
+    );
+    host.acknowledge_terminal_cleanup_preparation(&root).await;
+    assert!(host.session_slots.contains(session_id), "P4/E4");
+    host.acknowledge_completed_terminal_cleanup(session_id, &root.lease)
+        .await;
+    assert!(!host.session_slots.contains(session_id), "P5/E5");
+    assert!(
+        !host.session_slots.contains("terminal-retire-pending"),
+        "P5/E5"
+    );
+    assert!(host.session_slots.contains(foreign), "P4/E3");
 }
 
 #[tokio::test]
@@ -17553,6 +19512,231 @@ impl awaken_dispatch_contract::ClaimedSessionControl for RemoteTerminalCleanupCo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
+    use std::sync::atomic::Ordering;
+
+    /* Large reconciliation cause/effect graph: C1 sixty-four independent
+     * resident Sessions are simultaneously due at the same Control renewal port;
+     * C2 every renewal blocks at one deterministic gate; C3 the Worker-wide bound
+     * is eight; C4 lease deadlines differ; C5 the gate is released. Effects:
+     * E1 exactly eight renewals enter before release; E2 no ninth enters; E3
+     * the first wave contains the eight earliest deadlines; E4 all sixty-four
+     * eventually renew; E5 each Session is called exactly once. Constraint:
+     * the per-Session realization lock and aggregate Fence remain the only
+     * effect authority; this scheduler owns capacity and ordering only.
+     *
+     * | Rule | Sessions | blocked | cap | Effect |
+     * |---|---:|---|---:|---|
+     * | L1 | 64 | yes | 8 | E1 + E2 + E3 |
+     * | L2 | 64 | released | 8 | E4 + E5 |
+     */
+    const SESSION_COUNT: usize = 64;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.renewal_gate.lock().unwrap() = Some(gate.clone());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    for index in 0..SESSION_COUNT {
+        let session_id = format!("mass-session-{index:03}");
+        install_test_renewal_authority(
+            &host,
+            &control,
+            &session_id,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: 50_000 + index as u64,
+            },
+        );
+    }
+
+    let running_host = host.clone();
+    let reconciliation = tokio::spawn(async move {
+        running_host
+            .renew_due_session_realizations(
+                50_000,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000),
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if control.renewal_sessions.lock().unwrap().len()
+                == crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("L1 first bounded wave enters");
+    assert_eq!(
+        control.renewals_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+        "L1/E1"
+    );
+    assert_eq!(
+        control.max_renewals_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+        "L1/E2"
+    );
+    let first_wave = control
+        .renewal_sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        first_wave,
+        (0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
+            .map(|index| format!("mass-session-{index:03}"))
+            .collect::<Vec<_>>(),
+        "L1/E3"
+    );
+
+    gate.add_permits(SESSION_COUNT);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), reconciliation)
+            .await
+            .expect("L2 bounded waves finish")
+            .expect("L2 reconciliation task")
+            .expect("L2 reconciliation result"),
+        SESSION_COUNT,
+        "L2 every due lease renewed"
+    );
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().len(),
+        SESSION_COUNT,
+        "L2/E4"
+    );
+    assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "L2/E4");
+    let mut observed = control
+        .renewal_sessions
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    observed.sort();
+    observed.dedup();
+    assert_eq!(observed.len(), SESSION_COUNT, "L2/E5");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete() {
+    use std::sync::atomic::Ordering;
+
+    /* Scale cause/effect graph: C1 five hundred twelve resident Sessions have
+     * exact live leases outside the renewal proof window; C2 repeated sweeps run
+     * before any lease is due; C3 one later sweep makes every lease due; C4 the
+     * production renewal cap is eight; C5 an immediate post-renewal sweep is
+     * again non-due. Effects: E1 C2 emits no Control renewal, terminal poll, or
+     * cold claim and retains every local projection; E2 C3 renews every Session
+     * exactly once; E3 concurrency remains bounded; E4 C5 emits no additional
+     * Control traffic. This is a deterministic scheduler test, not a production
+     * latency claim; live HTTP/PostgreSQL latency remains a deployment
+     * measurement.
+     *
+     * | Rule | sweep time | renewal due | Sessions | Effect |
+     * |---|---:|---|---:|---|
+     * | S1 | 0, 1000, 5000 | no | 512 | E1 |
+     * | S2 | 100000 | yes | 512 | E2 + E3 |
+     * | S3 | 100001 | no after S2 | 512 | E4 |
+     */
+    const SESSION_COUNT: usize = 512;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    for index in 0..SESSION_COUNT {
+        let session_id = format!("scale-session-{index:04}");
+        install_test_renewal_authority(
+            &host,
+            &control,
+            &session_id,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: 100_000 + index as u64,
+            },
+        );
+    }
+    let timing =
+        awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(15_000);
+    for now_unix_ms in [0, 1_000, 5_000] {
+        assert_eq!(
+            host.renew_due_session_realizations(now_unix_ms, timing)
+                .await
+                .expect("S1 repeated non-due scale sweep succeeds"),
+            0,
+            "S1/E1"
+        );
+    }
+    assert!(
+        control.renewal_sessions.lock().unwrap().is_empty(),
+        "S1/E1 no renewal Control traffic"
+    );
+    assert!(control.events.lock().unwrap().is_empty(), "S1/E1 no poll");
+    assert!(
+        control.claim_targets.lock().unwrap().is_empty(),
+        "S1/E1 no cold claim"
+    );
+    for index in 0..SESSION_COUNT {
+        assert!(
+            host.session_slots
+                .contains(&format!("scale-session-{index:04}")),
+            "S1/E1 retains every local projection"
+        );
+    }
+
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            host.renew_due_session_realizations(100_000, timing),
+        )
+        .await
+        .expect("S2/E3 scale scan remains bounded")
+        .expect("S2 scale renewal succeeds"),
+        SESSION_COUNT,
+        "S2/E2 every due lease renews"
+    );
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().len(),
+        SESSION_COUNT,
+        "S2/E2"
+    );
+    assert!(
+        control.max_renewals_active.load(Ordering::SeqCst)
+            <= crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+        "S2/E3"
+    );
+    assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "S2/E3");
+
+    assert_eq!(
+        host.renew_due_session_realizations(100_001, timing)
+            .await
+            .expect("S3 post-renewal non-due sweep succeeds"),
+        0,
+        "S3/E4"
+    );
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().len(),
+        SESSION_COUNT,
+        "S3/E4 no additional renewal Control traffic"
+    );
+    assert!(
+        control.events.lock().unwrap().is_empty(),
+        "S3/E4 no terminal poll"
+    );
+    assert!(
+        control.claim_targets.lock().unwrap().is_empty(),
+        "S3/E4 no cold claim"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
     /* Renewal failure cause/effect table: C1 Control does not answer before its
      * authority-derived request deadline; C2 the prior durable lease is either
@@ -17690,6 +19874,337 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
             "D1/E4"
         );
     }
+}
+
+#[tokio::test]
+async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 a Worker-local Session owns a live Sandbox; C2 the
+    // global claim-next authority returns its exact durable terminal assignment;
+    // C3 the lease is not yet due for ordinary renewal; C4 the aggregate first
+    // durably accepts source preparation, then accepts physical disposal but
+    // that second transport response is lost; C5 Control reoffers the same
+    // terminal assignment on the next recovery scan. Effects: E1 only global
+    // assignment recovery enters the aggregate driver; E2 the driver invokes
+    // the separate Host preparation and typed physical-disposal ports; E3 the
+    // exact preparation and disposal evidence return to Control in order; E4
+    // the failed disposal call retains the exact projection; E5 the completed
+    // readback retires it without replaying live preparation, physical disposal,
+    // or entering renewal/revoke. No resident scan or second scheduler exists.
+    //
+    // | Rule | cleanup | renewal due | Effect |
+    // | R1 | claimed prepare then disposal/response lost | no | E1 + E2 + E3 + E4 |
+    // | R2 | re-claimed Completed readback | no | E5 |
+    // | R3 | fenced empty | any | retain (covered by application table) |
+    // R1 receipt observation is scoped and released before the asynchronous R2
+    // readback, so the fixture cannot serialize behavior by holding Control's lock.
+    use awaken_provisioning_contract::SandboxStatus;
+
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let mut projection = remote_terminal_cleanup_projection();
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        "remote-terminal-worker",
+        projection.clone(),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("R1 complete projection precedes the live Environment");
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:incarnation".into(),
+        epoch: 3,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    };
+    let create_fence = lease
+        .sandbox_effect_fence("remote-terminal-create")
+        .expect("R1 create fence");
+    let physical = host
+        .provider
+        .create_sandbox_for_effect(
+            &host.sandbox_spec("remote-terminal-worker"),
+            &create_fence,
+            None,
+        )
+        .await
+        .expect("R1 exact Worker-local Sandbox");
+    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+        physical,
+    ));
+    let binding =
+        serde_json::to_string(&environment.handle()).expect("R1 encode live Environment binding");
+    let environment_generation = awaken_session_contract::SandboxGeneration::new(
+        "remote-terminal-worker",
+        lease.epoch,
+        lease.expires_at_unix_ms,
+        "remote-terminal-environment",
+        "remote-terminal-image",
+    );
+    let environment_effect_id = create_fence.operation_id.clone();
+    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding,
+        effect_id: Some(environment_effect_id.clone()),
+        generation: Some(environment_generation.clone()),
+        idle_since_unix_ms: None,
+    };
+    let candidate = host
+        .begin_session_environment_preparation("remote-terminal-worker", environment.clone())
+        .expect("R1 retain the exact Worker-local candidate");
+    host.install_session_environment_owner_projection(
+        "remote-terminal-worker",
+        &projection.workspace_id,
+        &projection.environment,
+    )
+    .expect("R1 project the durable Worker-local Environment identity");
+    host.publish_prepared_session_environment(
+        "remote-terminal-worker",
+        &candidate,
+        crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
+            effect_id: environment_effect_id,
+            generation: environment_generation,
+        },
+    )
+    .expect("R1 publish the exact Worker-local Environment owner");
+    let assignment = awaken_session_contract::SessionTerminalCleanupAssignment {
+        session_id: "remote-terminal-worker".into(),
+        projection: projection.clone(),
+        lease: lease.clone(),
+    };
+    control
+        .assignments
+        .lock()
+        .unwrap()
+        .push_back(assignment.clone());
+    let terminal_session = terminal_test_session(
+        "remote-terminal-worker",
+        &projection,
+        lease.clone(),
+        std::iter::empty(),
+        None,
+    );
+    let command = terminal_session
+        .terminal_cleanup
+        .command_for("remote-terminal-worker", "remote-terminal-worker")
+        .expect("R1 canonical command");
+    *control.session.lock().unwrap() = Some(terminal_session);
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: lease.owner.clone(),
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+        reassign_existing_lease: false,
+    };
+    control
+        .disposal_response_loss_once
+        .store(true, Ordering::SeqCst);
+
+    host.recover_terminal_cleanup_assignments(target.clone())
+        .await
+        .expect_err("R1/C4 reports the ambiguous completion response");
+    assert!(
+        host.session_slots.contains("remote-terminal-worker"),
+        "R1/E4 keeps the exact projection for aggregate readback"
+    );
+    assert_eq!(
+        environment.status().await.unwrap(),
+        SandboxStatus::Terminated,
+        "R1/E2"
+    );
+    {
+        let disposals = control.disposals.lock().unwrap();
+        assert_eq!(disposals.len(), 1, "R1/E3");
+        assert_eq!(
+            disposals[0]
+                .provider_disposal
+                .prepared_effect_fence()
+                .operation_id,
+            command.effect_id,
+            "R1/E3",
+        );
+    }
+    control.assignments.lock().unwrap().push_back(assignment);
+    assert_eq!(
+        host.recover_terminal_cleanup_assignments(target.clone())
+            .await
+            .expect("R2 Completed readback"),
+        1,
+        "R2/E5 reconciles the completed terminal generation without renewal"
+    );
+    assert!(
+        !host.session_slots.contains("remote-terminal-worker"),
+        "R2/E5 retires the exact local tree"
+    );
+    assert_eq!(
+        control.claim_targets.lock().unwrap().as_slice(),
+        [target.clone(), target.clone(), target.clone(), target],
+        "R1-R2 each recovery claims one assignment then observes the empty queue"
+    );
+    drop(managed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
+    // Cause/effect graph: C1 global claim-next returns one cold terminal
+    // assignment and its canonical driver blocks after aggregate authorization;
+    // C2 that terminal generation and another ordinary Session owned by the
+    // Worker are both due for renewal; C3 the terminal authorization is later
+    // released. Effects: E1 C1 uniquely installs and retains the terminal slot;
+    // E2 both Sessions reach the sole aggregate lease-renewal port and install
+    // monotonic same-generation readback before C3; E3 no resident scan, second
+    // cleanup driver, or local work queue is introduced; E4 the old asserted
+    // terminal effect continues under its renewed current generation and reaches
+    // its durable boundary. Constraint: the Session root remains the only
+    // renewal/terminal decision owner; renewal does not wait for long-lived
+    // terminal I/O.
+    //
+    // | Rule | cleanup blocked | terminal due | ordinary due | release | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | yes | yes | yes | no | E1 + E2 + E3 |
+    // | R2 | yes | renewed | renewed | yes | E4 |
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
+    let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
+    let requested_expiry_unix_ms = now_unix_ms.saturating_add(30_000);
+
+    let ordinary_id = "renewal-beside-terminal";
+    let ordinary_projection = remote_terminal_cleanup_projection();
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        ordinary_id,
+        ordinary_projection.clone(),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("R1/C2 install ordinary frozen projection");
+    let ordinary_lease = awaken_session_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:incarnation".into(),
+        epoch: 8,
+        expires_at_unix_ms: expiring_unix_ms,
+    };
+    host.install_session_realization_lease(ordinary_id, ordinary_lease.clone());
+    control
+        .renewals
+        .lock()
+        .unwrap()
+        .insert(ordinary_id.into(), ordinary_lease.clone());
+
+    let terminal_id = "blocked-terminal-cleanup";
+    let terminal_projection = remote_terminal_cleanup_projection();
+    let terminal_lease = awaken_session_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:incarnation".into(),
+        epoch: 9,
+        expires_at_unix_ms: expiring_unix_ms,
+    };
+    control.assignments.lock().unwrap().push_back(
+        awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: terminal_id.into(),
+            projection: terminal_projection.clone(),
+            lease: terminal_lease.clone(),
+        },
+    );
+    *control.session.lock().unwrap() = Some(terminal_test_session(
+        terminal_id,
+        &terminal_projection,
+        terminal_lease.clone(),
+        std::iter::empty(),
+        None,
+    ));
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: terminal_lease.owner.clone(),
+        runtime_incarnation: terminal_lease.runtime_incarnation.clone(),
+        lease_expires_at_unix_ms: terminal_lease.expires_at_unix_ms,
+        reassign_existing_lease: false,
+    };
+    let cleanup_started = Arc::new(tokio::sync::Notify::new());
+    let cleanup_release = Arc::new(tokio::sync::Notify::new());
+    *control.authorization_barrier.lock().unwrap() =
+        Some((cleanup_started.clone(), cleanup_release.clone()));
+
+    let cleanup = tokio::spawn({
+        let host = host.clone();
+        let target = target.clone();
+        async move { host.recover_terminal_cleanup_assignments(target).await }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        cleanup_started.notified(),
+    )
+    .await
+    .expect("R1/C1 terminal driver reaches the blocking authorization");
+
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            host.renew_due_session_realizations(
+                now_unix_ms,
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    30_000,
+                ),
+            ),
+        )
+        .await
+        .expect("R1/E2 renewal cadence is independent from terminal I/O")
+        .expect("R1/E2 aggregate renewal succeeds"),
+        2,
+        "R1/E2"
+    );
+    assert!(!cleanup.is_finished(), "R1/E1");
+    let mut renewed_sessions = control.renewal_sessions.lock().unwrap().clone();
+    renewed_sessions.sort();
+    assert_eq!(
+        renewed_sessions,
+        [terminal_id.to_owned(), ordinary_id.to_owned()],
+        "R1/E2 both Sessions use the sole lease-only renewal port"
+    );
+    assert_eq!(
+        host.session_slots
+            .read(ordinary_id, |slot| {
+                slot.realization_lease
+                    .as_ref()
+                    .map(|lease| lease.expires_at_unix_ms)
+            })
+            .flatten(),
+        Some(requested_expiry_unix_ms),
+        "R1/E2"
+    );
+    assert_eq!(
+        host.session_slots
+            .read(terminal_id, |slot| {
+                slot.realization_lease
+                    .as_ref()
+                    .map(|lease| lease.expires_at_unix_ms)
+            })
+            .flatten(),
+        Some(requested_expiry_unix_ms),
+        "R1/E2 terminal slot installs authoritative renewal readback"
+    );
+
+    cleanup_release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), cleanup)
+            .await
+            .expect("R2/E4 cleanup reaches its durable boundary")
+            .expect("R2/E4 cleanup task joins")
+            .expect("R2/E4 cleanup succeeds"),
+        1,
+        "R2/E4 one claimed terminal assignment completes"
+    );
+    assert_eq!(
+        control.claim_targets.lock().unwrap().as_slice(),
+        [target.clone(), target],
+        "R1-R2 one exact claim plus the terminating empty scan"
+    );
+    drop(managed);
 }
 
 #[tokio::test]
@@ -19778,4 +22293,72 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .dispose()
         .await
         .expect("dispose fixture environment");
+}
+
+/// Final-layout/prewarm decision rule: P1 a staged Repository owns
+/// `/workspace/repo`; P2 the effective SandboxSpec adds a CacheVolume below that
+/// tree. P1+P2 => reject before the shared CacheVolume initializer or provider
+/// create edge. This proves the call ordering in addition to the contract's pure
+/// overlap matrix.
+#[tokio::test]
+async fn repository_layout_conflict_fails_before_cache_prewarm() {
+    struct CountingInitializer(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::CacheVolumeInitializer for CountingInitializer {
+        async fn initialize(&self, _volume: &crate::CacheVolumeWarmup) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let initializer = Arc::new(CountingInitializer(AtomicUsize::new(0)));
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_cache_volume_initializer(initializer.clone()),
+    );
+    let managed = managed_with_resource_source(host.clone());
+    let mut init = bare_session("agent", host.local_workspace());
+    init.resources = effective_resources(vec![TestInput {
+        kind: "github_repository".into(),
+        id: "https://github.com/awaken/prewarm-fence.git".into(),
+        mount_path: "/workspace/repo".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    managed
+        .install_test_session_init("repository-prewarm-fence", init)
+        .await
+        .expect("P1 stage Repository without opening an Environment");
+
+    let mut spec = host.sandbox_spec("repository-prewarm-fence");
+    spec.mounts
+        .push(awaken_provisioning_contract::MountRequirement {
+            mount_id: "conflicting-cache".into(),
+            source: awaken_provisioning_contract::MountSource::CacheVolume {
+                location: awaken_provisioning_contract::CacheVolumeLocation::HostPath {
+                    path: "/tmp/awaken-conflicting-cache".into(),
+                },
+                key: "conflicting-cache-v1".into(),
+            },
+            mount_path: "/workspace/repo/cache".into(),
+            access: awaken_provisioning_contract::MountAccess::ReadWrite,
+            lifetime: awaken_provisioning_contract::MountLifetime::Durable,
+            required: false,
+        });
+    let error = match host
+        .create_session_environment(&host.session_provider, &spec)
+        .await
+    {
+        Ok(_) => panic!("P2 must fail before cache preparation"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("overlaps"), "P1/P2: {error}");
+    assert_eq!(
+        initializer.0.load(Ordering::SeqCst),
+        0,
+        "P1/P2 no prewarm effect"
+    );
 }

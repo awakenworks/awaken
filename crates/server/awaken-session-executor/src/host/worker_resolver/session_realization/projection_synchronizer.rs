@@ -369,6 +369,197 @@ mod tests {
         }
     }
 
+    /// Claimed durable-Hand rebuild cause/effect graph: C1 an exact durable
+    /// Environment A and Runtime R1 are Resident; C2 realization revocation
+    /// closes A's Hand and clears R1 while preserving the physical Sandbox; C3
+    /// a claimed Rebuild realization projects the same durable binding and the
+    /// provider reports Ready. Effects: E1 the existing synchronizer moves only
+    /// exact `Retiring(RealizationRevocation, Durable)` through canonical
+    /// adoption; E2 Environment B and its Hand are fresh Arcs; E3 B retains A's
+    /// exact typed handle/root and root sentinel; E4 the final claimed resolver
+    /// installs a fresh Runtime R2 with B as the sole Resident owner.
+    ///
+    /// | Rule | claim | policy | owner | observation | Effect |
+    /// |---|---|---|---|---|---|
+    /// | DH1 | yes | Rebuild | exact Durable revocation | Ready | E1-E4 |
+    /// | DH2 | no | any | exact Durable revocation | Ready | no claimed transition |
+    /// | DH3 | yes | Continuity | foreign/non-Ready | any | retain exact fence |
+    #[tokio::test]
+    async fn claimed_ready_durable_revocation_adopts_a_fresh_hand_and_runtime() {
+        use awaken_session_contract::SessionProjectionSynchronizer as _;
+
+        let thread = "claimed-ready-durable-hand-rebuild";
+        let storage = tempfile::tempdir().expect("durable Hand storage");
+        let mut raw_host = SharedHost::new(Arc::new(AdoptionModel), "stub");
+        raw_host.session_provider =
+            crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+                storage.path(),
+                false,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                "/bin/sh",
+                std::time::Duration::ZERO,
+            );
+        let host = Arc::new(raw_host.with_store_dir(storage.path()));
+        let managed = managed_test_host(host.clone());
+        let snapshot = test_activation(thread, "run-claimed-ready-durable").snapshot;
+        let mut projection = frozen_projection();
+        projection.agent_publication = Some(snapshot.clone());
+        let control = RecoveryControl::fixed(projection.clone());
+        let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &managed,
+            binding_sink.clone(),
+        );
+        let initial_lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &managed,
+            thread,
+            projection,
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                lease: initial_lease,
+                prepare_session: true,
+            },
+        )
+        .await
+        .expect("DH1 install complete durable projection");
+        let cached_runtime = host
+            .ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot.clone()))
+            .await
+            .expect("DH1/C1 build durable Runtime R1");
+        let original = host
+            .session_environment(thread)
+            .await
+            .expect("DH1/C1 durable Resident Environment A");
+        let original_handle = original.handle();
+        let original_hand = original.tool_executor();
+        let projection = control.current_projection();
+        let binding = projection
+            .environment
+            .binding()
+            .expect("DH1/C1 Store-read durable binding")
+            .to_string();
+        assert_eq!(binding_sink.calls(), 1, "DH1/C1 one durable Create");
+        let root_sentinel = storage
+            .path()
+            .join("sandboxes")
+            .join(thread)
+            .join("durable-root-sentinel");
+        std::fs::write(&root_sentinel, b"same physical durable root")
+            .expect("DH1/C2 root sentinel");
+        let lifecycle = host
+            .session_slots
+            .read(thread, |slot| slot.lifecycle.clone())
+            .expect("DH1 lifecycle owner");
+        {
+            let _lifecycle = lifecycle.lock().await;
+            assert!(
+                host.retire_session_environment_for_revocation(thread)
+                    .await
+                    .expect("DH1/C2 revoke exact durable owner"),
+                "DH1/C2 owner enters Retiring"
+            );
+        }
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.runtime.is_none()
+                    && !slot.environment_owner.is_resident())
+                .unwrap_or(false),
+            "DH1/C2 revocation clears R1 and hides Retiring A"
+        );
+
+        let claim = awaken_dispatch::RunClaim {
+            run_id: RunId("run-claimed-ready-durable".into()),
+            owner: "worker-a".into(),
+            epoch: 2,
+        };
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: claim.owner.clone(),
+            runtime_incarnation: "worker-a/boot-2".into(),
+            epoch: claim.epoch,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let directive = awaken_session_contract::SessionRealizationDirective {
+            projection: projection.clone(),
+            lease: lease.clone(),
+            action: awaken_session_contract::SessionRealizationAction::Complete,
+        };
+        WorkerProjectionSynchronizer::for_directive(
+            host.as_ref(),
+            &directive,
+            Some(&claim),
+            Some(&snapshot),
+            true,
+            Some(&binding),
+        )
+        .synchronize_session_projection(thread, &projection, &lease, true)
+        .await
+        .expect("DH1/E1 canonical claimed adoption");
+
+        let rebuilt = host
+            .session_environment(thread)
+            .await
+            .expect("DH1/E1-E2 fresh Resident Environment B");
+        let rebuilt_hand = rebuilt.tool_executor();
+        assert!(!Arc::ptr_eq(&original, &rebuilt), "DH1/E2 fresh wrapper");
+        assert!(
+            !Arc::ptr_eq(&original_hand, &rebuilt_hand),
+            "DH1/E2 fresh Hand"
+        );
+        assert_eq!(rebuilt.handle(), original_handle, "DH1/E3 typed handle");
+        assert!(root_sentinel.exists(), "DH1/E3 root sentinel survives");
+        assert_eq!(binding_sink.calls(), 2, "DH1/E1 one canonical Adopt");
+
+        let effective_model_ref = snapshot
+            .resolved_spec
+            .model_binding
+            .binding()
+            .model_ref
+            .clone();
+        let publications = Arc::new(
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
+                .expect("DH1 claimed publication source"),
+        );
+        let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
+            identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
+                &snapshot,
+                &[],
+                &effective_model_ref,
+            ),
+            publications,
+            effective_model_ref,
+        };
+        let fresh_runtime = host
+            .ctx_for_claimed_snapshot(thread, Some("agent-a"), snapshot, attempt)
+            .await
+            .expect("DH1/E4 claimed Runtime R2");
+        assert!(
+            !Arc::ptr_eq(&cached_runtime, &fresh_runtime),
+            "DH1/E4 R2 cannot reuse revoked R1"
+        );
+        assert!(
+            fresh_runtime
+                .env
+                .as_ref()
+                .is_some_and(|environment| Arc::ptr_eq(environment, &rebuilt)),
+            "DH1/E4 R2 consumes only Resident B"
+        );
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.runtime.as_ref().is_some_and(
+                    |runtime| {
+                        Arc::ptr_eq(runtime, &fresh_runtime) && slot.environment_owner.is_resident()
+                    }
+                ))
+                .unwrap_or(false),
+            "DH1/E4 fresh Runtime and Resident are published together"
+        );
+    }
+
     /// Reuse the production provider/create owner to establish the one legacy
     /// V1 revocation fixture shared by claimed pre-install ordering tests.
     async fn revoked_legacy_v1_environment(
@@ -419,5 +610,234 @@ mod tests {
             );
         }
         (environment, binding, sentinel)
+    }
+
+    /// Claimed legacy-rebuild cause/effect graph: C1 an exact claim selects
+    /// RebuildFromCommittedTruth; C2 its slot owns a Ready, revoked
+    /// LegacyDirect V1 Environment A; C3 the delivery cache carries A's raw
+    /// binding while aggregate truth is still Unmaterialized. Effects: E1
+    /// dispose and confirm A before raw merge/projection installation; E2 the
+    /// resulting closed adoption follows the existing RebuildRequired path; E3
+    /// install a fresh Environment B and Hand without a retiring-identity
+    /// conflict; E4 preserve V1 compatibility where A and B have equal handles
+    /// but distinct Arcs, so no handle-only filter may discard B.
+    ///
+    /// | Rule | claim | policy | revoked observation | raw binding | Effect |
+    /// |---|---|---|---|---|---|
+    /// | CR1 | yes | Rebuild | Ready V1 | A | E1 + E2 + E3 + E4 |
+    /// | CR2 | no | any | any | any | no claimed cleanup (merge unit L1-L4) |
+    /// | CR3 | yes | Continuity | any | any | no destructive recovery |
+    /// | CR4 | yes | Rebuild | closed/error | A | typed lifecycle table CP3 |
+    #[tokio::test]
+    async fn claimed_rebuild_disposes_legacy_v1_before_projection_install() {
+        use awaken_session_contract::SessionProjectionSynchronizer as _;
+
+        let thread = "claimed-ready-v1-preinstall-rebuild";
+        let storage = tempfile::tempdir().expect("legacy rebuild storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+            &managed,
+            Arc::new(LegacyUnownedEnvironmentBindingSink),
+        );
+
+        let snapshot = test_activation(thread, "run-claimed-ready-v1").snapshot;
+        let mut projection = frozen_projection();
+        projection.agent_publication = Some(snapshot.clone());
+        host.install_frozen_session_projection(thread, projection.clone(), None, true, None)
+            .await
+            .expect("CR1 install exact frozen publication before the legacy owner");
+        let (original, raw_binding, retired_sentinel) =
+            revoked_legacy_v1_environment(host.as_ref(), thread).await;
+        let original_handle = original.handle();
+        let original_hand = original.tool_executor();
+
+        let claim = awaken_dispatch::RunClaim {
+            run_id: RunId("run-claimed-ready-v1".into()),
+            owner: "worker-a".into(),
+            epoch: 1,
+        };
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: claim.owner.clone(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: claim.epoch,
+            expires_at_unix_ms: u64::MAX,
+        };
+        WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: Some(&claim),
+            published_snapshot: Some(&snapshot),
+            rebuild_unavailable_environment: true,
+            requires_runtime_before_effects: false,
+            claimed_environment_binding: Some(&raw_binding),
+        }
+        .synchronize_session_projection(thread, &projection, &lease, true)
+        .await
+        .expect("CR1/E1-E3 cleanup precedes merge and projection installation");
+
+        let rebuilt = host
+            .session_environment(thread)
+            .await
+            .expect("CR1/E3 fresh Resident Environment B");
+        assert!(!Arc::ptr_eq(&original, &rebuilt), "CR1/E3 fresh Arc");
+        assert_eq!(
+            original_handle,
+            rebuilt.handle(),
+            "CR1/E4 V1 recreates the same logical handle"
+        );
+        assert!(
+            !Arc::ptr_eq(&original_hand, &rebuilt.tool_executor()),
+            "CR1/E3 same-id recreation publishes a fresh Hand"
+        );
+        assert!(
+            !retired_sentinel.exists(),
+            "CR1/E1 old root is disposed before same-id recreation"
+        );
+    }
+
+    /// Remote claimed-realization cause/effect graph: C1 a claimed rebuild
+    /// carries an A2A-only publication; C2 the slot retains an exact Ready,
+    /// revoked local LegacyDirect owner; C3 neither the aggregate projection nor
+    /// raw delivery cache supplies a local binding. Effects: E1 classify the
+    /// conflict before legacy disposal, projection/Resource installation, or MCP
+    /// eligibility; E2 retain the exact Retiring Arc, Ready root sentinel, frozen
+    /// publication/lease caches, and Resource/MCP projections unchanged.
+    ///
+    /// | Rule | claim | route | local input | policy | Effect |
+    /// |---|---|---|---|---|---|
+    /// | RA1 | yes | A2A-only | Retiring owner | Rebuild | E1 + E2 |
+    /// | RA2 | yes | A2A-only | none | either | ordinary remote realization |
+    /// | RA3 | yes | local-capable | Retiring LegacyDirect | Rebuild | CR1 |
+    #[tokio::test]
+    async fn claimed_remote_a2a_rejects_a_retiring_local_owner_before_any_effect() {
+        use awaken_session_contract::SessionProjectionSynchronizer as _;
+
+        let thread = "claimed-remote-a2a-retiring-local";
+        let storage = tempfile::tempdir().expect("remote A2A guard storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let local_snapshot = test_activation(thread, "run-local-owner").snapshot;
+        let mut local_projection = frozen_projection();
+        local_projection.agent_publication = Some(local_snapshot.clone());
+        let cached_lease = awaken_session_contract::SessionRealizationLease {
+            owner: "previous-worker".into(),
+            runtime_incarnation: "previous-worker/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        host.install_frozen_session_projection(
+            thread,
+            local_projection,
+            None,
+            true,
+            Some(cached_lease.clone()),
+        )
+        .await
+        .expect("RA1 install retained local projection");
+        let (retiring, _raw_binding, root_sentinel) =
+            revoked_legacy_v1_environment(host.as_ref(), thread).await;
+        let cached = host
+            .session_slots
+            .read(thread, |slot| {
+                (
+                    slot.published_snapshot.clone(),
+                    slot.realization_lease.clone(),
+                    slot.environment_projection
+                        .as_ref()
+                        .map(|projection| projection.fingerprint.clone()),
+                    slot.mcp.len(),
+                )
+            })
+            .expect("RA1 retained slot caches");
+        let cached_resources = host.thread_resource_manifest(thread);
+
+        let remote_snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "remote-agent",
+                "",
+                "a2a:https://agent.example.test",
+            ))
+            .build();
+        let mut remote_projection = empty_frozen_projection_for_snapshot(
+            "workspace",
+            eager_environment(),
+            &remote_snapshot,
+        );
+        remote_projection.agent_publication = Some(remote_snapshot.clone());
+        let claim = awaken_dispatch::RunClaim {
+            run_id: RunId("run-remote-a2a-owner-conflict".into()),
+            owner: "worker-a".into(),
+            epoch: 2,
+        };
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: claim.owner.clone(),
+            runtime_incarnation: "worker-a/boot-2".into(),
+            epoch: claim.epoch,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let directive = awaken_session_contract::SessionRealizationDirective {
+            projection: remote_projection.clone(),
+            lease: lease.clone(),
+            action: awaken_session_contract::SessionRealizationAction::Complete,
+        };
+        let error = WorkerProjectionSynchronizer::for_directive(
+            host.as_ref(),
+            &directive,
+            Some(&claim),
+            Some(&remote_snapshot),
+            true,
+            None,
+        )
+        .synchronize_session_projection(thread, &remote_projection, &lease, true)
+        .await
+        .expect_err("RA1/E1 remote A2A must fail before local effects");
+        assert_eq!(
+            error.code, "session_runtime_remote_environment_conflict",
+            "RA1/E1 classified fail-closed"
+        );
+
+        assert_eq!(
+            retiring.status().await.expect("RA1 retained owner status"),
+            awaken_provisioning_contract::SandboxStatus::Ready,
+            "RA1/E2 rebuild disposal never ran"
+        );
+        assert!(root_sentinel.exists(), "RA1/E2 physical root is untouched");
+        assert!(
+            host.session_slots
+                .read(thread, |slot| {
+                    matches!(
+                        &slot.environment_owner,
+                        crate::session_slot::SessionEnvironmentOwner::Retiring(current)
+                            if current.cause
+                                == crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation
+                                && Arc::ptr_eq(&current.owned.environment(), &retiring)
+                    )
+                })
+                .unwrap_or(false),
+            "RA1/E2 exact Retiring owner remains fenced"
+        );
+        assert_eq!(
+            host.session_slots.read(thread, |slot| {
+                (
+                    slot.published_snapshot.clone(),
+                    slot.realization_lease.clone(),
+                    slot.environment_projection
+                        .as_ref()
+                        .map(|projection| projection.fingerprint.clone()),
+                    slot.mcp.len(),
+                )
+            }),
+            Some(cached),
+            "RA1/E2 publication, lease, Environment, and MCP caches are unchanged"
+        );
+        assert_eq!(
+            host.thread_resource_manifest(thread),
+            cached_resources,
+            "RA1/E2 Resource projection is unchanged"
+        );
     }
 }

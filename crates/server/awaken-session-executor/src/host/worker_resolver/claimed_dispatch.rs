@@ -523,4 +523,32 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
 #[cfg(test)]
 mod canonical_projection_tests {
     use super::canonical_session_projection_is_installed;
+
+    #[test]
+    fn claimed_dispatch_uses_only_a_complete_session_projection() {
+        // Cause/effect graph: C1 the dispatch is explicitly Session-affine;
+        // C2 the canonical Dispatch projection was installed; C3 its frozen
+        // baseline is present. E1 the retained immutable publication selects
+        // the Session, while E2 the compatibility envelope remains the sole
+        // input. The three facts are conjunctive so a partial or ordinary slot
+        // can never acquire canonical ownership by transport inference.
+        //
+        // | Rule | C1 affinity | C2 dispatch | C3 baseline | Effect |
+        // | P1 | yes | yes | yes | E1 canonical projection |
+        // | P2 | no  | yes | yes | E2 ordinary dispatch |
+        // | P3 | yes | no  | yes | E2 partial projection |
+        // | P4 | yes | yes | no  | E2 partial projection |
+        for (rule, affinity, dispatch, baseline, expected) in [
+            ("P1", true, true, true, true),
+            ("P2", false, true, true, false),
+            ("P3", true, false, true, false),
+            ("P4", true, true, false, false),
+        ] {
+            assert_eq!(
+                canonical_session_projection_is_installed(affinity, dispatch, baseline),
+                expected,
+                "{rule}"
+            );
+        }
+    }
 }

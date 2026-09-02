@@ -1602,6 +1602,37 @@ pub(crate) fn baseline_projection(
 mod terminal_cleanup_drive_error_tests {
     use super::terminal_cleanup_drive_error;
     use crate::HostErrorKind;
+
+    #[test]
+    fn terminal_driver_error_mapping_preserves_effect_faults_and_control_boundary() {
+        // Cause/effect graph: C1 the canonical driver returns a classified
+        // Runtime effect failure; C2 it returns a Control/protocol failure.
+        // Effects: E1 preserve the Runtime fault kind and stable code through
+        // the existing inverse adapter; E2 keep Control/protocol failure at the
+        // Host's terminal reconciliation boundary with the Session identity.
+        // Decision rules: M1=C1=>E1; M2=C2=>E2.
+        let effect = terminal_cleanup_drive_error(
+            "session-a",
+            awaken_session_contract::SessionRealizationDriveError::Effect(
+                awaken_session_contract::RunError::unavailable_classified(
+                    "terminal_provider_retry",
+                    "provider is temporarily unavailable",
+                ),
+            ),
+        );
+        assert_eq!(effect.kind, HostErrorKind::Unavailable, "M1/E1");
+        assert_eq!(effect.code, "terminal_provider_retry", "M1/E1");
+
+        let control = terminal_cleanup_drive_error(
+            "session-a",
+            awaken_session_contract::SessionRealizationDriveError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::Conflict,
+            ),
+        );
+        assert_eq!(control.kind, HostErrorKind::Internal, "M2/E2");
+        assert!(control.message.contains("session-a"), "M2/E2");
+        assert!(control.message.contains("changed concurrently"), "M2/E2");
+    }
 }
 
 #[cfg(test)]
@@ -1641,6 +1672,54 @@ mod resource_transition_install_tests {
     ) -> awaken_session_contract::SessionResourceTransition {
         awaken_session_contract::SessionResourceTransition::new(previous, desired)
             .expect("test transition belongs to one Workspace")
+    }
+
+    #[test]
+    fn complete_projection_install_decision_has_one_authority_table() {
+        use FrozenResourceTransitionInstallDecision::{Reject, Replace, Stage};
+
+        // Cause/effect graph: C1 a staged transition exists; C2 incoming desired
+        // generation is an exact replay (its prior endpoint may already have
+        // advanced after physical completion); C3 Workspace matches; C4 desired revision is newer,
+        // equal, or older; C5 the typed caller is Coordinator Dispatch and may
+        // project the aggregate's unattempted amendment. Effects are Stage,
+        // Replace, or Reject before any Resource read or slot mutation.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | I1 | F | any | any | any | any | Stage |
+        // | I2 | T | T | any | any | any | Stage |
+        // | I3 | T | F | T | newer | any | Replace |
+        // | I4 | T | F | T | equal | T | Replace |
+        // | I5 | T | F | T | equal | F | Reject |
+        // | I6 | T | F | T | older | any | Reject |
+        // | I7 | T | F | F | any | any | Reject |
+        let old = transition_from(
+            transition("workspace-a", 8, Some("base")).desired().clone(),
+            transition("workspace-a", 9, Some("old")).desired().clone(),
+        );
+        let exact = old.clone();
+        let exact_after_completion =
+            transition_from(exact.desired().clone(), exact.desired().clone());
+        let newer = transition("workspace-a", 10, Some("new"));
+        let amended = transition("workspace-a", 9, Some("amended"));
+        let older = transition("workspace-a", 8, Some("older"));
+        let foreign = transition("workspace-b", 10, Some("foreign"));
+        let rules = [
+            (None, &old, false, Stage),
+            (Some(&old), &exact, false, Stage),
+            (Some(&old), &exact_after_completion, false, Stage),
+            (Some(&old), &newer, false, Replace),
+            (Some(&old), &amended, true, Replace),
+            (Some(&old), &amended, false, Reject),
+            (Some(&old), &older, true, Reject),
+            (Some(&old), &foreign, true, Reject),
+        ];
+        for (existing, incoming, authority, expected) in rules {
+            assert_eq!(
+                frozen_resource_transition_install_decision(existing, incoming, authority),
+                expected
+            );
+        }
     }
 }
 

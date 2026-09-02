@@ -529,6 +529,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dispatch_resource_manifest_has_one_session_generation_selector() {
+        // Cause/effect graph: C1 the slot is ordinary/prepared Session; C2 a
+        // desired transition is absent/present; C3 active is absent/present.
+        // Effects: E1 ordinary dispatch selects active only; E2 prepared
+        // dispatch selects desired before physical publication; E3 desired
+        // wins over stale active; E4 a legacy Session falls back to active; E5
+        // selection never publishes or replaces active.
+        //
+        // | Rule | C1       | C2   | C3   | Selected | Active after |
+        // | S1   | ordinary | A->B | A    | A        | A            |
+        // | S2   | Session  | 0->B | none | B        | none         |
+        // | S3   | Session  | A->B | A    | B        | A            |
+        // | S4   | Session  | none | A    | A        | A            |
+        let manifest = |revision| {
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                revision,
+                awaken_session_contract::ResolvedSessionResources::default(),
+            )
+        };
+        for (rule, session_dispatch, active, desired, expected) in [
+            ("S1", false, Some(4), Some(7), 4),
+            ("S2", true, None, Some(7), 7),
+            ("S3", true, Some(4), Some(7), 7),
+            ("S4", true, Some(4), None, 4),
+        ] {
+            let active = active.map(manifest);
+            let transition = desired.map(|revision| {
+                awaken_session_contract::SessionResourceTransition::new(
+                    active.clone().unwrap_or_else(|| manifest(0)),
+                    manifest(revision),
+                )
+                .expect("test transition belongs to one Workspace")
+            });
+            let slot = SessionRuntimeSlot {
+                session_dispatch,
+                manifest: active.clone(),
+                resource_transition: transition,
+                ..Default::default()
+            };
+
+            assert_eq!(
+                slot.dispatch_resource_manifest()
+                    .unwrap_or_else(|| panic!("{rule} selected manifest"))
+                    .revision,
+                expected,
+                "{rule} selection",
+            );
+            assert_eq!(slot.manifest, active, "{rule}/E5 active is unchanged");
+        }
+    }
+
+    #[test]
     fn environment_only_session_lease_remains_supervised() {
         // FMECA/causal graph: C1 Environment startup outlives the initial lease;
         // C2 the Session has no MCP projection; C3 supervision filters on MCP.

@@ -1124,6 +1124,92 @@ mod completion_tests {
     }
 
     #[test]
+    fn session_path_causes_compile_into_worker_admission_once() {
+        use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
+
+        // Cause/effect graph: C1 Environment asks for Workdir/Namespace; C2 the
+        // frozen SessionResourceManifest has/has-not a typed Repository input;
+        // C3 execution is cooperative Native/projected ACP; C4 the Worker
+        // advertises path_fidelity=false/true while every unrelated capability
+        // remains satisfied. E1 placement emits one SandboxRequirements vector;
+        // E2 the exact Worker predicate accepts/rejects it. Repository presence
+        // comes only from the frozen typed manifest, never from mount-path text.
+        //
+        // | Rule | Environment | Repository | Execution | Fidelity required |
+        // |---|---|---|---|---|
+        // | P1 | Workdir | no  | Native        | no  |
+        // | P2 | Workdir | no  | projected ACP | yes |
+        // | P3 | Workdir | yes | Native        | yes |
+        // | P4 | Workdir | yes | projected ACP | yes |
+        // | P5 | Namespace | no  | Native        | yes |
+        // | P6 | Namespace | no  | projected ACP | yes |
+        // | P7 | Namespace | yes | Native        | yes |
+        // | P8 | Namespace | yes | projected ACP | yes |
+        // For every P-row, C4=true accepts; C4=false accepts only P1 and rejects
+        // P2-P8. This is the same `SandboxCapabilities::satisfies_requirements`
+        // predicate consumed by Worker `can_claim`; no second admission table.
+        for isolation in [IsolationClass::Workdir, IsolationClass::Namespace] {
+            for has_repository in [false, true] {
+                for projected_acp in [false, true] {
+                    let environment = environment_with_isolation(isolation);
+                    let models = if projected_acp {
+                        projected_acp_models()
+                    } else {
+                        host_models()
+                    };
+                    let repository = has_repository.then(repository_manifest);
+                    let placement = remote_worker_placement(
+                        &models,
+                        Some(&environment),
+                        repository.as_ref(),
+                        true,
+                    );
+                    let fidelity_required =
+                        isolation >= IsolationClass::Namespace || has_repository || projected_acp;
+                    let expected_isolation = if fidelity_required {
+                        isolation.max(IsolationClass::Namespace)
+                    } else {
+                        isolation
+                    };
+                    assert_eq!(
+                        placement.sandbox.isolation, expected_isolation,
+                        "P isolation: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
+                    assert_eq!(
+                        placement.sandbox.tool_transparent, fidelity_required,
+                        "P transparency: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
+                    assert_eq!(
+                        placement.sandbox.path_fidelity, fidelity_required,
+                        "P fidelity: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
+
+                    for path_fidelity in [false, true] {
+                        let worker = SandboxCapabilities {
+                            isolation: IsolationClass::Namespace,
+                            tool_transparent: true,
+                            path_fidelity,
+                            enforced_readonly: true,
+                            network_isolation: true,
+                            enforced_network_allowlist: true,
+                            secret_egress_substitution: true,
+                            resource_limits: true,
+                            custom_rootfs: true,
+                            package_provisioning: true,
+                            control_services: Default::default(),
+                        };
+                        assert_eq!(
+                            worker.satisfies_requirements(&placement.sandbox),
+                            path_fidelity || !fidelity_required,
+                            "Worker claim: {isolation:?}/{has_repository}/{projected_acp}/{path_fidelity}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn hand_recovery_policy_compiles_into_the_existing_worker_requirement() {
         use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 

@@ -471,6 +471,161 @@ mod tests {
         }
     }
 
+    /// Direct cold-recovery cause/effect decision table:
+    ///
+    /// | Rule | committed Run | exact Thread identity | Expected effect |
+    /// |------|---------------|-----------------------|-----------------|
+    /// | R1 | absent/running/awaiting | any | do not construct or call an observer |
+    /// | R2 | Ended | different | fail closed without constructing/calling an observer |
+    /// | R3 | Ended | exact | construct once and deliver the exact committed fact |
+    ///
+    /// Constraint: `committed_terminal_projection` remains the only terminal
+    /// predicate. This orchestration may sequence effects but cannot reinterpret
+    /// Run state or caller-supplied Thread identity.
+    #[tokio::test]
+    async fn direct_terminal_recovery_constructs_observers_only_for_exact_ended_truth() {
+        let run_id = RunId("run-direct-recovery".into());
+        let thread_id = ThreadId("thread-direct-recovery".into());
+
+        for state in [None, Some(RunState::Running), Some(RunState::Awaiting)] {
+            let factory_calls = Arc::new(AtomicUsize::new(0));
+            let observer_calls = Arc::new(AtomicUsize::new(0));
+            let view = TerminalProjectionView(state.map(|state| RunRecord {
+                id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                state,
+            }));
+            let factory_counter = factory_calls.clone();
+            let observer_counter = observer_calls.clone();
+            let recovered = reconcile_direct_terminal_from_committed_truth(
+                &view,
+                &run_id,
+                &thread_id,
+                move || async move {
+                    factory_counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![Arc::new(CountingTerminalObserver(observer_counter))
+                        as Arc<
+                            dyn awaken_runtime_contract::terminal::RunTerminalObserver,
+                        >])
+                },
+            )
+            .await
+            .expect("R1 nonterminal projection");
+            assert!(!recovered, "R1");
+            assert_eq!(factory_calls.load(Ordering::SeqCst), 0, "R1 factory");
+            assert_eq!(observer_calls.load(Ordering::SeqCst), 0, "R1 observer");
+        }
+
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let observer_calls = Arc::new(AtomicUsize::new(0));
+        let foreign = TerminalProjectionView(Some(RunRecord {
+            id: run_id.clone(),
+            thread_id: ThreadId("foreign-thread".into()),
+            state: RunState::Ended(EndCause::NaturalEnd),
+        }));
+        let factory_counter = factory_calls.clone();
+        let observer_counter = observer_calls.clone();
+        let conflict = reconcile_direct_terminal_from_committed_truth(
+            &foreign,
+            &run_id,
+            &thread_id,
+            move || async move {
+                factory_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![Arc::new(CountingTerminalObserver(observer_counter))
+                    as Arc<
+                        dyn awaken_runtime_contract::terminal::RunTerminalObserver,
+                    >])
+            },
+        )
+        .await
+        .expect_err("R2 identity conflict");
+        assert!(
+            conflict.message.contains("another Thread"),
+            "R2: {conflict}"
+        );
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 0, "R2 factory");
+        assert_eq!(observer_calls.load(Ordering::SeqCst), 0, "R2 observer");
+
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let observer_calls = Arc::new(AtomicUsize::new(0));
+        let exact = TerminalProjectionView(Some(RunRecord {
+            id: run_id.clone(),
+            thread_id: thread_id.clone(),
+            state: RunState::Ended(EndCause::NaturalEnd),
+        }));
+        let factory_counter = factory_calls.clone();
+        let observer_counter = observer_calls.clone();
+        let recovered = reconcile_direct_terminal_from_committed_truth(
+            &exact,
+            &run_id,
+            &thread_id,
+            move || async move {
+                factory_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![Arc::new(CountingTerminalObserver(observer_counter))
+                    as Arc<
+                        dyn awaken_runtime_contract::terminal::RunTerminalObserver,
+                    >])
+            },
+        )
+        .await
+        .expect("R3 exact terminal projection");
+        assert!(recovered, "R3");
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 1, "R3 factory");
+        assert_eq!(observer_calls.load(Ordering::SeqCst), 1, "R3 observer");
+    }
+
+    /// Cause/effect decision rule: C1 an exact committed terminal Run, C2 a
+    /// writable direct Memory binding, and C3 terminal observer delivery fails.
+    /// Effects: E1 `ctx_for` returns the observer error; E2 Session Environment
+    /// creation is never entered. Constraint: an already-committed Run is not
+    /// rewritten, and retry remains possible through the same observer/outbox.
+    #[tokio::test]
+    async fn direct_terminal_observer_failure_precedes_every_environment_effect() {
+        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+
+        let creates = Arc::new(AtomicUsize::new(0));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_session_container_provider(
+                Arc::new(CountingRejectedEnvironmentProvider(creates.clone())),
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            ),
+        );
+        let _managed = crate::host::tests::install_test_dispatch_runtime(&host);
+        host.install_memory_extraction_repository(Arc::new(FailingTerminalExtractionRepository));
+        crate::host::tests::bind_test_memory(
+            &host,
+            "direct-terminal-observer-failure",
+            "observer-failure-store",
+            true,
+        );
+        let commit = host
+            .build_commit("direct-terminal-observer-failure")
+            .await
+            .expect("commit authority");
+        commit_run(
+            &commit,
+            &ThreadId("direct-terminal-observer-failure".into()),
+            RunDisposition::ended(
+                RunId("direct-terminal-observer-failure-run".into()),
+                EndCause::NaturalEnd,
+            ),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("terminal truth");
+
+        let error = match host.ctx_for("direct-terminal-observer-failure", None).await {
+            Ok(_) => panic!("C3/E1 terminal observer failure must abort recovery"),
+            Err(error) => error,
+        };
+        assert!(
+            error.message.contains("scripted terminal observer failure"),
+            "E1: {error:?}"
+        );
+        assert_eq!(creates.load(Ordering::SeqCst), 0, "E2");
+    }
+
     /// Cause/effect decision table for Host-wide legacy reconciliation:
     ///
     /// | Rule | Host role | Dispatch | Thread commit | Expected effect |

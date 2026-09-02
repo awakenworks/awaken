@@ -395,4 +395,164 @@ mod tests {
             .expect("R2 join");
         drop(resumed);
     }
+
+    #[tokio::test]
+    async fn panicking_shared_environment_work_releases_exact_generation() {
+        // Cause/effect decision table: C1=SharedEnvironment task panics after
+        // admission; C2=query is exact or another generation. R1 exact+active
+        // -> E1 quiescence blocks; R2 other generation -> E2 remains quiescent;
+        // R3 panic unwinds the task -> E3 exact activity is released and drain
+        // still treats the best-effort task as finished.
+        let bg = BackgroundRuns::new();
+        let (panic_now, admitted) = tokio::sync::oneshot::channel::<()>();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "panic-session".into(),
+                generation_id: "panic-generation".into(),
+            },
+            async move {
+                let _ = admitted.await;
+                panic!("shared background panic");
+            },
+        )
+        .await;
+
+        assert!(
+            !bg.quiesce_shared_environment(
+                "panic-session",
+                "panic-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R1/E1 exact generation remains active"
+        );
+        assert!(
+            bg.quiesce_shared_environment(
+                "panic-session",
+                "other-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R2/E2 another generation is independent"
+        );
+
+        panic_now.send(()).expect("release panicking task");
+        assert!(bg.drain(Duration::from_secs(1)).await, "R3 drain");
+        assert!(
+            bg.quiesce_shared_environment(
+                "panic-session",
+                "panic-generation",
+                Duration::from_secs(1),
+            )
+            .await,
+            "R3/E3 panic releases exact generation"
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_shared_environment_work_releases_exact_generation() {
+        // Cause/effect decision table: C1=SharedEnvironment task is pending;
+        // C2=query is exact or another generation; C3=the owning JoinSet aborts
+        // the task. R1 exact+pending -> E1 quiescence blocks; R2 other generation
+        // -> E2 remains quiescent; R3 abort/drop -> E3 exact activity is released
+        // and the JoinSet remains drainable.
+        let bg = BackgroundRuns::new();
+        let (_keep_pending, pending) = tokio::sync::oneshot::channel::<()>();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "abort-session".into(),
+                generation_id: "abort-generation".into(),
+            },
+            async move {
+                let _ = pending.await;
+            },
+        )
+        .await;
+
+        assert!(
+            !bg.quiesce_shared_environment(
+                "abort-session",
+                "abort-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R1/E1 exact generation remains active"
+        );
+        assert!(
+            bg.quiesce_shared_environment(
+                "abort-session",
+                "other-generation",
+                Duration::from_millis(10),
+            )
+            .await,
+            "R2/E2 another generation is independent"
+        );
+
+        bg.tasks.lock().await.abort_all();
+        assert!(bg.drain(Duration::from_secs(1)).await, "R3 drain");
+        assert!(
+            bg.quiesce_shared_environment(
+                "abort-session",
+                "abort-generation",
+                Duration::from_secs(1),
+            )
+            .await,
+            "R3/E3 abort releases exact generation"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completion_between_activity_check_and_waiter_creation_is_not_lost() {
+        // Cause/effect decision table for one exact generation:
+        // R1 task completed before quiesce creates its waiter -> E1 the count is
+        // already absent and quiesce succeeds without waiting; R2 task remains
+        // active after the check -> E2 its waiter remains pending; R3 task drops
+        // in the former check-to-waiter-registration interval -> E3 the already
+        // registered waiter observes that release; R4 task remains active past
+        // the deadline -> E4 only that case times out. Existing normal/timeout
+        // cases cover R1/R2/R4; this probe deterministically forces R3.
+        let bg = BackgroundRuns::new();
+        let (complete, pending) = tokio::sync::oneshot::channel::<()>();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "race-session".into(),
+                generation_id: "race-generation".into(),
+            },
+            async move {
+                let _ = pending.await;
+            },
+        )
+        .await;
+
+        let waiter = bg
+            .shared_environment_waiter_with_probe("race-session", "race-generation", || {
+                complete.send(()).expect("release race task");
+                let deadline = std::time::Instant::now() + Duration::from_secs(1);
+                while bg.has_shared_environment_work("race-session", "race-generation") {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "R3 task must drop while the ordering probe is active"
+                    );
+                    std::thread::yield_now();
+                }
+            })
+            .expect("R3 task was active at the count check");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), waiter)
+                .await
+                .is_ok(),
+            "R3/E3 completion between the check and the former waiter creation must wake"
+        );
+        assert!(bg.drain(Duration::from_secs(1)).await, "R3 drain");
+        assert!(
+            bg.quiesce_shared_environment(
+                "race-session",
+                "race-generation",
+                Duration::from_millis(50),
+            )
+            .await,
+            "R1/E1 completed work remains quiescent"
+        );
+    }
 }

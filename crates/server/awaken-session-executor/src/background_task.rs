@@ -993,6 +993,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn detached_state_invalidation_has_one_terminal_background_classification() {
+        // Cause/effect decision table: C1 the detached start, poll, or cancel
+        // crossed its dispatch boundary; C2 the executor then reports
+        // StateInvalidated. SI1 C1+C2 => preserve the exact fence and publish
+        // one Indeterminate candidate, never Failed/Completed. Both launch
+        // branches call this single classifier; Runtime continuation tests own
+        // the start/poll/cancel error mapping itself.
+        let fence = TaskFence {
+            worker_id: "worker".into(),
+            epoch: 9,
+        };
+
+        let completion = BackgroundTaskTerminalObserver::state_invalidated(fence.clone());
+
+        assert_eq!(completion.fence, fence, "SI1 exact claim fence");
+        assert!(
+            matches!(
+                completion.end,
+                BackgroundTaskEnd::Indeterminate { ref message }
+                    if message.contains("unavailable after dispatch")
+            ),
+            "SI1 terminal classification"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn attention_publication_retries_ambiguous_failures_with_one_identity_only() {
         // Cause/effect decision table:
