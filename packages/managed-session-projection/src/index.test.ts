@@ -345,7 +345,9 @@ describe("Managed Session Runtime and admission decision table", () => {
    * is admitted only at the exact idle gate. E3 interrupt is admitted only for
    * nonterminal active/recovery work. Decision rules A1 idle+unknown/idle/error+
    * empty+healthy=>message; A2 any non-idle aggregate=>deny message; A3 any gate
-   * or unhealthy=>deny message; A4 idle+pending=>tool reply/interrupt.
+   * =>deny message; A4 idle+pending=>tool reply/interrupt. Projection-unhealthy
+   * recovery has its own table below, so it cannot weaken these ordinary
+   * admission expectations.
    */
   it("conservatively joins aggregate and Event truth for every input consumer", () => {
     const unknown = projectManagedSessionRuntime([]);
@@ -380,7 +382,48 @@ describe("Managed Session Runtime and admission decision table", () => {
       event({ id: "reply", type: "user.tool_confirmation", tool_use_id: "tool", result: "allow" }),
     ]);
     expect(managedSessionAdmission(resolving, "idle").canSendMessage).toBe(false);
-    expect(managedSessionAdmission(staleIdle, "idle", false)).toEqual({
+  });
+
+  /**
+   * Cause/effect graph: C1 the aggregate is nonterminal idle; C2 committed
+   * Event projection is unhealthy, so a damaged Awaiting ticket may have no
+   * visible tool card; C3 ordinary message/reply controls remain unsafe.
+   * Effects: E1 deny message and reply; E2 retain one force-recovery Interrupt
+   * path that uses server-side committed Run topology rather than browser
+   * pending reconstruction.
+   *
+   * | Rule | Aggregate | Projection | Visible pending | Effects |
+   * |---|---|---|---|---|
+   * | D1 | idle/nonterminal | unhealthy | none/unknown | E1 + E2 |
+   * | D2 | terminated | any | any | deny every control (terminal table above) |
+   *
+   * The aggregate is the nonterminal fence for control-only recovery; an
+   * unknown aggregate or any terminal source remains fully denied.
+   */
+  it("keeps only force recovery available when pending projection is damaged", () => {
+    const noVisiblePending = projectManagedSessionRuntime([event({
+      id: "idle-before-damage",
+      type: "session.status_idle",
+      processed_at: "t0",
+      stop_reason: { type: "end_turn" },
+    })]);
+    expect({
+      admission: managedSessionAdmission(noVisiblePending, "idle", false),
+      pendingToolCount: noVisiblePending.pendingToolIds.size,
+    }).toEqual({
+      admission: {
+        canSendMessage: false,
+        canResolveTools: false,
+        canInterrupt: true,
+      },
+      pendingToolCount: 0,
+    });
+    expect(managedSessionAdmission(noVisiblePending, undefined, false)).toEqual({
+      canSendMessage: false,
+      canResolveTools: false,
+      canInterrupt: false,
+    });
+    expect(managedSessionAdmission(noVisiblePending, "terminated", false)).toEqual({
       canSendMessage: false,
       canResolveTools: false,
       canInterrupt: false,

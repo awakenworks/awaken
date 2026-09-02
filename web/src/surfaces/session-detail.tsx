@@ -3,7 +3,6 @@
 // exactly one live SessionLog; header, chat, approvals, and trace consume it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { managedSessionPresentationPhase } from "@awaken/managed-session-projection";
 import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { TranscriptView } from "../components/session/Transcript";
@@ -177,8 +176,9 @@ export default function SessionDetailSurface() {
     followLive: true,
   });
   const runtime = sessionLog.runtime;
-  const admission = sessionLog.admission;
-  const effectiveStatus = managedSessionPresentationPhase(runtime, session.data?.status);
+  const presentation = sessionLog.presentation;
+  const admission = presentation.admission;
+  const effectiveStatus = presentation.phase;
   const runtimeName = sessionRuntime(session.data);
   const mcpPolicies = sessionMcpPolicies(session.data?.agent);
   const configDestinations = sessionConfigDestinations(wsId, session.data?.agent);
@@ -194,11 +194,10 @@ export default function SessionDetailSurface() {
   const outputTokens = session.data?.usage?.output_tokens;
   const hasUsageEvidence = budgetLabel != null || costLabel != null
     || inputTokens != null || outputTokens != null || outcomes.length > 0;
-  // A committed tool request waiting for an external resolution is recoverable
-  // work. Inputs and tool replies that are currently resolving are ordinary
-  // active turns, so presenting their interrupt as "Recover run" falsely tells
-  // the operator that healthy work is stuck.
-  const needsRecovery = runtime.pendingToolIds.size > 0;
+  // The shared presentation classifies both a visible committed tool wait and
+  // an unhealthy projection as recovery. Resolving healthy input remains an
+  // ordinary active turn, so it continues to present Stop rather than Recover.
+  const needsRecovery = presentation.needsRecovery;
 
   const rename = useMutation({
     mutationFn: (title: string) => api.post<Session>(base, { title }),
@@ -284,7 +283,7 @@ export default function SessionDetailSurface() {
               ⌫ {archive.isPending ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
             </Button>
           )}
-          <Button variant="danger" disabled={!admission.canInterrupt || sessionLog.sendPending} onClick={() => void interruptSession()}>
+          <Button variant="danger" disabled={!admission.canInterrupt} onClick={() => void interruptSession()}>
             ⏹ {needsRecovery ? app.t("Recover run", "恢复运行") : app.t("Stop run", "停止运行")}
           </Button>
         </span>
@@ -449,8 +448,8 @@ export default function SessionDetailSurface() {
             </h2>
             <div className="mut" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 4 }}>
               <span>{app.t("Created", "创建时间")} {session.data?.created_at ? new Date(session.data.created_at).toLocaleString() : "—"}</span>
-              <span>{app.t("Status", "状态")} {effectiveStatus === "running" ? app.t("running", "运行中") : effectiveStatus === "idle" ? app.t("idle", "空闲") : effectiveStatus ?? "—"}</span>
-              <span>{app.t("Pending tools", "待审批工具")} {runtime.pendingToolIds.size}</span>
+              <span>{app.t("Status", "状态")} {effectiveStatus === "running" ? app.t("running", "运行中") : effectiveStatus === "idle" ? app.t("idle", "空闲") : effectiveStatus === "submitting" ? app.t("submitting", "提交中") : effectiveStatus ?? "—"}</span>
+              <span>{app.t("Pending tools", "待审批工具")} {presentation.pendingToolIds.size}</span>
               <span>{app.t("Resolving tools", "处理中工具")} {runtime.resolvingToolIds.size}</span>
               <span>{app.t("Resolving inputs", "处理中输入")} {runtime.resolvingInputIds.size}</span>
               <span>{app.t("Can send message", "允许发送消息")} {admission.canSendMessage ? app.t("yes", "是") : app.t("no", "否")}</span>
