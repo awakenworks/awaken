@@ -14,7 +14,7 @@ use awaken_agent_contract::event::{
 use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::Value;
 
-use crate::types::{UIStreamEvent, history_message, text_parts};
+use crate::types::{UIStreamEvent, assistant_parts, history_message, text_parts};
 
 /// The AI SDK v6 transcoder: the one per-protocol adapter for both tiers (ADR-0058
 /// Axis 9). `fact()` projects committed whole-units (`tool-input-available`,
@@ -129,7 +129,26 @@ impl AiSdkEncoder {
         output.extend(self.close_reasoning());
         output.extend(self.close_text());
         for event in &events {
-            if self.streamed_text && matches!(event, Fact::AssistantMessage { .. }) {
+            if let Fact::AssistantMessage { id, content } = event {
+                // The neutral streaming fold deliberately narrows this Fact to
+                // answer text. Citation blocks remain in the same committed
+                // Message, so the AI SDK adapter reads them there without
+                // widening the shared event vocabulary or creating replay state.
+                let committed = outcome
+                    .new_messages
+                    .iter()
+                    .find(|message| message.role == Role::Assistant && message.id.0 == *id)
+                    .map(|message| message.content.as_slice())
+                    .unwrap_or(content);
+                let folded_sources = source_events(content);
+                if !self.streamed_text {
+                    output.extend(self.fact(event));
+                } else {
+                    output.extend(folded_sources.iter().cloned());
+                }
+                if folded_sources.is_empty() {
+                    output.extend(source_events(committed));
+                }
                 continue;
             }
             output.extend(self.fact(event));
@@ -196,7 +215,7 @@ impl Transcoder for AiSdkEncoder {
             }
             Fact::AssistantMessage { id, content } => {
                 let text = blocks_text(content);
-                if text.is_empty() {
+                let mut output = if text.is_empty() {
                     Vec::new()
                 } else {
                     vec![
@@ -207,7 +226,9 @@ impl Transcoder for AiSdkEncoder {
                         },
                         UIStreamEvent::TextEnd { id: id.clone() },
                     ]
-                }
+                };
+                output.extend(source_events(content));
+                output
             }
             Fact::ToolCall {
                 id,
@@ -330,6 +351,39 @@ impl Transcoder for AiSdkEncoder {
     }
 }
 
+fn source_events(content: &[ContentBlock]) -> Vec<UIStreamEvent> {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::SearchResult {
+                source,
+                title,
+                citations,
+                ..
+            } if citations.enabled
+                && (source.starts_with("https://") || source.starts_with("http://")) =>
+            {
+                Some(UIStreamEvent::SourceUrl {
+                    source_id: source.clone(),
+                    url: source.clone(),
+                    title: Some(title.clone()),
+                })
+            }
+            ContentBlock::SearchResult {
+                source,
+                title,
+                citations,
+                ..
+            } if citations.enabled => Some(UIStreamEvent::SourceDocument {
+                source_id: source.clone(),
+                media_type: "text/plain".into(),
+                title: title.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AiSdkTerminalClass {
     ToolCalls,
@@ -442,7 +496,7 @@ impl HistorySink for AiSdkHistorySink {
     }
 
     fn assistant(&mut self, id: &str, content: &[ContentBlock], tools: &[ToolUseRef<'_>]) {
-        let mut parts = text_parts(content);
+        let mut parts = assistant_parts(content);
         let message_index = self.encoded.len();
         for tool in tools {
             let part_index = parts.len();
@@ -782,6 +836,44 @@ mod tests {
                 |e| matches!(e, UIStreamEvent::TextDelta { delta, .. } if delta == "hello there")
             ),
             "the full projection carries the assistant text: {full:?}"
+        );
+    }
+
+    #[test]
+    fn streamed_text_keeps_committed_sources_in_the_authoritative_tail() {
+        use awaken_agent_contract::agent::content::{SearchResultCitations, SearchResultContent};
+
+        let outcome = StepOutcome::ended(
+            vec![Message::new(
+                Id("a-source".into()),
+                Role::Assistant,
+                vec![
+                    ContentBlock::text("answer"),
+                    ContentBlock::SearchResult {
+                        source: "https://example.test/docs".into(),
+                        title: "Docs".into(),
+                        content: vec![SearchResultContent::text("evidence")],
+                        citations: SearchResultCitations { enabled: true },
+                    },
+                ],
+            )],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        );
+        let mut encoder = AiSdkEncoder::new();
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::TextDelta {
+            delta: "answer".into(),
+        });
+        let tail = encoder.complete(&outcome);
+
+        assert!(tail.iter().any(|event| matches!(
+            event,
+            UIStreamEvent::SourceUrl { source_id, .. }
+                if source_id == "https://example.test/docs"
+        )));
+        assert!(
+            tail.iter()
+                .all(|event| !matches!(event, UIStreamEvent::TextDelta { .. }))
         );
     }
 
