@@ -1,4 +1,4 @@
-//! In-process hand tools (ADR-0007). `read`, `write`, `edit`, `move`, `delete`,
+//! In-process hand tools (ADR-0007). `read`, `write`, `edit`,
 //! `glob`, `grep`, and `bash` run directly in the runtime process and render results as text.
 //! Their ids match the descriptors in [`crate::builtin_tools`], so a run that
 //! makes a descriptor model-visible can register the matching implementation.
@@ -277,18 +277,6 @@ impl ConfinedPath {
             Some(parent) if !parent.as_os_str().is_empty() => self.directory.create_dir_all(parent),
             _ => Ok(()),
         }
-    }
-
-    fn rename_to(&self, destination: &Self) -> std::io::Result<()> {
-        self.directory.rename(
-            &self.relative,
-            &destination.directory,
-            &destination.relative,
-        )
-    }
-
-    fn remove_file(&self) -> std::io::Result<()> {
-        self.directory.remove_file(&self.relative)
     }
 }
 
@@ -1147,100 +1135,6 @@ impl Tool for EditTool {
     }
 }
 
-/// Move or rename one file. Directory trees are intentionally unsupported so
-/// callers cannot turn a narrowly-scoped file operation into a recursive move.
-pub struct MoveTool(FileContext);
-
-impl MoveTool {
-    pub fn new(context: &HandToolContext) -> Self {
-        Self(FileContext::new(context))
-    }
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MoveArgs {
-    /// Absolute source file path.
-    pub source: String,
-    /// Absolute destination file path.
-    pub destination: String,
-}
-
-#[async_trait]
-impl Tool for MoveTool {
-    type Args = MoveArgs;
-    type Output = String;
-    const ID: &'static str = "move";
-    const DESCRIPTION: &'static str = "Move or rename a file";
-
-    async fn call(&self, args: MoveArgs) -> Result<String, ToolError> {
-        let source = self.0.resolve(&args.source)?;
-        let destination = self.0.resolve(&args.destination)?;
-        if !source
-            .metadata()
-            .map(|metadata| metadata.is_file())
-            .unwrap_or(false)
-        {
-            return Err(ToolError::Execution(format!(
-                "move {}: source is not a file",
-                args.source
-            )));
-        }
-        destination
-            .create_parent_dirs()
-            .map_err(|error| ToolError::Execution(format!("move {}: {error}", args.destination)))?;
-        source.rename_to(&destination).map_err(|error| {
-            ToolError::Execution(format!(
-                "move {} to {}: {error}",
-                args.source, args.destination
-            ))
-        })?;
-        Ok(format!("moved {} to {}", args.source, args.destination))
-    }
-}
-
-/// Delete exactly one regular file. Directories are rejected; recursive deletion
-/// remains outside the model-callable capability surface.
-pub struct DeleteTool(FileContext);
-
-impl DeleteTool {
-    pub fn new(context: &HandToolContext) -> Self {
-        Self(FileContext::new(context))
-    }
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DeleteArgs {
-    /// Absolute file path to delete.
-    pub path: String,
-}
-
-#[async_trait]
-impl Tool for DeleteTool {
-    type Args = DeleteArgs;
-    type Output = String;
-    const ID: &'static str = "delete";
-    const DESCRIPTION: &'static str = "Delete one file";
-
-    async fn call(&self, args: DeleteArgs) -> Result<String, ToolError> {
-        let path = self.0.resolve(&args.path)?;
-        if !path
-            .metadata()
-            .map(|metadata| metadata.is_file())
-            .unwrap_or(false)
-        {
-            return Err(ToolError::Execution(format!(
-                "delete {}: path is not a file",
-                args.path
-            )));
-        }
-        path.remove_file()
-            .map_err(|error| ToolError::Execution(format!("delete {}: {error}", args.path)))?;
-        Ok(format!("deleted {}", args.path))
-    }
-}
-
 /// A persistent Bash scoped to one Hand/toolset instance.
 pub struct BashTool {
     context: HandToolContext,
@@ -1741,21 +1635,14 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-/// The local hand tools, erased for `Runtime::with_tool` registration. Both
-/// network tools are owned exclusively by their configured plugin paths.
-pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
-    executable_hand_tools_in(HandToolContext::default())
-}
-
 /// Create a fresh, environment-scoped toolset. The Bash session and filesystem
-/// confinement share this trusted workdir.
-pub fn executable_hand_tools_in(context: HandToolContext) -> Vec<Arc<dyn RawTool>> {
+/// confinement share this trusted workdir. The public catalog is owned by
+/// `all_hand_tools_in`; this private constructor cannot form a parallel API.
+pub(crate) fn hand_tools_in(context: HandToolContext) -> Vec<Arc<dyn RawTool>> {
     vec![
         erase_for(ReadTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(WriteTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(EditTool::new(&context), ToolExecutionTarget::Sandbox),
-        erase_for(MoveTool::new(&context), ToolExecutionTarget::Sandbox),
-        erase_for(DeleteTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(GlobTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(GrepTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(BashTool::new(&context), ToolExecutionTarget::Sandbox),
@@ -1862,7 +1749,6 @@ mod write_tests {
         assert!(atomic_write(&write, "must-not-escape").is_err(), "R2");
         assert!(!outside.path().join("new.txt").exists(), "R2");
     }
-
     #[cfg(unix)]
     #[test]
     fn search_walker_stays_bound_to_the_open_root_after_path_swap() {
@@ -1943,51 +1829,5 @@ mod write_tests {
         assert_eq!(visible, Path::new("/managed/inside.txt"), "P1/E2");
         assert!(!visible.starts_with(parent.path()), "P1/E3");
         assert!(!visible.starts_with(outside.path()), "P1/E3");
-    }
-
-    #[tokio::test]
-    async fn move_and_delete_are_single_file_operations() {
-        // Causes: M1 a regular source file and nested destination; M2 a regular
-        // destination file; M3 a directory passed to delete.
-        // Constraints: move/delete operate on one file and never recurse.
-        // Effects: M1 preserves bytes at the new path, M2 removes that file, and
-        // M3 fails without changing the directory tree.
-        // Decision rules: M1 move success; M2 delete success; M3 directory reject.
-        let base = std::env::temp_dir().join(format!("awaken-move-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let source = base.join("source.md");
-        let destination = base.join("nested/destination.md");
-        std::fs::write(&source, "durable").unwrap();
-        let context = HandToolContext::new(&base);
-        MoveTool::new(&context)
-            .call(MoveArgs {
-                source: source.to_string_lossy().into_owned(),
-                destination: destination.to_string_lossy().into_owned(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&destination).unwrap(),
-            "durable",
-            "M1"
-        );
-        DeleteTool::new(&context)
-            .call(DeleteArgs {
-                path: destination.to_string_lossy().into_owned(),
-            })
-            .await
-            .unwrap();
-        assert!(!destination.exists(), "M2");
-        assert!(
-            DeleteTool::new(&context)
-                .call(DeleteArgs {
-                    path: base.to_string_lossy().into_owned(),
-                })
-                .await
-                .is_err(),
-            "M3"
-        );
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

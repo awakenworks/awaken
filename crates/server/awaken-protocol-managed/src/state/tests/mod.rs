@@ -2,6 +2,7 @@ use super::test_support::{RehydrateFake, create_session_fixture, ephemeral_sessi
 use super::*;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
+use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::ToolPermissionDecision;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -106,14 +107,31 @@ impl SessionRuntime for EndSessionRecorder {
         // reintroduced merely to make archive/delete tests executable.
         Ok(None)
     }
-    async fn execute_terminal_cleanup(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.ended.lock().unwrap().push(command.thread_id.clone());
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            Vec::new(),
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        self.ended
+            .lock()
+            .unwrap()
+            .push(effect.command.thread_id.clone());
+        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        Ok(crate::test_support::complete_terminal_cleanup_disposal(
+            &effect,
         ))
     }
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {

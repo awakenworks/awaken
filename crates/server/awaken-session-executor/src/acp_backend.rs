@@ -339,13 +339,21 @@ impl crate::host::SharedHost {
             let hand_factory = hand_factory.unwrap_or_else(|| {
                 panic!("container Session environments require a hand executor factory")
             });
-            let components = crate::container_environment::build_container_environment(
-                tier,
-                deployment.container_image.as_deref(),
-                &deployment.sandbox,
-            )
-            .await
-            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+            let realization_namespace =
+                awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                    "direct-host-installation",
+                    host.local_workspace(),
+                ])
+                .unwrap_or_else(|error| panic!("configure Session container identity: {error}"));
+            let components =
+                crate::container_environment::build_container_environment_for_realization(
+                    realization_namespace,
+                    tier,
+                    deployment.container_image.as_deref(),
+                    &deployment.sandbox,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
             if let Some(initializer) = components.cache_volume_initializer {
                 host.cache_volume_prewarmer =
                     crate::cache_volume::CacheVolumePrewarmer::new(initializer);

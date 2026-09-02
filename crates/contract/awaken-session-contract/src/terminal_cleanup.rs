@@ -5,95 +5,40 @@
 //! from a stable [`SessionCleanupCommand`]. Their untrusted completion report
 //! becomes a [`VerifiedSessionCleanupReceipt`] only after exact command binding.
 
-
-mod effects;
-pub use effects::*;
-mod state;
-pub use state::*;
 mod completion;
+mod driver;
+mod effects;
+mod progress;
 mod repository_publication;
+mod state;
 
-pub use completion::{SessionCleanupCompletion, VerifiedSessionCleanupReceipt};
+use completion::SessionCleanupCompletion;
+use completion::VerifiedSessionCleanupReceipt;
+pub use driver::{SessionTerminalCleanupDriveOutcome, drive_session_terminal_cleanup};
+pub use effects::*;
+pub use progress::{
+    SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt, SessionCleanupPreparation,
+    SessionCleanupRepositoryPreparation, SessionTerminalCleanupAction,
+};
+use progress::{SessionCleanupDisposing, SessionCleanupPreparing};
 use repository_publication::{
-    VerifiedRepositoryPublicationOutcome, verified_repository_publication_outcome,
+    SessionRepositoryPublicationCleanup, VerifiedRepositoryPublicationOutcome,
+    verified_repository_publication_outcome, verified_repository_publication_outcome_for,
 };
+pub use repository_publication::{
+    SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
+    SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
+    SessionRepositoryPublicationRejection,
+};
+pub use state::SessionCleanupOperation;
+pub(crate) use state::deserialize_persisted_operation;
+#[cfg(kani)]
+use state::{SessionCleanupPhase, session_cleanup_phase_advance_admitted};
 
-use awaken_provisioning_contract::{
-    RepositoryPublicationExpectation, RepositoryPublicationReceipt, RepositoryPublicationRejection,
-};
+#[cfg(test)]
+use effects::cleanup_effect_id;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-
-/// One explicit, frozen request to publish the exact writable Repository input
-/// already owned by the Session. Configuration, credential reference, mount,
-/// and access remain in the existing [`crate::ResolvedInput`] authority; this
-/// intent adds only the terminal Git ref expected by the caller.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRepositoryPublicationIntent {
-    pub input: crate::ResolvedInput,
-    pub expectation: RepositoryPublicationExpectation,
-}
-
-/// Stable root-only publication command derived from the one durable cleanup
-/// operation. It contains no credential material and cannot select a current
-/// Repository configuration after the Session has frozen its input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRepositoryPublicationCommand {
-    pub session_id: String,
-    pub effect_id: String,
-    pub intent: SessionRepositoryPublicationIntent,
-}
-
-/// Untrusted but canonical, secret-free effect evidence for one exact Session
-/// publication command. The Repository result remains owned by the provisioning
-/// contract; this wrapper binds it to the durable Session operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRepositoryPublicationReceipt {
-    pub command_fingerprint: String,
-    pub effect_receipt: RepositoryPublicationReceipt,
-    pub receipt_fingerprint: String,
-}
-
-/// Canonical permanent rejection evidence for one exact Session publication
-/// command. This is the negative counterpart of
-/// [`SessionRepositoryPublicationReceipt`], not a second cleanup state: exactly
-/// one of the two may be retained by the existing publication sidecar.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRepositoryPublicationRejection {
-    pub command_fingerprint: String,
-    pub effect_rejection: RepositoryPublicationRejection,
-    pub rejection_fingerprint: String,
-}
-
-/// One execution attempt at the root publication effect. `Rejected` is a
-/// successful observation of a permanent compare-and-swap failure and therefore
-/// must be made durable before ordinary root cleanup. Dependency loss remains a
-/// `RunError` outside this enum so the same command is retried.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionRepositoryPublicationEffect {
-    Published(SessionRepositoryPublicationReceipt),
-    Rejected(SessionRepositoryPublicationRejection),
-}
-
-/// The publication sidecar around the one legacy cleanup operation.
-///
-/// Its fields are private so callers cannot construct a recursive wrapper or a
-/// second cleanup state machine. The inner operation remains the sole phase,
-/// target, completion, and terminal-receipt authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionRepositoryPublicationCleanup {
-    cleanup: SessionCleanupOperation,
-    intent: SessionRepositoryPublicationIntent,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    receipt: Option<SessionRepositoryPublicationReceipt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    rejection: Option<SessionRepositoryPublicationRejection>,
-}
 
 /// Heap-free admission kernel for one terminal cleanup effect receipt. The
 /// typed boundary performs the exact identity and canonical-fingerprint
@@ -114,236 +59,9 @@ pub(crate) const fn session_cleanup_completion_admitted(
         && canonical_receipt_matches
 }
 
-/// Heap-free phase projection used by the production operation gate and Kani.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum SessionCleanupPhase {
-    NotRequested,
-    Fenced,
-    Requested,
-    Completed,
-}
-
-/// A durable cleanup operation may advance by exactly one phase. Replays are
-/// handled by the phase-specific methods without rewriting durable authority.
-#[must_use]
-pub(crate) const fn session_cleanup_phase_advance_admitted(
-    current: SessionCleanupPhase,
-    next: SessionCleanupPhase,
-) -> bool {
-    matches!(
-        (current, next),
-        (
-            SessionCleanupPhase::NotRequested,
-            SessionCleanupPhase::Fenced
-        ) | (SessionCleanupPhase::Fenced, SessionCleanupPhase::Requested)
-            | (
-                SessionCleanupPhase::Requested,
-                SessionCleanupPhase::Completed
-            )
-    )
-}
-
-/// The one durable cleanup operation stored by the Session aggregate.
-///
-/// The four pre-publication variants and their field types are retained exactly
-/// for Rust source and persisted-wire compatibility. Repository publication is
-/// an additive heap-indirected sidecar around one of those same variants; it
-/// delegates every cleanup phase transition to that sole inner operation.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum SessionCleanupOperation {
-    #[default]
-    NotRequested,
-    /// Durable admission fence. No new Session Run or delegation may begin,
-    /// but the currently executing parent has not yet reached quiescence.
-    Fenced { effect_id: String },
-    Requested {
-        effect_id: String,
-        #[serde(default)]
-        thread_ids: BTreeSet<String>,
-        #[serde(default)]
-        delegation_watermark: u64,
-        /// Runtime commit high-water captured after the terminal fence joined
-        /// every admitted root/child execution.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        runtime_commit_cursor: Option<u64>,
-        /// Canonical Runtime completions already admitted for this frozen
-        /// target set. Local execution may settle the whole operation in one
-        /// call; a remote Worker records these one at a time through the same
-        /// operation so process loss never requires a second cleanup queue.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        completions: BTreeMap<String, SessionCleanupCompletion>,
-    },
-    Completed {
-        effect_id: String,
-        #[serde(default)]
-        thread_ids: BTreeSet<String>,
-        #[serde(default)]
-        delegation_watermark: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        runtime_commit_cursor: Option<u64>,
-        receipt_fingerprint: String,
-    },
-    /// Additive publication metadata around exactly one non-publication cleanup
-    /// operation. The private payload and custom decoder reject recursive
-    /// wrappers, so this cannot become a parallel phase hierarchy.
-    RepositoryPublication(Box<SessionRepositoryPublicationCleanup>),
-}
-
-fn complete_cleanup(
-    cleanup: &mut SessionCleanupOperation,
-    session_id: &str,
-    receipts: &[VerifiedSessionCleanupReceipt],
-    repository_publication_outcome: Option<VerifiedRepositoryPublicationOutcome>,
-) -> Result<bool, SessionCleanupError> {
-    let SessionCleanupOperation::Requested {
-        effect_id,
-        thread_ids,
-        delegation_watermark,
-        runtime_commit_cursor,
-        ..
-    } = cleanup
-    else {
-        return if cleanup.is_completed() {
-            Ok(false)
-        } else {
-            Err(SessionCleanupError::NotRequested)
-        };
-    };
-    if receipts.is_empty() {
-        return Err(SessionCleanupError::MissingReceipt);
-    }
-    let mut evidence = receipts.to_vec();
-    evidence.sort_by(|left, right| left.thread_id().cmp(right.thread_id()));
-    for pair in evidence.windows(2) {
-        if pair[0].thread_id() == pair[1].thread_id() {
-            return Err(SessionCleanupError::DuplicateThread(
-                pair[0].thread_id().to_string(),
-            ));
-        }
-    }
-    let evidenced_threads = evidence
-        .iter()
-        .map(|receipt| receipt.thread_id().to_string())
-        .collect::<BTreeSet<_>>();
-    if !evidenced_threads.contains(session_id) {
-        return Err(SessionCleanupError::MissingRootReceipt);
-    }
-    if evidenced_threads != *thread_ids {
-        return Err(SessionCleanupError::MissingReceipt);
-    }
-    for receipt in &evidence {
-        let expected = SessionCleanupCommand::new(session_id, receipt.thread_id(), effect_id);
-        if receipt.command() != &expected {
-            return Err(SessionCleanupError::ReceiptMismatch);
-        }
-    }
-    let cleanup_evidence = evidence
-        .iter()
-        .map(|receipt| {
-            (
-                receipt.thread_id(),
-                receipt.effect_id(),
-                receipt.receipt_fingerprint(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let receipt_fingerprint = match repository_publication_outcome {
-        Some(VerifiedRepositoryPublicationOutcome::Published(publication_receipt)) => {
-            crate::stable_fingerprint(&(
-                "session-terminal-cleanup-receipt-v2",
-                effect_id.as_str(),
-                *delegation_watermark,
-                cleanup_evidence,
-                publication_receipt.receipt_fingerprint.as_str(),
-            ))
-        }
-        Some(VerifiedRepositoryPublicationOutcome::Rejected(publication_rejection)) => {
-            crate::stable_fingerprint(&(
-                "session-terminal-cleanup-rejection-v1",
-                effect_id.as_str(),
-                *delegation_watermark,
-                cleanup_evidence,
-                publication_rejection.rejection_fingerprint.as_str(),
-            ))
-        }
-        None => crate::stable_fingerprint(&(
-            "session-terminal-cleanup-receipt-v1",
-            effect_id.as_str(),
-            *delegation_watermark,
-            cleanup_evidence,
-        )),
-    };
-    let next = SessionCleanupOperation::Completed {
-        effect_id: effect_id.clone(),
-        thread_ids: thread_ids.clone(),
-        delegation_watermark: *delegation_watermark,
-        runtime_commit_cursor: *runtime_commit_cursor,
-        receipt_fingerprint,
-    };
-    if !cleanup.advance_to(next) {
-        return Err(SessionCleanupError::InvalidPhaseAdvance);
-    }
-    Ok(true)
-}
-
-/// Stable, per-thread cleanup command derived from the root operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionCleanupCommand {
-    pub session_id: String,
-    pub thread_id: String,
-    pub effect_id: String,
-    /// Exact unpublished physical target owned by a durable `Restoring` state.
-    /// Only the root command carries it; legacy/non-restoring commands omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restore_target: Option<crate::SandboxRestoreRequest>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SessionCleanupError {
-    #[error("Session terminal cleanup was not requested")]
-    NotRequested,
-    #[error("Session terminal cleanup has no Runtime receipt")]
-    MissingReceipt,
-    #[error("Session terminal cleanup has no root-thread receipt")]
-    MissingRootReceipt,
-    #[error("Session terminal cleanup contains duplicate thread {0}")]
-    DuplicateThread(String),
-    #[error("Session terminal cleanup receipt does not match its exact intent")]
-    ReceiptMismatch,
-    #[error("invalid Session Repository publication intent: {0}")]
-    InvalidRepositoryPublicationIntent(String),
-    #[error("Session Repository publication was not requested")]
-    RepositoryPublicationNotRequested,
-    #[error("Session Repository publication is not ready before child cleanup completes")]
-    RepositoryPublicationNotReady,
-    #[error("Session terminal cleanup has no Repository publication receipt")]
-    MissingRepositoryPublicationReceipt,
-    #[error("Session Repository publication receipt does not match its exact command")]
-    RepositoryPublicationReceiptMismatch,
-    #[error("Session terminal cleanup has no Repository publication outcome")]
-    MissingRepositoryPublicationOutcome,
-    #[error("Session Repository publication rejection does not match its exact command")]
-    RepositoryPublicationRejectionMismatch,
-    #[error("Session Repository publication has conflicting terminal outcomes")]
-    RepositoryPublicationOutcomeMismatch,
-    #[error("Session Repository publication intent is already frozen to another value")]
-    FrozenRepositoryPublicationMismatch,
-    #[error("Session cleanup operation does not match its Session identity")]
-    OperationMismatch,
-    #[error("Session terminal cleanup targets were already frozen at a different watermark")]
-    FrozenTargetsMismatch,
-    #[error("Session cleanup operation attempted an invalid phase advance")]
-    InvalidPhaseAdvance,
-}
-
-fn cleanup_effect_id(session_id: &str) -> String {
-    crate::stable_fingerprint(&("session-terminal-cleanup-v1", session_id))
-}
-
 #[cfg(test)]
 mod tests {
+    use super::state::SessionCleanupState;
     use super::*;
     use awaken_provisioning_contract::{
         RepositoryPublicationExpectation, RepositoryPublicationReceipt,
@@ -355,6 +73,75 @@ mod tests {
         SessionCleanupCompletion::new(command, Vec::new())
             .verify(command)
             .unwrap()
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PersistedCleanupFixture {
+        #[serde(deserialize_with = "super::deserialize_persisted_operation")]
+        cleanup: SessionCleanupOperation,
+    }
+
+    fn decode_persisted_cleanup(
+        value: serde_json::Value,
+    ) -> Result<SessionCleanupOperation, serde_json::Error> {
+        serde_json::from_value::<PersistedCleanupFixture>(serde_json::json!({
+            "cleanup": value,
+        }))
+        .map(|fixture| fixture.cleanup)
+    }
+
+    fn decode_persisted_cleanup_slice(
+        encoded: &[u8],
+    ) -> Result<SessionCleanupOperation, serde_json::Error> {
+        decode_persisted_cleanup(serde_json::from_slice(encoded)?)
+    }
+
+    fn decode_persisted_cleanup_str(
+        encoded: &str,
+    ) -> Result<SessionCleanupOperation, serde_json::Error> {
+        decode_persisted_cleanup(serde_json::from_str(encoded)?)
+    }
+
+    /// Construct old persisted bytes without retaining a production one-stage
+    /// completion writer. Cause/effect decision table: C1 an exact legacy
+    /// Requested wire is plain or publication-wrapped; C2 its completion is
+    /// canonical or malformed. E1 the private aggregate-field codec admits the
+    /// canonical historical bytes; E2 verification rejects malformed evidence;
+    /// E3 the opaque public operation exposes no completion mutation or decoder.
+    ///
+    /// | Rule | wrapper | completion | Effect |
+    /// | L1 | absent | canonical | E1/E3 |
+    /// | L2 | publication | canonical | E1/E3 |
+    /// | L3 | either | malformed | E2/E3 |
+    fn install_legacy_completion_wire(
+        state: &mut SessionCleanupOperation,
+        completion: SessionCleanupCompletion,
+    ) {
+        let thread_id = completion.thread_id.clone();
+        let mut encoded = serde_json::to_value(&*state).unwrap();
+        let cleanup = if encoded.get("state").and_then(serde_json::Value::as_str)
+            == Some("repository_publication")
+        {
+            encoded
+                .get_mut("cleanup")
+                .expect("publication wire contains its cleanup")
+        } else {
+            &mut encoded
+        };
+        assert_eq!(
+            cleanup.get("state").and_then(serde_json::Value::as_str),
+            Some("requested"),
+            "legacy completion fixture requires Requested cleanup"
+        );
+        cleanup
+            .as_object_mut()
+            .expect("cleanup wire is an object")
+            .entry("completions")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .expect("legacy completions wire is an object")
+            .insert(thread_id, serde_json::to_value(completion).unwrap());
+        *state = decode_persisted_cleanup(encoded).unwrap();
     }
 
     fn publication_intent() -> SessionRepositoryPublicationIntent {
@@ -383,6 +170,28 @@ mod tests {
                 commit: "0123456789abcdef0123456789abcdef01234567".into(),
                 expected_prior_commit: None,
             },
+        }
+    }
+
+    fn memory_input(
+        binding_id: &str,
+        store_id: &str,
+        mount_path: &str,
+        access: ResourceAccess,
+    ) -> crate::ResolvedInput {
+        crate::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::from(binding_id),
+            source: crate::ResolvedInputSource::MemoryStore {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from(store_id),
+                config: awaken_resource_contract::MemoryStoreConfigVersion {
+                    memory_store_id: awaken_resource_contract::MemoryStoreId::from(store_id),
+                    version: awaken_resource_contract::ConfigVersion(7),
+                    retention_policy: Default::default(),
+                },
+            },
+            mount_path: mount_path.into(),
+            access,
+            instructions: None,
         }
     }
 
@@ -424,79 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_layout_and_legacy_variant_fields_remain_exact() {
-        // Layout cause/effect decision table: C1 PersistedSession embeds the
-        // cleanup operation by value; C2 the four legacy variants retain their
-        // exact public fields; C3 publication is absent/present; C4 optional
-        // realization-failure provenance is heap-indirected; C5 the embedded
-        // Suspending source identity is also heap-indirected. Effects: E1 the
-        // operation retains its exact legacy inline size and each C4/C5
-        // provenance contribution remains one pointer field;
-        // E2 legacy Rust construction/destructuring keeps BTreeMap/String field
-        // types; E3 publication contributes only one boxed-wrapper word; E4
-        // serde emits the wrapper payload without a Box representation.
-        //
-        // | Rule | publication | legacy fields | Effect |
-        // | B1 | absent | unchanged | E1/E2 |
-        // | B2 | present | isolated in wrapper | E1/E3/E4 |
-        // | B3 | either | boxed failure source | E1 (one pointer field) |
-        // | B4 | either | boxed suspend source | E1 (one pointer field) |
-        //
-        // On x86_64 the uncorrected publication layout measured 120 bytes for
-        // SessionCleanupOperation and 2480 for PersistedSession. Boxing the one
-        // additive wrapper, not either legacy public field, preserves the exact
-        // 104-byte operation layout. The later failure-source provenance adds
-        // one boxed pointer field; aggregate alignment produces the intentional
-        // 2480-byte Session instead of the 2496-byte inline-RunId layout.
-        assert_eq!(
-            std::mem::size_of::<SessionCleanupOperation>(),
-            std::mem::size_of::<LegacySessionCleanupOperationLayout>(),
-            "B1-B2/E1 publication must not enlarge the legacy cleanup layout"
-        );
-        assert!(
-            std::mem::size_of::<SessionCleanupOperation>()
-                < std::mem::size_of::<SessionRepositoryPublicationReceipt>(),
-            "B1-B2/E3 cleanup must not inline publication payloads"
-        );
-        #[cfg(target_pointer_width = "64")]
-        {
-            assert_eq!(std::mem::size_of::<SessionCleanupOperation>(), 104, "E1");
-            assert_eq!(
-                std::mem::size_of::<crate::SessionEnvironmentState>(),
-                416,
-                "E1"
-            );
-            assert_eq!(std::mem::size_of::<crate::PersistedSession>(), 2480, "E1");
-        }
-        let _legacy_requested_source_shape = SessionCleanupOperation::Requested {
-            effect_id: String::new(),
-            thread_ids: BTreeSet::new(),
-            delegation_watermark: 0,
-            runtime_commit_cursor: None,
-            completions: BTreeMap::new(),
-        };
-        let _legacy_completed_source_shape = SessionCleanupOperation::Completed {
-            effect_id: String::new(),
-            thread_ids: BTreeSet::new(),
-            delegation_watermark: 0,
-            runtime_commit_cursor: None,
-            receipt_fingerprint: String::new(),
-        };
-
-        let intent = publication_intent();
-        let mut state = SessionCleanupOperation::default();
-        state
-            .request_with_publication("boxed-wire", intent.clone())
-            .unwrap();
-        let encoded = serde_json::to_value(&state).unwrap();
-        assert_eq!(
-            encoded.get("intent"),
-            Some(&serde_json::to_value(intent).unwrap()),
-            "B2/E4"
-        );
-    }
-
-    #[test]
     fn publication_wrapper_deserialization_rejects_recursive_or_impossible_state() {
         // Decoder cause/effect decision table: C1 the additive wrapper contains
         // exactly one legacy cleanup; C2 that inner cleanup is itself a wrapper;
@@ -516,18 +252,14 @@ mod tests {
             .request_with_publication("decode-shape", intent.clone())
             .unwrap();
         let valid = serde_json::to_value(&state).unwrap();
-        assert!(
-            serde_json::from_value::<SessionCleanupOperation>(valid.clone()).is_ok(),
-            "D1/E1"
-        );
+        assert!(decode_persisted_cleanup(valid.clone()).is_ok(), "D1/E1");
 
         let nested = serde_json::json!({
             "state": "repository_publication",
             "cleanup": valid,
             "intent": intent,
         });
-        let nested_error =
-            serde_json::from_value::<SessionCleanupOperation>(nested).expect_err("D2/E2");
+        let nested_error = decode_persisted_cleanup(nested).expect_err("D2/E2");
         assert!(
             nested_error
                 .to_string()
@@ -540,10 +272,7 @@ mod tests {
             "cleanup": { "state": "not_requested" },
             "intent": publication_intent(),
         });
-        assert!(
-            serde_json::from_value::<SessionCleanupOperation>(unrequested).is_err(),
-            "D3/E2"
-        );
+        assert!(decode_persisted_cleanup(unrequested).is_err(), "D3/E2");
 
         let completed_without_receipt = serde_json::json!({
             "state": "repository_publication",
@@ -558,7 +287,7 @@ mod tests {
             "intent": publication_intent(),
         });
         assert!(
-            serde_json::from_value::<SessionCleanupOperation>(completed_without_receipt).is_err(),
+            decode_persisted_cleanup(completed_without_receipt).is_err(),
             "D4/E2"
         );
     }
@@ -609,7 +338,7 @@ mod tests {
         assert!(state.freeze_targets("legacy-session", [], 7, 11).unwrap());
         let requested = r#"{"state":"requested","effect_id":"fnv1a64:0f89047907a93a47","thread_ids":["legacy-session"],"delegation_watermark":7,"runtime_commit_cursor":11}"#;
         assert_eq!(serde_json::to_string(&state).unwrap(), requested, "L2/E1");
-        let decoded: SessionCleanupOperation = serde_json::from_str(requested).unwrap();
+        let decoded = decode_persisted_cleanup_str(requested).unwrap();
         assert!(decoded.repository_publication_intent().is_none(), "L2/E3");
 
         let command = state
@@ -628,7 +357,7 @@ mod tests {
         );
         let completed = r#"{"state":"completed","effect_id":"fnv1a64:0f89047907a93a47","thread_ids":["legacy-session"],"delegation_watermark":7,"runtime_commit_cursor":11,"receipt_fingerprint":"fnv1a64:b5e378ea35d2300b"}"#;
         assert_eq!(serde_json::to_string(&state).unwrap(), completed, "L3/E1");
-        let decoded: SessionCleanupOperation = serde_json::from_str(completed).unwrap();
+        let decoded = decode_persisted_cleanup_str(completed).unwrap();
         assert!(decoded.repository_publication_intent().is_none(), "L3/E3");
         assert!(
             decoded
@@ -646,7 +375,7 @@ mod tests {
         // absent/present; C4 root cleanup is asserted; C5 process recovery may
         // occur after either durable effect. Effects: E1 children are the only
         // first commands; E2 publication becomes the sole root projection; E3
-        // ordinary root finalization is withheld until publication evidence; E4
+        // ordinary root disposal is withheld until publication evidence; E4
         // exact receipts replay without a second effect; E5 recovery preserves
         // the same command/receipt and reaches one v2 terminal outcome.
         //
@@ -711,12 +440,10 @@ mod tests {
             "R1 children cannot be bypassed"
         );
 
-        state
-            .record_completion(
-                "publish-session",
-                SessionCleanupCompletion::new(&child, Vec::new()),
-            )
-            .unwrap();
+        install_legacy_completion_wire(
+            &mut state,
+            SessionCleanupCompletion::new(&child, Vec::new()),
+        );
         assert!(
             state
                 .pending_commands("publish-session")
@@ -729,17 +456,20 @@ mod tests {
             .unwrap()
             .expect("R2/E2");
         assert_eq!(publication.session_id, "publish-session", "R2 root-only");
+        let mut premature = state.clone();
+        install_legacy_completion_wire(
+            &mut premature,
+            SessionCleanupCompletion::new(&root, Vec::new()),
+        );
+        let premature_receipts = premature.recorded_receipts("publish-session").unwrap();
         assert_eq!(
-            state.record_completion(
-                "publish-session",
-                SessionCleanupCompletion::new(&root, Vec::new()),
-            ),
+            premature.complete("publish-session", &premature_receipts),
             Err(SessionCleanupError::MissingRepositoryPublicationOutcome),
-            "R3/E3"
+            "R3/E3 historical wire cannot bypass publication"
         );
 
         let encoded = serde_json::to_vec(&state).unwrap();
-        let mut recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
+        let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
         assert_eq!(
             recovered.publication_command("publish-session").unwrap(),
             Some(publication.clone()),
@@ -760,7 +490,7 @@ mod tests {
         );
 
         let encoded = serde_json::to_vec(&recovered).unwrap();
-        let mut recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
+        let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
         assert_eq!(
             recovered
                 .pending_commands("publish-session")
@@ -778,12 +508,10 @@ mod tests {
                 .is_none(),
             "R5"
         );
-        recovered
-            .record_completion(
-                "publish-session",
-                SessionCleanupCompletion::new(&root, Vec::new()),
-            )
-            .unwrap();
+        install_legacy_completion_wire(
+            &mut recovered,
+            SessionCleanupCompletion::new(&root, Vec::new()),
+        );
         let receipts = recovered.recorded_receipts("publish-session").unwrap();
         assert!(
             recovered.complete("publish-session", &receipts).unwrap(),
@@ -796,13 +524,13 @@ mod tests {
                 .is_some(),
             "R6"
         );
-        let SessionCleanupOperation::RepositoryPublication(publication) = &recovered else {
+        let SessionCleanupState::RepositoryPublication(publication) = recovered.state() else {
             panic!("R6 publication wrapper");
         };
-        let SessionCleanupOperation::Completed {
+        let SessionCleanupState::Completed {
             receipt_fingerprint,
             ..
-        } = &publication.cleanup
+        } = publication.cleanup.state()
         else {
             panic!("R6 completed");
         };
@@ -836,7 +564,7 @@ mod tests {
         );
         assert_ne!(receipt_fingerprint.as_str(), would_be_v1, "R6 not v1");
         let encoded = serde_json::to_vec(&recovered).unwrap();
-        let mut recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
+        let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
         assert_eq!(
             serde_json::to_string(&recovered).unwrap(),
             r#"{"state":"repository_publication","cleanup":{"state":"completed","effect_id":"fnv1a64:0644e194c63acc8b","thread_ids":["publish-child","publish-session"],"delegation_watermark":17,"runtime_commit_cursor":23,"receipt_fingerprint":"fnv1a64:98d50a5f30ce7e68"},"intent":{"input":{"binding_id":"source","source":{"kind":"repository","repository_id":"repo-1","config":{"repository_id":"repo-1","version":7,"remote_url":"https://example.test/repo.git","initial_branch":"main","clone_policy":{}}},"mount_path":"/workspace/source","access":"read_write"},"expectation":{"branch":"awf/work","commit":"0123456789abcdef0123456789abcdef01234567"}},"receipt":{"command_fingerprint":"fnv1a64:e390852b7b991ab6","effect_receipt":{"repository_id":"repo-1","source_remote_url":"https://example.test/repo.git","branch":"awf/work","commit":"0123456789abcdef0123456789abcdef01234567"},"receipt_fingerprint":"fnv1a64:2350653aaf1ff920"}}"#,
@@ -847,93 +575,6 @@ mod tests {
                 .record_repository_publication_receipt("publish-session", receipt)
                 .unwrap(),
             "R6 exact completed replay"
-        );
-    }
-
-    #[test]
-    fn repository_publication_rejection_is_durable_root_gating_evidence() {
-        /* Permanent-rejection cause/effect table. Causes: C1 every child is
-         * complete; C2 the realizer reports an exact command-bound stale remote;
-         * C3 the same/different outcome is replayed; C4 ordinary root cleanup is
-         * attempted before/after rejection durability. Effects: E1 retain no
-         * second publication command; E2 expose the root cleanup only after the
-         * rejection; E3 exact rejection replay is a no-op and receipt/conflicting
-         * rejection fails closed; E4 completed recovery preserves the rejection.
-         * Rules: J1 !C1=>reject record; J2 C1+C2=>E1+E2; J3 same=>E3 no-op;
-         * J4 different=>E3 fail; J5 C2+C4=>E4. */
-        let session_id = "rejected-publication";
-        let prior = "1111111111111111111111111111111111111111";
-        let observed = "2222222222222222222222222222222222222222";
-        let mut intent = publication_intent();
-        intent.expectation.expected_prior_commit = Some(prior.into());
-        let mut state = SessionCleanupOperation::default();
-        state.request_with_publication(session_id, intent).unwrap();
-        state.freeze_targets(session_id, [], 3, 5).unwrap();
-        let command = state
-            .publication_command(session_id)
-            .unwrap()
-            .expect("J2 publication command");
-        let rejection = SessionRepositoryPublicationRejection::new(
-            &command,
-            RepositoryPublicationRejection::RemoteRefChanged {
-                observed_commit: observed.into(),
-            },
-        )
-        .unwrap();
-        assert!(
-            state.pending_commands(session_id).unwrap().is_empty(),
-            "J1 root is withheld before the publication outcome"
-        );
-        assert!(
-            state
-                .record_repository_publication_rejection(session_id, rejection.clone())
-                .unwrap(),
-            "J2 rejection becomes durable"
-        );
-        assert!(
-            !state
-                .record_repository_publication_rejection(session_id, rejection.clone())
-                .unwrap(),
-            "J3 exact rejection replay"
-        );
-        assert!(
-            state.publication_command(session_id).unwrap().is_none(),
-            "J2 Git is absorbing after durable rejection"
-        );
-        assert_eq!(
-            state
-                .pending_commands(session_id)
-                .unwrap()
-                .iter()
-                .map(|command| command.thread_id.as_str())
-                .collect::<Vec<_>>(),
-            vec![session_id],
-            "J2 ordinary root cleanup is now exposed"
-        );
-        assert_eq!(
-            state.record_repository_publication_receipt(session_id, publication_receipt(&command),),
-            Err(SessionCleanupError::RepositoryPublicationOutcomeMismatch),
-            "J4 receipt cannot replace a durable rejection"
-        );
-
-        let root = state.command_for(session_id, session_id).unwrap();
-        state
-            .record_completion(session_id, SessionCleanupCompletion::new(&root, Vec::new()))
-            .unwrap();
-        let receipts = state.recorded_receipts(session_id).unwrap();
-        assert!(state.complete(session_id, &receipts).unwrap(), "J5");
-        let encoded = serde_json::to_vec(&state).unwrap();
-        let recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(
-            recovered
-                .repository_publication_rejection(session_id)
-                .unwrap(),
-            Some(&rejection),
-            "J5 durable recovery"
-        );
-        assert!(
-            recovered.publication_command(session_id).unwrap().is_none(),
-            "J5 recovered rejection never reissues Git"
         );
     }
 
@@ -990,7 +631,7 @@ mod tests {
                 "V{}",
                 index + 2
             );
-            assert_eq!(state, SessionCleanupOperation::NotRequested, "E2");
+            assert!(state.is_not_requested(), "E2");
         }
 
         let mut state = SessionCleanupOperation::default();
@@ -1076,8 +717,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("runtime_commit_cursor");
-        let legacy_requested: SessionCleanupOperation =
-            serde_json::from_value(legacy_requested).unwrap();
+        let legacy_requested = decode_persisted_cleanup(legacy_requested).unwrap();
         assert_eq!(
             legacy_requested.runtime_commit_cursor(),
             None,
@@ -1092,8 +732,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("runtime_commit_cursor");
-        let legacy_completed: SessionCleanupOperation =
-            serde_json::from_value(legacy_completed).unwrap();
+        let legacy_completed = decode_persisted_cleanup(legacy_completed).unwrap();
         assert_eq!(
             legacy_completed.runtime_commit_cursor(),
             None,
@@ -1255,73 +894,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_completion_progress_is_durable_exact_and_replay_safe() {
-        // Cause/effect graph: C1 targets are frozen; C2 a canonical completion
-        // arrives for a pending target; C3 the exact completion replays; C4 a
-        // conflicting completion is asserted; C5 the operation is serialized
-        // between target completions. Effects: E1 remove only that command from
-        // the pending projection; E2 replay is a no-op; E3 conflict fails closed;
-        // E4 cold recovery retains verified progress and completes from the same
-        // immutable target set.
-        //
-        // | Rule | target | completion | restart | Effect |
-        // | R1 | frozen | canonical new | no | E1 |
-        // | R2 | frozen | exact replay | no | E2 |
-        // | R3 | frozen | conflicting | no | E3 |
-        // | R4 | remaining | canonical | yes | E4 |
-        // Constraints/invariants: the frozen target set and canonical receipt
-        // identity never change across retries or process recovery.
-        let mut state = SessionCleanupOperation::default();
-        state.request("remote-session");
-        state
-            .freeze_targets("remote-session", ["remote-child".to_string()], 17, 0)
-            .unwrap();
-        let child = state.command_for("remote-session", "remote-child").unwrap();
-        let child_completion = SessionCleanupCompletion::new(&child, Vec::new());
-        assert!(
-            state
-                .record_completion("remote-session", child_completion.clone())
-                .unwrap(),
-            "R1/E1"
-        );
-        assert_eq!(state.pending_commands("remote-session").unwrap().len(), 1);
-        assert!(
-            !state
-                .record_completion("remote-session", child_completion.clone())
-                .unwrap(),
-            "R2/E2"
-        );
-        let mut conflicting = child_completion;
-        conflicting.receipt_fingerprint.push_str("-stale");
-        assert_eq!(
-            state.record_completion("remote-session", conflicting),
-            Err(SessionCleanupError::ReceiptMismatch),
-            "R3/E3"
-        );
-
-        let encoded = serde_json::to_vec(&state).unwrap();
-        let mut recovered: SessionCleanupOperation = serde_json::from_slice(&encoded).unwrap();
-        let root = recovered
-            .command_for("remote-session", "remote-session")
-            .unwrap();
-        recovered
-            .record_completion(
-                "remote-session",
-                SessionCleanupCompletion::new(&root, Vec::new()),
-            )
-            .unwrap();
-        assert!(
-            recovered
-                .pending_commands("remote-session")
-                .unwrap()
-                .is_empty(),
-            "R4/E4"
-        );
-        let receipts = recovered.recorded_receipts("remote-session").unwrap();
-        assert!(recovered.complete("remote-session", &receipts).unwrap());
-    }
-
-    #[test]
     fn every_terminal_cleanup_receipt_identity_axis_is_mandatory() {
         for missing in 0..5 {
             let mut axes = [true; 5];
@@ -1344,12 +916,15 @@ mod tests {
         ) {
             /* Model-based cause/effect design. Each generated action is one of:
              * C0 request, C1 exact freeze, C2 exact receipt settlement, C3
-             * foreign freeze, C4 request replay, C5 mismatched freeze replay.
+             * foreign freeze, C4 request replay, C5 alternate freeze (valid as
+             * the first freeze, mismatched once another target is frozen).
              * Effects/invariants: E1 state rank never decreases; E2 Completed is
-             * immutable; E3 an intent exists only in Requested; E4 foreign or
-             * mismatched commands never rewrite authority. Random sequences
-             * cover order/replay combinations after the deterministic decision
-             * table owns each individual oracle. */
+             * immutable; E3 a frozen command exists in Requested and remains
+             * available in Completed solely for final-CAS acknowledgement,
+             * while Completed has no pending provider work; E4 foreign or
+             * already-frozen mismatched commands never rewrite authority.
+             * Random sequences cover order/replay combinations after the
+             * deterministic decision table owns each individual oracle. */
             let mut state = SessionCleanupOperation::default();
             for action in actions {
                 let before = state.clone();
@@ -1410,22 +985,33 @@ mod tests {
                 }
                 prop_assert_eq!(
                     state.command_for("model-session", "model-session").is_some(),
-                    state.is_requested(),
-                    "E3",
+                    state.is_requested() || state.is_completed(),
+                    "E3 frozen command projection",
                 );
+                if state.is_completed() {
+                    prop_assert!(
+                        state.pending_commands("model-session").unwrap().is_empty(),
+                        "E3 Completed has no provider work",
+                    );
+                }
+                if action == 3 || (action == 5 && (before.is_requested() || before.is_completed())) {
+                    prop_assert_eq!(&state, &before, "E4");
+                }
             }
         }
     }
 
     fn cleanup_rank(state: &SessionCleanupOperation) -> u8 {
-        match state {
-            SessionCleanupOperation::NotRequested => 0,
-            SessionCleanupOperation::Fenced { .. } => 1,
-            SessionCleanupOperation::Requested { .. } => 2,
-            SessionCleanupOperation::Completed { .. } => 3,
-            SessionCleanupOperation::RepositoryPublication(publication) => {
+        match state.state() {
+            SessionCleanupState::NotRequested => 0,
+            SessionCleanupState::Fenced { .. } => 1,
+            SessionCleanupState::Requested { .. } => 2,
+            SessionCleanupState::Completed { .. } => 3,
+            SessionCleanupState::RepositoryPublication(publication) => {
                 cleanup_rank(&publication.cleanup)
             }
+            SessionCleanupState::Preparing(_) => 2,
+            SessionCleanupState::Disposing(_) => 2,
         }
     }
 }

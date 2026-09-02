@@ -32,6 +32,20 @@ fn map_claimed_session_control_error(
     }
 }
 
+/// Compare the carried Run manifest with the one effect-capable Resource
+/// transition authored by Control. Decoding through the projection's canonical
+/// transition boundary keeps legacy validation and physical replay rules out of
+/// the Worker transport adapter.
+fn control_projection_matches_dispatched_manifest(
+    projection: &awaken_session_contract::FrozenSessionProjection,
+    dispatched: &awaken_session_contract::SessionResourceManifest,
+) -> Result<bool, awaken_session_contract::RunError> {
+    Ok(projection
+        .resource_transition(awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects)?
+        .desired()
+        == dispatched)
+}
+
 /// Install the frozen Session projection under the authenticated Run claim.
 /// Session authoring is complete before WorkQueue dispatch; the Worker can
 /// realize committed truth but cannot contribute another desired-state input.
@@ -95,25 +109,28 @@ pub(super) async fn install_claimed_session_projection(
             claimed.lease.run_id.0
         ))
     })?;
-    if let Some(dispatched) = dispatched_resources
-        && (dispatched.workspace_id != directive.projection.workspace_id
-            || dispatched.resources != directive.projection.resources)
-    {
-        return Err(HostWorkerResolver::execution_error(
-            "Control resume projection conflicts with the claimed resource snapshot",
-        ));
+    if let Some(dispatched) = dispatched_resources {
+        let exact = control_projection_matches_dispatched_manifest(
+            &directive.projection,
+            dispatched,
+        )
+        .map_err(|error| {
+            HostWorkerResolver::execution_error(format!(
+                "Control resume projection has no effect-capable Resource transition: {error}"
+            ))
+        })?;
+        if !exact {
+            return Err(HostWorkerResolver::execution_error(
+                "Control resume projection conflicts with the claimed resource snapshot",
+            ));
+        }
     }
-    let session_publication =
-        (claimed.request.thread_id() == thread_id).then_some(&claimed.request.activation.snapshot);
     HostWorkerResolver::drive_session_realization(
         host,
         control.as_ref(),
         &thread_id.0,
         directive,
-        Some(&claim),
-        session_publication,
-        claimed.request.placement.recovery
-            == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        Some(claimed),
     )
     .await
 }

@@ -546,20 +546,20 @@ pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
 
 /// A commit boundary that rejects every `commit` while `fail` is set, delegating
 /// all *reads* (run record, transcript, awaiting ticket) to a shared inner
-/// [`MemoryCommitCoordinator`]. It is the fault-injection seam for the worker's
+/// commit authority. It is the fault-injection seam for the worker's
 /// genuine-drive-failure path: a real storage failure during `execute`/`resume`/
 /// `perform_scheduled` makes the drive return `Err` while committed truth still
 /// shows the run non-terminal, so the worker must re-raise (not swallow) and leave
 /// the dispatch un-settled for a later retry.
 #[derive(Clone)]
-pub struct FailingCommit {
-    inner: Arc<awaken_store_inmem::MemoryCommitCoordinator>,
+pub struct FailingCommit<C> {
+    inner: Arc<C>,
     fail: Arc<AtomicBool>,
 }
 
-impl FailingCommit {
+impl<C> FailingCommit<C> {
     /// Wrap `inner`; commits fail immediately when `fail` is true.
-    pub fn new(inner: Arc<awaken_store_inmem::MemoryCommitCoordinator>, fail: bool) -> Self {
+    pub fn new(inner: Arc<C>, fail: bool) -> Self {
         Self {
             inner,
             fail: Arc::new(AtomicBool::new(fail)),
@@ -573,7 +573,7 @@ impl FailingCommit {
 }
 
 #[async_trait::async_trait]
-impl CommitCoordinator for FailingCommit {
+impl<C: CommitCoordinator> CommitCoordinator for FailingCommit<C> {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
         if self.fail.load(Ordering::SeqCst) {
             return Err(CommitError::Rejected("injected commit failure".to_string()));
@@ -582,7 +582,7 @@ impl CommitCoordinator for FailingCommit {
     }
 }
 
-impl CommittedThreadView for FailingCommit {
+impl<C: CommittedThreadView> CommittedThreadView for FailingCommit<C> {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.inner.committed_messages(thread_id)
     }
@@ -607,7 +607,7 @@ impl CommittedThreadView for FailingCommit {
 }
 
 #[async_trait::async_trait]
-impl RunRecoverySource for FailingCommit {
+impl<C: RunRecoverySource> RunRecoverySource for FailingCommit<C> {
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,

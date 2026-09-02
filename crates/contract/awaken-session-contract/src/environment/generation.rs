@@ -1,7 +1,5 @@
 //! Immutable identity of one live Sandbox generation.
 
-use super::*;
-
 /// Stable identity and immutable compatibility facts for one live Sandbox.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SandboxGeneration {
@@ -51,16 +49,30 @@ pub enum SuspendPhase {
     Quiescing,
     Uploading,
     ReadyToDispose,
+    Disposing,
 }
 
-/// Representation-free irreversible-effect gate shared by production and the
-/// bounded proof harness.
+/// Representation-free source-durability preparation gate shared by production
+/// and the bounded proof harness.
+#[must_use]
+pub const fn checkpoint_source_preparation_authorized(
+    phase: SuspendPhase,
+    has_checkpoint: bool,
+    has_preparation: bool,
+) -> bool {
+    matches!(phase, SuspendPhase::ReadyToDispose) && has_checkpoint && !has_preparation
+}
+
+/// Representation-free irreversible physical-effect gate shared by production
+/// and the bounded proof harness. Preparation must be durably admitted before
+/// this phase, so physical absence is never inferred from provider state alone.
 #[must_use]
 pub const fn checkpoint_source_disposal_authorized(
     phase: SuspendPhase,
     has_checkpoint: bool,
+    has_preparation: bool,
 ) -> bool {
-    matches!(phase, SuspendPhase::ReadyToDispose) && has_checkpoint
+    matches!(phase, SuspendPhase::Disposing) && has_checkpoint && has_preparation
 }
 
 /// Closed admission rule for evidence that every live Environment effect has
@@ -96,6 +108,18 @@ pub(crate) const fn checkpoint_receipt_admitted(
         && checkpoint_effect_matches
         && environment_fingerprint_matches
         && base_image_fingerprint_matches
+}
+
+/// Closed admission rule for the canonical receipt proving every live
+/// source-durability participant completed before physical deletion.
+#[must_use]
+pub(crate) const fn source_release_preparation_receipt_admitted(
+    effect_matches: bool,
+    generation_matches: bool,
+    source_binding_matches: bool,
+    canonical_receipt_matches: bool,
+) -> bool {
+    effect_matches && generation_matches && source_binding_matches && canonical_receipt_matches
 }
 
 /// Closed admission rule for the irreversible source-disposal receipt.

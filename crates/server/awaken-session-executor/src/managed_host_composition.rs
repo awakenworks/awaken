@@ -1,6 +1,6 @@
+//! Process-local composition of the Managed adapter around one shared Host.
+
 use super::*;
-
-
 
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
@@ -36,7 +36,7 @@ impl ManagedHost {
     }
 
     /// Connect BackgroundTask completion to the canonical Session Run
-    /// application after composition has wrapped it in an `Arc`.
+    /// application after composition has wrapped that application in an `Arc`.
     ///
     /// This is an executable weak edge only. It owns no notification record,
     /// BackgroundTask state, Run identity mapping, or retry ledger.
@@ -111,9 +111,8 @@ impl ManagedHost {
         }
     }
 
-    /// Publish only the execution-preparation effects that are not already part
-    /// of a complete frozen projection. Projection coordinates and Resources
-    /// have been installed exactly once in the same lifecycle critical section.
+    /// Publish only execution-preparation effects that are not already part of
+    /// the complete frozen projection.
     pub(super) fn complete_session_preparation(
         &self,
         thread: &str,
@@ -137,9 +136,8 @@ impl ManagedHost {
         }
     }
 
-    /// Install the complete immutable projection facts selected by one typed
-    /// mode. Callers that materialize execution hold the lifecycle mutex; lease
-    /// only realization uses the same projection owner without preparation.
+    /// Install all immutable facts selected by one typed mode through the sole
+    /// complete projection owner.
     pub(super) async fn install_projection_facts(
         &self,
         thread: &str,
@@ -153,13 +151,16 @@ impl ManagedHost {
                     .install_dispatch_frozen_session_projection(thread, projection.clone())
                     .await
             }
-            awaken_session_contract::SessionProjectionInstallMode::Realization { .. } => {
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                prepare_session,
+                ..
+            } => {
                 self.host
                     .install_frozen_session_projection(
                         thread,
                         projection.clone(),
                         None,
-                        true,
+                        *prepare_session,
                         realization_lease,
                     )
                     .await
@@ -169,8 +170,7 @@ impl ManagedHost {
     }
 
     /// Unit-test fixture for low-level Runtime behavior that does not construct
-    /// a persisted Session aggregate. Production Managed paths must use the
-    /// complete projection port above.
+    /// a persisted Session aggregate. Production paths use the complete port.
     #[cfg(test)]
     pub(super) async fn install_test_session_init(
         &self,
@@ -182,8 +182,7 @@ impl ManagedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
-        let preparation_needed = self.session_preparation_needed(thread)?;
-        if !preparation_needed {
+        if !self.session_preparation_needed(thread)? {
             return Ok(());
         }
         let resource_projection = self
@@ -204,4 +203,5 @@ impl ManagedHost {
         .await?;
         self.complete_session_preparation(thread, &init.environment);
         Ok(())
-    }}
+    }
+}

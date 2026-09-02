@@ -42,6 +42,8 @@ fn an_unknown_role_fails_and_names_the_valid_roles() {
             && text.contains("git-credential")
             && text.contains("control-forwarder")
             && text.contains("control-forwarder-ready")
+            && text.contains("repository-publish-noreplace")
+            && text.contains("read-tree-nofollow")
             && !text.contains("memoryd"),
         "the error lists the valid roles: {text}"
     );
@@ -57,6 +59,7 @@ fn no_role_prints_usage_and_fails() {
     assert!(
         text.contains("usage")
             && text.contains("acp|hand|git-credential|control-forwarder|control-forwarder-ready")
+            && text.contains("repository-publish-noreplace|read-tree-nofollow")
             && !text.contains("memoryd"),
         "with no role the binary prints usage: {text}"
     );

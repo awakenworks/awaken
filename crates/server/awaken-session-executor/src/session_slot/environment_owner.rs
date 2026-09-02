@@ -44,10 +44,6 @@ impl UnboundSessionEnvironment {
             && self.environment.handle() == other.environment.handle()
     }
 
-    pub(crate) fn requires_initial_provisioning(&self) -> bool {
-        matches!(&self.origin, UnboundSessionEnvironmentOrigin::New)
-    }
-
     pub(crate) fn effect_kind(&self) -> awaken_session_contract::SessionEnvironmentEffectKind {
         match &self.origin {
             UnboundSessionEnvironmentOrigin::New => {
@@ -62,6 +58,11 @@ impl UnboundSessionEnvironment {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// These variants are the exact in-memory ownership proof retained across a
+// fallible adoption. There is one per Session slot; heap-indirecting only the
+// durable identity would obscure its value semantics without changing wire or
+// persistence size.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum UnboundSessionEnvironmentOrigin {
     New,
     Adoption,
@@ -94,6 +95,10 @@ impl BoundSessionEnvironment {
 }
 
 #[derive(Clone)]
+// AwaitingAdoption deliberately retains the complete durable identity while
+// Candidate retains the exact Arc. Both are mutually exclusive phases of the
+// single Session slot owner, not elements of a retained collection.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum SessionEnvironmentPreparation {
     AwaitingAdoption {
         identity: BoundSessionEnvironmentIdentity,
@@ -136,6 +141,11 @@ impl RetiringSessionEnvironment {
 }
 
 #[derive(Clone)]
+// Retirement must carry either the exact unpublished Candidate or the exact
+// published owner across cancellation and response loss. The enum is a single
+// slot phase, so preserving direct value ownership is preferable to a second
+// heap-owned identity wrapper.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum RetiringEnvironmentOwner {
     Unbound(UnboundSessionEnvironment),
     Bound(BoundSessionEnvironment),
@@ -240,6 +250,21 @@ impl SessionEnvironmentOwner {
                 | Self::Resident(_)
                 | Self::Retiring(_)
         )
+    }
+
+    /// A Store response may be lost after the durable binding commits but
+    /// before this process receives the generated identity. The one hidden
+    /// Candidate must remain eligible for its existing idempotent publication
+    /// retry; it is not a second Resident or a license to create a substitute.
+    pub(crate) fn unpublished_candidate(&self) -> Option<&UnboundSessionEnvironment> {
+        match self {
+            Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => Some(candidate),
+            Self::Vacant
+            | Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption { .. })
+            | Self::Restoring(_)
+            | Self::Resident(_)
+            | Self::Retiring(_) => None,
+        }
     }
 
     /// Binding asserted by durable Session truth. An unpersisted candidate or

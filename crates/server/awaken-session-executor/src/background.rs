@@ -96,6 +96,52 @@ impl awaken_runtime_contract::ToolExecutionAdmission for SharedToolExecutionAdmi
     }
 }
 
+/// Releases one admission from the existing generation-scoped activity map on
+/// every task exit path, including panic unwind and Tokio cancellation/drop.
+struct SharedEnvironmentActivityGuard {
+    activity: Arc<BackgroundActivity>,
+    key: (String, String),
+}
+
+impl SharedEnvironmentActivityGuard {
+    fn acquire(activity: Arc<BackgroundActivity>, class: &BackgroundWorkClass) -> Option<Self> {
+        let BackgroundWorkClass::SharedEnvironment {
+            session_id,
+            generation_id,
+        } = class
+        else {
+            return None;
+        };
+        let key = (session_id.clone(), generation_id.clone());
+        *activity
+            .shared
+            .lock()
+            .expect("background activity mutex poisoned")
+            .entry(key.clone())
+            .or_default() += 1;
+        Some(Self { activity, key })
+    }
+}
+
+impl Drop for SharedEnvironmentActivityGuard {
+    fn drop(&mut self) {
+        let mut shared = self
+            .activity
+            .shared
+            .lock()
+            .expect("background activity mutex poisoned");
+        let remove = shared.get_mut(&self.key).is_some_and(|count| {
+            *count -= 1;
+            *count == 0
+        });
+        if remove {
+            shared.remove(&self.key);
+        }
+        drop(shared);
+        self.activity.changed.notify_waiters();
+    }
+}
+
 /// Every detached task must state whether it can mutate one Session
 /// Environment. This replaces inference from Tokio task identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,41 +206,11 @@ impl BackgroundRuns {
             "aux.background",
             otel.kind = "internal"
         );
-        let activity = self.activity.clone();
-        if let BackgroundWorkClass::SharedEnvironment {
-            session_id,
-            generation_id,
-        } = &class
-        {
-            *activity
-                .shared
-                .lock()
-                .expect("background activity mutex poisoned")
-                .entry((session_id.clone(), generation_id.clone()))
-                .or_default() += 1;
-        }
+        let activity_guard = SharedEnvironmentActivityGuard::acquire(self.activity.clone(), &class);
         self.tasks.lock().await.spawn(
             async move {
+                let _activity_guard = activity_guard;
                 fut.await;
-                if let BackgroundWorkClass::SharedEnvironment {
-                    session_id,
-                    generation_id,
-                } = class
-                {
-                    let mut shared = activity
-                        .shared
-                        .lock()
-                        .expect("background activity mutex poisoned");
-                    let key = (session_id, generation_id);
-                    if let Some(count) = shared.get_mut(&key) {
-                        *count -= 1;
-                        if *count == 0 {
-                            shared.remove(&key);
-                        }
-                    }
-                    drop(shared);
-                    activity.changed.notify_waiters();
-                }
             }
             .instrument(span),
         );
@@ -209,6 +225,21 @@ impl BackgroundRuns {
             .contains_key(&(session_id.to_string(), generation_id.to_string()))
     }
 
+    fn shared_environment_waiter_with_probe<'a>(
+        &'a self,
+        session_id: &str,
+        generation_id: &str,
+        after_check: impl FnOnce(),
+    ) -> Option<tokio::sync::futures::Notified<'a>> {
+        // `notify_waiters` does not retain a permit for a future listener. A
+        // Notified created first records its generation immediately, so a task
+        // dropping after the count check cannot wake before registration.
+        let changed = self.activity.changed.notified();
+        let active = self.has_shared_environment_work(session_id, generation_id);
+        after_check();
+        active.then_some(changed)
+    }
+
     /// Wait only for work that can mutate this exact environment generation.
     /// External durable work and caches never retain Session compute.
     pub async fn quiesce_shared_environment(
@@ -218,8 +249,10 @@ impl BackgroundRuns {
         timeout: Duration,
     ) -> bool {
         tokio::time::timeout(timeout, async {
-            while self.has_shared_environment_work(session_id, generation_id) {
-                self.activity.changed.notified().await;
+            while let Some(changed) =
+                self.shared_environment_waiter_with_probe(session_id, generation_id, || {})
+            {
+                changed.await;
             }
         })
         .await
@@ -290,9 +323,11 @@ mod tests {
         );
     }
 
-    // Cause/effect design: C2=shared task active then complete; external durable
-    // and cache tasks coexist. R4 retains the environment only for the matching
-    // session+generation and then permits E2 when that exact count reaches zero.
+    // Cause/effect decision table: C1=SharedEnvironment task exit is normal;
+    // C2=query is exact or another generation; C3=external/cache work coexists.
+    // R1 exact+active -> E1 quiescence blocks; R2 other generation -> E2 it is
+    // immediately quiescent; R3 exact+normal completion -> E3 the activity
+    // count is released; R4 external/cache -> E4 no environment count changes.
     #[tokio::test]
     async fn shared_environment_quiescence_is_generation_scoped() {
         let bg = BackgroundRuns::new();

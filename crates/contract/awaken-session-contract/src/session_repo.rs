@@ -13,21 +13,31 @@
 //! realization consumes that pin through the common exact resolver without
 //! selecting another source or revision.
 
+use std::collections::{BTreeMap, BTreeSet};
 
 mod disposition;
 mod persisted_session;
 mod recovery;
 mod repository_port;
-pub use repository_port::*;
-use async_trait::async_trait;
-use std::collections::{BTreeMap, BTreeSet};
-
-mod environment_binding;
 mod repository_publication;
 mod runtime_intervals;
 
+use disposition::{SessionDeleteDispositionClass, session_delete_request_plan};
+pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
+pub use persisted_session::PersistedSession;
+pub use recovery::{
+    SessionRecoveryCursor, SessionRecoveryQuarantine, SessionRecoveryScan,
+    SessionRepositoryRecoveryAction,
+};
+pub use repository_port::{
+    IdempotencyRecord, ManagedSessionRepository, ScopedPersistedSession, SessionCreateResult,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionMutationValidationError, SessionRealizationLease, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRevision, SessionTombstone, session_tombstone_is_admitted,
+};
 pub use repository_publication::SessionArchiveWithRepositoryPublicationError;
 
+#[cfg(test)]
 use crate::ManagedLifecycleFact;
 
 mod execution_state;
@@ -43,279 +53,6 @@ pub struct VisibleMcpServer {
     pub target: crate::McpTarget,
     pub prompts_as_skills: bool,
 }
-
-/// Monotonic root revision for every mutation of one Session aggregate.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct SessionRevision(pub u64);
-
-/// Durable retention and public-visibility state of one Session.
-///
-/// `Deleting` is committed before physical cleanup starts. `Deleted` is retained
-/// for imported historical rows and compact tombstone projections; ordinary new
-/// deletions remove the aggregate only after cleanup receipts are committed.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum SessionDisposition {
-    #[default]
-    Active,
-    Archived {
-        archived_at: String,
-    },
-    Deleting,
-    Deleted,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum SessionDeleteDispositionClass {
-    Active,
-    Archived,
-    Deleting,
-    Deleted,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SessionDeleteRequestPlan {
-    transition_to_deleting: bool,
-    terminalize_execution: bool,
-    request_cleanup: bool,
-}
-
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum SessionDispositionTransitionError {
-    #[error("cannot archive a Session while deletion is in progress or complete")]
-    ArchiveAfterDelete,
-}
-
-/// Durable owner fence for all process-local Session projections. Runtime and
-/// Worker identities are opaque to the Session domain.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionRealizationLease {
-    pub owner: String,
-    pub runtime_incarnation: String,
-    pub epoch: u64,
-    pub expires_at_unix_ms: u64,
-}
-
-/// The durable, adapter-side configuration of one Managed session, keyed by its
-/// id (which is also its thread id). Everything here is what the wire `Session`
-/// object needs beyond the runtime's committed transcript.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PersistedSession {
-    pub session_id: String,
-    /// The one optimistic-concurrency fence for baseline, Resource, MCP,
-    /// environment, execution, and disposition mutations. New, not-yet-inserted
-    /// values use 0.
-    pub revision: SessionRevision,
-    /// The only immutable configuration authority. A preparation intent is
-    /// consumed exactly once and replaced by its frozen baseline.
-    pub baseline: crate::SessionBaselineState,
-    pub title: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-    /// Exact durable neutral mutable tool policy. Empty is an intentional clear;
-    /// public protocol tool unions are projections and never persistence truth.
-    pub tools: crate::SessionToolConfiguration,
-    /// All accepted Session Event batches in root-revision order. Entries remain
-    /// after processing as the sole durable inbound DTO provenance; User/System
-    /// completion remains owned by Dispatch/Thread and Outcome state by the
-    /// Thread Outcome aggregate.
-    pub event_batches: Vec<crate::SessionEventBatch>,
-    /// Monotonic root-CAS environment fence for overlapping driving events.
-    /// Execution and disposition remain the durable logical state; completion
-    /// membership is owned by `active_activity_epochs`, while this scalar never
-    /// rewinds and therefore keeps environment operations uniquely ordered.
-    pub activity_epoch: u64,
-    /// Epochs of driving activities that have been admitted but have not yet
-    /// settled. This is Session activity truth, not a child/coordinator
-    /// relationship registry. `activity_epoch` remains the monotonic
-    /// environment fence; this set only prevents an out-of-order completion
-    /// from closing the shared Running interval while an older activity remains.
-    ///
-    /// Historical Running rows deserialize with an empty set. A direct settle
-    /// of their current scalar epoch is treated as the one legacy activity; a
-    /// new admission supersedes that unknowable crash-orphan and starts the
-    /// explicit set at its successor epoch.
-    pub active_activity_epochs: BTreeSet<u64>,
-    /// One continuous authoritative Running interval. It is persisted in the
-    /// aggregate so process recovery and overlapping driving events cannot
-    /// fabricate gaps or emit two customer-usage intervals.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub running_interval: Option<crate::SessionRuntimeIntervalStart>,
-    /// Every closed aggregate Running interval in root-revision order. This is
-    /// intentionally retained for the Session lifetime: the public Events API
-    /// accepts any prior event id as a page cursor, so truncating this prefix
-    /// would make a valid cross-replica cursor unknowable.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub closed_runtime_intervals: Vec<crate::SessionRuntimeInterval>,
-    /// Cumulative wall-clock milliseconds across closed Running intervals.
-    /// Overlapping activities share one interval, so this is the authoritative
-    /// non-double-counted Session runtime quantity used by list-cost pricing.
-    pub runtime_active_millis: u64,
-    /// Latest cumulative neutral Runtime usage observed by the Session root.
-    /// Runtime remains the counter authority; retaining this root-CAS projection
-    /// lets no-budget Sessions close an exact historical usage event too.
-    #[serde(default)]
-    pub usage_cursor: crate::ManagedBudgetUsageCursor,
-    /// Exact Managed list-cost budget and immutable price snapshot. All
-    /// Session threads share this root-owned admission and settlement fence.
-    pub budget: crate::SessionBudgetState,
-    /// Durable, secret-free execution-environment phase. Opaque bindings are
-    /// interpreted only by the runtime that produced them; this aggregate owns
-    /// their transition, not their substrate meaning.
-    pub environment: crate::SessionEnvironmentState,
-    /// The only initial and hot MCP desired-state authority.
-    pub mcp: crate::SessionMcpAttachmentSet,
-    /// Durable resource activation state. Its `active` manifest is the exact,
-    /// secret-free Session pin; `pending` and activation records make external
-    /// realization/release recoverable without importing authorization concepts.
-    pub resources: crate::SessionResourceState,
-    /// Continuing Session projection ownership; no process-local slot is an
-    /// authority for this lease.
-    pub realization: Option<SessionRealizationLease>,
-    /// Initial Environment realization retry state. Kept inside the Session
-    /// root so a reclaimed Worker claim cannot reset the failure budget.
-    pub realization_progress: crate::SessionRealizationProgress,
-    /// The only durable execution-state authority. The retained serialized key
-    /// keeps historical aggregate JSON readable through the store codec.
-    #[serde(rename = "status")]
-    pub execution: SessionExecutionState,
-    /// Retention/public-visibility is independent from execution progress.
-    pub disposition: SessionDisposition,
-    /// Durable intent/receipt state for terminal Runtime effects. Resource,
-    /// Environment, artifact, and process cleanup project from this one fact.
-    pub terminal_cleanup: crate::SessionCleanupOperation,
-}
-
-/// One durable Session together with its intrinsic Workspace partition.
-///
-/// Recovery consumes this envelope atomically instead of looking up an owner in
-/// a second step. It contains no principal, role, policy, credential, or
-/// authorization decision; `workspace_id` is resource routing state only.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ScopedPersistedSession {
-    pub workspace_id: String,
-    pub session: PersistedSession,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionTombstone {
-    pub session_id: String,
-    pub deleted_revision: SessionRevision,
-    pub deleted_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct IdempotencyRecord {
-    pub key: String,
-    pub payload_hash: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionIdempotencyReceipt {
-    pub payload_hash: String,
-    pub committed_revision: SessionRevision,
-}
-
-/// Atomic outcome of one Session-root create command. Both variants carry the
-/// repository's durable aggregate; callers must never continue from their
-/// locally compiled candidate after the repository classified a replay.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SessionCreateResult {
-    Applied(PersistedSession),
-    Replayed(PersistedSession),
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "the public root-mutation contract intentionally carries a complete replacement aggregate"
-)]
-pub enum SessionMutationPayload {
-    Replace(PersistedSession),
-    Delete(SessionTombstone),
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SessionMutation {
-    pub expected_revision: SessionRevision,
-    pub idempotency: IdempotencyRecord,
-    pub payload: SessionMutationPayload,
-    #[serde(default)]
-    pub lifecycle_facts: Vec<ManagedLifecycleFact>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionMutationResult {
-    Applied { new_revision: SessionRevision },
-    Replayed { new_revision: SessionRevision },
-    Conflict { current_revision: SessionRevision },
-    IdempotencyMismatch,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionMutationValidationError {
-    #[error("Session mutation idempotency key is empty")]
-    EmptyIdempotencyKey,
-    #[error("Session mutation payload hash is empty")]
-    EmptyPayloadHash,
-    #[error("Session mutation id is empty")]
-    EmptySessionId,
-    #[error("Session mutation revision is exhausted")]
-    RevisionExhausted,
-    #[error("replacement carries a revision different from expected_revision")]
-    ReplacementRevisionMismatch,
-    #[error("tombstone deleted_revision is not the next root revision")]
-    TombstoneRevisionMismatch,
-    #[error("lifecycle fact targets another Session")]
-    LifecycleSessionMismatch,
-    #[error("Session Running interval is inconsistent with execution state")]
-    RuntimeIntervalStateMismatch,
-    #[error("Session active activity epochs are inconsistent with execution state or fence")]
-    ActiveActivityStateMismatch,
-    #[error("lifecycle runtime interval payload is inconsistent")]
-    RuntimeIntervalFactMismatch,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionRepositoryConflict {
-    #[error("Session already exists")]
-    AlreadyExists,
-    #[error("Session was deleted")]
-    Tombstoned,
-    #[error("Session idempotency key was reused with another payload")]
-    IdempotencyMismatch,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionRepositoryError {
-    #[error("Session was not found")]
-    NotFound,
-    #[error("Session repository is unavailable: {0}")]
-    Unavailable(String),
-    #[error("Session repository contains corrupt durable state: {0}")]
-    Corrupt(String),
-    #[error("Session repository conflict: {0}")]
-    Conflict(SessionRepositoryConflict),
-    #[error("Session repository rejected invalid mutation: {0}")]
-    InvalidMutation(String),
-}
-
-// In-memory and durable adapters live outward in `awaken-session-store`.
-// Workspace ownership is persisted atomically beside each row through `create`;
-// authorization scope decorators do not belong in this resource persistence port.
 
 #[cfg(test)]
 mod mutation_tests {
@@ -418,6 +155,17 @@ mod mutation_tests {
         }
     }
 
+    fn terminal_disposal_command(
+        session: &PersistedSession,
+    ) -> Option<crate::SessionCleanupDisposalCommand> {
+        match session.terminal_cleanup_work_action().unwrap() {
+            Some(crate::SessionTerminalCleanupAction::Dispose { command }) => Some(command),
+            Some(crate::SessionTerminalCleanupAction::Waiting)
+            | Some(crate::SessionTerminalCleanupAction::Prepare { .. })
+            | None => None,
+        }
+    }
+
     #[test]
     fn frozen_constructor_owns_the_complete_initial_aggregate_shape() {
         // Cause/effect graph: C1 complete typed creation input is compiled; C2
@@ -463,13 +211,7 @@ mod mutation_tests {
         assert!(prepared.mcp.attachments.is_empty(), "C1/E1");
         assert!(prepared.resources.active.inputs().is_empty(), "C1/E1");
         assert!(prepared.realization.is_none(), "C1/E1");
-        assert!(
-            matches!(
-                prepared.terminal_cleanup,
-                crate::SessionCleanupOperation::NotRequested
-            ),
-            "C1/E1"
-        );
+        assert!(prepared.terminal_cleanup.is_not_requested(), "C1/E1");
     }
 
     #[test]
@@ -1239,26 +981,3 @@ mod verification {
         }
     }
 }
-
-
-
-/// Closed reducer plan for the durable Delete-intent transaction. Deleting and
-/// Deleted are absorbing replays; every admitted request hides the aggregate,
-/// fences nonterminal execution, and requests recoverable cleanup together.
-#[must_use]
-const fn session_delete_request_plan(
-    disposition: SessionDeleteDispositionClass,
-    execution_terminal: bool,
-) -> SessionDeleteRequestPlan {
-    let transition_to_deleting = matches!(
-        disposition,
-        SessionDeleteDispositionClass::Active | SessionDeleteDispositionClass::Archived
-    );
-    SessionDeleteRequestPlan {
-        transition_to_deleting,
-        terminalize_execution: transition_to_deleting && !execution_terminal,
-        request_cleanup: transition_to_deleting,
-    }
-}
-
-pub use recovery::{SessionRepositoryRecoveryAction, SessionRecoveryQuarantine, SessionRecoveryScan, SessionRecoveryCursor};

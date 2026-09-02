@@ -128,9 +128,17 @@ mod tests {
         }
     }
 
-    fn grading_input() -> GradingInput {
+    /// Complete ordinary Host composition for real Judge Run tests. The Judge
+    /// remains toolless and owns no alternate Session or dispatch path.
+    fn judge_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
+        let host = Arc::new(SharedHost::new(model, "stub"));
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        host
+    }
+
+    fn grading_input(outcome_id: &str) -> GradingInput {
         GradingInput {
-            outcome_id: Id("agent-grade".into()),
+            outcome_id: Id(outcome_id.into()),
             iteration: 0,
             description: "ship".into(),
             rubric: Rubric("all tests pass".into()),
@@ -155,13 +163,17 @@ mod tests {
 
     #[tokio::test]
     async fn agent_grader_executes_a_fresh_toolless_run_and_parses_exact_json() {
+        // Cause/effect rule J1: one unique Outcome identity selects one fresh
+        // grader Thread; exact JSON then parses to the authored decision. A
+        // sibling parser case owns a different Outcome and cannot leave this
+        // test's provider root behind for another Host.
         let model = Arc::new(FixedJudge {
             reply: r#"{"result":"needs_revision","explanation":"add coverage"}"#.into(),
             requests: Mutex::new(Vec::new()),
         });
-        let host = SharedHost::new(model.clone(), "stub");
+        let host = judge_test_host(model.clone());
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
-        let input = grading_input();
+        let input = grading_input("agent-grade-exact-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = host.ctx_for(&thread.0, None).await.unwrap();
         let executor = BoundRunExecutor::new(&host, context.clone());
@@ -187,13 +199,16 @@ mod tests {
 
     #[tokio::test]
     async fn agent_grader_rejects_prose_wrapped_json() {
+        // Cause/effect rule J2: a distinct fresh grader Thread receives prose
+        // around otherwise valid JSON, so strict parsing alone produces
+        // InvalidOutput; filesystem residue from J1 is not an input condition.
         let model = Arc::new(FixedJudge {
             reply: r#"Result: {"result":"satisfied","explanation":"ok"}"#.into(),
             requests: Mutex::new(Vec::new()),
         });
-        let host = SharedHost::new(model, "stub");
+        let host = judge_test_host(model);
         let snapshot = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS);
-        let input = grading_input();
+        let input = grading_input("agent-grade-prose-json");
         let thread = grader_thread_id(&input.outcome_id, input.iteration);
         let context = host.ctx_for(&thread.0, None).await.unwrap();
         let executor = BoundRunExecutor::new(&host, context.clone());

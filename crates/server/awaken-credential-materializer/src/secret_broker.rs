@@ -141,6 +141,30 @@ fn verify_exact_vault_revision(
     Ok(())
 }
 
+#[cfg(feature = "authority")]
+struct CredentialWritebackRequest {
+    source_id: String,
+    revision: Option<u64>,
+    material: RedactedString,
+}
+
+#[cfg(feature = "authority")]
+fn credential_writeback_request(
+    reference: &str,
+    bytes: Vec<u8>,
+) -> Result<CredentialWritebackRequest, awaken_provisioning_contract::SandboxError> {
+    let (source_id, revision) = split_exact_vault_reference(reference)
+        .map_err(awaken_provisioning_contract::SandboxError::new)?;
+    let material = String::from_utf8(bytes).map_err(|_| {
+        awaken_provisioning_contract::SandboxError::new("credential write-back is not valid UTF-8")
+    })?;
+    Ok(CredentialWritebackRequest {
+        source_id: source_id.to_owned(),
+        revision,
+        material: RedactedString::new(material),
+    })
+}
+
 #[cfg(kani)]
 mod kani_proofs {
     use super::exact_vault_revision_is_admitted;
@@ -297,12 +321,14 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         }
         #[cfg(feature = "authority")]
         {
-            let (source_id, revision) = split_exact_vault_reference(reference)
-                .map_err(awaken_provisioning_contract::SandboxError::new)?;
-            let source = self.load_active_source(source_id).await.map_err(|error| {
-                awaken_provisioning_contract::SandboxError::new(error.to_string())
-            })?;
-            verify_exact_vault_revision(&source, revision)
+            let request = credential_writeback_request(reference, bytes)?;
+            let source = self
+                .load_active_source(&request.source_id)
+                .await
+                .map_err(|error| {
+                    awaken_provisioning_contract::SandboxError::new(error.to_string())
+                })?;
+            verify_exact_vault_revision(&source, request.revision)
                 .map_err(awaken_provisioning_contract::SandboxError::new)?;
             if source.descriptor.is_some() {
                 return Err(awaken_provisioning_contract::SandboxError::new(
@@ -315,11 +341,6 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                     source.id.0
                 ))
             })?;
-            let material = String::from_utf8(bytes).map_err(|_| {
-                awaken_provisioning_contract::SandboxError::new(
-                    "credential write-back is not valid UTF-8",
-                )
-            })?;
             let (credentials, secrets) = self.local_stores().ok_or_else(|| {
                 awaken_provisioning_contract::SandboxError::new(
                     "credential write-back requires a local credential authority",
@@ -329,10 +350,55 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                 &source.id,
                 source.version,
                 awaken_credential_vault::repo::CredentialMaterialPatch {
-                    primary: Some(RedactedString::new(material)),
+                    primary: Some(request.material),
                     auxiliary: BTreeMap::new(),
                     descriptor: None,
                 },
+                secrets.as_ref(),
+                credentials.as_ref(),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))
+        }
+    }
+
+    async fn write_back_for_effect(
+        &self,
+        effect: &awaken_provisioning_contract::SecretWritebackEffect,
+        bytes: Vec<u8>,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        #[cfg(not(feature = "authority"))]
+        {
+            let _ = (effect, bytes);
+            return Err(awaken_provisioning_contract::SandboxError::new(
+                "database-less Worker cannot write a local Vault reference",
+            ));
+        }
+        #[cfg(feature = "authority")]
+        {
+            effect.authorization().validate_live_at(unix_time_ms())?;
+            let request = credential_writeback_request(effect.reference(), bytes)?;
+            let revision = request.revision.ok_or_else(|| {
+                awaken_provisioning_contract::SandboxError::new(
+                    "effect-fenced credential write-back requires an exact source revision",
+                )
+            })?;
+            let expected_version = i64::try_from(revision).map_err(|_| {
+                awaken_provisioning_contract::SandboxError::new(
+                    "credential reference revision exceeds the authority range",
+                )
+            })?;
+            let (credentials, secrets) = self.local_stores().ok_or_else(|| {
+                awaken_provisioning_contract::SandboxError::new(
+                    "credential write-back requires a local credential authority",
+                )
+            })?;
+            awaken_credential_vault::repo::write_back_credential_material_for_effect(
+                &awaken_credential_contract::CredentialSourceId(request.source_id),
+                expected_version,
+                effect.writeback_id(),
+                request.material,
                 secrets.as_ref(),
                 credentials.as_ref(),
             )
@@ -361,7 +427,7 @@ mod tests {
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialKind, InMemorySecretStore, SecretStore,
     };
-    use awaken_provisioning_contract::SecretBroker;
+    use awaken_provisioning_contract::{SecretBroker, SecretWritebackEffect};
 
     use super::PinnedCredentialMaterializer;
 

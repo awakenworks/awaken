@@ -1,5 +1,55 @@
-use super::*;
+use async_trait::async_trait;
 
+use super::{PersistedSession, SessionExecutionState, SessionRecoveryCursor, SessionRecoveryScan};
+use crate::ManagedLifecycleFact;
+
+/// Monotonic root revision for every mutation of one Session aggregate.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct SessionRevision(pub u64);
+
+/// Durable owner fence for all process-local Session projections. Runtime and
+/// Worker identities are opaque to the Session domain.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionRealizationLease {
+    pub owner: String,
+    pub runtime_incarnation: String,
+    pub epoch: u64,
+    pub expires_at_unix_ms: u64,
+}
+
+impl SessionRealizationLease {
+    /// Project the aggregate-owned realization generation into the one neutral
+    /// provider fence. Domain callers still decide whether this lease is the
+    /// current/live authority; this method only prevents adapters from growing
+    /// duplicate field mappings or operation-identity algorithms.
+    pub fn sandbox_effect_fence(
+        &self,
+        operation_id: impl Into<String>,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxEffectFence,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_provisioning_contract::SandboxEffectFence::new(
+            operation_id,
+            self.owner.clone(),
+            self.runtime_incarnation.clone(),
+            self.epoch,
+            self.expires_at_unix_ms,
+        )
+    }
+}
 
 /// Closed admission kernel for physically deleting the authoritative Session
 /// row. Visibility, execution fencing, accepted Event provenance, and verified
@@ -21,6 +71,55 @@ pub const fn session_tombstone_is_admitted(
         && next_revision_exact
 }
 
+/// One durable Session together with its intrinsic Workspace partition.
+///
+/// Recovery consumes this envelope atomically instead of looking up an owner in
+/// a second step. It contains no principal, role, policy, credential, or
+/// authorization decision; `workspace_id` is resource routing state only.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScopedPersistedSession {
+    pub workspace_id: String,
+    pub session: PersistedSession,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionTombstone {
+    pub session_id: String,
+    pub deleted_revision: SessionRevision,
+    pub deleted_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IdempotencyRecord {
+    pub key: String,
+    pub payload_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionIdempotencyReceipt {
+    pub payload_hash: String,
+    pub committed_revision: SessionRevision,
+}
+
+/// Atomic outcome of one Session-root create command. Both variants carry the
+/// repository's durable aggregate; callers must never continue from their
+/// locally compiled candidate after the repository classified a replay.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionCreateResult {
+    Applied(PersistedSession),
+    Replayed(PersistedSession),
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the public root-mutation contract intentionally carries a complete replacement aggregate"
+)]
+pub enum SessionMutationPayload {
+    Replace(PersistedSession),
+    Delete(SessionTombstone),
+}
+
 impl SessionMutationPayload {
     #[must_use]
     pub fn session_id(&self) -> &str {
@@ -34,6 +133,71 @@ impl SessionMutationPayload {
     pub fn stable_hash(&self) -> String {
         crate::stable_fingerprint(self)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SessionMutation {
+    pub expected_revision: SessionRevision,
+    pub idempotency: IdempotencyRecord,
+    pub payload: SessionMutationPayload,
+    #[serde(default)]
+    pub lifecycle_facts: Vec<ManagedLifecycleFact>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionMutationResult {
+    Applied { new_revision: SessionRevision },
+    Replayed { new_revision: SessionRevision },
+    Conflict { current_revision: SessionRevision },
+    IdempotencyMismatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SessionMutationValidationError {
+    #[error("Session mutation idempotency key is empty")]
+    EmptyIdempotencyKey,
+    #[error("Session mutation payload hash is empty")]
+    EmptyPayloadHash,
+    #[error("Session mutation id is empty")]
+    EmptySessionId,
+    #[error("Session mutation revision is exhausted")]
+    RevisionExhausted,
+    #[error("replacement carries a revision different from expected_revision")]
+    ReplacementRevisionMismatch,
+    #[error("tombstone deleted_revision is not the next root revision")]
+    TombstoneRevisionMismatch,
+    #[error("lifecycle fact targets another Session")]
+    LifecycleSessionMismatch,
+    #[error("Session Running interval is inconsistent with execution state")]
+    RuntimeIntervalStateMismatch,
+    #[error("Session active activity epochs are inconsistent with execution state or fence")]
+    ActiveActivityStateMismatch,
+    #[error("lifecycle runtime interval payload is inconsistent")]
+    RuntimeIntervalFactMismatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SessionRepositoryConflict {
+    #[error("Session already exists")]
+    AlreadyExists,
+    #[error("Session was deleted")]
+    Tombstoned,
+    #[error("Session idempotency key was reused with another payload")]
+    IdempotencyMismatch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SessionRepositoryError {
+    #[error("Session was not found")]
+    NotFound,
+    #[error("Session repository is unavailable: {0}")]
+    Unavailable(String),
+    #[error("Session repository contains corrupt durable state: {0}")]
+    Corrupt(String),
+    #[error("Session repository conflict: {0}")]
+    Conflict(SessionRepositoryConflict),
+    #[error("Session repository rejected invalid mutation: {0}")]
+    InvalidMutation(String),
 }
 
 impl SessionMutation {
@@ -194,6 +358,8 @@ pub trait ManagedSessionRepository: Send + Sync {
         ))
     }
 
+    /// Compatibility first-page read over the same keyset authority. It never
+    /// loops or replays a default page on behalf of callers.
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
         self.reconcilable_sessions_page(None).await
     }
@@ -249,25 +415,6 @@ pub trait ManagedSessionRepository: Send + Sync {
     async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError>;
 }
 
-impl SessionRealizationLease {
-
-    /// Project the aggregate-owned realization generation into the one neutral
-    /// provider fence. Domain callers still decide whether this lease is the
-    /// current/live authority; this method only prevents adapters from growing
-    /// duplicate field mappings or operation-identity algorithms.
-    pub fn sandbox_effect_fence(
-        &self,
-        operation_id: impl Into<String>,
-    ) -> Result<
-        awaken_provisioning_contract::SandboxEffectFence,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        awaken_provisioning_contract::SandboxEffectFence::new(
-            operation_id,
-            self.owner.clone(),
-            self.runtime_incarnation.clone(),
-            self.epoch,
-            self.expires_at_unix_ms,
-        )
-    }
-}
+// In-memory and durable adapters live outward in `awaken-session-store`.
+// Workspace ownership is persisted atomically beside each row through `create`;
+// authorization scope decorators do not belong in this resource persistence port.

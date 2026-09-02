@@ -10,7 +10,7 @@
 //! with an in-memory duplex; [`McpStdioServer::serve_stdio`] binds the real
 //! process stdin/stdout for a subprocess-launched server.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_mcp_server_core::NotifySink;
@@ -21,22 +21,38 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::watch;
 
 use crate::service::McpToolService;
 
 /// Delivers notifications through the peer's write queue. The peer is built
 /// around the request handler, so the notifier lands here one step later —
-/// before it does, there is no connection to notify.
+/// callers arriving before that publication wait at this one startup handshake
+/// instead of silently losing their notification.
 struct PeerSink {
-    notifier: Arc<OnceLock<JsonRpcNotifier>>,
+    notifier: watch::Receiver<Option<JsonRpcNotifier>>,
+}
+
+impl PeerSink {
+    async fn published_notifier(&self) -> JsonRpcNotifier {
+        let mut notifier = self.notifier.clone();
+        loop {
+            if let Some(notifier) = notifier.borrow().clone() {
+                return notifier;
+            }
+            notifier
+                .changed()
+                .await
+                .expect("stdio peer publishes its notifier during construction");
+        }
+    }
 }
 
 #[async_trait]
 impl NotifySink for PeerSink {
     async fn notify(&self, method: &str, params: Value) {
-        if let Some(notifier) = self.notifier.get() {
-            let _ = notifier.notify(method, params).await;
-        }
+        let notifier = self.published_notifier().await;
+        let _ = notifier.notify(method, params).await;
     }
 }
 
@@ -75,17 +91,14 @@ impl McpStdioServer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let notifier_cell = Arc::new(OnceLock::new());
+        let (notifier_publisher, notifier) = watch::channel(None);
+        let sink = Arc::new(PeerSink { notifier });
         let handler = Arc::new(ServiceHandler {
             service: Arc::clone(&service),
-            sink: Arc::new(PeerSink {
-                notifier: Arc::clone(&notifier_cell),
-            }),
+            sink: Arc::clone(&sink),
         });
         let (peer, mut notifications) = JsonRpcPeer::new(reader, writer, Some(handler));
-        notifier_cell
-            .set(peer.notifier())
-            .unwrap_or_else(|_| unreachable!("notifier cell is set exactly once"));
+        notifier_publisher.send_replace(Some(peer.notifier()));
         let peer = Arc::new(peer);
 
         // Client notifications (initialized, cancelled) forward to the service.
@@ -100,12 +113,9 @@ impl McpStdioServer {
 
         // Export-set changes owe the client a tools/list_changed.
         if let Some(mut changes) = service.source().changes() {
-            let sink = PeerSink {
-                notifier: Arc::clone(&notifier_cell),
-            };
             tokio::spawn(async move {
                 while changes.changed().await.is_ok() {
-                    awaken_mcp_server_core::notify_tools_list_changed(&sink).await;
+                    awaken_mcp_server_core::notify_tools_list_changed(sink.as_ref()).await;
                 }
             });
         }
@@ -137,7 +147,10 @@ mod tests {
     use awaken_runtime_contract::permission::ToolCall;
     use awaken_runtime_contract::resolved::ToolDescriptor;
     use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+    use std::future::Future;
+    use std::task::Poll;
     use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
     struct EchoTool;
 

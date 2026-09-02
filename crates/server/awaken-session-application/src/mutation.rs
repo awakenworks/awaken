@@ -7,7 +7,7 @@ use awaken_session_contract::{
     SessionRepositoryError,
 };
 
-use crate::creation::validated_create_replay;
+use crate::creation::{SessionCreationCompletion, validated_create_replay};
 
 pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutationError {
     match error {
@@ -96,11 +96,47 @@ impl SessionApplication {
         session_id: &str,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.replay_session_create_with_completion(
+            owner_scope,
+            session_id,
+            idempotency,
+            SessionCreationCompletion::AwaitRealization,
+        )
+        .await
+    }
+
+    /// Atomically inspect an asynchronous create receipt without converting a
+    /// durably failed realization into a transport-level create conflict. The
+    /// repository read and identity comparison remain the same authority as
+    /// [`Self::replay_session_create`]; only the caller's completion boundary
+    /// differs.
+    pub async fn replay_accepted_session_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.replay_session_create_with_completion(
+            owner_scope,
+            session_id,
+            idempotency,
+            SessionCreationCompletion::AcceptDurableRoot,
+        )
+        .await
+    }
+
+    async fn replay_session_create_with_completion(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+        completion: SessionCreationCompletion,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.sessions_repo
             .replay_create(owner_scope, session_id, idempotency)
             .await
             .map_err(SessionCreationError::repository)?
-            .map(validated_create_replay)
+            .map(|session| validated_create_replay(session, completion))
             .transpose()
     }
 

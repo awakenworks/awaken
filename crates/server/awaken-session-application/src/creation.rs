@@ -13,19 +13,22 @@ use awaken_session_contract::{
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionCreationCompletion {
+pub(super) enum SessionCreationCompletion {
     AwaitRealization,
     AcceptDurableRoot,
 }
 
 /// Classify the repository-owned durable result at both create-replay entry
-/// points. `ActivationFailed` is retained for recovery but can never become a
-/// successful create merely because two callers passed protocol preflight
-/// before either committed.
+/// points. Awaiting callers retain the historical terminal conflict, while an
+/// accepting caller receives the same failed asynchronous-operation root rather
+/// than starting or projecting a replacement.
 pub(super) fn validated_create_replay(
     session: PersistedSession,
+    completion: SessionCreationCompletion,
 ) -> Result<PersistedSession, SessionCreationError> {
-    if session.execution == SessionExecutionState::ActivationFailed {
+    if completion == SessionCreationCompletion::AwaitRealization
+        && session.execution == SessionExecutionState::ActivationFailed
+    {
         return Err(SessionCreationError::Tombstoned);
     }
     Ok(session)
@@ -177,7 +180,7 @@ impl SessionApplication {
         .await
     }
 
-    async fn create_session_with_completion(
+    pub(super) async fn create_session_with_completion(
         &self,
         command: CreateSessionCommand,
         completion: SessionCreationCompletion,
@@ -213,6 +216,31 @@ impl SessionApplication {
                 return Err(first);
             }
         };
+        let layout = awaken_session_contract::SessionSandboxLayout {
+            workspace_id: owner_scope.clone(),
+            agent_id: compiled.baseline.agent_id.clone(),
+            agent_revision: compiled.baseline.agent_revision,
+            runtime_placement: compiled.baseline.runtime_placement,
+            model_override: compiled.baseline.model_override.clone(),
+            runtime: compiled.baseline.runtime.clone(),
+            mounts: compiled.baseline.mounts.clone(),
+            env: compiled.baseline.env.clone(),
+            environment: compiled.baseline.environment.clone(),
+            resources: compiled.initial_resources.sandbox_layout_bindings(),
+        };
+        if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
+            let first = SessionCreationError::Rejected(error);
+            if !self
+                .abort_unadopted_session_repositories(&repository_configurations)
+                .await
+            {
+                tracing::warn!(
+                    session = %session_id,
+                    "Session Repository compensation remains pending after Sandbox-layout rejection"
+                );
+            }
+            return Err(first);
+        }
         let mut persisted = match Self::compile_session_root(
             session_id.clone(),
             title,
@@ -266,7 +294,7 @@ impl SessionApplication {
                     .replay_session_create(&owner_scope, &session_id, &idempotency)
                     .await
                 {
-                    Ok(Some(session)) => return validated_create_replay(session),
+                    Ok(Some(session)) => return validated_create_replay(session, completion),
                     Ok(None) => {
                         if !self
                             .abort_unadopted_session_repositories(&repository_configurations)
@@ -310,7 +338,9 @@ impl SessionApplication {
             // Returning here also prevents duplicate external installation,
             // activation, WorkQueue dispatch, or cleanup from a newly lowered
             // candidate that was never committed.
-            SessionCreateResult::Replayed(session) => return validated_create_replay(session),
+            SessionCreateResult::Replayed(session) => {
+                return validated_create_replay(session, completion);
+            }
         };
 
         if completion == SessionCreationCompletion::AcceptDurableRoot {

@@ -66,6 +66,80 @@ impl WorkerControlClient {
         }
     }
 
+    fn session_environment_error(
+        status: reqwest::StatusCode,
+        body: &Value,
+    ) -> awaken_session_contract::RunError {
+        let code = body.get("code").and_then(Value::as_str).unwrap_or(
+            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                "unavailable"
+            } else {
+                "session_environment_control_rejected"
+            },
+        );
+        let message = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("Session Environment control request rejected");
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            awaken_session_contract::RunError::unavailable_classified(code, message)
+        } else {
+            awaken_session_contract::RunError::classified(code, message)
+        }
+    }
+
+    pub async fn authorize_session_environment_effect(
+        &self,
+        identity: &WorkerIdentity,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_contract::RunError,
+    > {
+        let (status, body) = self
+            .post_response(
+                "/v1/worker/session/environment/authorize",
+                json!({ "identity": identity, "intent": intent }),
+            )
+            .await
+            .map_err(awaken_session_contract::RunError::unavailable)?;
+        if !status.is_success() {
+            return Err(Self::session_environment_error(status, &body));
+        }
+        serde_json::from_value(body.get("authorization").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                awaken_session_contract::RunError::internal(format!(
+                    "Session Environment authorization decode: {error}"
+                ))
+            },
+        )
+    }
+
+    pub async fn persist_session_environment_receipt(
+        &self,
+        identity: &WorkerIdentity,
+        receipt: &awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
+    {
+        let (status, body) = self
+            .post_response(
+                "/v1/worker/session/environment/persist",
+                json!({ "identity": identity, "receipt": receipt }),
+            )
+            .await
+            .map_err(awaken_session_contract::RunError::unavailable)?;
+        if !status.is_success() {
+            return Err(Self::session_environment_error(status, &body));
+        }
+        serde_json::from_value(body.get("environment").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                awaken_session_contract::RunError::internal(format!(
+                    "Session Environment authority decode: {error}"
+                ))
+            },
+        )
+    }
+
     /// Register once while preserving the one retryable registry conflict as a
     /// typed result. The caller owns retry timing; all other transport and
     /// validation failures remain terminal.
@@ -233,16 +307,17 @@ impl WorkerControlClient {
             })
     }
 
-    /// Poll the Coordinator's existing durable Session cleanup operation for
-    /// this exact realization generation. `Some([])` is a terminal fence that
-    /// is not yet ready to execute and must retain the local projection.
-    pub async fn terminal_cleanup_commands(
+    /// Poll one Coordinator-derived terminal-work projection for this exact
+    /// realization generation. `Some(work)` with no commands is a terminal
+    /// fence that is not yet ready to execute and must retain the exact frozen
+    /// assignment delivered from the same Session-root snapshot.
+    pub async fn terminal_cleanup_work(
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
         lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<
-        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        Option<awaken_session_contract::SessionTerminalCleanupWork>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         let body = self
@@ -255,13 +330,110 @@ impl WorkerControlClient {
                 }),
             )
             .await?;
-        serde_json::from_value(body.get("commands").cloned().unwrap_or(Value::Null)).map_err(
-            |error| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                    "Session terminal cleanup command decode: {error}"
-                ))
-            },
+        let work = body.get("work").cloned().ok_or_else(|| {
+            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                "Session terminal cleanup response omitted its work projection".into(),
+            )
+        })?;
+        serde_json::from_value(work).map_err(|error| {
+            awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                "Session terminal cleanup work decode: {error}"
+            ))
+        })
+    }
+
+    pub async fn authorize_terminal_cleanup_effect(
+        &self,
+        identity: &WorkerIdentity,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) -> Result<
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/cleanup/preparation/authorize",
+                json!({
+                    "identity": identity,
+                    "effect": effect,
+                }),
+            )
+            .await?;
+        let authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization =
+            serde_json::from_value(body.get("authorization").cloned().unwrap_or(Value::Null))
+                .map_err(|error| {
+                    awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                        "Session terminal cleanup preparation authorization decode: {error}"
+                    ))
+                })?;
+        authorization.verify_for(effect).map_err(|error| {
+            awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                "Session terminal cleanup preparation authorization mismatch: {error}"
+            ))
+        })?;
+        Ok(authorization)
+    }
+
+    pub async fn record_terminal_cleanup_preparation(
+        &self,
+        identity: &WorkerIdentity,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        preparation: awaken_session_contract::SessionCleanupPreparation,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.realization_response(
+            "/v1/worker/session/cleanup/preparation/record",
+            json!({
+                "identity": identity,
+                "lease": lease,
+                "preparation": preparation,
+            }),
         )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn authorize_terminal_cleanup_disposal(
+        &self,
+        identity: &WorkerIdentity,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/cleanup/disposal/authorize",
+                json!({
+                    "identity": identity,
+                    "effect": effect,
+                }),
+            )
+            .await?;
+        body.get("workspace_id")
+            .and_then(Value::as_str)
+            .filter(|workspace_id| !workspace_id.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                    "Session terminal cleanup disposal authorization response has no Workspace"
+                        .into(),
+                )
+            })
+    }
+
+    pub async fn record_terminal_cleanup_disposal(
+        &self,
+        identity: &WorkerIdentity,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.realization_response(
+            "/v1/worker/session/cleanup/disposal/record",
+            json!({
+                "identity": identity,
+                "lease": lease,
+                "receipt": receipt,
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Poll the aggregate-owned root publication command and its canonical
@@ -337,25 +509,6 @@ impl WorkerControlClient {
         .await
         .map(|_| ())
     }
-
-    pub async fn record_terminal_cleanup_completion(
-        &self,
-        identity: &WorkerIdentity,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        completion: awaken_session_contract::SessionCleanupCompletion,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.realization_response(
-            "/v1/worker/session/cleanup/complete",
-            json!({
-                "identity": identity,
-                "lease": lease,
-                "completion": completion,
-            }),
-        )
-        .await
-        .map(|_| ())
-    }
-
     pub async fn list_session_agents(
         &self,
         identity: &WorkerIdentity,

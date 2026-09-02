@@ -289,9 +289,8 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             scope_id: None,
             logical_path: None,
             harvest_key: None,
-            deleted: false,
-        
             artifact_idempotency_scope: None,
+            deleted: false,
         })
         .await
         .unwrap();
@@ -505,9 +504,8 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             scope_id: None,
             logical_path: None,
             harvest_key: None,
-            deleted: false,
-        
             artifact_idempotency_scope: None,
+            deleted: false,
         })
         .await
         .unwrap();
@@ -546,9 +544,8 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
             scope_id: None,
             logical_path: None,
             harvest_key: None,
-            deleted: false,
-        
             artifact_idempotency_scope: None,
+            deleted: false,
         })
         .await
         .unwrap();
@@ -656,9 +653,8 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
             scope_id: None,
             logical_path: None,
             harvest_key: None,
-            deleted: false,
-        
             artifact_idempotency_scope: None,
+            deleted: false,
         })
         .await
         .unwrap();
@@ -757,9 +753,8 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
             scope_id: None,
             logical_path: None,
             harvest_key: None,
-            deleted: false,
-        
             artifact_idempotency_scope: None,
+            deleted: false,
         })
         .await
         .unwrap();

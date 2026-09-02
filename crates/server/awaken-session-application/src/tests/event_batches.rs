@@ -544,9 +544,16 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
 }
 
 fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
+    tool_reply_input_for_target(tool_use_id, SessionThreadTarget::Primary)
+}
+
+fn tool_reply_input_for_target(
+    tool_use_id: &str,
+    target: SessionThreadTarget,
+) -> SessionEventInput {
     SessionEventInput::ToolReply(SessionEventToolReply {
         tool_request_event_id: format!("evt_{tool_use_id}"),
-        target: SessionThreadTarget::Primary,
+        target,
         expected_run_id: RunId("awaiting-run".into()),
         expected_correlation_id: "awaiting-correlation".into(),
         expected_thread_version: None,
@@ -557,6 +564,38 @@ fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
             is_error: false,
         },
     })
+}
+
+fn tool_reply_activity_operation_id(
+    session_id: &str,
+    batch: &awaken_session_contract::SessionEventBatch,
+) -> String {
+    let ordinal = batch
+        .events
+        .iter()
+        .position(|entry| matches!(&entry.event, SessionEventCommand::ToolReply { .. }))
+        .expect("fixture batch contains a ToolReply");
+    let reply = match &batch.events[ordinal].event {
+        SessionEventCommand::ToolReply { reply, .. } => reply,
+        _ => unreachable!("ToolReply ordinal was selected above"),
+    };
+    let accompanying_system = batch.events.get(ordinal + 1).and_then(|entry| {
+        if let SessionEventCommand::SystemMessage {
+            operation_id,
+            content,
+        } = &entry.event
+        {
+            Some(awaken_session_contract::SessionUserRunSystemInput {
+                operation_id: operation_id.clone(),
+                content: content.clone(),
+            })
+        } else {
+            None
+        }
+    });
+    reply
+        .delivery_command(session_id, accompanying_system)
+        .activity_operation_id()
 }
 
 fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSession {
@@ -861,10 +900,10 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 .freeze_targets(session_id, [], 0, cursor)
                 .expect("freeze terminal visibility cursor");
         } else {
-            let mut legacy = serde_json::to_value(&session.terminal_cleanup).unwrap();
-            legacy["state"] = serde_json::Value::String("requested".into());
-            session.terminal_cleanup = serde_json::from_value(legacy)
-                .expect("legacy Requested cleanup without runtime cursor");
+            let mut legacy = serde_json::to_value(&session).unwrap();
+            legacy["terminal_cleanup"]["state"] = serde_json::Value::String("requested".into());
+            session = serde_json::from_value(legacy)
+                .expect("aggregate codec reads legacy Requested cleanup without runtime cursor");
         }
         create(repository.as_ref(), session).await;
     }
@@ -1003,15 +1042,17 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
         .expect("legacy delete starts from a valid terminal aggregate");
     session.disposition = awaken_session_contract::SessionDisposition::Deleting;
-    session.terminal_cleanup = serde_json::from_value(serde_json::json!({
+    let mut legacy = serde_json::to_value(&session).unwrap();
+    legacy["terminal_cleanup"] = serde_json::json!({
         "state": "completed",
         "effect_id": "legacy-delete-cleanup",
         "thread_ids": ["deleting-batch"],
         "delegation_watermark": 0,
         "runtime_commit_cursor": 31,
         "receipt_fingerprint": "legacy-delete-receipt"
-    }))
-    .expect("legacy completed terminal cleanup");
+    });
+    session = serde_json::from_value(legacy)
+        .expect("aggregate codec reads legacy completed terminal cleanup");
     create(repository.as_ref(), session).await;
     let runtime = Arc::new(EventBatchRuntime::default());
     let app = application_with_runtime(
@@ -1020,7 +1061,10 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    let first = app.reconcile_resource_activations().await;
+    // Each D1-D3 reconciliation owns a large generated future. Pin the three
+    // decision rules independently so the test driver does not retain one
+    // reconciler frame while SQLite decodes the next root snapshot.
+    let first = Box::pin(app.reconcile_resource_activations()).await;
     assert!(first.failures.is_empty(), "D1/E1");
     assert!(
         !repository
@@ -1033,7 +1077,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         "D1/E1 provenance survives the resource-first pass"
     );
 
-    let events = app.reconcile_event_batches().await;
+    let events = Box::pin(app.reconcile_event_batches()).await;
     assert!(events.failures.is_empty(), "D2/E2: {:?}", events.failures);
     let resolved = repository.get("deleting-batch").await.unwrap();
     assert!(resolved.event_batches[0].events[0].processed, "D2/E2");
@@ -1045,7 +1089,7 @@ async fn deleting_tombstone_waits_for_terminal_batch_provenance_case() {
         "D2/E2"
     );
 
-    let second = app.reconcile_resource_activations().await;
+    let second = Box::pin(app.reconcile_resource_activations()).await;
     assert!(second.failures.is_empty(), "D3/E3");
     assert!(matches!(
         repository.get("deleting-batch").await,
@@ -1220,6 +1264,141 @@ async fn immediate_commands_bypass_queued_user_and_reply_system_observation_is_n
     assert!(!reply.events[0].processed, "P3/E3 User remains queued");
     assert!(reply.events[2].processed, "P3/E5 exact System observed");
     assert!(runtime.reserved.lock().unwrap().is_empty(), "P1-P3/E3");
+}
+
+async fn recover_failed_reply_with_interrupt()
+-> (Arc<dyn ManagedSessionRepository>, SessionApplication) {
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("CR1 repository"),
+    );
+    let runtime = Arc::new(EventBatchRuntime::default());
+    runtime.tool_reply_prior_epoch.store(1, Ordering::SeqCst);
+    runtime
+        .fail_tool_reply_after_stage_once
+        .store(true, Ordering::SeqCst);
+    create(
+        repository.as_ref(),
+        running_session_with_activity("cold-interrupt-priority", 1),
+    )
+    .await;
+    let warm = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let reply = warm
+        .append_session_event_batch(
+            "cold-interrupt-priority",
+            vec![
+                tool_reply_input("older-damaged-reply"),
+                SessionEventInput::SystemMessage {
+                    content: vec![ContentBlock::text("superseded reply context")],
+                },
+            ],
+            None,
+            None,
+        )
+        .await
+        .expect("CR1 older reply");
+    let reply_activity_operation =
+        tool_reply_activity_operation_id("cold-interrupt-priority", &reply);
+    let interrupt = warm
+        .append_session_event_batch(
+            "cold-interrupt-priority",
+            vec![SessionEventInput::Interrupt(SessionEventInterrupt {
+                requested_target: None,
+                targets: vec![
+                    SessionThreadTarget::Child(ThreadId("event-child".into())),
+                    SessionThreadTarget::Primary,
+                ],
+            })],
+            None,
+            None,
+        )
+        .await
+        .expect("CR1 later interrupt");
+
+    let cold = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let error = cold
+        .drive_session_event_batches("cold-interrupt-priority", None)
+        .await
+        .expect_err("CR1/E2 reply failure remains independent");
+    assert_eq!(
+        error.message, "scripted crash after durable reply stage",
+        "CR1/E2 original reply retry signal"
+    );
+    assert_eq!(
+        runtime.trace.lock().unwrap().as_slice(),
+        [
+            "reply:older-damaged-reply",
+            "interrupt:event-child",
+            "interrupt:primary",
+        ],
+        "CR1/E1 mixed targets include the exact primary reply target"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        1,
+        "CR1/E1 cold recovery must execute Interrupt before retrying damaged ToolReply"
+    );
+    let repaired = repository.get("cold-interrupt-priority").await.unwrap();
+    let reply = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == reply.batch_id)
+        .expect("CR1 reply provenance");
+    let interrupt = repaired
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == interrupt.batch_id)
+        .expect("CR1 Interrupt provenance");
+    assert!(reply.events[0].processed, "CR1/E2 reply superseded");
+    assert!(
+        reply.events[1].processed,
+        "CR1/E2 adjacent System superseded"
+    );
+    assert!(interrupt.events[0].processed, "CR1/E2 Interrupt anchored");
+    assert_eq!(
+        [
+            reply.events[0].projection_anchor,
+            reply.events[1].projection_anchor,
+            interrupt.events[0].projection_anchor,
+        ],
+        [interrupt.events[0].projection_anchor; 3],
+        "CR1/E2 one Interrupt anchor owns the atomic supersession"
+    );
+    let (activity_root, reply_activity_epoch) = cold
+        .recover_activity_for_operation("cold-interrupt-priority", &reply_activity_operation)
+        .await
+        .expect("CR1/E2 exact activity receipt remains recoverable")
+        .expect("CR1/E2 reply transferred one exact activity epoch");
+    assert_ne!(reply_activity_epoch, 1, "CR1/E2 transferred epoch is exact");
+    assert!(
+        !activity_root
+            .active_activity_epochs
+            .contains(&reply_activity_epoch),
+        "CR1/E2 exact reply activity is settled before root supersession"
+    );
+    assert_eq!(
+        activity_root.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "CR1/E4 recovery cannot leave a Running aggregate without pending work"
+    );
+    cold.drive_session_event_batches("cold-interrupt-priority", None)
+        .await
+        .expect("CR1/E4 second cold scan has no damaged backlog");
+    assert_eq!(runtime.tool_reply_calls.load(Ordering::SeqCst), 1, "CR1/E4");
+
+    // The fixture retains staged reply payloads for response-loss replay; the
+    // production Interrupt owner has already terminalized that Runtime await.
+    // Remove only that fixture projection before exercising unrelated new work.
+    runtime.staged_tool_replies.lock().unwrap().clear();
+    (repository, cold)
 }
 
 #[tokio::test]

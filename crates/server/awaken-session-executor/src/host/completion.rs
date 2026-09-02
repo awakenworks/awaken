@@ -108,11 +108,10 @@ impl SharedHost {
                 "cannot freeze Agent execution publications: {error}"
             ))
         })?;
-        let resources = self.thread_resource_manifest(&thread);
-        let runtime_projection = self
+        let (resources, runtime_projection, is_session_dispatch) = self
             .session_slots
             .read(&thread, |slot| {
-                slot.environment_snapshot.clone().map(|environment| {
+                let runtime_projection = slot.environment_snapshot.clone().map(|environment| {
                     let mcp_stages = slot
                         .mcp
                         .iter()
@@ -122,9 +121,17 @@ impl SharedHost {
                         .map(|projection| projection.request.clone())
                         .collect();
                     (environment, slot.tools.clone(), mcp_stages)
-                })
+                });
+                // Resource generation, Session identity, and runtime projection
+                // come from one slot snapshot so dispatch cannot mix transition
+                // generations. The slot owns the sole desired/active selector;
+                // an Environment projection alone never promotes an ordinary
+                // Run to Session identity.
+                let is_session_dispatch = slot.session_dispatch;
+                let resources = slot.dispatch_resource_manifest();
+                (resources, runtime_projection, is_session_dispatch)
             })
-            .flatten();
+            .unwrap_or_default();
         // `SessionRuntime::install_session_projection` is the sole
         // Coordinator-side owner that installs this frozen runtime projection.
         // Preserve that existing
@@ -132,11 +139,6 @@ impl SharedHost {
         // the canonical Control-owned realization path before it constructs the
         // execution context. Resource manifests alone are deliberately
         // insufficient: ordinary Runs may carry one without being Sessions.
-        let is_session_dispatch = self
-            .session_slots
-            .read(&thread, |slot| slot.session_dispatch)
-            .unwrap_or(false)
-            || runtime_projection.is_some();
         let environment_snapshot = runtime_projection
             .as_ref()
             .map(|(environment, _, _)| environment);
@@ -874,6 +876,86 @@ mod completion_tests {
         }
     }
 
+    fn environment_with_isolation(
+        isolation: awaken_provisioning_contract::IsolationClass,
+    ) -> awaken_session_contract::EnvironmentSnapshot {
+        let mut environment = environment();
+        let isolation = match isolation {
+            awaken_provisioning_contract::IsolationClass::Workdir => "workdir",
+            awaken_provisioning_contract::IsolationClass::Namespace => "namespace",
+            awaken_provisioning_contract::IsolationClass::Container => "container",
+        };
+        environment.sandbox = serde_json::from_value(serde_json::json!({
+            "isolation": isolation,
+        }))
+        .expect("valid isolation-only SandboxOverride fixture");
+        environment.packages = Default::default();
+        environment.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+        environment
+    }
+
+    fn projected_acp_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
+        let mut models = host_models();
+        models.model_binding = ResolvedModelCandidate::try_provider_with_acp(
+            ModelBinding::new("provider", "model", "acp:claude"),
+            "provider@1",
+            "route@1",
+            "workspace",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://example.test".into(),
+                upstream_model: "model".into(),
+                processing_placement: None,
+            },
+            awaken_runtime_contract::resolved::AcpExecutionProfile {
+                capability_fingerprint: "sha256:test-capability".into(),
+                capability_adapter_version: "test".into(),
+                session_configuration: Default::default(),
+            },
+        )
+        .expect("coherent projected ACP candidate");
+        models
+    }
+
+    fn repository_manifest() -> awaken_session_contract::SessionResourceManifest {
+        use awaken_resource_contract::{
+            BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
+            ResourceAccess,
+        };
+        use awaken_session_contract::{
+            ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
+        };
+
+        SessionResourceManifest::new(
+            "workspace-a",
+            ResolvedSessionResources::try_new(
+                vec![ResolvedInput {
+                    binding_id: BindingId::new("repo-binding"),
+                    source: ResolvedInputSource::Repository {
+                        repository_id: RepositoryId::from("repo-a"),
+                        config: RepositoryConfigVersion {
+                            repository_id: "repo-a".into(),
+                            version: ConfigVersion::INITIAL,
+                            remote_url: "https://example.invalid/repo.git".into(),
+                            credential_binding: Some("credential-a".into()),
+                            initial_branch: None,
+                            initial_commit: None,
+                            clone_policy: ClonePolicy::default(),
+                        },
+                        credential: None,
+                    },
+                    mount_path: "/workspace/repo".into(),
+                    access: ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .expect("valid frozen Repository manifest"),
+        )
+    }
+
     fn resume_command(run_id: &str, correlation_id: &str, answer: &str) -> ResumeCommand {
         ResumeCommand {
             operation_id: None,
@@ -960,7 +1042,8 @@ mod completion_tests {
         // keeps the local Environment requirement.
         //
         // Decision table:
-        // R1 C1+C5 -> exact Environment enforcement, cooperative Hand paths.
+        // R1 C1+C5 -> exact Environment enforcement, including the Environment's
+        // Namespace-or-stronger path contract.
         // R2 C2+C5 -> R1 plus transparent/path-fidelity.
         // R3 C3+C5 -> trusted Workdir semantics; no artificial Namespace demand.
         // R4 C4+C5 -> default (no local Environment) vector.
@@ -981,31 +1064,11 @@ mod completion_tests {
             "R1 memory request"
         );
         assert!(
-            !native.sandbox.tool_transparent && !native.sandbox.path_fidelity,
-            "R1 hand"
+            native.sandbox.tool_transparent && native.sandbox.path_fidelity,
+            "R1 Container paths"
         );
 
-        let mut projected_acp = host_models();
-        projected_acp.model_binding = ResolvedModelCandidate::try_provider_with_acp(
-            ModelBinding::new("provider", "model", "acp:claude"),
-            "provider@1",
-            "route@1",
-            "workspace",
-            None,
-            awaken_runtime_contract::InferenceEndpoint {
-                adapter_kind: "anthropic".into(),
-                api_dialect: "anthropic_messages".into(),
-                base_url: "https://example.test".into(),
-                upstream_model: "model".into(),
-                processing_placement: None,
-            },
-            awaken_runtime_contract::resolved::AcpExecutionProfile {
-                capability_fingerprint: "sha256:test-capability".into(),
-                capability_adapter_version: "test".into(),
-                session_configuration: Default::default(),
-            },
-        )
-        .expect("coherent projected ACP candidate");
+        let projected_acp = projected_acp_models();
         let acp = remote_worker_placement(&projected_acp, Some(&frozen), None, true);
         assert!(
             acp.sandbox.tool_transparent && acp.sandbox.path_fidelity,
@@ -1065,9 +1128,10 @@ mod completion_tests {
         use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
         // Cause/effect decision table: C1=a selected canonical Hand descriptor
-        // freezes DurableRequest; C2=a non-Hand task descriptor has the same
-        // policy. R1 !C1+C2 => no Sandbox demand, because task recovery is owned
-        // by its own executor; R2 C1+C2 => exactly one DurableRequest demand.
+        // freezes DurableRequest; C2=a non-Hand coordination descriptor has the
+        // same policy. R1 !C1+C2 => no Sandbox demand, because coordination
+        // recovery is owned by its host executor; R2 C1+C2 => exactly one
+        // DurableRequest demand.
         // This derives placement from the immutable snapshot without a second
         // Agent field or a concrete tool-id list in the placement owner.
         let mut models = host_models();
@@ -1078,20 +1142,23 @@ mod completion_tests {
             .expect("Hand catalog is non-empty")
             .descriptor()
             .clone();
-        let task = builtins
+        let coordination = builtins
             .iter()
-            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Task)
-            .expect("Task catalog is non-empty")
+            .find(|tool| tool.toolset() == awaken_ext_builtin_tools::Toolset::Coordination)
+            .expect("Coordination catalog is non-empty")
             .descriptor()
             .clone()
             .with_recovery(ToolRecoveryPolicy::durable_request());
-        models.tool_descriptors = vec![hand.clone(), task.clone()];
-        let task_only = remote_worker_placement(&models, None, None, true);
-        assert!(task_only.required_sandbox_tool_recovery.is_empty(), "R1");
+        models.tool_descriptors = vec![hand.clone(), coordination.clone()];
+        let coordination_only = remote_worker_placement(&models, None, None, true);
+        assert!(
+            coordination_only.required_sandbox_tool_recovery.is_empty(),
+            "R1"
+        );
 
         models.tool_descriptors = vec![
             hand.with_recovery(ToolRecoveryPolicy::durable_request()),
-            task,
+            coordination,
         ];
         let resident_hand = remote_worker_placement(&models, None, None, true);
         assert_eq!(
@@ -1124,7 +1191,14 @@ mod completion_tests {
         use awaken_agent_contract::agent::{run::Id as AgentRunId, thread::Id as ThreadId};
         use awaken_runtime_contract::RunActivation;
 
-        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF);
+        // Cause/effect rule: C0 the ordinary Dispatch runtime composition is
+        // present and C1 its frozen model is explicitly unconfigured. E1 context
+        // creation succeeds through C0; E2 dispatch rejects C1 before enqueue.
+        let host = Arc::new(SharedHost::new(
+            Arc::new(NoModelConfiguredExecutor),
+            UNCONFIGURED_MODEL_REF,
+        ));
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let ctx = host
             .ctx_for("unconfigured-model", None)
             .await
@@ -1700,45 +1774,12 @@ mod completion_tests {
 
     #[test]
     fn resource_placement_requires_resource_and_repository_credential_capabilities() {
-        use awaken_resource_contract::{
-            BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
-            ResourceAccess,
-        };
-        use awaken_session_contract::{
-            ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
-        };
-
         // Cause/effect graph: C1=resource manifest exists; C2=repository has a
         // credential; C3=input is read-only. Effects: E1=resource realization
         // capability; E2=repository credential capability; E3=enforced read-only
         // Sandbox capability. One row with C1+C2+C3 covers all conjunctive effects;
         // the following empty-manifest test owns the !C2/!C3 revocation row.
-        let resources = SessionResourceManifest::new(
-            "workspace-a",
-            ResolvedSessionResources::try_new(
-                vec![ResolvedInput {
-                    binding_id: BindingId::new("repo-binding"),
-                    source: ResolvedInputSource::Repository {
-                        repository_id: RepositoryId::from("repo-a"),
-                        config: RepositoryConfigVersion {
-                            repository_id: "repo-a".into(),
-                            version: ConfigVersion::INITIAL,
-                            remote_url: "https://example.invalid/repo.git".into(),
-                            credential_binding: Some("credential-a".into()),
-                            initial_branch: None,
-                            initial_commit: None,
-                            clone_policy: ClonePolicy::default(),
-                        },
-                        credential: None,
-                    },
-                    mount_path: "/workspace/repo".into(),
-                    access: ResourceAccess::ReadOnly,
-                    instructions: None,
-                }],
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let resources = repository_manifest();
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(
             placement

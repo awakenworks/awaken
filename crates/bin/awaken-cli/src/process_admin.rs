@@ -702,13 +702,13 @@ mod tests {
         // Cause/effect graph: C1 this process has not completed an authoritative
         // final Session scan; C2 it has one published snapshot. Effects: E1 C1
         // returns 503 with a stable pending classification; E2 C2 returns 200
-        // with exactly generation and the four aggregate counts. Session IDs,
+        // with exactly generation and the three aggregate counts. Session IDs,
         // quarantine reasons, clocks, and repository details are never inputs.
         //
         // | Rule | Snapshot | Status | Body |
         // |---|---|---|---|
         // | A1 | absent | 503 | pending classification only |
-        // | A2 | present | 200 | exact five-field snapshot |
+        // | A2 | present | 200 | exact four-field snapshot |
         let (app, _) = app();
         let (status, body) = get(&app, "/admin/session-event-batch-cutover-validation").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "A1/E1");
@@ -724,7 +724,6 @@ mod tests {
                 terminal_with_incomplete_event_batches: 1,
                 event_batch_failures: 2,
                 quarantined: 3,
-                restoring_sessions: 4,
             },
         ));
         assert_eq!(response.status(), StatusCode::OK, "A2/E2");
@@ -738,7 +737,6 @@ mod tests {
                 "terminal_with_incomplete_event_batches": 1,
                 "event_batch_failures": 2,
                 "quarantined": 3,
-                "restoring_sessions": 4,
             }),
             "A2/E2"
         );

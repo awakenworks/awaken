@@ -1,8 +1,9 @@
-
 use super::claimed_dispatch::adopt_bound_sandbox;
 use super::test_support::{
-    AdoptionModel, ToggleBindingSink, claim, deferred_environment, prepare_deferred_session,
-    test_activation,
+    AdoptionModel, ToggleBindingSink, available_local_environment_binding, claim,
+    complete_managed_test_host, deferred_environment, eager_environment, empty_frozen_projection,
+    empty_frozen_projection_for_snapshot, frozen_projection_for_manifest, managed_test_host,
+    prepare_deferred_session, test_activation, with_empty_session_resources,
 };
 use super::*;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -13,13 +14,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 async fn session_run_reservation_repair_skips_execution_realization() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
-    // Cause/effect graph: C1 a complete self-affine Session Run reservation
-    // expires; C2 the queue grants its dedicated recovery claim; C3 no
-    // Session Environment has been realized. Effects: E1 the claim is marked
-    // admission-only; E2 Host resolves the existing environment-free boundary
-    // Worker; E3 no Session Environment or Sandbox side effect is created.
-    // Decision rule R1=C1+C2+C3=>E1+E2+E3. Ordinary and cancellation claims
-    // retain their existing resolver tables in this module.
+    // Cause/effect graph: C0 the Session application supplies the current
+    // immutable command fingerprint; C1 a complete self-affine Session Run
+    // reservation expires; C2 the queue grants its dedicated recovery claim;
+    // C3 no Session Environment has been realized. Effects: E1 the claim is
+    // marked admission-only; E2 Host resolves the existing environment-free
+    // boundary Worker; E3 no Session Environment or Sandbox side effect is
+    // created. Decision rule R1=C0+C1+C2+C3=>E1+E2+E3. Missing/unknown command
+    // fingerprints remain owned by the queue conformance table.
     use awaken_dispatch::{Clock, DispatchQueue};
 
     let store = Arc::new(
@@ -28,22 +30,22 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     let session_id = "reservation-repair";
     let run_id = "reservation-repair-run";
     let activation = test_activation(session_id, run_id);
-    let fingerprint = awaken_session_contract::SessionRunCommandFingerprint::current(
-        &awaken_session_contract::AdmitSessionRun {
-            session_id: session_id.into(),
-            agent_id: activation.snapshot.root_agent_id.0.clone(),
-            operation_id: "reservation-repair-operation".into(),
-            run_id: activation.run_id.clone(),
-            messages: activation.input.clone(),
-            data_subject_id: None,
-            traceparent: None,
-            execution_requirements: Default::default(),
-            replacement: Default::default(),
-        },
-    );
+    let command = awaken_session_contract::AdmitSessionRun {
+        session_id: session_id.into(),
+        agent_id: activation.snapshot.root_agent_id.0.clone(),
+        operation_id: "reservation-repair-operation".into(),
+        run_id: activation.run_id.clone(),
+        messages: activation.input.clone(),
+        data_subject_id: None,
+        traceparent: None,
+        execution_requirements: Default::default(),
+        replacement: Default::default(),
+    };
     let request = awaken_dispatch::RunDispatch::new(activation)
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()))
-        .with_session_command_fingerprint(fingerprint);
+        .with_session_command_fingerprint(
+            awaken_session_contract::SessionRunCommandFingerprint::current(&command),
+        );
     assert_eq!(
         store
             .reserve_session_run(request, 1)
@@ -88,19 +90,20 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 the local Runtime authority is ephemeral; C2 the
-    // parent Session therefore uses direct foreground ingress; C3 an ordinary
+    // parent Session therefore uses direct foreground delivery; C3 an ordinary
     // child Run is claimed from that same authority's dispatch queue with
     // parent affinity. Effects: E1 resolution reuses the parent commit,
     // Environment, and attempt context; E2 it constructs the existing child
     // boundary Worker without requiring a second per-Session durable ingress.
     // The durable-parent sibling paths are covered by cold-worker recovery.
     //
-    // | Rule | Authority | Parent ingress | Claimed Thread | Effect |
+    // | Rule | Authority | Parent delivery | Claimed Thread | Effect |
     // |---|---|---|---|---|
     // | E1 | ephemeral | direct | child != parent | E1+E2 |
     use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+    let _managed = managed_test_host(host.clone());
     let parent = awaken_agent_contract::agent::thread::Id("ephemeral-parent".into());
     let child = awaken_agent_contract::agent::thread::Id("ephemeral-child".into());
     let run = awaken_agent_contract::agent::run::Id("ephemeral-child-run".into());
@@ -155,11 +158,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     use awaken_dispatch::{Clock as _, DispatchQueue as _, WorkerResolver as _};
 
     let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-    let coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
-        Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
-    crate::ManagedHost::new(ephemeral.clone())
-        .install_agent_coordination_application(Arc::downgrade(&coordination))
-        .expect("R1 coordination authority");
+    let _ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
     let direct = ephemeral
         .ctx_for(session_id, None)
@@ -226,6 +225,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let durable = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(durable_store),
     );
+    let _durable_managed = managed_test_host(durable.clone());
     let durable_thread = ThreadId("durable-claimed-root".into());
     let durable_ctx = durable
         .ctx_for(&durable_thread.0, None)
@@ -241,7 +241,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .expect("R2 resolve resident durable worker");
     assert!(
         Arc::ptr_eq(&resolved, &durable_ctx.claimed_worker),
-        "R2/E3 resolver reuses the one canonical Worker Arc"
+        "R2/E3 resolver reuses the same Worker Arc"
     );
 
     let coordinator_store = Arc::new(
@@ -285,9 +285,10 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
 
 /// Cold-Worker delegation cause/effect decision table and FMECA. Causes:
 /// C1 the Worker has no process-local publication catalog; C2 the claim
-/// carries the exact child publication; C3 the bundle is absent. Effects:
-/// E1 parent context and `agent_run` admission are constructed from claim
-/// truth; E2 C3 fails before inference. Rules D1=C1+C2=>E1 and
+/// carries the exact child publication; C3 the bundle is absent; C4 the frozen
+/// Runtime and empty Resource generation were installed through their canonical
+/// projections. Effects: E1 parent context and `agent_run` admission are constructed from claim
+/// truth; E2 C3 fails before inference. Rules D1=C1+C2+C4=>E1 and
 /// D2=C1+C3=>E2. FMECA: dropping the bundle is high severity and previously
 /// caused an endlessly retried Session; D2 turns it into a classified,
 /// claim-settled setup failure while D1 proves no Control lookup is needed.
@@ -307,7 +308,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     let host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
     );
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let managed = managed_test_host(host.clone());
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
     };
@@ -335,13 +336,38 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             ..Default::default()
         };
         activation
+            .snapshot
+            .recompute_fingerprint()
+            .expect("coherent delegated root fixture");
+        activation
     };
+    let runtime = awaken_dispatch::SessionRuntimeEnvelope::from_projection(
+        deferred_environment(),
+        Some(Default::default()),
+        Vec::new(),
+    )
+    .expect("encode complete ordinary Runtime projection");
+    let complete_activation = delegated("cold-delegation", "run-cold-delegation");
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        "cold-delegation",
+        empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            deferred_environment(),
+            &complete_activation.snapshot,
+        ),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("D1 install complete cold Runtime projection");
 
     store
-        .enqueue(
-            awaken_dispatch::RunDispatch::new(delegated("cold-delegation", "run-cold-delegation"))
-                .with_agent_publications(vec![child]),
-        )
+        .enqueue(with_empty_session_resources(
+            awaken_dispatch::RunDispatch::new(complete_activation)
+                .with_agent_publications(vec![child])
+                .with_session_runtime(runtime.clone()),
+            host.local_workspace(),
+        ))
         .await
         .expect("enqueue D1");
     let complete = store
@@ -355,7 +381,8 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .expect("D1/E1 claimed publication constructs delegation");
 
     let missing_store = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("missing dispatch store"),
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("missing dispatch store"),
     );
     let missing_host = Arc::new(
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(missing_store.clone()),
@@ -366,10 +393,14 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         host: Arc::downgrade(&missing_host),
     };
     missing_store
-        .enqueue(awaken_dispatch::RunDispatch::new(delegated(
-            "cold-delegation-missing",
-            "run-cold-delegation-missing",
-        )))
+        .enqueue(with_empty_session_resources(
+            awaken_dispatch::RunDispatch::new(delegated(
+                "cold-delegation-missing",
+                "run-cold-delegation-missing",
+            ))
+            .with_session_runtime(runtime),
+            missing_host.local_workspace(),
+        ))
         .await
         .expect("enqueue D2");
     let missing = missing_store
@@ -391,7 +422,9 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
 
 #[tokio::test]
 async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure() {
-    // Cause/effect graph: C1 an unclaimed warm context exists; C2 a claim
+    // Cause/effect graph: C0 the ordinary complete projection owns the baseline,
+    // exact empty Resource transition, and frozen model route before warmth;
+    // C1 an unclaimed warm context exists; C2 a claim
     // carries the same root but a different unversioned child publication;
     // C3 run/owner/lease epoch change while the publication closure and
     // effective model remain identical; C4 only the per-run effective model
@@ -446,9 +479,17 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             .with_dispatch_store(store.clone())
             .with_agent_publications(Arc::new(catalog)),
     );
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let managed = managed_test_host(host.clone());
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        "claimed-cache",
+        empty_frozen_projection_for_snapshot(host.local_workspace(), deferred_environment(), &root),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("K1 install complete warm projection");
     let warm = host
-        .ctx_for_snapshot_with_sandbox("claimed-cache", Some("agent-a"), Some(root), None)
+        .ctx_for_snapshot("claimed-cache", Some("agent-a"), Some(root))
         .await
         .expect("K1 warm unclaimed context");
     let request =
@@ -532,29 +573,38 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     assert!(!Arc::ptr_eq(&retried, &model_changed_ctx), "K3/E4");
 }
 
-/// Cause/effect decision table: D1 durable lazy placement resolves a
-/// Sandbox-free Brain; D3 a replacement claim fences stale first-use; D4
-/// dispatch binding succeeds but durable Session binding fails while the
-/// exact New candidate remains hidden; D5 a later exact claim carries that
-/// dispatch binding. Effects: D1 creates no Environment; D3 performs no
-/// stale publication; D4 retains one Candidate Arc; D5 resumes the canonical
-/// candidate completion, persists once more, and publishes that same Arc
-/// without provider adoption or a second owner.
+/// Durable lazy placement decision table. Brain resolution stays sandbox-free;
+/// root persistence precedes the raw dispatch cache; both stale-cache rejection
+/// and response loss retain the one hidden Candidate for the next owner.
+///
+/// | Rule | Root persist | Dispatch claim/cache | Effect |
+/// | D1 | not attempted | current | sandbox-free Brain worker |
+/// | D2 | committed | stale | reject exposure; retain Candidate |
+/// | D3 | already committed | replacement current | reuse Candidate; publish exact identity |
+/// | D4 | committed, response lost | current/cache empty | return error; retain Candidate |
+/// | D5 | already committed | replacement current | one idempotent Store-read; publish |
+///
+/// D3/D5 perform no second provider create/adopt. Two sink entries in D4+D5
+/// represent one attempted mutation plus its authoritative readback replay.
 #[tokio::test]
 async fn durable_deferred_sandbox_publication_decision_table() {
     use awaken_dispatch::{Clock, DispatchQueue};
     use awaken_session_contract::SessionRuntime;
 
     let now = awaken_dispatch::SystemClock.now_ms();
+    let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
     let store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
     );
     let host = Arc::new(
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .with_store_dir(storage.path())
+            .with_dispatch_store(store.clone()),
     );
     let sink = Arc::new(ToggleBindingSink {
         fail: std::sync::atomic::AtomicBool::new(false),
         calls: AtomicUsize::new(0),
+        binding: std::sync::Mutex::new(None),
     });
     let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
     managed.install_environment_binding_sink(sink.clone());
@@ -595,64 +645,104 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         host.session_environment("durable-lazy").await.is_none(),
-        "D3"
+        "D2"
     );
 
     resolver
         .worker_for_claimed(&replacement)
         .await
-        .expect("install replacement claim");
-    sink.fail.store(true, Ordering::SeqCst);
-    let deferred = host
+        .expect("D3 replacement repairs the root-first Candidate");
+    assert!(
+        host.session_environment("durable-lazy").await.is_some(),
+        "D3 exact Candidate published"
+    );
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "D2+D3");
+
+    let loss_store = Arc::new(
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().expect("loss dispatch store"),
+    );
+    let loss_host = Arc::new(
+        SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .with_store_dir(storage.path().join("response-loss"))
+            .with_dispatch_store(loss_store.clone()),
+    );
+    let loss_sink = Arc::new(ToggleBindingSink {
+        fail: std::sync::atomic::AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+        binding: std::sync::Mutex::new(None),
+    });
+    let loss_managed = prepare_deferred_session(loss_host.clone(), "durable-loss").await;
+    loss_managed.install_environment_binding_sink(loss_sink.clone());
+    let loss_now = awaken_dispatch::SystemClock.now_ms();
+    let loss_claim = claim(
+        &loss_store,
+        "durable-loss",
+        "run-durable-loss",
+        "worker-loss-a",
+        loss_now,
+    )
+    .await;
+    let loss_resolver = HostWorkerResolver {
+        host: Arc::downgrade(&loss_host),
+    };
+    loss_resolver
+        .worker_for_claimed(&loss_claim)
+        .await
+        .expect("D4 sandbox-free loss worker");
+    loss_sink.fail.store(true, Ordering::SeqCst);
+    let loss_deferred = loss_host
         .session_slots
-        .read("durable-lazy", |slot| slot.deferred_executor.clone())
+        .read("durable-loss", |slot| slot.deferred_executor.clone())
         .flatten()
-        .expect("replacement deferred executor");
-    let error = deferred
+        .expect("D4 deferred executor");
+    let error = loss_deferred
         .invoke(&awaken_runtime_contract::tool::ToolCall {
             call_id: "crash-gap-read".into(),
             tool_id: "read".into(),
             arguments: serde_json::json!({"path": "missing"}),
         })
         .await
-        .expect_err("D4 Session binding failure");
+        .expect_err("D4 Session binding response loss");
     assert!(
         error
             .to_string()
-            .contains("injected Session binding failure")
+            .contains("injected Session binding failure"),
+        "D4: {error}"
     );
     assert!(
-        host.session_environment("durable-lazy").await.is_none(),
-        "D4"
+        loss_host
+            .session_environment("durable-loss")
+            .await
+            .is_none(),
+        "D4 hidden Candidate is not exposed"
     );
-    let retained = host
-        .prepared_session_environment("durable-lazy")
-        .expect("D4 exact hidden candidate");
-    assert!(retained.requires_initial_provisioning(), "D4 New candidate");
-
-    let adopted = store
-        .claim("worker-c", 1_000, now + 4_000, &Default::default())
+    let loss_retried = loss_store
+        .claim(
+            "worker-loss-b",
+            1_000,
+            loss_now + 2_000,
+            &Default::default(),
+        )
         .await
-        .expect("adoption claim")
-        .expect("dispatch-bound run is recoverable");
-    assert!(adopted.sandbox.is_some(), "D4 dispatch binding survived");
-    sink.fail.store(false, Ordering::SeqCst);
-    resolver
-        .worker_for_claimed(&adopted)
+        .expect("D5 retry claim")
+        .expect("D5 response-loss Run is recoverable");
+    assert!(loss_retried.sandbox.is_none(), "D4 cache remains empty");
+    loss_sink.fail.store(false, Ordering::SeqCst);
+    loss_resolver
+        .worker_for_claimed(&loss_retried)
         .await
-        .expect("D5 adopts and repairs Session binding");
-    let resident = host
-        .session_environment("durable-lazy")
-        .await
-        .expect("D5 Resident");
-    assert!(
-        Arc::ptr_eq(&resident, &retained.environment),
-        "D5 same Candidate Arc"
-    );
+        .expect("D5 exact Candidate readback repair");
     assert_eq!(
-        sink.calls.load(Ordering::SeqCst),
+        loss_sink.calls.load(Ordering::SeqCst),
         2,
-        "D4 failure + D5 repair"
+        "D4 attempted the root mutation once; D5 uses one idempotent Store-read replay"
+    );
+    assert!(
+        loss_host
+            .session_environment("durable-loss")
+            .await
+            .is_some(),
+        "D5 exact Candidate published"
     );
 }
 
@@ -734,7 +824,9 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
      * C1 a cold Worker has no process-local Agent publication; C2 the durable
      * Run carries its exact immutable snapshot and non-default backend
      * projection; C3 its Session runtime envelope contains a sandbox-stdio
-     * MCP stage; C4 the Session has no resident Runtime/Environment. Effects:
+     * MCP stage; C4 the Session has no resident Runtime/Environment; C5 its
+     * complete baseline/model and empty Resource transition are installed but
+     * retain no Agent publication. Effects:
      * E1 open only the physical Session Environment from the claimed snapshot
      * before MCP staging; E2 stage and publish the exact MCP generation; E3
      * build the root Runtime once after publication, never as stage substrate;
@@ -752,9 +844,22 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         required_physical_environment: Some((Arc::downgrade(&host), thread.into())),
         ..Default::default()
     });
-    let _managed = crate::ManagedHost::new(host.clone())
-        .with_mcp_attachment_realizer(realizer.clone())
-        .install_dispatch_session_runtime();
+    let managed = complete_managed_test_host(
+        crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
+    );
+    let activation = test_activation(thread, "run-cold-stdio-recovery");
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        thread,
+        empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            deferred_environment(),
+            &activation.snapshot,
+        ),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("S1 install complete cold Runtime coordinates");
     let stage = awaken_session_contract::StageMcpAttachment {
         workspace_id: host.local_workspace().into(),
         generation: awaken_session_contract::McpGenerationRef {
@@ -784,10 +889,10 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
     )
     .expect("runtime envelope");
     store
-        .enqueue(
-            awaken_dispatch::RunDispatch::new(test_activation(thread, "run-cold-stdio-recovery"))
-                .with_session_runtime(runtime),
-        )
+        .enqueue(with_empty_session_resources(
+            awaken_dispatch::RunDispatch::new(activation).with_session_runtime(runtime),
+            host.local_workspace(),
+        ))
         .await
         .expect("enqueue");
     let claimed = store
@@ -947,63 +1052,38 @@ fn ordinary_frozen_projection() -> awaken_session_contract::FrozenSessionProject
         awaken_runtime_contract::PlaintextBoundary::Worker,
         "test.worker",
     );
-    let baseline = awaken_session_contract::SessionBaseline::compile(
-        awaken_session_contract::SessionBaselineInputs {
-            environment: awaken_session_contract::EnvironmentSnapshot {
-                environment_id: "env".into(),
-                revision: awaken_session_contract::EnvironmentRevision(1),
-                self_hosted: true,
-                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                    "env-fingerprint".into(),
-                ),
-                sandbox: Default::default(),
-                sandbox_provisioning: Default::default(),
-                idle_retention: Default::default(),
-                packages: Default::default(),
-                prepared_image: None,
-                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
-                    inference_holder: holder.clone(),
-                    mcp_holder: holder.clone(),
-                    resource_holder: holder,
-                },
+    empty_frozen_projection(
+        "workspace",
+        awaken_session_contract::EnvironmentSnapshot {
+            environment_id: "env".into(),
+            revision: awaken_session_contract::EnvironmentRevision(1),
+            self_hosted: true,
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                "env-fingerprint".into(),
+            ),
+            sandbox: Default::default(),
+            sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                inference_holder: holder.clone(),
+                mcp_holder: holder.clone(),
+                resource_holder: holder,
             },
-            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
-            mcp_authoring: Default::default(),
-            agent_id: "agent-a".into(),
-            agent_revision: None,
-            model_override: None,
-            model: "model".into(),
-            runtime: None,
-            delegate_ids: Vec::new(),
-            toolsets: Vec::new(),
-            mounts: Vec::new(),
-            env: Vec::new(),
-            prompts: Vec::new(),
-            transcript_prefix: None,
         },
-    );
-    awaken_session_contract::FrozenSessionProjection {
-        workspace_id: "workspace".into(),
-        revision: awaken_session_contract::SessionRevision(2),
-        baseline,
-        agent_publication: None,
-        environment: Default::default(),
-        resource_revision: 0,
-        resources: Default::default(),
-        tools: Default::default(),
-        mcp: Vec::new(),
-        request_context: Vec::new(),
-    }
+    )
 }
 
 /// Cause/effect graph: C1 an authenticated Run claim is current; C2 its
 /// Session is already frozen; C3 the Worker has the claimed Session-control
-/// client. C1+C2+C3 cause E1 resume the canonical realization, E2 install
-/// the exact baseline and lease, and E3 create the Worker environment.
+/// client; C4 the Worker has the canonical Environment-effect binding sink.
+/// C1+C2+C3+C4 cause E1 resume the canonical realization, E2 install the exact
+/// baseline and lease, and E3 durably create the Worker environment.
 /// C3 absent is the co-located local-pool row, covered by the cold legacy test.
 ///
-/// | Rule | Claim | Frozen | Control | Effect |
+/// | Rule | Claim | Frozen | Control+binding | Effect |
 /// |---|---|---|---|---|
 /// | O1 | live | yes | present | resume and realize frozen projection |
 /// | O2 | stale | any | present | reject before realization |
@@ -1029,6 +1109,15 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
                 mcp_stage: None,
                 fail_begin: Arc::new(AtomicBool::new(false)),
             })),
+    );
+    let managed = managed_test_host(host.clone());
+    awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+        &managed,
+        Arc::new(ToggleBindingSink {
+            fail: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            binding: std::sync::Mutex::new(None),
+        }),
     );
     dispatch
         .enqueue(
@@ -1077,11 +1166,24 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         "O1/E1-E2"
     );
 
+    let ordinary_activation = test_activation("ordinary-run", "run-without-session");
+    awaken_session_contract::SessionRuntime::install_session_projection(
+        &managed,
+        "ordinary-run",
+        empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            deferred_environment(),
+            &ordinary_activation.snapshot,
+        ),
+        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+    )
+    .await
+    .expect("O5 install complete ordinary Runtime projection");
     dispatch
-        .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
-            "ordinary-run",
-            "run-without-session",
-        )))
+        .enqueue(with_empty_session_resources(
+            awaken_dispatch::RunDispatch::new(ordinary_activation),
+            host.local_workspace(),
+        ))
         .await
         .expect("O5 enqueue");
     let claimed = dispatch
@@ -1212,202 +1314,6 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     );
 }
 
-#[tokio::test]
-async fn claimed_worker_installs_then_live_replaces_a_frozen_file_manifest() {
-    let storage = tempfile::tempdir().expect("storage");
-    let mut raw_host =
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    // Cause/effect decision table: R1 no resident Environment + generation 1
-    // File => stage before open with path fidelity/read-only enforcement; R2
-    // resident Environment + higher empty generation => remove the physical
-    // projection before publishing the empty logical manifest. Workdir remains
-    // correctly ineligible for R1's immutability requirement.
-    raw_host.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
-            storage.path().join("sandboxes"),
-            false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-            "/bin/sh",
-            std::time::Duration::ZERO,
-        );
-    let host = Arc::new(raw_host);
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-    let bytes = b"frozen worker input".to_vec();
-    let file_id = host
-        .file_application()
-        .expect("test startup installs File application")
-        .create_uploaded_file(
-            "workspace-a",
-            "input.bin".into(),
-            "application/octet-stream".into(),
-            &bytes,
-        )
-        .await
-        .expect("create file")
-        .id;
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
-        "workspace-a",
-        awaken_session_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_contract::ResolvedInput {
-                binding_id: awaken_resource_contract::BindingId::new("file-binding"),
-                source: awaken_session_contract::ResolvedInputSource::File {
-                    file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
-                },
-                mount_path: "/uploads/input.bin".to_string(),
-                access: awaken_resource_contract::ResourceAccess::ReadOnly,
-                instructions: None,
-            }],
-            Vec::new(),
-        )
-        .unwrap(),
-    );
-
-    host.install_dispatched_resources("thread-cold-resource", &manifest, None)
-        .await
-        .expect("install frozen manifest");
-    let activation = test_activation("thread-cold-resource", "run-cold-resource");
-    host.ctx_for_snapshot_with_sandbox(
-        "thread-cold-resource",
-        Some("agent-a"),
-        Some(activation.snapshot),
-        None,
-    )
-    .await
-    .expect("open environment after resource install");
-
-    let mount = host
-        .sandbox_spec("thread-cold-resource")
-        .mounts
-        .into_iter()
-        .find(|mount| mount.mount_id == file_id)
-        .expect("frozen File mount");
-    assert_eq!(mount.mount_path, "/mnt/session/uploads/uploads/input.bin");
-    assert_eq!(
-        mount.access,
-        awaken_provisioning_contract::MountAccess::ReadOnly
-    );
-    let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = mount.source
-    else {
-        panic!("frozen File uses the binary-safe carried source")
-    };
-    assert_eq!(contents, bytes);
-    assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
-        Some(manifest)
-    );
-
-    let cleared = awaken_session_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        2,
-        awaken_session_contract::ResolvedSessionResources::default(),
-    );
-    host.install_dispatched_resources("thread-cold-resource", &cleared, None)
-        .await
-        .expect("R2 live replacement");
-    assert!(
-        host.session_environment("thread-cold-resource")
-            .await
-            .expect("resident environment")
-            .list_frozen_mount_files("/mnt/session/uploads")
-            .await
-            .expect("list live files")
-            .is_empty(),
-        "R2 removes the stale physical projection"
-    );
-    assert!(
-        host.sandbox_spec("thread-cold-resource").mounts.is_empty(),
-        "R2 publishes the empty staged projection"
-    );
-    assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
-        Some(cleared),
-        "R2 publishes generation 2 only after realization"
-    );
-}
-
-/// Claimed Session Resource generation cause/effect decision table.
-/// Causes: C1 prior process-local generation exists; C2 incoming generation
-/// is exact, newer, older, or same-generation/different-value; C3 Workspace
-/// partition is unchanged. Effects: E1 revalidate exact bytes without a
-/// logical replacement; E2 advance to the newer generation; E3 reject stale,
-/// corrupt, or cross-Workspace replacement and retain the prior manifest.
-/// Rules: R1 exact+C3=>E1; R2 newer+C3=>E2; R3 older+C3=>E3;
-/// R4 same-revision/different-value+C3=>E3; R5 !C3=>E3.
-#[tokio::test]
-async fn claimed_worker_advances_only_to_a_newer_resource_generation() {
-    let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-    let claim = awaken_dispatch::RunClaim {
-        run_id: RunId("run-generation-fence".into()),
-        owner: "worker-generation-fence".into(),
-        epoch: 1,
-    };
-    let revision_four = awaken_session_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        4,
-        awaken_session_contract::ResolvedSessionResources::default(),
-    );
-    host.install_dispatched_resources("thread-generation-fence", &revision_four, None)
-        .await
-        .expect("install active generation");
-
-    host.install_dispatched_resources("thread-generation-fence", &revision_four, Some(&claim))
-        .await
-        .expect("R1 exact replay");
-
-    for rejected in [
-        awaken_session_contract::SessionResourceManifest::at_revision(
-            "workspace-a",
-            3,
-            awaken_session_contract::ResolvedSessionResources::default(),
-        ),
-        awaken_session_contract::SessionResourceManifest::at_revision(
-            "workspace-a",
-            4,
-            awaken_session_contract::ResolvedSessionResources::try_new(
-                Vec::new(),
-                vec![awaken_session_contract::ResolvedSkillBinding {
-                    kind: awaken_agent_contract::AgentSkillKind::Custom,
-                    skill_id: "different-same-generation".into(),
-                    version: 1,
-                    bundle_sha256: "sha256-different".into(),
-                }],
-            )
-            .unwrap(),
-        ),
-        awaken_session_contract::SessionResourceManifest::at_revision(
-            "workspace-b",
-            5,
-            awaken_session_contract::ResolvedSessionResources::default(),
-        ),
-    ] {
-        let result = host
-            .install_dispatched_resources("thread-generation-fence", &rejected, Some(&claim))
-            .await;
-        assert!(
-            result.is_err(),
-            "R3/R4/R5 reject non-authoritative replacement: {rejected:?}"
-        );
-        assert_eq!(
-            host.thread_resource_manifest("thread-generation-fence"),
-            Some(revision_four.clone())
-        );
-    }
-
-    let revision_five = awaken_session_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        5,
-        awaken_session_contract::ResolvedSessionResources::default(),
-    );
-    host.install_dispatched_resources("thread-generation-fence", &revision_five, Some(&claim))
-        .await
-        .expect("R2 newer generation");
-    assert_eq!(
-        host.thread_resource_manifest("thread-generation-fence"),
-        Some(revision_five)
-    );
-}
-
 /// Cause/effect decision table for Worker-side File staging:
 /// | Rule | Worker File source | exact claim | local File DB entry | Effect |
 /// |---|---|---|---|---|
@@ -1495,6 +1401,10 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         ),
         "W1"
     );
+    assert!(
+        host.thread_resource_manifest("remote-file-ok").is_none(),
+        "W1 desired-only staging does not publish active completion"
+    );
     managed
         .validate_thread_resource_bindings("remote-file-ok")
         .await
@@ -1519,7 +1429,8 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
         host.adopt_bound_session_environment(
             "thread-a",
             Some("not-json"),
-            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+            &host.session_provider,
+            None,
             false,
         )
         .await
@@ -1534,108 +1445,12 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
         host.adopt_bound_session_environment(
             "thread-a",
             Some(&wrong),
-            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+            &host.session_provider,
+            None,
             false,
         )
         .await
         .is_err()
-    );
-}
-
-#[tokio::test]
-async fn recovery_mode_requires_provider_confirmed_termination() {
-    // Cause/effect decision table: C1 exact binding adopts Ready; C2 adopt
-    // returns Err, so physical state is unknown; C3 recovery requests
-    // RebuildFromCommittedTruth; C4 continuity is required; C5 the frozen
-    // provider matches. Effects: E1 C1+C5 publishes the adopted wrapper in
-    // the sole slot owner and returns no by-value duplicate; E2 C2+C3 fails
-    // and retains the durable pending owner; E3 C2+C4 also fails. Rules
-    // R19/R20: C1+C5=>E1, C2+C3=>E2, C2+C4=>E3. Only an observed
-    // Terminated status may clear.
-    let storage = tempfile::tempdir().expect("storage");
-    let thread = "thread-adoption";
-    let first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    let first_ctx = first.ctx_for(thread, None).await.expect("first session");
-    let handle = first_ctx.env.as_ref().expect("eager environment").handle();
-    let encoded = serde_json::to_string(&handle).unwrap();
-    drop(first_ctx);
-    drop(first);
-
-    let replacement =
-        SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    let frozen = test_activation(thread, "run-adoption-publication").snapshot;
-    replacement.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(frozen);
-    });
-    let run_id = RunId("run-adoption".into());
-    let (adopted, rebuild) = adopt_bound_sandbox(
-        &replacement,
-        Some(&encoded),
-        thread,
-        &run_id,
-        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
-    )
-    .await
-    .expect("continuity mode adopts the durable handle");
-    assert!(!rebuild);
-    assert!(adopted.is_none(), "R20/E1 has no by-value owner duplicate");
-    assert_eq!(
-        replacement.session_environment_handle(thread).await,
-        Some(handle.clone()),
-        "R20/E1 slot is the sole published owner"
-    );
-
-    let missing_thread = "thread-missing";
-    let missing = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
-        handle.provider_kind(),
-        missing_thread,
-    ))
-    .unwrap();
-    replacement
-        .install_session_environment_owner_projection(
-            missing_thread,
-            "workspace",
-            &awaken_session_contract::SessionEnvironmentState::Resident {
-                binding: missing.clone(),
-                effect_id: None,
-                generation: None,
-                idle_since_unix_ms: None,
-            },
-        )
-        .expect("R20/C2 durable pending owner");
-    assert!(
-        adopt_bound_sandbox(
-            &replacement,
-            Some(&missing),
-            missing_thread,
-            &run_id,
-            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
-        )
-        .await
-        .is_err(),
-        "R19/E2 unknown adoption cannot authorize rebuild"
-    );
-    assert_eq!(
-        replacement
-            .durable_session_environment_binding(missing_thread)
-            .as_deref(),
-        Some(missing.as_str()),
-        "R20/E2"
-    );
-    assert!(
-        adopt_bound_sandbox(
-            &replacement,
-            Some(&missing),
-            missing_thread,
-            &run_id,
-            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
-        )
-        .await
-        .is_err(),
-        "R20/E3 continuity mode fails closed when physical state is unknown"
     );
 }
 
@@ -1647,38 +1462,39 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     // host-identity root; E3=missing selected root fails continuity.
     //
     // Decision table: A1 C1+C3(configured)=>E1 (covered by
-    // recovery_mode_requires...); A2 C2+C3(trusted)=>E2; A3 either model
+    // recovery_mode_controls...); A2 C2+C3(trusted)=>E2; A3 either model
     // with its selected root absent=>E3 (covered by that test's missing row).
     let storage = tempfile::tempdir().expect("storage");
     let trusted_root = storage.path().join("trusted-local-sandboxes");
     let thread = "thread-backend-owned-adoption";
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
-        ModelBinding::new("local", "", "acp:local"),
+        awaken_runtime_contract::resolved::ModelBinding::new("provider", "", "acp:codex"),
         awaken_runtime_contract::CredentialRef {
             id: "local".into(),
             revision: 1,
         },
         awaken_runtime_contract::resolved::BackendModelSelection::Default,
-        "backend-owned-adoption-v1",
-        "sha256:backend-owned-adoption-v1",
+        "test-acp-adapter-v1",
+        "test-acp-capability-v1",
         Default::default(),
     )
-    .expect("coherent BackendOwned test candidate");
+    .expect("A2 valid BackendOwned candidate");
     let provisioning = candidate.provisioning().clone();
+    let mut activation = test_activation(thread, "fixture-backend-owned-adoption");
+    activation.snapshot.resolved_spec.model_binding = candidate;
 
     let mut first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
     first.backend_owned_session_provider =
         Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
-    let created = first
-        .backend_owned_session_provider
-        .as_ref()
-        .expect("trusted provider")
-        .create(&first.sandbox_spec(thread))
-        .await
-        .expect("A2 create trusted environment");
-    let handle = created.handle();
-    let encoded = serde_json::to_string(&handle).unwrap();
-    drop(created);
+    let first = Arc::new(first);
+    let projection = empty_frozen_projection_for_snapshot(
+        first.local_workspace(),
+        eager_environment(),
+        &activation.snapshot,
+    );
+    let encoded = available_local_environment_binding(&first, thread, &projection).await;
+    let handle: awaken_provisioning_contract::SandboxHandle =
+        serde_json::from_str(&encoded).expect("A2 exact ready handle");
     drop(first);
     assert!(
         trusted_root.join(thread).exists(),
@@ -1693,14 +1509,13 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
     replacement.backend_owned_session_provider =
         Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
-    let frozen =
-        awaken_runtime_contract::ExecutableAgentSnapshot::builder("backend-owned-adoption")
-            .resolved_model(candidate)
-            .build();
-    replacement.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(frozen);
-    });
-    let (adopted, rebuild) = adopt_bound_sandbox(
+    let replacement = Arc::new(replacement);
+    let _replacement_managed = managed_test_host(replacement.clone());
+    replacement
+        .install_frozen_session_projection(thread, projection, None, true, None)
+        .await
+        .expect("A2 install exact consumer projection");
+    let adopted = adopt_bound_sandbox(
         &replacement,
         Some(&encoded),
         thread,
@@ -1710,25 +1525,35 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     )
     .await
     .expect("A2 adopt from the provisioning-selected provider");
-    assert!(!rebuild, "A2");
-    assert!(adopted.is_none(), "A2 has no by-value owner duplicate");
     assert_eq!(
-        replacement.session_environment_handle(thread).await,
-        Some(handle),
-        "A2 sole slot publication"
+        adopted,
+        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        "A2"
+    );
+    assert_eq!(
+        replacement
+            .session_environment_handle(thread)
+            .await
+            .expect("A2 adopted"),
+        handle,
+        "A2"
     );
 }
 
 #[tokio::test]
 async fn a_resident_environment_is_reused_without_a_second_adoption() {
+    // R1: canonical Runtime composition + direct empty transition creates the
+    // resident Environment; matching binding adoption reuses that exact owner.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-resident-adoption";
-    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let handle = ctx.env.as_ref().expect("eager environment").handle();
     let encoded = serde_json::to_string(&handle).unwrap();
 
-    let (adopted, rebuild) = adopt_bound_sandbox(
+    let adopted = adopt_bound_sandbox(
         &host,
         Some(&encoded),
         thread,
@@ -1739,29 +1564,30 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
     .await
     .expect("resident handle is already adopted");
 
-    assert!(adopted.is_none(), "no duplicate environment wrapper");
-    assert!(!rebuild);
+    assert_eq!(
+        adopted,
+        crate::host::session::SessionEnvironmentAdoptionDisposition::Ready,
+        "the lifecycle owner publishes no duplicate wrapper"
+    );
     assert_eq!(host.session_environment_handle(thread).await, Some(handle));
 }
 
 #[tokio::test]
 async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebuild() {
-    // Cause/effect rule: an exact Resident reports Terminated. Continuity
-    // fails without mutation; explicit rebuild first hides the owner in
-    // Retiring and only the exact frozen provider authorizes its removal.
+    // R1/R2: a canonically created resident whose provider state disappears is
+    // retained by continuity mode and discarded only by explicit rebuild.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-dead-resident";
-    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let handle = ctx.env.as_ref().expect("eager environment").handle();
     let encoded = serde_json::to_string(&handle).unwrap();
-    let run = RunId("dead-resident-run".into());
-    host.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(test_activation(thread, &run.0).snapshot);
-    });
     std::fs::remove_dir_all(storage.path().join("sandboxes").join(thread))
         .expect("terminate local sandbox out of band");
 
+    let run = RunId("dead-resident-run".into());
     assert!(
         adopt_bound_sandbox(
             &host,
@@ -1781,7 +1607,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         "a failed continuity check does not mutate the owner registry"
     );
 
-    let (adopted, rebuild) = adopt_bound_sandbox(
+    let adopted = adopt_bound_sandbox(
         &host,
         Some(&encoded),
         thread,
@@ -1791,8 +1617,10 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     )
     .await
     .expect("explicit rebuild may discard the dead resident environment");
-    assert!(adopted.is_none());
-    assert!(rebuild);
+    assert_eq!(
+        adopted,
+        crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired
+    );
     assert!(host.session_environment(thread).await.is_none());
     assert!(
         !host
@@ -1804,9 +1632,13 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
 
 #[tokio::test]
 async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
+    // R1: canonical resident + stale full-handle binding => reject adoption and
+    // retain both the exact Environment owner and Runtime.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-binding-fence";
-    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let resident = ctx.env.as_ref().expect("eager environment").handle();
     let stale = awaken_provisioning_contract::SandboxHandle::new(
@@ -1841,25 +1673,48 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
 
 #[tokio::test]
 async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
+    // Cause/effect rule: C1 canonical V2 creation and first adoption publish
+    // owner A; C2 spec-aware re-adoption yields owner B with the same handle;
+    // C3 stale discard still names A. E1 exact Arc identity fences C3 and B
+    // remains Resident. A legacy V1 fixture cannot prove C2 and is excluded.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-environment-aba";
-    let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    host.ctx_for(thread, None).await.expect("resident session");
+    let host =
+        Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()));
+    let _managed = managed_test_host(host.clone());
+    let projection = empty_frozen_projection(host.local_workspace(), eager_environment());
+    let binding = available_local_environment_binding(&host, thread, &projection).await;
+    adopt_bound_sandbox(
+        &host,
+        Some(&binding),
+        thread,
+        &RunId("aba-fixture-run".into()),
+        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+        awaken_dispatch::WorkerRecoveryMode::RequireSandboxContinuity,
+    )
+    .await
+    .expect("C1 publish first exact owner");
     let observed = host
         .session_environment(thread)
         .await
         .expect("observed owner");
+    let spec = host.sandbox_spec_for_resolved_resources_and_provider(
+        thread,
+        &projection.resources,
+        &host.session_provider,
+    );
+    let spec = host
+        .validate_session_environment_capabilities(&host.session_provider, &spec)
+        .expect("C2 exact adoption spec");
     let replacement = Arc::new(
         host.session_provider
-            .adopt(&host.sandbox_spec(thread), &observed.handle())
+            .adopt(&spec, &observed.handle())
             .await
             .expect("same-handle replacement"),
     );
     assert_eq!(observed.handle(), replacement.handle());
     assert!(!Arc::ptr_eq(&observed, &replacement));
 
-    host.session_slots
-        .modify(thread, |slot| slot.runtime = None);
     host.install_test_resident_session_environment(thread, replacement.clone());
 
     assert!(

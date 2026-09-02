@@ -7,7 +7,123 @@
 
 use super::*;
 
+/// Deliver one direct cold-recovery fact from the Runtime contract's sole
+/// committed-terminal predicate. The observer factory is deliberately lazy:
+/// nonterminal or conflicting identity cannot bind resources, probe an outbox,
+/// or enter any later Session Environment effect.
+async fn reconcile_direct_terminal_from_committed_truth<F, Fut>(
+    reader: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    observer_factory: F,
+) -> Result<bool, HostError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<
+            Output = Result<
+                Vec<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
+                HostError,
+            >,
+        >,
+{
+    let terminal = match awaken_runtime_contract::terminal::committed_terminal_projection(
+        reader, run_id, thread_id,
+    ) {
+        awaken_runtime_contract::terminal::CommittedTerminalProjection::Nonterminal => {
+            return Ok(false);
+        }
+        awaken_runtime_contract::terminal::CommittedTerminalProjection::IdentityConflict => {
+            return Err(HostError::internal(
+                "stable Run identity belongs to another Thread",
+            ));
+        }
+        awaken_runtime_contract::terminal::CommittedTerminalProjection::Exact(terminal) => terminal,
+    };
+    let observers = observer_factory().await?;
+    let failures =
+        awaken_runtime_contract::terminal::deliver_committed_terminal(&observers, &terminal).await;
+    if failures.is_empty() {
+        return Ok(true);
+    }
+    Err(HostError::internal(format!(
+        "direct committed-terminal observation failed: {}",
+        failures
+            .into_iter()
+            .map(|failure| format!("{}: {}", failure.observer_id, failure.error))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )))
+}
+
 impl SharedHost {
+    /// Repair direct-ingress terminal Memory work before ordinary Session
+    /// construction can enter the physical Environment lifecycle. This is a
+    /// cold recovery wake only: resident contexts already own their observer and
+    /// durable/remote delivery has a guarded settlement owner.
+    pub(super) async fn reconcile_direct_terminal_before_environment(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+    ) -> Result<bool, HostError> {
+        if self.deployment.durable
+            || self.upstream.is_some()
+            || self
+                .session_slots
+                .read(thread, |slot| slot.runtime.is_some())
+                .unwrap_or(false)
+        {
+            return Ok(false);
+        }
+        let thread_id = ThreadId(thread.to_string());
+        let commit = self.commit_for_read(thread).await?;
+        let Some(latest) = commit.latest_run(&thread_id) else {
+            return Ok(false);
+        };
+        reconcile_direct_terminal_from_committed_truth(
+            commit.as_ref(),
+            &latest.id,
+            &thread_id,
+            || async {
+                let (workspace, _, installed, _) =
+                    self.resolve_session_publication(thread, agent, None)?;
+                let frozen_model_ref = installed.as_ref().map_or(self.model_ref.as_str(), |root| {
+                    root.resolved_spec.model_binding.model_ref.as_str()
+                });
+                let effective_model_ref =
+                    self.inference_routing.model_ref(thread, frozen_model_ref);
+                let frozen = installed
+                    .as_ref()
+                    .map(|root| {
+                        crate::agent_catalog::freeze_run_publications(
+                            root,
+                            self.agent_publications.as_deref(),
+                            &workspace,
+                        )
+                    })
+                    .transpose()
+                    .map_err(HostError::bad_request)?
+                    .unwrap_or_default();
+                let source =
+                    awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(frozen)
+                        .map_err(|error| {
+                            HostError::bad_request(format!(
+                                "invalid Agent publication closure: {error}"
+                            ))
+                        })?;
+                self.direct_memory_terminal_observer(
+                    thread,
+                    installed.as_ref(),
+                    &effective_model_ref,
+                    &source,
+                    commit.clone(),
+                )
+                .await
+                .map(|observer| observer.into_iter().collect())
+            },
+        )
+        .await
+    }
+
     /// Start the one coordinator-side reconciliation loop when this Host owns
     /// durable dispatch/commit truth but intentionally does not run an execution
     /// pool. A local-pool Host already performs the same maintenance in its pool;
@@ -213,6 +329,147 @@ pub(super) async fn reconcile_committed_terminals(
 mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{AdoptionModel, claim, test_activation};
+    use async_trait::async_trait;
+    use awaken_agent_contract::agent::awaiting::ResumeTicket;
+    use awaken_agent_contract::agent::message::Message;
+    use awaken_agent_contract::agent::run::Record as RunRecord;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TerminalProjectionView(Option<RunRecord>);
+
+    impl CommittedThreadView for TerminalProjectionView {
+        fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
+            Vec::new()
+        }
+
+        fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
+            self.0.clone()
+        }
+
+        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
+            self.0.clone()
+        }
+
+        fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+            None
+        }
+
+        fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+            // This terminal-only projection intentionally carries no awaiting
+            // ticket, so it has no open wait to expose.
+            None
+        }
+    }
+
+    struct CountingTerminalObserver(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl awaken_runtime_contract::terminal::RunTerminalObserver for CountingTerminalObserver {
+        fn observer_id(&self) -> &str {
+            "counting-direct-terminal"
+        }
+
+        async fn observe(
+            &self,
+            _terminal: &awaken_runtime_contract::terminal::CommittedTerminalRun,
+        ) -> Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct FailingTerminalExtractionRepository;
+
+    #[async_trait]
+    impl awaken_ext_memory::MemoryExtractionRepository for FailingTerminalExtractionRepository {
+        async fn put_extraction_if_absent(
+            &self,
+            _intent: awaken_ext_memory::MemoryExtractionIntent,
+        ) -> Result<
+            awaken_ext_memory::PutMemoryExtractionOutcome,
+            awaken_ext_memory::MemoryExtractionError,
+        > {
+            Err(awaken_ext_memory::MemoryExtractionError::Invalid(
+                "scripted terminal observer failure".into(),
+            ))
+        }
+
+        async fn get_extraction(
+            &self,
+            _intent_id: &str,
+        ) -> Result<
+            Option<awaken_ext_memory::MemoryExtractionIntent>,
+            awaken_ext_memory::MemoryExtractionError,
+        > {
+            Err(awaken_ext_memory::MemoryExtractionError::Invalid(
+                "scripted terminal observer failure".into(),
+            ))
+        }
+
+        async fn extraction_cursor(
+            &self,
+            _thread_id: &str,
+        ) -> Result<usize, awaken_ext_memory::MemoryExtractionError> {
+            Ok(0)
+        }
+
+        async fn recoverable_extractions(
+            &self,
+            _limit: usize,
+        ) -> Result<
+            Vec<awaken_ext_memory::MemoryExtractionIntent>,
+            awaken_ext_memory::MemoryExtractionError,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn compare_and_swap_extraction(
+            &self,
+            _expected_revision: u64,
+            _intent: awaken_ext_memory::MemoryExtractionIntent,
+        ) -> Result<(), awaken_ext_memory::MemoryExtractionError> {
+            Err(awaken_ext_memory::MemoryExtractionError::Invalid(
+                "scripted terminal observer failure".into(),
+            ))
+        }
+    }
+
+    struct CountingRejectedEnvironmentProvider(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl awaken_sandbox_container::ContainerEnvironmentProvider
+        for CountingRejectedEnvironmentProvider
+    {
+        async fn probe_ready(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Ok(())
+        }
+
+        async fn create_environment(
+            &self,
+            _spec: &awaken_provisioning_contract::SandboxSpec,
+        ) -> Result<
+            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(awaken_provisioning_contract::SandboxError::new(
+                "scripted Environment entry",
+            ))
+        }
+
+        async fn adopt_environment(
+            &self,
+            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        ) -> Result<
+            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::new(
+                "scripted Environment adoption",
+            ))
+        }
+    }
 
     /// Cause/effect decision table for Host-wide legacy reconciliation:
     ///

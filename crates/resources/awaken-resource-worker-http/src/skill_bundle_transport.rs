@@ -26,6 +26,8 @@ use awaken_worker_transport_security::{
     verify_claim_owner,
 };
 
+use crate::worker_authority::unix_now_ms;
+
 const SKILL_BUNDLE_PATH: &str = "/v1/worker/resources/skills/bundle";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,13 +88,6 @@ pub fn worker_skill_bundle_router(service: Arc<WorkerSkillBundleService>) -> Rou
             authenticate_worker_request,
         ))
         .with_state(service)
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 async fn read_skill_bundle(

@@ -426,25 +426,6 @@ impl ManagedState {
         traceparent: Option<String>,
         idempotency_key: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
-        // Cold-admission cause/effect table: C1=every non-empty command is an
-        // Interrupt; C2=the frozen Agent publication remains available. E1=C1
-        // rebuilds only the disposable frozen-control projection and addresses
-        // existing work; E2=!C1+C2 uses interactive recovery; E3=!C1+!C2 fails
-        // closed. Constraint: a mixed batch may start/resume work and can never
-        // inherit the control-only bypass. Rules A1=C1=>E1; A2=!C1+C2=>E2;
-        // A3=!C1+!C2=>E3.
-        let interruption_only = !req.events.is_empty()
-            && req
-                .events
-                .iter()
-                .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
-        if interruption_only {
-            self.ensure_session_for_frozen_control(session_id).await?;
-        } else {
-            // Recover before resolving the agent so a normal resume continues
-            // the awaiting run instead of creating a second execution (ADR-0039).
-            self.ensure_session(session_id).await?;
-        }
         let request_fingerprint = idempotency_key
             .as_ref()
             .map(|_| awaken_session_contract::stable_fingerprint(&(&req, &data_subject_id)));
@@ -455,9 +436,12 @@ impl ManagedState {
         // Cause/effect decision table for transport retry admission:
         // R1 no key => preserve ordinary current-state validation; R2 new key =>
         // validate and append under the Session root CAS; R3 same key+fingerprint
-        // => replay the one retained batch before archived/pending-tool checks;
-        // R4 same key+different fingerprint => 409 and no mutation. A second
-        // observation after any admission failure closes the Absent->Exact race.
+        // => replay the one retained batch before every disposable projection,
+        // archived, or pending-tool check; R4 same key+different fingerprint =>
+        // 409 and no mutation. A second observation after any admission failure
+        // closes the Absent->Exact race. The root receipt is the sole replay
+        // authority, so an exact retry neither drives Runtime nor rebuilds or
+        // republishes the Managed cache.
         let classify_retry = || async {
             let Some((key, fingerprint)) = replay_coordinate else {
                 return Ok(None);
@@ -477,8 +461,39 @@ impl ManagedState {
                 }
             }
         };
+        let receipt_response =
+            |batch: &awaken_session_contract::SessionEventBatch| SendEventsResponse {
+                data: accepted_inbound_receipts(session_id, batch)
+                    .into_iter()
+                    .map(|projection| projection.event)
+                    .collect(),
+            };
+        if let Some(batch) = classify_retry().await? {
+            return Ok(receipt_response(&batch));
+        }
+
+        // Cold-admission cause/effect table: C1=every non-empty command is an
+        // Interrupt; C2=the frozen Agent publication remains available. E1=C1
+        // rebuilds only the disposable frozen-control projection and addresses
+        // existing work; E2=!C1+C2 uses interactive recovery; E3=!C1+!C2 fails
+        // closed. Constraint: a mixed batch may start/resume work and can never
+        // inherit the control-only bypass. Rules A1=C1=>E1; A2=!C1+C2=>E2;
+        // A3=!C1+!C2=>E3. Exact replays returned above never enter this cache
+        // recovery path.
+        let interruption_only = !req.events.is_empty()
+            && req
+                .events
+                .iter()
+                .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
+        if interruption_only {
+            self.ensure_session_for_frozen_control(session_id).await?;
+        } else {
+            // Recover before resolving the agent so a normal resume continues
+            // the awaiting run instead of creating a second execution (ADR-0039).
+            self.ensure_session(session_id).await?;
+        }
         let accepted = if let Some(batch) = classify_retry().await? {
-            batch
+            return Ok(receipt_response(&batch));
         } else {
             let admission = async {
                 // An archived session is terminal and read-only: refuse every inbound write
@@ -550,7 +565,7 @@ impl ManagedState {
                 Ok(Some(batch)) => batch,
                 Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
                 Err(error) => match classify_retry().await? {
-                    Some(batch) => batch,
+                    Some(batch) => return Ok(receipt_response(&batch)),
                     None => return Err(error),
                 },
             }

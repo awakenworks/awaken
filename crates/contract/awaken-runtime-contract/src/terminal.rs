@@ -50,6 +50,44 @@ pub struct RunTerminalDeliveryFailure {
     pub error: String,
 }
 
+/// Exact outcome of projecting one committed terminal fact.
+///
+/// `IdentityConflict` is distinct from `Nonterminal`: a stable Run id already
+/// owned by another Thread must fail closed rather than being executed or
+/// reported under the caller-supplied Thread identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommittedTerminalProjection {
+    Nonterminal,
+    Exact(CommittedTerminalRun),
+    IdentityConflict,
+}
+
+/// Project the one committed terminal fact for `run_id`.
+///
+/// Stable-id executors and recovery callers share this predicate so neither a
+/// host nor an adapter can invent a second definition of terminality before
+/// redelivery. A missing, running, or awaiting Run has no terminal projection.
+pub fn committed_terminal_projection(
+    reader: &dyn CommittedThreadView,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+) -> CommittedTerminalProjection {
+    let Some(record) = reader.run(run_id) else {
+        return CommittedTerminalProjection::Nonterminal;
+    };
+    if record.id != *run_id || record.thread_id != *thread_id {
+        return CommittedTerminalProjection::IdentityConflict;
+    }
+    let awaken_agent_contract::agent::run::RunState::Ended(cause) = record.state else {
+        return CommittedTerminalProjection::Nonterminal;
+    };
+    CommittedTerminalProjection::Exact(CommittedTerminalRun {
+        run_id: run_id.clone(),
+        thread_id: thread_id.clone(),
+        cause,
+    })
+}
+
 /// Deliver a terminal fact with uniform error and panic isolation across native,
 /// ACP, A2A, and future Run executors.
 pub async fn deliver_committed_terminal(
@@ -93,28 +131,50 @@ pub async fn redeliver_committed_terminal(
     run_id: &RunId,
     thread_id: &ThreadId,
 ) -> Option<Vec<RunTerminalDeliveryFailure>> {
-    let Some(awaken_agent_contract::agent::run::RunState::Ended(cause)) = reader.run_state(run_id)
+    let CommittedTerminalProjection::Exact(terminal) =
+        committed_terminal_projection(reader, run_id, thread_id)
     else {
         return None;
     };
-    Some(
-        deliver_committed_terminal(
-            observers,
-            &CommittedTerminalRun {
-                run_id: run_id.clone(),
-                thread_id: thread_id.clone(),
-                cause,
-            },
-        )
-        .await,
-    )
+    Some(deliver_committed_terminal(observers, &terminal).await)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_agent_contract::agent::run::Failure;
+    use awaken_agent_contract::agent::awaiting::ResumeTicket;
+    use awaken_agent_contract::agent::message::Message;
+    use awaken_agent_contract::agent::run::{Failure, Record as RunRecord, RunState};
     use std::sync::Mutex;
+
+    struct StateView(Option<RunRecord>);
+
+    impl CommittedThreadView for StateView {
+        fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
+            Vec::new()
+        }
+
+        fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+            self.0
+                .as_ref()
+                .filter(|record| record.id == *run_id)
+                .cloned()
+        }
+
+        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
+            self.0.clone()
+        }
+
+        fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+            None
+        }
+
+        fn open_wait_for_thread(&self, _thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+            // This terminal-projection fixture never represents an awaiting
+            // ticket, so no Thread can expose an open wait.
+            None
+        }
+    }
 
     struct PanickingObserver;
 

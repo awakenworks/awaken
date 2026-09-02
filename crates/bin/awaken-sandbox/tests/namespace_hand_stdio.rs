@@ -44,6 +44,36 @@ fn rendered(result: HandResult) -> String {
     }
 }
 
+fn effect_fence(operation_id: &str) -> pc::SandboxEffectFence {
+    pc::SandboxEffectFence::new(
+        operation_id,
+        "namespace-hand-owner",
+        "namespace-hand-runtime",
+        1,
+        u64::MAX,
+    )
+    .expect("typed Namespace Hand effect fence")
+}
+
+fn disposal_authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDisposalAuthorization {
+    let preparation = pc::SandboxDisposalPreparation::new(
+        prepared.clone(),
+        format!("namespace-hand-preparation:{}", prepared.operation_id),
+    )
+    .expect("typed Namespace Hand disposal preparation");
+    let successor = pc::SandboxEffectFence::new(
+        preparation.operation_id().expect("preparation operation"),
+        prepared.owner.clone(),
+        prepared.runtime_incarnation.clone(),
+        prepared.epoch,
+        prepared.expires_at_unix_ms,
+    )
+    .expect("typed Namespace Hand disposal successor");
+    preparation
+        .authorize(successor)
+        .expect("typed Namespace Hand disposal authorization")
+}
+
 #[tokio::test]
 async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     /*
@@ -68,7 +98,12 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         eprintln!("skipping: no usable bwrap/user namespace");
         return;
     }
-    let sandbox = provider.create_sandbox(&spec()).await.expect("namespace");
+    let sandbox_spec = spec();
+    let realization = effect_fence("namespace-hand-realization");
+    let sandbox = provider
+        .create_sandbox_for_effect(&sandbox_spec, &realization, None)
+        .await
+        .expect("fenced namespace");
     let mut command = pc::Command::new([env!("CARGO_BIN_EXE_awaken-sandbox"), "hand", "--stdio"]);
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
@@ -241,9 +276,9 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     drop(sandbox);
 
     let adopted = provider
-        .adopt_sandbox(&handle)
+        .adopt_sandbox_for_effect(&sandbox_spec, &handle, &realization)
         .await
-        .expect("adopt namespace");
+        .expect("adopt fenced namespace");
     adopted
         .attach(spec().mounts.into_iter().next().unwrap())
         .await
@@ -271,5 +306,13 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     drop(adopted_executor);
     let _ = adopted_process.signal(pc::Signal::Term).await;
     let _ = adopted_process.wait().await;
-    adopted.dispose().await.expect("dispose namespace");
+    let terminal = effect_fence("namespace-hand-terminal");
+    let prepared = adopted
+        .prepare_disposal_for_effect(&terminal)
+        .await
+        .expect("prepare fenced namespace disposal");
+    adopted
+        .dispose_for_effect(&disposal_authorization(&prepared))
+        .await
+        .expect("dispose fenced namespace");
 }

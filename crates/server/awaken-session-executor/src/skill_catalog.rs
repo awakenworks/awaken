@@ -180,9 +180,9 @@ impl SkillCatalog {
         Some(result)
     }
 
-    /// Persist one agent-authored `SKILL.md` as an immutable resource version.
-    /// Re-harvesting identical bytes is a no-op; changed bytes append exactly one
-    /// version. The caller already supplies the trusted Workspace scope.
+    /// Test-only explicit control-plane publication helper. Runtime-authored
+    /// Skills remain run-scoped and never call this path during cleanup.
+    #[cfg(test)]
     pub(crate) async fn persist_authored(
         &self,
         workspace: &str,

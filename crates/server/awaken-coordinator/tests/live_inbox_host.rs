@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_coordinator::SharedHost;
+use awaken_coordinator::{ManagedHost, SharedHost};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
@@ -57,8 +57,10 @@ fn harness() -> Harness {
         started: started_tx,
         permits: Mutex::new(permit_rx),
     };
+    let host = Arc::new(SharedHost::new(Arc::new(llm), "gated"));
+    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     Harness {
-        host: Arc::new(SharedHost::new(Arc::new(llm), "gated")),
+        host,
         started: Mutex::new(started_rx),
         permits: permit_tx,
     }
@@ -77,11 +79,12 @@ fn user(id: &str, text: &str) -> Message {
     Message::text(MessageId(id.to_string()), Role::User, text)
 }
 
-/// Cause/effect design: C1 a native Run is gated mid-inference with its inbox
+/// Cause/effect design: C0 the Host installs the canonical dispatch Session
+/// Runtime; C1 a native Run is gated mid-inference with its inbox
 /// open; C2 a follow-up is offered before the natural-end boundary; C3 both
 /// inference Steps are released. Effects: E1 the same Run folds the follow-up
 /// into its final reply; E2 the inbox closes; E3 the injection commits under a
-/// Run-scoped inbox id. Decision rule L1=C1+C2+C3=>E1+E2+E3.
+/// Run-scoped inbox id. Decision rule L1=C0+C1+C2+C3=>E1+E2+E3.
 #[tokio::test]
 async fn a_message_queued_mid_run_reaches_the_same_run() {
     // Causes: the fixtures below establish `a message queued mid run` with the concrete inputs,
@@ -146,12 +149,13 @@ async fn a_message_queued_mid_run_reaches_the_same_run() {
     );
 }
 
-/// Cause/effect design: C1 a follow-up is queued while the first Run is gated;
+/// Cause/effect design: C0 the Host installs the canonical dispatch Session
+/// Runtime; C1 a follow-up is queued while the first Run is gated;
 /// C2 that Run is interrupted before a drain boundary; C3 a second Run starts on
 /// the same Thread and reaches its first natural boundary. Effects: E1 the first
 /// inbox closes without consuming the message; E2 the survivor appears in the
-/// second Run's reply. Decision rule C1+C2+C3=>E1+E2; consumption before cancel
-/// is covered by the preceding test.
+/// second Run's reply. Decision rule C0+C1+C2+C3=>E1+E2; consumption before
+/// cancel is covered by the preceding test.
 #[tokio::test]
 async fn a_message_the_cancelled_run_never_consumed_carries_over() {
     // Causes: the fixtures below establish `a message the cancelled run` with the concrete inputs,

@@ -1,6 +1,15 @@
 use super::*;
 use awaken_session_contract::SessionRealizationControl;
 
+fn terminal_prepare_commands(
+    work: awaken_session_contract::SessionTerminalCleanupWork,
+) -> Vec<awaken_session_contract::SessionCleanupCommand> {
+    match work.action {
+        awaken_session_contract::SessionTerminalCleanupAction::Prepare { commands } => commands,
+        action => panic!("expected terminal preparation action, got {action:?}"),
+    }
+}
+
 /// Recovery-scan causal graph: C1 one supervisor cycle owns Resource,
 /// Environment, realization, Event, and Outcome convergence; C2 every handler
 /// previously opened the same durable candidate index; C3 cutover validation is
@@ -57,14 +66,12 @@ impl SessionRuntime for RecordingResourceRuntime {
     async fn apply_session_inputs(
         &self,
         _thread: &str,
-        _workspace_id: &str,
-        resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
+        transition: &awaken_session_contract::SessionResourceTransition,
     ) -> Result<(), RunError> {
-        self.applied
-            .lock()
-            .unwrap()
-            .push((resource_revision, inputs.clone()));
+        self.applied.lock().unwrap().push((
+            transition.desired().revision,
+            transition.desired().resources.clone(),
+        ));
         Ok(())
     }
 
@@ -940,14 +947,21 @@ async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
 /// | Rule | Placement | Lifecycle | Resource state | Effect |
 /// |---|---|---|---|---|
 /// | W1 | Worker | idle | Prepared | E1 remain unattempted |
-/// | W2 | Worker | terminal | Releasing, no receipt | E2 remain pending |
-/// | W3 | Worker | terminal | exact Worker receipt | E3 release durably |
-#[tokio::test]
-async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
+/// | W2 | Worker | terminal, current renewal live | Releasing, no preparation | E2 remain pending without Coordinator failure |
+/// | W3 | Worker | expired assertion + current renewal | canonical Worker driver | E3 prepare, dispose, release durably |
+#[test]
+fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
+    // Coverage rationale: the async case below remains the sole W1-W3 oracle.
+    // The shared composed-test executor changes stack placement only and adds
+    // no realization owner, cleanup queue, or alternate receipt path.
+    run_composed_async_test(worker_placement_defers_live_effects_but_not_terminal_cleanup_case);
+}
+
+async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
     // Constraint/Invariant: Worker placement owns live realization, while the
     // Session repository still owns terminal cleanup progress. Decision rule:
     // execute W1-W3 and distinguish deferred live effects, pending cleanup, and
-    // exact-receipt completion.
+    // exact two-stage driver completion.
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
@@ -969,11 +983,15 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
     create(repo.as_ref(), live).await;
 
     let mut terminal = worker_baseline("worker-terminal", "terminated");
-    let terminal_lease = awaken_session_contract::SessionRealizationLease {
+    let asserted_terminal_lease = awaken_session_contract::SessionRealizationLease {
         owner: "worker-terminal-owner".into(),
         runtime_incarnation: "worker-terminal-incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: 1,
+        expires_at_unix_ms: crate::activity::now_unix_ms().saturating_sub(20_001),
+    };
+    let terminal_lease = awaken_session_contract::SessionRealizationLease {
+        expires_at_unix_ms: crate::activity::now_unix_ms().saturating_add(30_000),
+        ..asserted_terminal_lease.clone()
     };
     terminal.realization = Some(terminal_lease.clone());
     terminal.resources =
@@ -994,27 +1012,31 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
         },
     );
     let report = application.reconcile_resource_activations().await;
-    assert_eq!(report.failures.len(), 1, "W2/E2: {:#?}", report.failures);
-    assert!(report.settled.is_empty(), "W2/E2");
+    assert!(report.failures.is_empty(), "W2/E2: {:#?}", report.failures);
+    assert_eq!(report.settled.len(), 1, "W2/E2 durable pending root");
 
     let live = repo.get("worker-live").await.expect("W1 durable truth");
     assert!(live.resources.pending.is_some(), "W1/E1");
     assert_eq!(live.resources.activations[0].attempts, 0, "W1/E1");
     let pending = repo.get("worker-terminal").await.expect("W2 durable truth");
     assert!(pending.terminal_cleanup.is_requested(), "W2/E2");
-    let commands = application
-        .terminal_cleanup_commands("worker-terminal", &terminal_lease)
+    let work = application
+        .terminal_cleanup_work("worker-terminal", &asserted_terminal_lease)
         .await
         .unwrap()
         .expect("W2 terminal fence");
+    assert_eq!(work.assignment.lease, terminal_lease, "W2 exact root lease");
+    let commands = terminal_prepare_commands(work);
     assert_eq!(commands.len(), 1, "W2/E2");
-    application
-        .record_terminal_cleanup_completion(
-            &terminal_lease,
-            awaken_session_contract::SessionCleanupCompletion::new(&commands[0], Vec::new()),
-        )
-        .await
-        .expect("W3 exact Worker receipt");
+    assert_eq!(commands[0].thread_id, "worker-terminal", "W2/E2");
+    awaken_session_contract::drive_session_terminal_cleanup(
+        "worker-terminal",
+        &asserted_terminal_lease,
+        &application,
+        &NoopRuntime,
+    )
+    .await
+    .expect("W3 canonical Worker driver");
     let terminal = repo.get("worker-terminal").await.expect("W3 durable truth");
     assert!(
         terminal.resources.activations.iter().all(
@@ -1025,136 +1047,64 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
     );
 }
 
-#[tokio::test]
-async fn remote_terminal_cleanup_uses_durable_commands_and_cold_receipt_replay() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C1 a terminal Worker-placed Session retains one exact
-    // realization lease; C2 the frozen target set contains root and child; C3
-    // no Worker receipt exists, one receipt exists, or every receipt exists; C4
-    // a stale lease or exact post-completion replay is submitted. Effects: E1
-    // Coordinator performs no Runtime teardown; E2 Worker polls only missing
-    // canonical commands; E3 verified receipts complete the existing operation;
-    // E4 stale authority fails closed; E5 cold/exact replay performs no effect.
-    //
-    // | Rule | lease | receipts | Effect |
-    // | W1 | exact | none | E1 + E2(child before root) |
-    // | W2 | stale | any | E4 |
-    // | W3 | exact | partial | E2(one command) |
-    // | W4 | exact | complete/replay | E3 + E5 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("remote cleanup Session repository"),
-    );
-    let lease = awaken_session_contract::SessionRealizationLease {
-        owner: "worker-a".into(),
-        runtime_incarnation: "worker-a:incarnation-1".into(),
-        epoch: 7,
-        expires_at_unix_ms: 1,
-    };
-    let mut session = persisted("remote-cleanup", true, "terminated");
-    session.realization = Some(lease.clone());
-    create(repo.as_ref(), session).await;
-    let runtime = Arc::new(RecordingCleanupRuntime::default());
-    *runtime.delegated_snapshot.lock().unwrap() = awaken_session_contract::DelegatedRunSnapshot {
-        delegated_runs: Vec::new(),
-        coordinated_thread_ids: vec![awaken_agent_contract::agent::thread::Id(
-            "remote-cleanup-child".into(),
-        )],
-        watermark: 31,
-        runtime_commit_cursor: 41,
-    };
-    let application = SessionApplication::new_with_configuration(
-        runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
-
-    application
-        .release_terminal_resources("workspace", "remote-cleanup")
-        .await
-        .expect_err("W1 waits for Worker receipts");
-    assert!(runtime.intents.lock().unwrap().is_empty(), "W1/E1");
-    let commands = application
-        .terminal_cleanup_commands("remote-cleanup", &lease)
-        .await
-        .expect("W1 exact lease")
-        .expect("W1 terminal fence");
-    assert_eq!(commands.len(), 1, "W1/E2 child phase");
-    assert_eq!(commands[0].thread_id, "remote-cleanup-child", "W1/E2");
-
-    let mut stale = lease.clone();
-    stale.epoch += 1;
-    assert!(
-        matches!(
-            application
-                .terminal_cleanup_commands("remote-cleanup", &stale)
-                .await,
-            Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
-        ),
-        "W2/E4"
-    );
-
-    let first = awaken_session_contract::SessionCleanupCompletion::new(&commands[0], Vec::new());
-    application
-        .record_terminal_cleanup_completion(&lease, first)
-        .await
-        .expect("W3 first receipt");
-    let remaining = application
-        .terminal_cleanup_commands("remote-cleanup", &lease)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(remaining.len(), 1, "W3/E2");
-    let last = awaken_session_contract::SessionCleanupCompletion::new(&remaining[0], Vec::new());
-    application
-        .record_terminal_cleanup_completion(&lease, last.clone())
-        .await
-        .expect("W4 completes cleanup");
-    let completed = repo
-        .get("remote-cleanup")
-        .await
-        .expect("W4 durable Session");
-    assert!(completed.terminal_cleanup.is_completed(), "W4/E3");
-    assert!(runtime.intents.lock().unwrap().is_empty(), "W4/E1");
-
-    application
-        .record_terminal_cleanup_completion(&lease, last)
-        .await
-        .expect("W4/E5 exact response-loss replay");
-    assert!(runtime.intents.lock().unwrap().is_empty(), "W4/E5");
-}
-
 /// Repository-publication control cause/effect graph. C1 a Requested terminal
-/// operation has an exact publication intent; C2 a child completion is absent
+/// operation has an exact publication intent; C2 a child preparation is absent
 /// or durable; C3 the asserted lease is exact or stale; C4 the publication
 /// receipt is mismatched, exact, or an exact response-loss replay; C5 ordinary
 /// cleanup commands may be empty while publication is pending; C6 the durable
 /// Session row has one immutable Workspace owner; C7 the publication outcome is
-/// an exact receipt or typed permanent rejection. Effects: E1 the child is the
-/// sole first command; E2 publication remains hidden behind the child; E3 an
-/// empty cleanup vector remains cold-claimable; E4 stale/wrong evidence fails
-/// without mutation; E5 the exact receipt is durably replayable; E6 only then is
-/// the root finalizer exposed and completion becomes absorbing; E7 the command
-/// projection carries that canonical Workspace beside the command so transports
-/// need not accept a Worker-selected tenant; E8 an exact rejection is durable
-/// and replayable before ordinary root cleanup without a second Git command.
+/// an exact receipt or typed permanent rejection; C8 each cleanup poll projects
+/// its assignment and action from the same current root snapshot. Effects: E1 the
+/// child is the sole first preparation; E2 publication remains hidden behind the
+/// child and projects `Waiting`; E3 a Waiting publication remains cold-claimable; E4 stale/wrong
+/// evidence fails without mutation; E5 the exact receipt is durably replayable;
+/// E6 only then is root preparation exposed and the canonical driver performs
+/// the one aggregate disposal;
+/// E7 the command projection carries that canonical Workspace beside the
+/// command so transports need not accept a Worker-selected tenant; E8 an exact
+/// rejection is durable and replayable before ordinary root preparation without
+/// a second Git command; E9 every cleanup work value carries the current lease
+/// and post-outcome root revision. C9 a pending credentialed Repository publication is claimed only by a Worker
+/// with the existing Session-Resources and Repository-credential capabilities;
+/// C10 its aggregate Environment either names an existing live publication
+/// source or would require terminal cleanup to invent/restore one; C11 the
+/// asserted terminal timestamp may be expired while the current same-generation
+/// root is live, but an expired current root cannot start publication.
 ///
-/// | Rule | child | lease | publication outcome | Effect |
+/// | Rule | child preparation | lease | publication outcome | Effect |
 /// |---|---|---|---|---|
-/// | P1 | pending | exact | none | E1 + E2 |
+/// | P1 | pending | exact | none | E1 + E2 + E9 |
 /// | P2 | complete | stale | none | E4 |
-/// | P3 | none | unclaimed | none, cleanup=[] | E3 + E7 |
+/// | P3 | none | expired same-owner Resident source | none, action=Waiting | E3 + E7 + E9 |
+/// | P3a | none | unclaimed, credential capability absent | none | E4 |
+/// | P3b | none | Unmaterialized source | none | E4, zero root CAS |
+/// | P3c | none | asserted expired, current same-generation live | none | E3 + E7 + E9 |
+/// | P3d | none | asserted and current expired | none | E4 before projection |
 /// | P4 | complete | exact | wrong | E4 |
-/// | P5 | complete | exact | exact/replay | E5 + E6 |
-/// | P6 | complete | exact | rejection/replay | E8 + E6 |
+/// | P5 | complete | exact | exact/replay | E5 + E6 + E9 |
+/// | P6 | complete | exact successor of expired Resident affinity | rejection/replay | E8 + E6 + E9 |
+fn repository_publication_terminal_session(
+    session_id: &str,
+    child: Option<&str>,
+    lease: Option<awaken_session_contract::SessionRealizationLease>,
+    environment: awaken_session_contract::SessionEnvironmentState,
+) -> PersistedSession {
+    let resources = credentialed_repository_resources("source", "repo-1");
+    let intent = repository_publication_intent(&resources);
+    let mut session = persisted(session_id, true, "terminated");
+    session.environment = environment;
+    session.resources = awaken_session_contract::SessionResourceState::from_active(resources);
+    session
+        .terminal_cleanup
+        .request_with_publication(session_id, intent)
+        .expect("publication fence");
+    session
+        .terminal_cleanup
+        .freeze_targets(session_id, child.into_iter().map(str::to_string), 17, 19)
+        .expect("publication cleanup target");
+    session.realization = lease;
+    session
+}
 #[tokio::test]
 async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayable() {
     // Constraint: SessionCleanupOperation is the only queue/receipt registry;
@@ -1169,45 +1119,54 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         epoch: 4,
         expires_at_unix_ms: u64::MAX,
     };
-    let requested =
-        |session_id: &str,
-         child: Option<&str>,
-         lease: Option<awaken_session_contract::SessionRealizationLease>| {
-            let resources = repository_resources("source", "repo-1");
-            let intent = repository_publication_intent(&resources);
-            let mut session = persisted(session_id, true, "terminated");
-            session.resources =
-                awaken_session_contract::SessionResourceState::from_active(resources);
-            session
-                .terminal_cleanup
-                .request_with_publication(session_id, intent)
-                .expect("publication fence");
-            session
-                .terminal_cleanup
-                .freeze_targets(session_id, child.into_iter().map(str::to_string), 17, 19)
-                .expect("publication cleanup target");
-            session.realization = lease;
-            session
-        };
     create(
         repo.as_ref(),
-        requested(
+        repository_publication_terminal_session(
             "publication-child-barrier",
             Some("publication-child"),
             Some(exact_lease.clone()),
+            awaken_session_contract::SessionEnvironmentState::Resident {
+                binding: "publication-child-barrier:publication-source".into(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            },
         ),
     )
     .await;
+    let expired_cold_lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-b".into(),
+        runtime_incarnation: "worker-b:previous-publication".into(),
+        epoch: 2,
+        expires_at_unix_ms: 1,
+    };
     create(
         repo.as_ref(),
-        requested("publication-cold-claim", None, None),
+        repository_publication_terminal_session(
+            "publication-cold-claim",
+            None,
+            Some(expired_cold_lease.clone()),
+            awaken_session_contract::SessionEnvironmentState::Resident {
+                binding: "publication-cold-claim:publication-source".into(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            },
+        ),
     )
     .await;
-    let resources = repository_resources("source", "repo-1");
+    let resources = credentialed_repository_resources("source", "repo-1");
     let mut rejected_intent = repository_publication_intent(&resources);
     rejected_intent.expectation.expected_prior_commit =
         Some("1111111111111111111111111111111111111111".into());
     let mut rejected = persisted("publication-rejected", true, "terminated");
+    rejected.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding: "publication-rejected:publication-source".into(),
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    rejected.realization = Some(expired_cold_lease.clone());
     rejected.resources = awaken_session_contract::SessionResourceState::from_active(resources);
     rejected
         .terminal_cleanup
@@ -1226,12 +1185,26 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             ..Default::default()
         },
     );
+    assert!(
+        matches!(
+            application
+                .terminal_repository_publication_command(
+                    "publication-cold-claim",
+                    &expired_cold_lease,
+                )
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+        ),
+        "P3d/E4 expired current root cannot project a publication"
+    );
 
-    let child_commands = application
-        .terminal_cleanup_commands("publication-child-barrier", &exact_lease)
+    let child_work = application
+        .terminal_cleanup_work("publication-child-barrier", &exact_lease)
         .await
         .expect("P1 exact lease")
         .expect("P1 terminal fence");
+    assert_eq!(child_work.assignment.lease, exact_lease, "P1 current lease");
+    let child_commands = terminal_prepare_commands(child_work);
     assert_eq!(child_commands.len(), 1, "P1/E1");
     assert_eq!(child_commands[0].thread_id, "publication-child", "P1/E1");
     assert!(
@@ -1242,20 +1215,28 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .is_none(),
         "P1/E2"
     );
-    application
-        .record_terminal_cleanup_completion(
-            &exact_lease,
-            awaken_session_contract::SessionCleanupCompletion::new(&child_commands[0], Vec::new()),
-        )
-        .await
-        .expect("P2 child receipt");
+    let child_worker = RecordingCleanupRuntime::default();
+    child_worker
+        .fail_publication_once
+        .store(true, Ordering::SeqCst);
+    awaken_session_contract::drive_session_terminal_cleanup(
+        "publication-child-barrier",
+        &exact_lease,
+        &application,
+        &child_worker,
+    )
+    .await
+    .expect_err("P2 injected publication failure stops after child preparation");
     assert!(
-        application
-            .terminal_cleanup_commands("publication-child-barrier", &exact_lease)
-            .await
-            .unwrap()
-            .unwrap()
-            .is_empty(),
+        matches!(
+            application
+                .terminal_cleanup_work("publication-child-barrier", &exact_lease)
+                .await
+                .unwrap()
+                .unwrap()
+                .action,
+            awaken_session_contract::SessionTerminalCleanupAction::Waiting
+        ),
         "P2 publication barrier withholds root cleanup"
     );
     let mut stale = exact_lease.clone();
@@ -1272,31 +1253,63 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
 
     let target = awaken_session_contract::SessionRealizationTarget {
         owner: "worker-b".into(),
-        runtime_incarnation: "worker-b:publication".into(),
+        runtime_incarnation: "worker-b:1:publication".into(),
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
     };
+    let mut manifest = terminal_cleanup_manifest();
+    manifest
+        .capabilities
+        .insert(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY.to_string());
+    let workers = Arc::new(RecordingWorkerObservations::default());
+    workers.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
+    application
+        .set_worker_observation_source(workers.clone())
+        .expect("install publication Worker observations");
+    assert!(
+        application
+            .claim_next_terminal_cleanup(target.clone())
+            .await
+            .expect("P3a incompatible Worker is skipped")
+            .is_none(),
+        "P3a/E4 missing Repository credential capability"
+    );
+    manifest
+        .capabilities
+        .insert(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
+    workers.replace(vec![terminal_cleanup_worker(&target, manifest)]);
     let assignment = application
-        .claim_next_terminal_cleanup(target)
+        .claim_next_terminal_cleanup(target.clone())
         .await
         .expect("P3 claim")
         .expect("P3 publication-only assignment");
     assert_eq!(assignment.session_id, "publication-cold-claim", "P3/E3");
     assert!(
-        application
-            .terminal_cleanup_commands(&assignment.session_id, &assignment.lease)
-            .await
-            .unwrap()
-            .unwrap()
-            .is_empty(),
+        matches!(
+            application
+                .terminal_cleanup_work(&assignment.session_id, &assignment.lease)
+                .await
+                .unwrap()
+                .unwrap()
+                .action,
+            awaken_session_contract::SessionTerminalCleanupAction::Waiting
+        ),
         "P3/E3"
     );
+    let expired_assertion = awaken_session_contract::SessionRealizationLease {
+        expires_at_unix_ms: 1,
+        ..assignment.lease.clone()
+    };
     let publication = application
-        .terminal_repository_publication_command(&assignment.session_id, &assignment.lease)
+        .terminal_repository_publication_command(&assignment.session_id, &expired_assertion)
         .await
-        .expect("P3 publication poll")
-        .expect("P3 publication projection");
-    assert_eq!(publication.workspace_id, "workspace", "P3/E7");
+        .expect("P3c expired assertion publication poll")
+        .expect("P3c publication projection");
+    assert_eq!(publication.workspace_id, "workspace", "P3c/E7");
+    assert_eq!(
+        publication.current_lease, assignment.lease,
+        "P3c/E8 projection carries the current live same-generation root"
+    );
     let publication = publication.command;
     let awaken_session_contract::ResolvedInputSource::Repository {
         repository_id,
@@ -1382,20 +1395,35 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .is_none(),
         "P5/E6"
     );
-    let root = application
-        .terminal_cleanup_commands(&assignment.session_id, &assignment.lease)
+    let root_work = application
+        .terminal_cleanup_work(&assignment.session_id, &assignment.lease)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        root_work.assignment.session_id, assignment.session_id,
+        "P5 current assignment Session"
+    );
+    assert_eq!(
+        root_work.assignment.lease, assignment.lease,
+        "P5 current assignment generation"
+    );
+    assert!(
+        root_work.assignment.projection.revision.0 > assignment.projection.revision.0,
+        "P5 work refreshes the frozen root snapshot after publication"
+    );
+    let root = terminal_prepare_commands(root_work);
     assert_eq!(root.len(), 1, "P5/E6");
     assert_eq!(root[0].thread_id, assignment.session_id, "P5/E6");
-    application
-        .record_terminal_cleanup_completion(
-            &assignment.lease,
-            awaken_session_contract::SessionCleanupCompletion::new(&root[0], Vec::new()),
-        )
-        .await
-        .expect("P5 root finalizer");
+    let root_worker = RecordingCleanupRuntime::default();
+    awaken_session_contract::drive_session_terminal_cleanup(
+        &assignment.session_id,
+        &assignment.lease,
+        &application,
+        &root_worker,
+    )
+    .await
+    .expect("P5 root preparation and aggregate disposal");
     assert!(
         repo.get(&assignment.session_id)
             .await
@@ -1404,18 +1432,15 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .is_completed(),
         "P5/E6"
     );
-
     let rejected_assignment = application
-        .claim_next_terminal_cleanup(awaken_session_contract::SessionRealizationTarget {
-            owner: "worker-c".into(),
-            runtime_incarnation: "worker-c:publication".into(),
-            lease_expires_at_unix_ms: u64::MAX,
-            reassign_existing_lease: false,
-        })
+        .claim_next_terminal_cleanup(target.clone())
         .await
         .expect("P6 claim")
         .expect("P6 rejected publication assignment");
-    assert_eq!(rejected_assignment.session_id, "publication-rejected", "P6");
+    assert_eq!(
+        rejected_assignment.session_id, "publication-rejected",
+        "P6 exact Session"
+    );
     let projection = application
         .terminal_repository_publication_command(
             &rejected_assignment.session_id,
@@ -1454,30 +1479,63 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             .await
             .unwrap()
             .is_none(),
-        "P6 no second Git command"
+        "P6/E8 no second Git command"
     );
-    let root = application
-        .terminal_cleanup_commands(&rejected_assignment.session_id, &rejected_assignment.lease)
+    let root_work = application
+        .terminal_cleanup_work(&rejected_assignment.session_id, &rejected_assignment.lease)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(root.len(), 1, "P6 ordinary root cleanup is exposed");
-    application
-        .record_terminal_cleanup_completion(
-            &rejected_assignment.lease,
-            awaken_session_contract::SessionCleanupCompletion::new(&root[0], Vec::new()),
-        )
-        .await
-        .expect("P6 root completion");
+        .expect("P6 ordinary root work");
+    assert!(
+        root_work.assignment.projection.revision.0 > rejected_assignment.projection.revision.0,
+        "P6/E9 work refreshes the root after the rejection CAS"
+    );
+    let root = terminal_prepare_commands(root_work);
+    assert_eq!(root.len(), 1, "P6 ordinary root preparation is exposed");
+    assert_eq!(
+        root[0].thread_id, rejected_assignment.session_id,
+        "P6 root preparation"
+    );
+    let rejected_worker = RecordingCleanupRuntime::default();
+    awaken_session_contract::drive_session_terminal_cleanup(
+        &rejected_assignment.session_id,
+        &rejected_assignment.lease,
+        &application,
+        &rejected_worker,
+    )
+    .await
+    .expect("P6 root preparation and aggregate disposal");
     let durable = repo.get("publication-rejected").await.unwrap();
-    assert!(durable.terminal_cleanup.is_completed(), "P6 completed");
+    assert!(durable.terminal_cleanup.is_completed(), "P6/E6 completed");
     assert_eq!(
         durable
             .terminal_cleanup
             .repository_publication_rejection("publication-rejected")
             .unwrap(),
         Some(&rejection),
-        "P6 rejection survives the same root CAS lifecycle"
+        "P6/E8 rejection survives the same root CAS lifecycle"
+    );
+    let invalid_source = repository_publication_terminal_session(
+        "publication-unmaterialized",
+        None,
+        None,
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+    );
+    create(repo.as_ref(), invalid_source).await;
+    assert!(
+        matches!(
+            application.claim_next_terminal_cleanup(target).await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+        ),
+        "P3b/E4 an Unmaterialized Session cannot acquire a publication lease"
+    );
+    assert!(
+        repo.get("publication-unmaterialized")
+            .await
+            .unwrap()
+            .realization
+            .is_none(),
+        "P3b/E4 invalid source admission performs zero root mutation"
     );
 }
 
@@ -1488,24 +1546,29 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 placement is Worker-owned; C2 cleanup has an
-    // immutable Requested command; C3 the realization lease is absent, expired,
-    // live under the same logical owner's predecessor incarnation, live under
-    // this incarnation with equal or strictly older expiry, or live under
-    // another owner; C4 the root CAS response is lost after commit. Effects: E1
-    // allocate epoch N+1 and return only the
-    // frozen projection/lease; E2 skip ineligible/Fenced/nonterminal/local rows;
-    // E3 skip an already-current assignment so a failed candidate cannot starve
-    // the scan; E4 replay this invocation's exact committed assignment after an
-    // ambiguous CAS response. Commands remain exclusively in terminal_cleanup.
+    // immutable Requested command; C3 the realization lease is absent, expired
+    // under the same logical Worker installation, exact-current with a strictly
+    // older or equal expiry, live under that owner's predecessor incarnation,
+    // or belongs to a foreign logical Worker; C4 the authenticated registry
+    // snapshot is current and explicitly supports the closed cleanup protocol;
+    // C5 the root CAS response is lost after commit. Effects: E1 an unbound,
+    // expired same-owner, or exact-current strictly older lease allocates epoch
+    // N+1 and returns the frozen projection/lease; E2 foreign, predecessor,
+    // ineligible, Fenced, nonterminal, and local rows perform zero root CAS; E3
+    // exact-current equal expiry is skipped so one unavailable candidate cannot
+    // starve the scan; E4 this invocation replays its exact committed assignment
+    // after an ambiguous CAS response. Commands remain exclusively in
+    // terminal_cleanup, and Worker compatibility is an AND gate, never authority
+    // to cross the provider's stable installation namespace.
     //
     // | Rule | C1+C2 | lease | Effect |
-    // | C1 | yes | same owner, predecessor incarnation | E1 |
-    // | C2 | yes | absent | E1 after C1 is current/skipped |
-    // | C3 | yes | expired foreign | E1 after C2 is current/skipped |
-    // | C4 | yes | exact incarnation, strictly older expiry | E1 once per heartbeat |
-    // | C5 | yes | exact incarnation, equal expiry | E3 |
-    // | C6 | yes | live foreign owner | E2 |
-    // | C7 | no / Fenced | any | E2 |
+    // | C1 | yes | same owner, predecessor incarnation, live | E2 |
+    // | C2 | yes | absent | E1 |
+    // | C3 | yes | expired same logical owner | E1 after C2 is current/skipped |
+    // | C4 | yes | exact current, strictly older expiry | E1 once per heartbeat target |
+    // | C5 | yes | exact current, equal expiry | E3 |
+    // | C6 | yes | live or expired foreign owner | E2; immutable provider affinity |
+    // | C7 | no / Fenced / unauthenticated or legacy Worker | any | E2 |
     // | C8 | yes + ambiguous committed CAS | exact attempted | E4 |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -1573,14 +1636,22 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         repo.as_ref(),
         requested(
             "claim-e-expired",
-            Some(lease("worker-b", "worker-b:1:boot", 9, 1)),
+            Some(lease("worker-a", "worker-a:1:boot-old", 9, 1)),
         ),
     )
     .await;
-    let mut fenced = persisted("claim-f-fenced", true, "terminated");
-    assert!(fenced.terminal_cleanup.request("claim-f-fenced"));
+    create(
+        repo.as_ref(),
+        requested(
+            "claim-f-expired-foreign",
+            Some(lease("worker-b", "worker-b:1:boot", 11, 1)),
+        ),
+    )
+    .await;
+    let mut fenced = persisted("claim-g-fenced", true, "terminated");
+    assert!(fenced.terminal_cleanup.request("claim-g-fenced"));
     create(repo.as_ref(), fenced).await;
-    let mut local = requested("claim-g-local", None);
+    let mut local = requested("claim-h-local", None);
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut local.baseline
     else {
         unreachable!("fixture is frozen")
@@ -1589,7 +1660,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     create(repo.as_ref(), local).await;
     create(
         repo.as_ref(),
-        persisted("claim-h-nonterminal", true, "idle"),
+        persisted("claim-i-nonterminal", true, "idle"),
     )
     .await;
 
@@ -1601,9 +1672,16 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             ..Default::default()
         },
     );
+    let workers = Arc::new(RecordingWorkerObservations::default());
+    workers.replace(vec![terminal_cleanup_worker(
+        &target,
+        terminal_cleanup_manifest(),
+    )]);
+    application
+        .set_worker_observation_source(workers.clone())
+        .expect("install the one Worker observation authority");
     for (rule, expected_id, expected_epoch) in [
         ("C4", "claim-b0-current-renewable", 5),
-        ("C1", "claim-c-predecessor", 8),
         ("C2", "claim-d-absent", 1),
         ("C3", "claim-e-expired", 10),
     ] {
@@ -1628,9 +1706,25 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         application
             .claim_next_terminal_cleanup(target.clone())
             .await
-            .expect("C5-C7")
+            .expect("C1+C5-C7")
             .is_none(),
-        "C5-C7/E2+E3"
+        "C1+C5-C7/E2+E3"
+    );
+    assert_eq!(
+        repo.get("claim-a-current").await.unwrap().realization,
+        Some(lease("worker-a", "worker-a:2:boot-new", 4, u64::MAX)),
+        "C5/E3 equal expiry performs zero root mutation"
+    );
+    assert_eq!(
+        repo.get("claim-c-predecessor").await.unwrap().realization,
+        Some(lease("worker-a", "worker-a:1:boot-old", 7, u64::MAX)),
+        "C1/E2 live predecessor affinity performs zero root mutation"
+    );
+    let foreign = repo.get("claim-f-expired-foreign").await.unwrap();
+    assert_eq!(
+        foreign.realization,
+        Some(lease("worker-b", "worker-b:1:boot", 11, 1)),
+        "C6/E2 foreign provider installation remains authoritative"
     );
     let invalid = application
         .claim_next_terminal_cleanup(awaken_session_contract::SessionRealizationTarget {
@@ -1661,6 +1755,14 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             ..Default::default()
         },
     );
+    let workers = Arc::new(RecordingWorkerObservations::default());
+    workers.replace(vec![terminal_cleanup_worker(
+        &target,
+        terminal_cleanup_manifest(),
+    )]);
+    application
+        .set_worker_observation_source(workers.clone())
+        .expect("install the one Worker observation authority");
     let replayed = application
         .claim_next_terminal_cleanup(target)
         .await
@@ -1668,6 +1770,33 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         .expect("C8 assignment");
     assert_eq!(replayed.session_id, "claim-conflict", "C8/E4");
     assert_eq!(replayed.lease.epoch, 1, "C8/E4 does not allocate twice");
+    assert!(
+        workers.list_calls.load(Ordering::SeqCst) >= 2,
+        "C8 recomputes Worker eligibility after the root CAS conflict"
+    );
+}
+
+fn registry_race_terminal_session(
+    session_id: &str,
+    realization: Option<awaken_session_contract::SessionRealizationLease>,
+) -> PersistedSession {
+    let mut session = persisted(session_id, true, "terminated");
+    assert!(session.terminal_cleanup.request(session_id));
+    session
+        .terminal_cleanup
+        .freeze_targets(session_id, [], 0, 0)
+        .expect("freeze Registry-race cleanup target");
+    session.realization = realization;
+    session
+}
+
+fn registry_race_target() -> awaken_session_contract::SessionRealizationTarget {
+    awaken_session_contract::SessionRealizationTarget {
+        owner: "worker-registry-race".into(),
+        runtime_incarnation: "worker-registry-race:2:boot-current".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    }
 }
 
 #[tokio::test]
@@ -1698,18 +1827,19 @@ async fn recovery_treats_a_concurrently_deleted_terminal_session_as_converged() 
     );
 }
 
-/// Legacy no-publication crash-window graph. C1 the terminal fence carries no
-/// Repository publication intent; C2 cleanup fails before or after its effect;
-/// C3 recovery/replay observes Requested or Completed. Effects: E1 legacy wire
-/// and cleanup behavior remain unchanged; E2 no publication command/effect is
-/// invented; E3 recovery reuses the exact cleanup effect id and commits the
-/// receipt plus Environment removal atomically; E4 Completed is absorbing.
+/// No-publication crash-window graph. C1 the terminal fence carries no
+/// Repository publication intent; C2 preparation fails before its receipt;
+/// C3 recovery/replay observes Requested or Completed. Effects: E1 the durable
+/// target stays Requested until preparation is accepted; E2 no publication
+/// command/effect is invented; E3 recovery reuses the exact cleanup effect id,
+/// then performs one aggregate disposal; E4 Completed is absorbing and only
+/// replays the aggregate-level process-local acknowledgement.
 ///
 /// | Rule | publication intent | cleanup phase | Effect |
 /// |---|---|---|---|
-/// | L1 | absent | first effect fails | E1 + E2, Requested retained |
-/// | L2 | absent | retry succeeds | E3 |
-/// | L3 | absent | Completed replay | E2 + E4 |
+/// | L1 | absent | first preparation fails | E1 + E2, Requested retained |
+/// | L2 | absent | retry succeeds | E3, preparation ack once |
+/// | L3 | absent | Completed replay | E2 + E4, no preparation replay |
 #[tokio::test]
 async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
     let repo = Arc::new(
@@ -1758,6 +1888,12 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
         ),
         "R2 Environment projection removed with receipt"
     );
+    assert_eq!(
+        runtime.acknowledged_effects.lock().unwrap().len(),
+        1,
+        "R2 acknowledges preparation only after its durable root CAS"
+    );
+    assert_eq!(runtime.acknowledged_completed.lock().unwrap().len(), 1);
 
     application
         .release_terminal_resources("workspace", "cleanup-recovery")
@@ -1773,6 +1909,22 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
     assert!(
         runtime.publication_intents.lock().unwrap().is_empty(),
         "L1-L3/E2 legacy cleanup never invents publication"
+    );
+    let acknowledgements = runtime.acknowledged_effects.lock().unwrap();
+    assert_eq!(
+        acknowledgements.len(),
+        1,
+        "R3 does not replay preparation acknowledgement"
+    );
+    let completed_acknowledgements = runtime.acknowledged_completed.lock().unwrap();
+    assert_eq!(
+        completed_acknowledgements.len(),
+        2,
+        "R3 replays only the aggregate completion acknowledgement"
+    );
+    assert_eq!(
+        completed_acknowledgements[0], completed_acknowledgements[1],
+        "R3 completion acknowledgement retains the exact lease generation"
     );
 }
 
@@ -1872,10 +2024,13 @@ async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
 
 /// Complete durable terminal-cleanup crash matrix. Causes are the process stop
 /// location relative to C1=fence CAS, C2=quiesce, C3=target-intent CAS,
-/// C4=idempotent external effect, C5=exact receipt, and C6=completion CAS.
+/// C4=idempotent preparation, C5=preparation CAS plus physical disposal, and
+/// C6=disposal-receipt CAS.
 /// Effects are E1 no pre-intent I/O, E2 recover from the last committed phase,
 /// E3 reuse one effect identity, E4 keep Environment authority until completion,
-/// and E5 replay Completed without another effect.
+/// E5 replay Completed without another provider effect, and E6 retire the
+/// process-local preparation/disposal projections only after their respective
+/// CAS is durably observable.
 ///
 /// | Rule | Crash point | Durable phase | Recovery effect |
 /// |---|---|---|---|
@@ -1883,9 +2038,9 @@ async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
 /// | F1 | after C1/before C2 | Fenced | E2 quiesces before targets |
 /// | F2 | after C2/before C3 | Fenced | E2 repeats quiesce, freezes once |
 /// | F3 | after C3/before C4 | Requested | E2 executes exact frozen targets |
-/// | F4 | after C4/before C5 | Requested | E3 idempotent effect replay |
-/// | F5 | after C5/before C6 | Requested | E3 receipt replay, E4 retained |
-/// | F6 | after C6/before response | Completed | E5 no second effect |
+/// | F4 | preparation response lost | Requested | E3 idempotent preparation replay |
+/// | F5 | disposal receipt CAS unavailable | Disposing | E4 retained; preparation acked; disposal replayable |
+/// | F6 | disposal CAS accepted | Completed | E5 no preparation replay + E6 |
 #[tokio::test]
 async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
     let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
@@ -1954,19 +2109,28 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
         "F4/E4"
     );
 
-    repo.fail_once("resource-release-complete");
+    repo.fail_once("terminal-cleanup-disposal");
     application
         .release_terminal_resources("workspace", "cleanup-f0-f6")
         .await
         .expect_err("F5 completion CAS outage");
     let f5 = repo.get("cleanup-f0-f6").await.expect("F5 truth");
-    assert!(f5.terminal_cleanup.is_requested(), "F5/E2");
+    assert!(
+        f5.terminal_cleanup.is_requested(),
+        "F5/E2 Disposing wraps Requested"
+    );
     assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "F5/E3");
     assert_eq!(
         f5.environment.binding(),
         Some("opaque-environment"),
         "F5/E4"
     );
+    assert_eq!(
+        runtime.acknowledged_effects.lock().unwrap().len(),
+        1,
+        "F5/E6 preparation acknowledgement follows its own durable CAS"
+    );
+    let assignment_projections_after_f5 = runtime.terminal_assignments.lock().unwrap().len();
 
     let f6 = application
         .release_terminal_resources("workspace", "cleanup-f0-f6")
@@ -1978,6 +2142,17 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
         f6.environment,
         awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
+    assert_eq!(
+        runtime.acknowledged_effects.lock().unwrap().len(),
+        1,
+        "F6/E6 disposal recovery does not replay preparation acknowledgement"
+    );
+    assert_eq!(
+        runtime.terminal_assignments.lock().unwrap().len(),
+        assignment_projections_after_f5 + 1,
+        "F6/E6 retries only the durable Disposing action"
+    );
+    assert_eq!(runtime.acknowledged_completed.lock().unwrap().len(), 1);
     let attempts = runtime.intents.lock().unwrap().len();
     application
         .release_terminal_resources("workspace", "cleanup-f0-f6")
@@ -1985,6 +2160,16 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
         .expect("F6 response-loss replay");
     assert_eq!(runtime.intents.lock().unwrap().len(), attempts, "F6/E5");
     assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "F6/E5");
+    let acknowledgements = runtime.acknowledged_completed.lock().unwrap();
+    assert_eq!(
+        acknowledgements.len(),
+        2,
+        "F6/E5 aggregate completion acknowledgement is replay-safe"
+    );
+    assert_eq!(
+        acknowledgements[0], acknowledgements[1],
+        "F6/E5 exact replay"
+    );
 }
 
 /// Deterministic archive/child race: the cleanup worker is paused after the
@@ -2054,15 +2239,16 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
         .expect("cleanup task")
         .expect("cleanup succeeds")
         .expect("archived Session remains");
-    let awaken_session_contract::SessionCleanupOperation::Completed {
-        thread_ids,
-        delegation_watermark,
-        ..
-    } = completed.terminal_cleanup
-    else {
-        panic!("terminal cleanup must be completed");
-    };
-    assert_eq!(delegation_watermark, 23);
+    assert!(
+        completed.terminal_cleanup.is_completed(),
+        "terminal cleanup must be completed"
+    );
+    assert_eq!(completed.terminal_cleanup.delegation_watermark(), Some(23));
+    let thread_ids = completed
+        .terminal_cleanup
+        .thread_ids()
+        .cloned()
+        .expect("completed cleanup retains frozen targets");
     assert_eq!(
         thread_ids,
         BTreeSet::from([

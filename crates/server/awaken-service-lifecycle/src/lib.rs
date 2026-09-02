@@ -32,6 +32,42 @@ pub fn block_on_service<F: Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
+/// Run a deeply composed async test on the shared explicit test stack.
+///
+/// The closure constructs its future inside the dedicated thread, so the
+/// future itself may be `!Send`. The single current-thread test Runtime
+/// preserves deterministic in-process scheduling while this wrapper owns the
+/// larger root-future stack and panic propagation. Product processes continue
+/// to use [`block_on_service`] rather than this test-only composition policy.
+#[cfg(any(test, feature = "test-support"))]
+const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn run_composed_async_test<F, Fut, T>(case: F) -> T
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = T> + 'static,
+    T: Send + 'static,
+{
+    const { assert!(COMPOSED_ASYNC_TEST_STACK_BYTES >= 4 * 1024 * 1024) };
+    const { assert!(COMPOSED_ASYNC_TEST_STACK_BYTES.is_multiple_of(mem::size_of::<usize>())) };
+    let test = std::thread::Builder::new()
+        .name("awaken-composed-test".into())
+        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build composed async test runtime")
+                .block_on(case())
+        })
+        .expect("spawn composed async test thread");
+    match test.join() {
+        Ok(output) => output,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 /// The three product service assemblies that share this lifecycle owner.
 ///
 /// `Worker` is intentionally absent: a Worker has its own authority-free
@@ -335,7 +371,7 @@ impl ServiceLifecycle {
 
 #[cfg(test)]
 mod tests {
-    use super::block_on_service;
+    use super::{COMPOSED_ASYNC_TEST_STACK_BYTES, block_on_service, run_composed_async_test};
 
     #[test]
     fn canonical_service_runtime_polls_the_launcher_future() {

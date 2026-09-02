@@ -1,5 +1,7 @@
-use super::*;
+//! Runtime-owned child Run and budget-resume coordination projections.
 
+use awaken_agent_contract::agent::delegation::DelegationStatus;
+use awaken_agent_contract::agent::run::Id as RunId;
 
 /// Stable child-Run relationship projected at a session boundary. Runtime owns
 /// the relationship; Managed and other adapters only render it.

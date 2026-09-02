@@ -14,4 +14,5 @@ use claimed_session::install_claimed_session_projection;
 pub(crate) use resolver::HostWorkerResolver;
 
 #[cfg(test)]
+#[path = "worker_resolver/tests.rs"]
 mod tests;

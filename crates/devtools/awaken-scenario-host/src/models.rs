@@ -344,7 +344,8 @@ impl LlmExecutor for ProbeModel {
 
 /// A deterministic model for the memory_store RESOURCE durability e2e (ADR-0038).
 /// On its first Run it writes the User text into the mounted memory store,
-/// realized read-write at `.mnt/memory`; it then reads the same path before
+/// realized read-write at the catalog-derived
+/// `.mnt/memory/durable-memory-store` path; it then reads the same path before
 /// finishing, proving the tool observed the mounted bytes rather than an unrelated
 /// workdir file. The host harvests that write back into the store under its stable
 /// id on Run completion. Driving write -> read -> harvest lets an e2e prove the store's
@@ -357,6 +358,7 @@ impl LlmExecutor for MemoryResourceModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        const MEMORY_NOTE_PATH: &str = ".mnt/memory/durable-memory-store/note.md";
         let tool_results = request
             .messages
             .iter()
@@ -373,12 +375,15 @@ impl LlmExecutor for MemoryResourceModel {
             0 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "memres-1".into(),
                 tool_id: "write".into(),
-                arguments: serde_json::json!({ "path": ".mnt/memory/note.md", "content": user_text }),
+                arguments: serde_json::json!({
+                    "path": MEMORY_NOTE_PATH,
+                    "content": user_text,
+                }),
             }]),
             1 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "memres-2".into(),
                 tool_id: "read".into(),
-                arguments: serde_json::json!({ "path": ".mnt/memory/note.md" }),
+                arguments: serde_json::json!({ "path": MEMORY_NOTE_PATH }),
             }]),
             _ => AssistantOutput::text("memory persisted"),
         };

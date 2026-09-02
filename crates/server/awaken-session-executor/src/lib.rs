@@ -13,7 +13,6 @@
 //! claim-fenced transports. Product composition mounts the corresponding
 //! routers around these protocol-neutral behaviors.
 
-mod managed_host_composition;
 mod acp_backend;
 mod acp_capability_probe;
 mod acp_provision;
@@ -33,7 +32,8 @@ mod config;
 mod container_environment;
 mod coordination;
 pub use container_environment::{
-    ContainerEnvironmentComponents, build_container_environment, package_image_provisioner,
+    ContainerEnvironmentComponents, build_container_environment,
+    build_container_environment_for_realization, package_image_provisioner,
 };
 mod delegate;
 mod deployment_config;
@@ -47,6 +47,8 @@ mod judge;
 mod lazy_sandbox;
 mod live_inbox;
 mod managed_adapter_error;
+mod managed_host_composition;
+mod managed_input_projection;
 mod managed_model_capability;
 mod managed_outcome;
 mod managed_resource_projection;
@@ -80,12 +82,12 @@ mod web_search;
 mod worker_services;
 
 use crate::session_environment::AgentSandbox as _;
+use crate::skill_catalog::skill_store_run_error;
 pub(crate) use dispatch_session_runtime::DispatchSessionRuntime;
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_runtime_contract::live_inbox::{LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -117,9 +119,11 @@ use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
-use crate::skill_catalog::skill_store_run_error;
 pub use crate::skills::SkillForkPlacement;
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
+pub(crate) use managed_input_projection::{
+    exact_credential_realization_target, session_system_message, user_message,
+};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the process startup builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
@@ -140,74 +144,6 @@ pub use crate::deployment_config::{
 // prepared configuration, and the live MCP credential probe.
 pub use crate::mcp::ExtMcpProbe;
 // ── Managed Agents adapter over the shared host ─────────────────────────────
-
-/// Mint a fresh user message from plain text (Managed `user.message` content is
-/// concatenated to text before it enters the host).
-fn user_message(content: Vec<ContentBlock>) -> Message {
-    Message::new(
-        MessageId(awaken_runtime::fresh_process_id("usr")),
-        Role::User,
-        content,
-    )
-}
-
-/// Lower one stable Session System input into its sole durable Message form.
-/// Fresh Run admission and same-Run tool reply resume share this constructor so
-/// System identity, validation, and Role ordering cannot diverge.
-fn session_system_message(
-    session_id: &str,
-    system: &awaken_session_contract::SessionUserRunSystemInput,
-) -> Result<Message, RunError> {
-    if session_id.trim().is_empty()
-        || system.operation_id.trim().is_empty()
-        || system.content.is_empty()
-    {
-        return Err(RunError::bad_request("Session System input is incomplete"));
-    }
-    Ok(Message::new(
-        MessageId::session_system(session_id, &system.operation_id),
-        Role::System,
-        system.content.clone(),
-    ))
-}
-
-/// Select the exact target carried by the admitted MCP realization request.
-/// Keeping this identity projection explicit prevents credential materialization
-/// from silently rebinding the request to a name/target tuple or another derived
-/// lookup key.
-#[must_use]
-fn exact_credential_realization_target<T>(request_target: &T) -> &T {
-    request_target
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn mcp_credential_realization_preserves_the_request_target_exactly() {
-    let request_target: u64 = kani::any();
-    let selected = exact_credential_realization_target(&request_target);
-    assert_eq!(*selected, request_target);
-    assert!(std::ptr::eq(selected, &request_target));
-}
-
-#[cfg(test)]
-mod credential_target_projection_tests {
-    use super::exact_credential_realization_target;
-
-    #[test]
-    fn materialization_target_is_the_original_typed_request_target() {
-        let target = awaken_session_contract::McpTarget::parse_http(
-            "https://credential-bound.example.test/mcp?tenant=exact",
-        )
-        .expect("valid target");
-        let selected = exact_credential_realization_target(&target);
-        assert!(std::ptr::eq(selected, &target));
-        assert_eq!(selected, &target);
-        assert_eq!(
-            selected.http_url(),
-            Some("https://credential-bound.example.test/mcp?tenant=exact")
-        );
-    }
-}
 
 /// Map a neutral terminal state to the Managed idle `stop_reason`. `RequiresAction`
 /// carries no event ids here; the projection refills them from the pending tool.
@@ -247,250 +183,16 @@ pub enum SessionRunBackgroundInstallError {
     AlreadyInstalled,
 }
 
-/// One compiled projection from the frozen Session manifest. Standard mounts
-/// and optional automatic-memory candidates travel together so installation
-/// cannot publish one generation with bindings from another.
-struct CompiledEffectiveInputs {
-    staged: crate::provisioning::StagedResources,
-    memory_bindings: std::collections::HashMap<String, Arc<crate::memory::BoundMemory>>,
-}
-
-impl ManagedHost {
-
-    /// Project the committed attempt result into the Managed Session contract.
-    /// Output persistence already happened at the shared attempt executor edge,
-    /// before direct or durable delivery returns here.
-    async fn finish_step(
-        &self,
-        _thread: &str,
-        result: Result<CommittedStepReceipt, HostError>,
-    ) -> Result<StepOutcome, RunError> {
-        result
-            .map_err(to_run_error)
-            .and_then(crate::step_projection::settled_step)
-    }
-
-    async fn install_effective_inputs(
-        &self,
-        thread: &str,
-        workspace: &str,
-        resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
-        compiled: CompiledEffectiveInputs,
-    ) -> Result<(), RunError> {
-        // The complete manifest replaces the prior projection. Register an empty
-        // value too, so deleting the final input cannot leave a stale mount behind.
-        self.host.register_thread_resources(thread, compiled.staged);
-        self.host.register_thread_resource_manifest(
-            thread,
-            awaken_session_contract::SessionResourceManifest::at_revision(
-                workspace,
-                resource_revision,
-                inputs.clone(),
-            ),
-        );
-        // Standard mounts and the optional automatic-memory selection are
-        // separate facts. Installing a manifest never picks a "first" store.
-        self.host
-            .register_thread_memory_bindings(thread, compiled.memory_bindings);
-        Ok(())
-    }
-
-    /// Apply one Resource generation while the slot's `resource_projection`
-    /// mutex is held. Dispatch and the public SessionRuntime port acquire that
-    /// same lock; this inner operation remains the sole transition algorithm.
-    async fn apply_session_inputs_under_resource_lock(
-        &self,
-        thread: &str,
-        workspace_id: &str,
-        resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
-        claim: Option<&awaken_dispatch::RunClaim>,
-    ) -> Result<(), RunError> {
-        let desired_manifest = awaken_session_contract::SessionResourceManifest::at_revision(
-            workspace_id,
-            resource_revision,
-            inputs.clone(),
-        );
-        // Exact local replays are already converged. Claimed replays are handled
-        // by `DispatchSessionRuntime::install`, which re-stages them to revalidate
-        // live Resource state before entering this replacement path.
-        if self.host.thread_resource_manifest(thread).as_ref() == Some(&desired_manifest) {
-            return Ok(());
-        }
-        let old = self.host.thread_resources_snapshot(thread);
-        let old_memory: Vec<_> = old
-            .mounts
-            .iter()
-            .filter_map(|mount| match &mount.source {
-                awaken_provisioning_contract::MountSource::MemoryStore { store_id, .. } => Some((
-                    mount.mount_id.clone(),
-                    store_id.clone(),
-                    mount.mount_path.clone(),
-                    mount.access,
-                )),
-                _ => None,
-            })
-            .collect();
-        let desired_memory: Vec<_> = inputs
-            .inputs()
-            .iter()
-            .filter_map(|input| match &input.source {
-                awaken_session_contract::ResolvedInputSource::MemoryStore {
-                    memory_store_id,
-                    ..
-                } => Some((
-                    input.binding_id.to_string(),
-                    memory_store_id.to_string(),
-                    crate::managed_resource_projection::managed_resource_mount_path(
-                        &input.mount_path,
-                    ),
-                    match input.access {
-                        awaken_resource_contract::ResourceAccess::ReadOnly => {
-                            awaken_provisioning_contract::MountAccess::ReadOnly
-                        }
-                        awaken_resource_contract::ResourceAccess::ReadWrite => {
-                            awaken_provisioning_contract::MountAccess::ReadWrite
-                        }
-                    },
-                )),
-                _ => None,
-            })
-            .collect();
-        let live_environment = self.host.session_environment(thread).await;
-        // Another cold-rehydration request can install this exact manifest while
-        // the environment lookup above yields. Re-read the canonical manifest at
-        // the decision boundary: equal means the concurrent replay converged;
-        // unequal remains a forbidden live Memory mutation.
-        let installed_manifest = self.host.thread_resource_manifest(thread);
-        if live_environment.is_some() && installed_manifest.as_ref() == Some(&desired_manifest) {
-            return Ok(());
-        }
-        // A durable sandbox binding can be adopted before this process has any
-        // Resource projection. `None` therefore means cold recovery: install the
-        // authority's active generation. Only an already-installed, different
-        // manifest is evidence of a forbidden live Memory mutation.
-        if live_environment.is_some()
-            && installed_manifest.is_some()
-            && old_memory != desired_memory
-        {
-            tracing::warn!(
-                session_id = thread,
-                installed_manifest = ?installed_manifest,
-                old_memory = ?old_memory,
-                desired_memory = ?desired_memory,
-                "rejecting a live Session Memory projection change"
-            );
-            return Err(RunError::bad_request(
-                "memory_store inputs are create-time only for a live Session",
-            ));
-        }
-        let skill_versions = Some(
-            self.host
-                .skills
-                .load_pinned(workspace_id, inputs.skills(), claim)
-                .await
-                .map_err(skill_store_run_error)?,
-        );
-        let compiled = self
-            .compile_effective_inputs(thread, workspace_id, inputs, claim)
-            .await?;
-        let new = &compiled.staged;
-        if let Some(environment) = &live_environment {
-            environment
-                .validate_live_mount_replacement(&old.mounts, &new.mounts)
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
-        }
-        self.host
-            .harvest_thread_skills(thread)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
-        let projection_update = match &live_environment {
-            Some(environment) => environment
-                .begin_live_projection_update()
-                .await
-                .map_err(|error| RunError::internal(error.to_string()))?,
-            None => None,
-        };
-        if let Some(environment) = &live_environment {
-            // Realize the desired live projection before committing its logical
-            // manifest. Every operation is idempotent, so a failed attempt leaves
-            // the prior manifest authoritative and the persisted pending generation
-            // can safely retry without mistaking an unrealized mount for success.
-            environment
-                .remove_projection_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
-                .await
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            for mount in &old.mounts {
-                if !new
-                    .mounts
-                    .iter()
-                    .any(|candidate| candidate.mount_path == mount.mount_path)
-                {
-                    environment
-                        .remove_projection_path(&mount.mount_path)
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            for mount in &new.mounts {
-                if !old.mounts.iter().any(|candidate| candidate == mount) {
-                    environment
-                        .attach_mount(mount.clone())
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            for repository in &old.repositories {
-                if !new
-                    .repositories
-                    .iter()
-                    .any(|candidate| candidate.plan == repository.plan)
-                {
-                    environment
-                        .remove_projection_path(&repository.plan.mount_path)
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            for repository in &new.repositories {
-                if !old
-                    .repositories
-                    .iter()
-                    .any(|candidate| candidate == repository)
-                {
-                    self.host
-                        .realize_repository_activation(
-                            thread,
-                            repository,
-                            &new.binding_checks,
-                            environment.as_ref(),
-                        )
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-        }
-        // Workspace is part of the logical generation. Publish it only after
-        // every fallible validation and physical projection effect succeeds;
-        // failed preparation may leave an empty coordination slot, never a
-        // workspace/manifest split-brain projection.
-        self.host.register_thread_workspace(thread, workspace_id);
-        self.install_effective_inputs(thread, workspace_id, resource_revision, inputs, compiled)
-            .await?;
-        if let Some(update) = projection_update {
-            update.commit();
-        }
-        self.host
-            .session_slots
-            .update(thread, |slot| slot.skills = skill_versions);
-        self.host.evict_session_for_rebuild(thread).await;
-        Ok(())
-    }
-}
-
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    fn validate_session_sandbox_layout(
+        &self,
+        thread: &str,
+        layout: &awaken_session_contract::SessionSandboxLayout,
+    ) -> Result<(), RunError> {
+        self.validate_prospective_session_layout(thread, layout)
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -570,6 +272,16 @@ impl SessionRuntime for ManagedHost {
             .expect("environment binding sink lock poisoned") = Some(sink);
     }
 
+    async fn install_terminal_cleanup_assignment(
+        &self,
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        self.host
+            .install_terminal_cleanup_projection(assignment)
+            .await
+            .map_err(to_run_error)
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_contract::AdmitSessionRun,
@@ -607,16 +319,17 @@ impl SessionRuntime for ManagedHost {
                     registry.as_ref(),
                     &command.session_id,
                     input,
-                ).map_err(RunError::bad_request)?,
+                )
+                .map_err(RunError::internal)?,
                 None => input,
             };
             let (_, mut activation) =
                 ctx.runtime
                     .prepare(&ctx.config, command.session_id.clone(), input);
             activation.run_id = command.run_id;
-            // Application requirements are a monotone restriction over the
-            // Session-owned activation: a caller can remove tool authority but
-            // cannot restore authority removed by the frozen Session profile.
+            // Application requirements may only narrow the Session-owned tool
+            // authority; they cannot restore a capability removed by the
+            // frozen Session profile.
             activation.tool_capability_narrowing = activation
                 .tool_capability_narrowing
                 .intersect(command.execution_requirements.tool_capability_narrowing);
@@ -638,9 +351,8 @@ impl SessionRuntime for ManagedHost {
                 .required_worker_capabilities
                 .is_empty()
             {
-                // An application protocol capability is implemented only by a
-                // registered Worker. Requiring it must never fall back to the
-                // generic in-process executor, even in a mixed deployment.
+                // Protocol-specific capabilities are implemented only by a
+                // registered Worker; never fall back to a generic local runner.
                 let strict_remote = awaken_dispatch::PlacementRequirements::remote_required();
                 request.placement.location = strict_remote.location;
                 if request.placement.contract_version == 0 {
@@ -902,18 +614,61 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
-    async fn execute_terminal_cleanup(
+    async fn prepare_terminal_cleanup_for_effect(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        self.execute_terminal_cleanup_continuation(command).await
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        self.host
+            .prepare_terminal_cleanup_effect(effect, authorization)
+            .await
+            .map_err(to_run_error)
     }
 
-    async fn execute_terminal_repository_publication(
+    async fn acknowledge_terminal_cleanup_preparation(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    ) {
+        self.host
+            .acknowledge_terminal_cleanup_preparation(effect)
+            .await;
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        self.host
+            .dispose_terminal_cleanup_effect(effect)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn acknowledge_terminal_cleanup_disposal(
+        &self,
+        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) {
+        self.host
+            .acknowledge_terminal_cleanup_disposal(effect)
+            .await;
+    }
+
+    async fn acknowledge_completed_terminal_cleanup(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) {
+        self.host
+            .acknowledge_completed_terminal_cleanup(session_id, lease)
+            .await;
+    }
+
+    async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_contract::SessionRealizationLease,
     ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
-        self.publish_terminal_repository(command, None).await
+        self.publish_terminal_repository(command, lease).await
     }
 
     async fn run(
@@ -927,7 +682,7 @@ impl SessionRuntime for ManagedHost {
             .host
             .run(Some(agent), thread, vec![user_message(content)])
             .await;
-        self.finish_step(thread, result).await
+        crate::step_projection::finish_managed_step(result)
     }
 
     async fn run_attributed(
@@ -947,7 +702,7 @@ impl SessionRuntime for ManagedHost {
                 data_subject_id.map(awaken_runtime_contract::DataSubjectId),
             )
             .await;
-        self.finish_step(thread, result).await
+        crate::step_projection::finish_managed_step(result)
     }
 
     async fn run_streaming(
@@ -964,7 +719,7 @@ impl SessionRuntime for ManagedHost {
             .host
             .run_streaming(Some(agent), thread, vec![user_message(content)], sink)
             .await;
-        self.finish_step(thread, result).await
+        crate::step_projection::finish_managed_step(result)
     }
 
     async fn run_streaming_attributed(
@@ -986,7 +741,7 @@ impl SessionRuntime for ManagedHost {
                 data_subject_id.map(awaken_runtime_contract::DataSubjectId),
             )
             .await;
-        self.finish_step(thread, result).await
+        crate::step_projection::finish_managed_step(result)
     }
 
     async fn resume(
@@ -1000,7 +755,7 @@ impl SessionRuntime for ManagedHost {
             .host
             .resume(thread, tool_use_id, HostResume::Permission(decision))
             .await;
-        self.finish_step(thread, result).await
+        crate::step_projection::finish_managed_step(result)
     }
 
     async fn resume_custom(
@@ -1019,7 +774,7 @@ impl SessionRuntime for ManagedHost {
                 HostResume::ClientResult { content, is_error },
             )
             .await;
-        self.finish_step(thread, result).await
+        crate::step_projection::finish_managed_step(result)
     }
 
     async fn live_inbox_snapshot(&self, thread: &str) -> LiveInboxSnapshot {
@@ -1186,23 +941,10 @@ impl SessionRuntime for ManagedHost {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        workspace_id: &str,
-        resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
+        transition: &awaken_session_contract::SessionResourceTransition,
     ) -> Result<(), RunError> {
-        let resource_projection = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.resource_projection.clone());
-        let _resource_projection = resource_projection.lock().await;
-        self.apply_session_inputs_under_resource_lock(
-            thread,
-            workspace_id,
-            resource_revision,
-            inputs,
-            None,
-        )
-        .await
+        self.apply_session_inputs_with_context(thread, transition, None)
+            .await
     }
 
     async fn replace_session_tools(
@@ -1228,19 +970,22 @@ impl SessionRuntime for ManagedHost {
         // ready physical environment. Run-dispatch recovery has its own explicit
         // RebuildFromCommittedTruth policy; applying that fallback here would
         // turn corrupt or deleted Session authority into a replacement sandbox.
-        let provisioning = self
+        let provider = self
             .host
-            .frozen_session_environment_provisioning(thread)
+            .projected_session_environment_provider(thread, Some(agent))
             .map_err(to_run_error)?;
-        let (adopted, rebuild) = self
+        let disposition = self
             .host
-            .adopt_bound_session_environment(thread, Some(binding), &provisioning, false)
+            .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
             .await
             .map_err(to_run_error)?;
-        debug_assert!(!rebuild);
-        debug_assert!(adopted.is_none());
+        if disposition != crate::host::SessionEnvironmentAdoptionDisposition::Ready {
+            return Err(RunError::internal(
+                "durable Session Environment adoption did not publish a ready binding",
+            ));
+        }
         self.host
-            .ctx_for_with_sandbox(thread, Some(agent), None)
+            .ctx_for(thread, Some(agent))
             .await
             .map_err(to_run_error)?;
         Ok(())
@@ -1275,22 +1020,29 @@ impl SessionRuntime for ManagedHost {
             .await
     }
 
-    async fn dispose_checkpoint_source(
+    async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        source_effect_id: &str,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
         generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
-        self.dispose_environment_continuation_source(
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, RunError> {
+        self.prepare_environment_continuation_source_release(
             thread,
-            operation,
-            source_effect_id,
+            preparation,
             generation,
             source_binding,
         )
         .await
+    }
+
+    async fn dispose_prepared_checkpoint_source(
+        &self,
+        thread: &str,
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
+        self.dispose_prepared_environment_continuation_source(thread, disposal)
+            .await
     }
 
     async fn restore_checkpointed_session_environment(

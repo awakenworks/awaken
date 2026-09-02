@@ -134,12 +134,13 @@ mod tests {
         }
     }
 
-    /// Cause/effect design: C1 ACP Serve wraps the real RunApplicationHost with a
-    /// model returning `served reply` and usage 13/9; C2 two Sessions are created;
-    /// C3 only the first is prompted. Effects: E1 ids are distinct and the model
+    /// Cause/effect design: C0 the production Dispatch Session Runtime composition
+    /// is installed; C1 ACP Serve wraps the real RunApplicationHost with a model
+    /// returning `served reply` and usage 13/9; C2 two Sessions are created; C3
+    /// only the first is prompted. Effects: E1 ids are distinct and the model
     /// identity is retained; E2 the prompted Session ends and surfaces the reply
     /// with usage 13/9; E3 the untouched Session remains 0/0. Decision table:
-    /// S1=C1+C2+C3=>E1+E2; S2=C1+C2+!C3=>E3. Constraint/Invariant:
+    /// S1=C0+C1+C2+C3=>E1+E2; S2=C0+C1+C2+!C3=>E3. Constraint/Invariant:
     /// ACP Serve uses the real RunApplicationHost and one Session authority.
     /// Decision rule: execute S1 and S2 to cover prompted and untouched Sessions.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -150,6 +151,7 @@ mod tests {
             Arc::new(DeterministicModel),
             "served-model",
         ));
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let serve = AcpServeHost::new(Arc::new(RunApplicationHost::new(host)));
 
         assert_eq!(serve.model(), "served-model");

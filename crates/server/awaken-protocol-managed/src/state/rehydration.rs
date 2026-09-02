@@ -15,24 +15,20 @@ impl ManagedState {
         self.get_session(session_id).map(Some)
     }
 
-    /// Rehydrate one deterministic product-authored Session from the repository's
-    /// atomic creation receipt. The receipt, not mutable Session metadata, owns
-    /// request equivalence.
-    pub(crate) async fn replay_session_with_receipt(
+    /// Project an exact product create receipt even when realization has
+    /// reached a durable failed state. The Session root is the asynchronous
+    /// operation, so retry returns that resource and never starts a replacement
+    /// operation or repeats physical effects.
+    pub(crate) async fn replay_accepted_session_with_receipt(
         &self,
         session_id: &str,
         workspace_id: &str,
         idempotency: &awaken_session_contract::IdempotencyRecord,
-    ) -> Result<Option<Session>, StateError> {
-        let persisted = self
-            .application
-            .replay_session_create(workspace_id, session_id, idempotency)
+    ) -> Result<Option<PersistedSession>, StateError> {
+        self.application
+            .replay_accepted_session_create(workspace_id, session_id, idempotency)
             .await
-            .map_err(Self::map_create_replay_error)?;
-        let Some(persisted) = persisted else {
-            return Ok(None);
-        };
-        self.replay_verified_session(session_id, persisted).await
+            .map_err(Self::map_create_replay_error)
     }
 
     /// Rehydrate one deterministic metadata-backed Session only when durable
@@ -182,107 +178,6 @@ mod tests {
         );
         assert!(state.list_sessions().is_empty(), "R1/E2");
         assert!(order.lock().unwrap().is_empty(), "R1/E3");
-    }
-
-    #[tokio::test]
-    async fn profiled_create_replay_uses_only_the_repository_receipt_and_owner() {
-        // Cause/effect graph: C1 identity absent/present; C2 repository receipt
-        // absent/present; C3 payload hash matches; C4 Workspace owner matches;
-        // C5 activation is live/failed. Effects: E1 absent identity+receipt means
-        // create may proceed; E2 an occupied identity without this receipt,
-        // mismatched hash, or mismatched owner is an idempotency conflict; E3 an
-        // exact live receipt cold-rehydrates; E4 an exact failed receipt is a
-        // terminal create conflict. No metadata key participates in any rule.
-        // Decision rules R1=!C1+!C2=>E1, R2=C1+(!C2|!C3|!C4)=>E2,
-        // R3=C1+C2+C3+C4+live=>E3, R4=same+failed=>E4.
-        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
-        let id = "profiled-receipt-live";
-        let receipt = awaken_session_contract::IdempotencyRecord {
-            key: format!("profiled:create:{id}"),
-            payload_hash: "request-a".into(),
-        };
-        let live = sample_persisted(id);
-        repo.create("workspace-a", live, receipt.clone(), Vec::new())
-            .await
-            .expect("persist exact receipt");
-        let durable_before = repo.get(id).await.unwrap();
-        let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
-
-        assert!(
-            restarted
-                .replay_session_with_receipt(
-                    "profiled-receipt-absent",
-                    "workspace-a",
-                    &awaken_session_contract::IdempotencyRecord {
-                        key: "profiled:create:profiled-receipt-absent".into(),
-                        payload_hash: "request-a".into(),
-                    },
-                )
-                .await
-                .expect("R1/E1")
-                .is_none(),
-            "R1/E1"
-        );
-        for (rule, owner, candidate) in [
-            (
-                "R2-no-receipt",
-                "workspace-a",
-                awaken_session_contract::IdempotencyRecord {
-                    key: format!("profiled:create:{id}:other"),
-                    payload_hash: "request-a".into(),
-                },
-            ),
-            (
-                "R2-hash",
-                "workspace-a",
-                awaken_session_contract::IdempotencyRecord {
-                    payload_hash: "request-b".into(),
-                    ..receipt.clone()
-                },
-            ),
-            ("R2-owner", "workspace-b", receipt.clone()),
-        ] {
-            assert!(
-                matches!(
-                    restarted
-                        .replay_session_with_receipt(id, owner, &candidate)
-                        .await,
-                    Err(StateError::IdempotencyMismatch)
-                ),
-                "{rule}/E2"
-            );
-        }
-        let replayed = restarted
-            .replay_session_with_receipt(id, "workspace-a", &receipt)
-            .await
-            .expect("R3 exact receipt")
-            .expect("R3/E3 rehydrated Session");
-        assert_eq!(replayed.id, id, "R3/E3");
-        assert_eq!(
-            repo.get(id).await.unwrap(),
-            durable_before,
-            "R1-R3 no mutation"
-        );
-
-        let failed_id = "profiled-receipt-failed";
-        let failed_receipt = awaken_session_contract::IdempotencyRecord {
-            key: format!("profiled:create:{failed_id}"),
-            payload_hash: "request-failed".into(),
-        };
-        let mut failed = sample_persisted(failed_id);
-        failed.execution = SessionExecutionState::ActivationFailed;
-        repo.create("workspace-a", failed, failed_receipt.clone(), Vec::new())
-            .await
-            .expect("persist failed receipt");
-        assert!(
-            matches!(
-                restarted
-                    .replay_session_with_receipt(failed_id, "workspace-a", &failed_receipt,)
-                    .await,
-                Err(StateError::TerminalCreateConflict)
-            ),
-            "R4/E4"
-        );
     }
 
     #[tokio::test]

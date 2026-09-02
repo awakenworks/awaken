@@ -1190,6 +1190,11 @@ async fn archive_terminal_cleanup_tears_down_each_unique_runtime_once() {
 
 #[tokio::test]
 async fn archive_session_rehydrates_after_process_restart() {
+    // Cause/effect graph: C1 a live Session is durable; C2 its process-local
+    // projection is lost; C3 archive commits the terminal fence; C4 no durable
+    // resident Environment binding exists. Effects: E1 the Session is terminal;
+    // E2 cold control never prepares a Runtime; E3 it invents no teardown. Rule
+    // R1=C1+C2+C3+C4=>E1+E2+E3.
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let original = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let id = original
@@ -1207,8 +1212,8 @@ async fn archive_session_rehydrates_after_process_restart() {
         .await
         .expect("archive durable Session after restart");
     assert_eq!(archived.status, SessionStatus::Terminated);
-    assert_eq!(*ended.lock().unwrap(), vec![id.clone()]);
-    assert!(prepared.lock().unwrap().is_empty());
+    assert!(ended.lock().unwrap().is_empty(), "E3");
+    assert!(prepared.lock().unwrap().is_empty(), "E2");
     assert_eq!(
         repo.get(&id).await.unwrap().execution,
         SessionExecutionState::Terminated
@@ -1219,11 +1224,13 @@ async fn archive_session_rehydrates_after_process_restart() {
 async fn archive_session_does_not_require_a_retired_agent_publication_after_restart() {
     // Cause/effect graph: C1 durable Session freezes Agent revision 7; C2 the
     // disposable projection and exact Control publication are unavailable after
-    // restart; C3 archive requests terminal cleanup. Effects: E1 the durable
-    // baseline supplies the cleanup projection; E2 the Session terminates and
-    // releases its Runtime exactly once; E3 ordinary interactive rehydration
+    // restart; C3 archive requests terminal cleanup; C4 no durable resident
+    // Environment binding exists. Effects: E1 the durable baseline supplies
+    // the control projection; E2 the Session terminates without inventing a
+    // Runtime teardown; E3 ordinary interactive rehydration
     // remains fail-closed elsewhere. Requiring mutable Control presentation for
     // C3 leaks every already-terminal Run and hot-loops its downstream inbox.
+    // Decision rule R1=C1+C2+C3+C4=>E1+E2+E3.
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("sesn_retired_agent_cleanup");
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &persisted.baseline
@@ -1262,10 +1269,9 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
         .expect("terminal cleanup uses durable baseline without Control publication");
     assert_eq!(archived.status, SessionStatus::Terminated, "E1/E2");
     assert_eq!(archived.agent.version, 7, "E1 keeps the frozen revision");
-    assert_eq!(
-        ended.lock().unwrap().as_slice(),
-        &["sesn_retired_agent_cleanup"],
-        "E2"
+    assert!(
+        ended.lock().unwrap().is_empty(),
+        "E2 no cleanup without a durable resident Environment"
     );
     assert!(
         prepared.lock().unwrap().is_empty(),
@@ -1286,7 +1292,7 @@ async fn archive_session_does_not_require_a_retired_agent_publication_after_rest
         .expect("terminal replay is idempotent");
     assert_eq!(
         ended.lock().unwrap().len(),
-        1,
+        0,
         "E2 replay has no second cleanup"
     );
 }
@@ -1426,10 +1432,25 @@ impl SessionRuntime for EndSessionFailer {
     {
         Ok(None)
     }
-    async fn execute_terminal_cleanup(
+    async fn install_terminal_cleanup_assignment(
         &self,
-        _command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        _assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        _effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         Err(RunError::internal("sandbox dispose blew up"))
     }
     fn model(&self) -> String {

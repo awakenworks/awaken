@@ -213,6 +213,9 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             Err(ToolError::UnavailableBeforeDispatch(message)) => {
                 Err(McpHostError::Internal(message))
             }
+            Err(ToolError::StateInvalidatedAfterDispatch(message)) => {
+                Err(McpHostError::Internal(message))
+            }
             Err(ToolError::Execution(message)) => Err(McpHostError::Internal(message)),
         }
     }
@@ -362,6 +365,21 @@ mod tests {
         }
         async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
             Err(ToolError::Execution("wire snapped".to_string()))
+        }
+    }
+
+    struct InvalidatedAfterDispatchTool;
+
+    #[async_trait]
+    impl RawTool for InvalidatedAfterDispatchTool {
+        fn id(&self) -> &str {
+            "invalidated"
+        }
+
+        async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::StateInvalidatedAfterDispatch(
+                "skill catalog refresh failed after the mutation".to_string(),
+            ))
         }
     }
 

@@ -3,41 +3,38 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
-struct RestoreSubstrate {
-    exact_request: Mutex<Option<awaken_session_contract::SandboxRestoreRequest>>,
-    creates: AtomicUsize,
-}
-
-#[derive(Default)]
 struct ContinuationRuntime {
     fail_quiesce_once: AtomicBool,
     fail_checkpoint_once: AtomicBool,
+    fail_prepare_once: AtomicBool,
     fail_dispose_once: AtomicBool,
     fail_restore_once: AtomicBool,
+    fail_adopt_once: AtomicBool,
     fail_delete_once: AtomicBool,
     quiesces: AtomicUsize,
     checkpoints: AtomicUsize,
+    preparations: AtomicUsize,
     disposals: AtomicUsize,
     restores: AtomicUsize,
+    projection_attempts: AtomicUsize,
+    adoption_attempts: AtomicUsize,
     deletes: AtomicUsize,
+    terminal_cleanups: AtomicUsize,
+    terminal_checkpoint_projections: AtomicUsize,
     checkpoint_scopes: Mutex<Vec<(String, u64)>>,
     expected_mcp_generations: Mutex<Vec<Vec<awaken_session_contract::McpGenerationRef>>>,
     quiescence_mcp_override: Mutex<Option<Vec<awaken_session_contract::McpGenerationRef>>>,
-    restore_requests: Mutex<Vec<awaken_session_contract::SandboxRestoreRequest>>,
-    terminal_restore_targets: Mutex<Vec<awaken_session_contract::SandboxRestoreRequest>>,
-    terminal_restore_disposals: AtomicUsize,
-    terminal_effect_order: Mutex<Vec<&'static str>>,
-    restore_substrate: Arc<RestoreSubstrate>,
     source_tuples: Mutex<Vec<(&'static str, String, String, String)>>,
-}
-
-impl ContinuationRuntime {
-    fn with_restore_substrate(restore_substrate: Arc<RestoreSubstrate>) -> Self {
-        Self {
-            restore_substrate,
-            ..Self::default()
-        }
-    }
+    preparation_effects: Mutex<Vec<awaken_session_contract::SourceReleasePreparationEffect>>,
+    disposal_authorizations: Mutex<Vec<awaken_provisioning_contract::SandboxDisposalAuthorization>>,
+    projection_installs: Mutex<
+        Vec<(
+            String,
+            awaken_session_contract::FrozenSessionProjection,
+            awaken_session_contract::SessionProjectionInstallMode,
+        )>,
+    >,
+    adoptions: Mutex<Vec<(String, String, String)>>,
 }
 
 #[async_trait::async_trait]
@@ -48,40 +45,69 @@ impl SessionRuntime for ContinuationRuntime {
         projection: awaken_session_contract::FrozenSessionProjection,
         mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        install_complete_test_projection(self, thread, projection, mode).await
+        self.projection_attempts.fetch_add(1, Ordering::SeqCst);
+        let successful_install = (thread.to_string(), projection.clone(), mode.clone());
+        install_complete_test_projection(self, thread, projection, mode).await?;
+        self.projection_installs
+            .lock()
+            .unwrap()
+            .push(successful_install);
+        Ok(())
     }
 
-    async fn execute_terminal_cleanup(
+    async fn adopt_session_environment(
         &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        if let Some(request) = command.restore_target.as_ref() {
-            let mut exact = self.restore_substrate.exact_request.lock().unwrap();
-            match exact.as_ref() {
-                Some(observed) if observed != request => {
-                    return Err(RunError::unavailable(
-                        "terminal cleanup selected another physical restore target",
-                    ));
-                }
-                Some(_) => *exact = None,
-                None => {}
-            }
-            drop(exact);
-            self.terminal_restore_targets
-                .lock()
-                .unwrap()
-                .push(request.clone());
-            self.terminal_restore_disposals
-                .fetch_add(1, Ordering::SeqCst);
-            self.terminal_effect_order
-                .lock()
-                .unwrap()
-                .push("dispose-restored-target");
+        agent: &str,
+        thread: &str,
+        binding: &str,
+    ) -> Result<(), RunError> {
+        self.adoption_attempts.fetch_add(1, Ordering::SeqCst);
+        if self.fail_adopt_once.swap(false, Ordering::SeqCst) {
+            return Err(RunError::unavailable("injected adoption failure"));
         }
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
+        self.adoptions.lock().unwrap().push((
+            agent.to_string(),
+            thread.to_string(),
+            binding.to_string(),
+        ));
+        Ok(())
+    }
+
+    async fn prepare_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupEffect,
+        _authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+    ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
+        let provider_prepared_effect_fence = effect
+            .sandbox_effect_fence()
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        awaken_session_contract::SessionCleanupPreparation::try_new(
+            &effect,
+            provider_prepared_effect_fence,
             Vec::new(),
+        )
+        .map_err(|error| RunError::internal(error.to_string()))
+    }
+
+    async fn dispose_terminal_cleanup_for_effect(
+        &self,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
+        self.terminal_cleanups.fetch_add(1, Ordering::SeqCst);
+        Ok(awaken_session_contract::SessionCleanupDisposalReceipt::new(
+            &effect.command,
         ))
+    }
+
+    async fn install_terminal_cleanup_assignment(
+        &self,
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), RunError> {
+        if assignment.projection.environment.checkpoint().is_some() {
+            self.terminal_checkpoint_projections
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     async fn session_thread_recovery_snapshot(
@@ -168,28 +194,51 @@ impl SessionRuntime for ContinuationRuntime {
         })
     }
 
-    async fn dispose_checkpoint_source(
+    async fn prepare_checkpoint_source_disposal(
         &self,
         _thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        source_effect_id: &str,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
         generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, RunError> {
+        self.preparations.fetch_add(1, Ordering::SeqCst);
+        self.preparation_effects
+            .lock()
+            .unwrap()
+            .push(preparation.clone());
+        if self.fail_prepare_once.swap(false, Ordering::SeqCst) {
+            return Err(RunError::unavailable("injected source preparation crash"));
+        }
+        let provider_prepared_effect_fence = preparation
+            .sandbox_effect_fence()
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        awaken_session_contract::SourceReleasePreparedReceipt::try_new(
+            preparation.clone(),
+            provider_prepared_effect_fence,
+            generation,
+            source_binding,
+        )
+        .map_err(|error| RunError::internal(error.to_string()))
+    }
+
+    async fn dispose_prepared_checkpoint_source(
+        &self,
+        _thread: &str,
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
         self.disposals.fetch_add(1, Ordering::SeqCst);
-        self.source_tuples.lock().unwrap().push((
-            "dispose",
-            source_effect_id.into(),
-            source_binding.into(),
-            generation.id.clone(),
-        ));
+        self.disposal_authorizations.lock().unwrap().push(
+            disposal.sandbox_disposal_authorization().map_err(|error| {
+                RunError::unavailable_classified("test_source_disposal_invalid", error.to_string())
+            })?,
+        );
         if self.fail_dispose_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected disposal crash"));
         }
         Ok(awaken_session_contract::SourceDisposedReceipt {
-            effect_id: operation.effect_id.clone(),
-            generation_id: generation.id.clone(),
-            source_binding: source_binding.into(),
+            effect_id: disposal.operation().effect_id.clone(),
+            generation_id: disposal.generation().id.clone(),
+            source_binding: disposal.source_binding().into(),
             terminated: true,
         })
     }
@@ -199,22 +248,6 @@ impl SessionRuntime for ContinuationRuntime {
         request: awaken_session_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         self.restores.fetch_add(1, Ordering::SeqCst);
-        self.restore_requests.lock().unwrap().push(request.clone());
-        let mut exact = self.restore_substrate.exact_request.lock().unwrap();
-        match exact.as_ref() {
-            Some(observed) if observed != &request => {
-                return Err(RunError::unavailable(
-                    "physical restore target belongs to another exact request",
-                ));
-            }
-            Some(_) => {}
-            None => {
-                self.restore_substrate
-                    .creates
-                    .fetch_add(1, Ordering::SeqCst);
-                *exact = Some(request.clone());
-            }
-        }
         if self.fail_restore_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected restore crash"));
         }
@@ -232,10 +265,6 @@ impl SessionRuntime for ContinuationRuntime {
         _checkpoint: &awaken_session_contract::SandboxCheckpointRef,
     ) -> Result<(), RunError> {
         self.deletes.fetch_add(1, Ordering::SeqCst);
-        self.terminal_effect_order
-            .lock()
-            .unwrap()
-            .push("delete-checkpoint");
         if self.fail_delete_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected delete crash"));
         }
@@ -285,13 +314,9 @@ impl SessionRuntime for ContinuationRuntime {
     }
 }
 
-fn generated_session(id: &str) -> PersistedSession {
-    let mut session = persisted(id, false, "idle");
-    let baseline = match &mut session.baseline {
-        awaken_session_contract::SessionBaselineState::Frozen(baseline) => baseline,
-        _ => unreachable!(),
-    };
-    baseline.environment.idle_retention = awaken_session_contract::EnvironmentIdleRetentionPolicy {
+pub(super) fn checkpoint_release_retention()
+-> awaken_session_contract::EnvironmentIdleRetentionPolicy {
+    awaken_session_contract::EnvironmentIdleRetentionPolicy {
         mode: awaken_session_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
         checkpoint_after_secs: 1,
         retention_secs: 100,
@@ -299,7 +324,16 @@ fn generated_session(id: &str) -> PersistedSession {
         max_checkpoint_bytes: 1024,
         max_checkpoint_duration_secs: 5,
         checkpoint_format: "awaken-fs-tar-v1".into(),
+    }
+}
+
+fn generated_session(id: &str) -> PersistedSession {
+    let mut session = persisted(id, false, "idle");
+    let baseline = match &mut session.baseline {
+        awaken_session_contract::SessionBaselineState::Frozen(baseline) => baseline,
+        _ => unreachable!(),
     };
+    baseline.environment.idle_retention = checkpoint_release_retention();
     let generation = awaken_session_contract::SandboxGeneration::new(
         id,
         0,
@@ -313,9 +347,19 @@ fn generated_session(id: &str) -> PersistedSession {
         generation: Some(generation),
         idle_since_unix_ms: Some(1),
     };
+    session.realization = Some(awaken_session_contract::SessionRealizationLease {
+        owner: "continuation-worker-a".into(),
+        runtime_incarnation: "continuation-runtime-a".into(),
+        epoch: 4,
+        expires_at_unix_ms: 100_000,
+    });
     session
 }
 
+/// Add the one durable Active MCP generation used by continuation tests. This
+/// fixture writes the same Session aggregate fields that the production MCP
+/// admission owns; callers vary only the generation set and receipt returned by
+/// the existing Runtime fake.
 fn add_acknowledged_active_mcp(
     session: &mut PersistedSession,
     name: &str,
@@ -344,7 +388,7 @@ fn add_acknowledged_active_mcp(
             target: awaken_session_contract::McpTarget::parse_http(format!(
                 "https://{name}.example.test/mcp"
             ))
-            .unwrap(),
+            .expect("continuation MCP fixture endpoint is valid"),
             prompts_as_skills: false,
             origin: awaken_session_contract::McpAttachmentOrigin::Agent,
             credential: None,
@@ -371,9 +415,60 @@ fn add_acknowledged_active_mcp(
     }
 }
 
+fn externally_placed(mut session: PersistedSession) -> PersistedSession {
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+    else {
+        unreachable!("continuation fixture baseline is frozen")
+    };
+    baseline.runtime_placement = awaken_session_contract::SessionRuntimePlacement::Worker;
+    session
+}
+
+fn memory_input(
+    binding_id: &str,
+    access: awaken_resource_contract::ResourceAccess,
+) -> awaken_session_contract::ResolvedInput {
+    awaken_session_contract::ResolvedInput {
+        binding_id: awaken_resource_contract::BindingId::from(binding_id),
+        source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id: awaken_resource_contract::MemoryStoreId::from("continuation-memory"),
+            config: awaken_resource_contract::MemoryStoreConfigVersion {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                    "continuation-memory",
+                ),
+                version: awaken_resource_contract::ConfigVersion(1),
+                retention_policy: Default::default(),
+            },
+        },
+        mount_path: format!("/memory/{binding_id}"),
+        access,
+        instructions: None,
+    }
+}
+
+fn legacy_memory_binding(id: &str) -> String {
+    serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::local(
+        id,
+        awaken_provisioning_contract::LocalSandboxHandleV1 {
+            outputs_path: "/mnt/session/outputs".into(),
+            base_env: Vec::new(),
+            continuation_excluded_paths: Vec::new(),
+            deny_tool_egress: false,
+        },
+    ))
+    .unwrap()
+}
+
 pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> PersistedSession {
     let mut session = generated_session(id);
-    let generation = session.environment.generation().unwrap().clone();
+    let source_generation = session.environment.generation().unwrap();
+    let generation = awaken_session_contract::SandboxGeneration::new(
+        id,
+        source_generation.created_at_unix_ms,
+        expires_at_unix_ms,
+        source_generation.environment_fingerprint.clone(),
+        source_generation.base_image_fingerprint.clone(),
+    );
     let operation = awaken_session_contract::SessionEnvironmentOperation::new(
         "workspace",
         id,
@@ -404,8 +499,11 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
 // Cause/effect design: C1=due Resident, C2/C3=quiescent, C4=current epoch,
 // C5=checkpoint success, C6=termination success, C8=no terminal race,
 // C9=repository owner scope. Decision rule R3 => E2 through each phase then E4;
-// the byte adapter receives exact Workspace + creation time, and replay in
-// Hibernated emits no effect.
+// the byte adapter receives exact Workspace + creation time, both
+// source-dependent calls receive the same physical source tuple, and replay in
+// Hibernated emits no effect. The prepared disposal fence is covered by the
+// adjacent two-stage artifact tests; this fake does not reconstruct source
+// facts that the disposal API no longer accepts.
 #[tokio::test]
 async fn due_idle_environment_suspends_once_in_order() {
     let repo =
@@ -436,6 +534,7 @@ async fn due_idle_environment_suspends_once_in_order() {
         .unwrap();
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1);
     assert_eq!(
         *runtime.checkpoint_scopes.lock().unwrap(),
@@ -454,16 +553,10 @@ async fn due_idle_environment_suspends_once_in_order() {
                 "checkpoint",
                 "create".into(),
                 "source-binding".into(),
-                generation_id.clone(),
-            ),
-            (
-                "dispose",
-                "create".into(),
-                "source-binding".into(),
                 generation_id,
             ),
         ],
-        "R19/R20 exact physical source tuple survives every suspend phase"
+        "R19/R20 exact physical source tuple reaches every source-dependent boundary"
     );
 }
 
@@ -775,9 +868,11 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
     }
 }
 
-// Cause/effect design: C5=upload failure after Quiescing committed. FMECA crash
-// window U1 => E3 source retained in Uploading; retry reuses the stable operation
-// and reaches E4 without repeating quiescence or disposing early.
+// Cause/effect design: C1=upload failure after Quiescing committed at T1;
+// C2=retry supervisor observes T2>T1. FMECA crash window U1 => E3 source
+// retained in Uploading; retry reuses the stable operation and its exact T1
+// object metadata, then reaches E4 without repeating quiescence, creating a
+// second logical checkpoint, or disposing early.
 #[tokio::test]
 async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
     let repo =
@@ -805,12 +900,16 @@ async fn checkpoint_failure_retains_source_and_retries_from_committed_phase() {
     ));
     assert_eq!(pending.environment.binding(), Some("source-binding"));
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0);
-    app.reconcile_environment_continuation("retry", 2_000)
+    app.reconcile_environment_continuation("retry", 3_000)
         .await
         .unwrap();
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 2);
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *runtime.checkpoint_scopes.lock().unwrap(),
+        [("workspace".into(), 2_000), ("workspace".into(), 2_000)]
+    );
 }
 
 // Cause/effect design: C3=quiescence effect fails before receipt; rule R6 =>
@@ -850,9 +949,14 @@ async fn quiescence_failure_retains_resident_source_for_retry() {
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1);
 }
 
-// Cause/effect design: C6=dispose fails after checkpoint receipt committed.
-// Crash window D1 => E3 keep ReadyToDispose plus the exact checkpoint; retry
-// repeats only idempotent disposal and cannot upload a parallel object.
+// Source-release decision table: C1 prep fails after checkpoint => retain
+// ReadyToDispose, disposal zero; C2 prep succeeds and its root CAS is durable
+// but physical disposal fails => retain Disposing; C3 retry from Disposing =>
+// never repeat checkpoint or live preparation, replay only exact disposal.
+// These rules make total source absence meaningful only after the durable prep
+// phase and close the response-loss window between provider delete and root CAS.
+// C4 a higher-epoch realization takes over durable Disposing => retain A and
+// its preparation fingerprint, use current B, and keep one physical operation.
 #[tokio::test]
 async fn disposal_failure_retries_without_recheckpointing() {
     let repo =
@@ -873,21 +977,64 @@ async fn disposal_failure_retries_without_recheckpointing() {
     assert!(matches!(
         repo.get("dispose-retry").await.unwrap().environment,
         awaken_session_contract::SessionEnvironmentState::Suspending {
-            suspend_phase: awaken_session_contract::SuspendPhase::ReadyToDispose,
+            suspend_phase: awaken_session_contract::SuspendPhase::Disposing,
             checkpoint: Some(_),
             ..
         }
     ));
+    let mut failed_over = repo.get("dispose-retry").await.unwrap();
+    failed_over.realization = Some(awaken_session_contract::SessionRealizationLease {
+        owner: "continuation-worker-b".into(),
+        runtime_incarnation: "continuation-runtime-b".into(),
+        epoch: 5,
+        expires_at_unix_ms: 100_000,
+    });
+    app.commit_session_snapshot(
+        "workspace",
+        failed_over,
+        "test-continuation-disposal-failover",
+        Vec::new(),
+    )
+    .await
+    .unwrap();
     app.reconcile_environment_continuation("dispose-retry", 2_000)
         .await
         .unwrap();
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 2);
+    let authorizations = runtime.disposal_authorizations.lock().unwrap();
+    assert_eq!(authorizations.len(), 2, "C4 two delivery attempts");
+    assert_eq!(
+        authorizations[0].prepared_effect_fence(),
+        authorizations[1].prepared_effect_fence(),
+        "C4 immutable A",
+    );
+    assert_eq!(
+        authorizations[0].preparation_fingerprint(),
+        authorizations[1].preparation_fingerprint(),
+        "C4 immutable preparation",
+    );
+    assert_eq!(
+        authorizations[0].effect_fence().operation_id,
+        authorizations[1].effect_fence().operation_id,
+        "C4 one physical operation",
+    );
+    assert_eq!(authorizations[0].effect_fence().epoch, 4, "C4 A delivery");
+    assert_eq!(authorizations[1].effect_fence().epoch, 5, "C4 B takeover");
 }
 
-// Cause/effect design: C1=Hibernated, C7=valid, C8=two driving joins. Restore
-// rule => E5 one stable restore effect and one Resident binding; subsequent
-// admission observes Resident and cannot create a parallel environment.
+// Restore-to-projection cause/effect graph: C1 the durable Environment is
+// Hibernated with a live exact realization lease; C2 restore returns the exact
+// receipt; C3 the root CAS commits Resident; C4 the same driving boundary is
+// replayed after Resident. Effects: E1 one stable physical restore; E2 only
+// after C3, install the complete committed projection through Realization with
+// prepare_session=true and the exact current lease; E3 C4 idempotently repeats
+// that one projection/adoption path without another restore or Environment.
+//
+// | Rule | durable phase | restore | Resident CAS | driving replay | Effect |
+// | R1 | Hibernated | succeeds | succeeds | no | E1 + E2 |
+// | R2 | Resident | n/a | already committed | yes | E3 |
 #[tokio::test]
 async fn driving_ingress_restores_once_before_activity() {
     let repo =
@@ -902,21 +1049,63 @@ async fn driving_ingress_restores_once_before_activity() {
     app.ensure_environment_resident("restore", 1_000)
         .await
         .unwrap();
+    let restored = repo.get("restore").await.unwrap();
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R1/E1");
+    assert_eq!(
+        restored.environment.binding(),
+        Some("restored-binding"),
+        "R1/E2 durable Resident precedes projection success",
+    );
+    {
+        let installs = runtime.projection_installs.lock().unwrap();
+        assert_eq!(installs.len(), 1, "R1/E2");
+        assert_eq!(installs[0].0, "restore", "R1/E2 exact Session");
+        assert_eq!(installs[0].1.environment, restored.environment, "R1/E2");
+        assert_eq!(installs[0].1.revision, restored.revision, "R1/E2");
+        assert!(
+            matches!(
+                &installs[0].2,
+                awaken_session_contract::SessionProjectionInstallMode::Realization {
+                    lease,
+                    prepare_session: true,
+                } if Some(lease) == restored.realization.as_ref()
+            ),
+            "R1/E2 exact current lease and adoption mode",
+        );
+    }
+    assert_eq!(
+        runtime.adoptions.lock().unwrap().as_slice(),
+        [("agent".into(), "restore".into(), "restored-binding".into())],
+        "R1/E2 exact Resident binding is adopted before handoff succeeds",
+    );
     app.ensure_environment_resident("restore", 1_000)
         .await
         .unwrap();
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R2/E3");
     assert_eq!(
-        repo.get("restore").await.unwrap().environment.binding(),
-        Some("restored-binding")
+        runtime.projection_attempts.load(Ordering::SeqCst),
+        2,
+        "R2/E3"
     );
     app.begin_activity("restore").await.unwrap();
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R2/E3");
+    assert_eq!(
+        runtime.projection_attempts.load(Ordering::SeqCst),
+        3,
+        "R2/E3"
+    );
 }
 
-// Cause/effect design: C7=valid checkpoint and restore effect fails after the
-// Restoring intent commits. Restore crash rule => E3 retain Restoring; retry
-// joins the stable operation and publishes one Resident binding.
+// Failure decision table: C1 restore fails while the root is Restoring; C2
+// restore succeeds and Resident commits; C3 the post-CAS adoption fails.
+// Effects: E1 C1 retains Restoring and performs zero projection; E2 C2+C3
+// retains durable Resident and performs no successful projection; E3 a later
+// Resident ensure retries the same complete projection without restoring again.
+//
+// | Rule | restore | durable state after call | projection | Effect |
+// | F1 | fails | Restoring | zero attempts | E1 |
+// | F2 | succeeds | Resident | exact adoption fails once | E2 |
+// | F3 | not repeated | Resident | succeeds on retry | E3 |
 #[tokio::test]
 async fn restore_failure_retries_the_committed_restore_operation() {
     let repo =
@@ -938,10 +1127,20 @@ async fn restore_failure_retries_the_committed_restore_operation() {
         repo.get("restore-retry").await.unwrap().environment,
         awaken_session_contract::SessionEnvironmentState::Restoring { .. }
     ));
+    assert_eq!(
+        runtime.projection_attempts.load(Ordering::SeqCst),
+        0,
+        "F1/E1 no projection before a Resident CAS",
+    );
     app.ensure_environment_resident("restore-retry", 1_000)
         .await
         .unwrap();
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 2);
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 2, "F1 retry");
+    assert_eq!(
+        runtime.projection_attempts.load(Ordering::SeqCst),
+        1,
+        "F1 retry"
+    );
     assert_eq!(
         repo.get("restore-retry")
             .await
@@ -952,151 +1151,22 @@ async fn restore_failure_retries_the_committed_restore_operation() {
     );
 }
 
-/*
- * Restore publication cause/effect decision table (R5, R8).
- * Causes: C1 provider completes the exact physical target; C2 root CAS fails;
- * C3 the first Host/runtime object is lost; C4 a fresh Host retries from the
- * durable Restoring aggregate. Effects: E1 retain Restoring and the physical
- * target; E2 publish no Runtime-local adoption before CAS; E3 pass the identical
- * canonical request to the fresh runtime; E4 leave post-CAS process projection
- * to the existing realization owner; E5 create one physical target and commit
- * its same binding.
- * Rules: R5=C1+C2=>E1+E2; R8=C3+C4=>E3+E4+E5.
- */
-#[tokio::test]
-async fn restore_receipt_cas_gap_is_recovered_by_a_fresh_runtime_without_target_two() {
-    let durable =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    create(
-        durable.as_ref(),
-        hibernated_session("restore-cas-gap", 100_000),
-    )
-    .await;
-    let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
-    faulting.fail_once("environment-restored");
-    let substrate = Arc::new(RestoreSubstrate::default());
-    let first_runtime = Arc::new(ContinuationRuntime::with_restore_substrate(
-        substrate.clone(),
-    ));
-    let first = application_with_runtime(
-        first_runtime.clone(),
-        faulting,
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    assert!(
-        first
-            .ensure_environment_resident("restore-cas-gap", 1_000)
-            .await
-            .is_err(),
-        "R5 injected root-CAS gap"
-    );
-    assert!(matches!(
-        durable.get("restore-cas-gap").await.unwrap().environment,
-        awaken_session_contract::SessionEnvironmentState::Restoring { .. }
-    ));
-    assert_eq!(substrate.creates.load(Ordering::SeqCst), 1, "R5/E1");
-    let first_request = first_runtime.restore_requests.lock().unwrap()[0].clone();
-    drop(first);
-    drop(first_runtime);
-
-    let fresh_runtime = Arc::new(ContinuationRuntime::with_restore_substrate(
-        substrate.clone(),
-    ));
-    let fresh = application_with_runtime(
-        fresh_runtime.clone(),
-        durable.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    fresh
-        .ensure_environment_resident("restore-cas-gap", 1_000)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        fresh_runtime.restore_requests.lock().unwrap().as_slice(),
-        [first_request],
-        "R8/E3"
-    );
-    assert_eq!(substrate.creates.load(Ordering::SeqCst), 1, "R8/E5");
-    assert_eq!(
-        durable
-            .get("restore-cas-gap")
-            .await
-            .unwrap()
-            .environment
-            .binding(),
-        Some("restored-binding"),
-        "R8/E5"
-    );
-}
-
-/*
- * Concurrent owner rule (R9): two driving callers can race the Hibernated ->
- * Restoring and Restoring -> Resident CAS edges, but both carry one aggregate
- * tuple. The effects are one physical target, one Resident binding, and no
- * alternate restore request.
- */
-#[tokio::test]
-async fn concurrent_restore_drivers_converge_on_one_exact_target_and_binding() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    create(
-        repo.as_ref(),
-        hibernated_session("restore-concurrent", 100_000),
-    )
-    .await;
-    let substrate = Arc::new(RestoreSubstrate::default());
-    let left_runtime = Arc::new(ContinuationRuntime::with_restore_substrate(
-        substrate.clone(),
-    ));
-    let right_runtime = Arc::new(ContinuationRuntime::with_restore_substrate(
-        substrate.clone(),
-    ));
-    let left = application_with_runtime(
-        left_runtime.clone(),
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let right = application_with_runtime(
-        right_runtime.clone(),
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let (left_result, right_result) = tokio::join!(
-        left.ensure_environment_resident("restore-concurrent", 1_000),
-        right.ensure_environment_resident("restore-concurrent", 1_000),
-    );
-    left_result.expect("R9 left converges");
-    right_result.expect("R9 right converges");
-    assert_eq!(substrate.creates.load(Ordering::SeqCst), 1, "R9");
-    let mut requests = left_runtime.restore_requests.lock().unwrap().clone();
-    requests.extend(right_runtime.restore_requests.lock().unwrap().clone());
-    assert!(!requests.is_empty(), "R9 exercised restore");
-    assert!(requests.iter().all(|request| request == &requests[0]), "R9");
-    assert_eq!(
-        repo.get("restore-concurrent")
-            .await
-            .unwrap()
-            .environment
-            .binding(),
-        Some("restored-binding"),
-        "R9"
-    );
-}
-
-// Cause/effect design: C1=Suspending/Uploading and C8=driving message arrives.
-// The message joins the committed operation: complete checkpoint+dispose, then
-// E5 restore exactly once. No cancellation branch or second resume queue exists.
+// Cause/effect design: C1=Suspending/Uploading with the exact current
+// realization frozen into the operation; C8=driving message arrives. The
+// message joins the committed operation: complete checkpoint+prepare+dispose,
+// then E5 restore exactly once. A legacy/foreign preparation fence remains
+// rejected by the adjacent continuation authority table; this fixture must not
+// weaken that invariant merely because it starts directly in Uploading. No
+// cancellation branch or second resume queue exists.
 #[tokio::test]
 async fn driving_ingress_during_upload_completes_suspend_then_restores() {
     let repo =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let mut session = generated_session("during-upload");
+    let realization = session.realization.clone();
     let operation = session
         .environment
-        .begin_suspend("workspace", "during-upload", 0, None)
+        .begin_suspend_at("workspace", "during-upload", 0, realization, 2_000)
         .unwrap()
         .clone();
     let generation = session.environment.generation().unwrap().clone();
@@ -1186,142 +1256,4 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
         repo.get("delete-retry").await.unwrap().environment,
         awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
-}
-
-// Cause/effect design: C8=terminal command races a Hibernated Session. Terminal
-// rule R7 => E8 delete checkpoint through the existing cleanup saga, never call
-// restore, and commit terminal cleanup only after deletion succeeds.
-#[tokio::test]
-async fn terminal_cleanup_deletes_checkpoint_without_restore() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    create(repo.as_ref(), hibernated_session("terminal", 100_000)).await;
-    let runtime = Arc::new(ContinuationRuntime::default());
-    let app = application_with_runtime(
-        runtime.clone(),
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    app.terminate_session(
-        "terminal",
-        "2026-08-11T00:00:00Z",
-        awaken_session_contract::ManagedLifecycleFact {
-            id: "terminal-archive".into(),
-            object_id: "terminal".into(),
-            workspace_id: Some("workspace".into()),
-            event_type: "session.archived".into(),
-            timestamp: 1,
-            runtime_interval: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(runtime.deletes.load(Ordering::SeqCst), 1);
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 0);
-    assert!(
-        repo.get("terminal")
-            .await
-            .unwrap()
-            .terminal_cleanup
-            .is_completed()
-    );
-}
-
-/*
- * Terminal restore-orphan cause/effect table (R10).
- * Causes: C1 restore acquired the exact physical target; C2 its completion
- * failed before the root Restoring -> Resident CAS; C3 terminal cleanup wins.
- * Effects: E1 project the unchanged Workspace/Session/effect/generation/
- * checkpoint tuple only on the root cleanup command; E2 dispose that exact
- * target before deleting checkpoint bytes; E3 never retry restore; E4 commit
- * terminal cleanup only after both effects succeed.
- * Rule R10=C1+C2+C3=>E1+E2+E3+E4.
- */
-#[tokio::test]
-async fn terminal_restoring_cleanup_disposes_exact_target_before_checkpoint() {
-    let repo =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    create(
-        repo.as_ref(),
-        hibernated_session("terminal-restoring", 100_000),
-    )
-    .await;
-    let runtime = Arc::new(ContinuationRuntime::default());
-    runtime.fail_restore_once.store(true, Ordering::SeqCst);
-    let app = application_with_runtime(
-        runtime.clone(),
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    assert!(
-        app.ensure_environment_resident("terminal-restoring", 1_000)
-            .await
-            .is_err(),
-        "R10/C1+C2"
-    );
-    let pending = repo.get("terminal-restoring").await.unwrap();
-    let exact = pending
-        .environment
-        .restoring_request("workspace", "terminal-restoring")
-        .expect("R10/E1 durable Restoring tuple");
-    assert_eq!(
-        runtime
-            .restore_substrate
-            .exact_request
-            .lock()
-            .unwrap()
-            .as_ref(),
-        Some(&exact),
-        "R10/C1"
-    );
-
-    app.terminate_session(
-        "terminal-restoring",
-        "2026-08-11T00:00:00Z",
-        awaken_session_contract::ManagedLifecycleFact {
-            id: "terminal-restoring-archive".into(),
-            object_id: "terminal-restoring".into(),
-            workspace_id: Some("workspace".into()),
-            event_type: "session.archived".into(),
-            timestamp: 1,
-            runtime_interval: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        runtime.terminal_restore_targets.lock().unwrap().as_slice(),
-        [exact],
-        "R10/E1"
-    );
-    assert_eq!(
-        runtime.terminal_restore_disposals.load(Ordering::SeqCst),
-        1,
-        "R10/E2"
-    );
-    assert_eq!(
-        runtime.terminal_effect_order.lock().unwrap().as_slice(),
-        ["dispose-restored-target", "delete-checkpoint"],
-        "R10/E2"
-    );
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R10/E3");
-    assert!(
-        runtime
-            .restore_substrate
-            .exact_request
-            .lock()
-            .unwrap()
-            .is_none(),
-        "R10/E2"
-    );
-    assert!(
-        repo.get("terminal-restoring")
-            .await
-            .unwrap()
-            .terminal_cleanup
-            .is_completed(),
-        "R10/E4"
-    );
 }

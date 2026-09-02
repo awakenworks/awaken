@@ -1,7 +1,10 @@
-
 use super::*;
 use crate::host::SharedHost;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+use awaken_sandbox_container::{
+    PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
+    SandboxControlServiceKind, SandboxControlServicePublisher,
+};
 use awaken_sandbox_local::LocalProvider;
 
 /// The logical path a staged resource realizes under, recovered from a projected
@@ -61,13 +64,217 @@ impl pc::RepositoryRealizer for RecordingPublicationRealizer {
     }
 }
 
-fn root_terminal_cleanup_command(
+fn terminal_cleanup_test_lease() -> awaken_session_contract::SessionRealizationLease {
+    awaken_session_contract::SessionRealizationLease {
+        owner: "terminal-provisioning-test".into(),
+        runtime_incarnation: "terminal-provisioning-test/incarnation".into(),
+        epoch: 1,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    }
+}
+
+fn terminal_cleanup_projection(
+    workspace_id: &str,
+    environment: awaken_session_contract::SessionEnvironmentState,
+) -> awaken_session_contract::FrozenSessionProjection {
+    frozen_projection_with_model_override(workspace_id, environment, None)
+}
+
+fn frozen_projection_with_model_override(
+    workspace_id: &str,
+    environment: awaken_session_contract::SessionEnvironmentState,
+    model_override: Option<awaken_session_contract::SessionModelOverride>,
+) -> awaken_session_contract::FrozenSessionProjection {
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        "terminal.provisioning.test",
+    );
+    let baseline = awaken_session_contract::SessionBaseline::compile(
+        awaken_session_contract::SessionBaselineInputs {
+            environment: awaken_session_contract::EnvironmentSnapshot {
+                environment_id: "terminal-test-environment".into(),
+                revision: awaken_session_contract::EnvironmentRevision(1),
+                self_hosted: false,
+                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                    "terminal-test-environment-v1".into(),
+                ),
+                sandbox: Default::default(),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                    inference_holder: holder.clone(),
+                    mcp_holder: holder.clone(),
+                    resource_holder: holder,
+                },
+            },
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+            mcp_authoring: Default::default(),
+            agent_id: "terminal-test-agent".into(),
+            agent_revision: None,
+            model_override,
+            model: "terminal-test-model".into(),
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        },
+    );
+    awaken_session_contract::FrozenSessionProjection {
+        workspace_id: workspace_id.into(),
+        revision: awaken_session_contract::SessionRevision(1),
+        baseline,
+        agent_publication: None,
+        environment,
+        resource_revision: 0,
+        resources: Default::default(),
+        previous_resource_manifest: Some(awaken_session_contract::SessionResourceManifest::new(
+            workspace_id,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        )),
+        tools: Default::default(),
+        mcp: Vec::new(),
+        request_context: Vec::new(),
+    }
+}
+
+/// Install the complete frozen projection before a terminal-artifact fixture
+/// creates its resident Environment. Causes: P1 the process-local slot is
+/// absent and P2 the physical Sandbox has not been created. Effects: E1 the
+/// canonical projection owner installs baseline, Workspace, Environment
+/// expectation, and exact revision-zero Resource transition; E2 later Sandbox
+/// creation cannot precede those frozen facts. Decision rule P1+P2 => E1+E2.
+async fn install_terminal_artifact_projection_before_environment(
+    host: &SharedHost,
     session_id: &str,
-) -> awaken_session_contract::SessionCleanupCommand {
-    let mut operation = awaken_session_contract::SessionCleanupOperation::default();
-    assert!(operation.request(session_id));
-    operation.freeze_targets(session_id, [], 0, 0).unwrap();
-    operation.command_for(session_id, session_id).unwrap()
+    workspace_id: &str,
+) {
+    host.install_frozen_session_projection(
+        session_id,
+        terminal_cleanup_projection(workspace_id, Default::default()),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("terminal artifact fixture installs its complete frozen projection first");
+}
+
+/// Publish a legacy durable binding through the same projection/adoption owner
+/// that terminal assignment installation later replays. Causes: F1 the frozen
+/// slot is Unmaterialized; F2 one exact physical Environment exists; F3 the
+/// historical aggregate state has binding evidence but no generated V2
+/// generation. Effects: E1 project the canonical DurableBinding identity; E2
+/// adopt and publish that exact Arc once. Rule F1+F2+F3=>E1+E2. A direct-only
+/// test receipt is not interchangeable with aggregate durable truth.
+fn install_terminal_artifact_environment(
+    host: &SharedHost,
+    session_id: &str,
+    workspace_id: &str,
+    environment: Arc<crate::session_environment::SessionEnvironment>,
+) {
+    let binding = serde_json::to_string(&environment.handle())
+        .expect("terminal artifact Environment binding");
+    let state = awaken_session_contract::SessionEnvironmentState::Resident {
+        binding,
+        effect_id: None,
+        generation: None,
+        idle_since_unix_ms: None,
+    };
+    host.install_session_environment_owner_projection(session_id, workspace_id, &state)
+        .expect("F1/E1 project the canonical legacy durable binding");
+    let candidate = host
+        .begin_session_environment_adoption(session_id, environment)
+        .expect("F2/E2 retain the exact adoption candidate");
+    let crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(identity) =
+        &candidate.origin
+    else {
+        panic!("F3 aggregate projection must own the durable adoption identity");
+    };
+    host.publish_prepared_session_environment(session_id, &candidate, identity.clone())
+        .expect("F2/E2 publish the exact durable owner");
+}
+
+async fn root_terminal_cleanup_effect(
+    host: &SharedHost,
+    session_id: &str,
+    lease: awaken_session_contract::SessionRealizationLease,
+) -> (
+    awaken_session_contract::PersistedSession,
+    awaken_session_contract::SessionTerminalCleanupEffect,
+) {
+    let environment = host
+        .session_slots
+        .read(session_id, |slot| slot.environment_owner.resident())
+        .flatten()
+        .expect("terminal test requires a resident Environment");
+    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let workspace_id = host
+        .session_slots
+        .read(session_id, |slot| slot.workspace.clone())
+        .flatten()
+        .expect("terminal test requires a root Workspace projection");
+    let projection = terminal_cleanup_projection(
+        &workspace_id,
+        awaken_session_contract::SessionEnvironmentState::Resident {
+            binding,
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        },
+    );
+    let mut session = awaken_session_contract::PersistedSession::frozen_with_budget(
+        session_id,
+        projection.baseline.clone(),
+        awaken_session_contract::SessionResourceState::from_active(projection.resources.clone()),
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    session.environment = projection.environment.clone();
+    session.realization = Some(lease.clone());
+    assert!(session.ensure_terminal_cleanup_fence());
+    session
+        .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)
+        .unwrap();
+    let command = session
+        .terminal_cleanup
+        .command_for(session_id, session_id)
+        .unwrap();
+    host.install_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: session_id.into(),
+            projection,
+            lease: lease.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease);
+    (session, effect)
+}
+
+fn root_terminal_preparation_authorization(
+    session: &awaken_session_contract::PersistedSession,
+    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+    workspace_id: &str,
+) -> awaken_session_contract::SessionTerminalCleanupPreparationAuthorization {
+    let inherited_provider_disposal = session
+        .authorize_terminal_cleanup_effect(effect)
+        .expect("derive the root preparation authorization from the aggregate");
+    awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        effect.clone(),
+        workspace_id.into(),
+        inherited_provider_disposal,
+    )
+    .expect("close the exact root terminal preparation authorization")
 }
 
 #[test]
@@ -116,7 +323,7 @@ fn repository_activation(logical: &str) -> RepositoryActivation {
     RepositoryActivation {
         plan: pc::RepositoryRealizationPlan {
             repository_id: format!("id-{logical}"),
-            mount_path: logical.to_string(),
+            mount_path: format!("/workspace/{logical}"),
             source_remote_url: "https://example.invalid/x.git".to_string(),
             transport_url: "https://example.invalid/x.git".to_string(),
             initial_branch: None,
@@ -258,7 +465,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     assert!(
         error
             .message
-            .contains("one sandbox-absolute workspace path"),
+            .contains("backend isolation is weaker than requested"),
         "W1/E2: {}",
         error.message
     );
@@ -430,7 +637,6 @@ async fn reverse_channels_are_safe_noops_without_a_live_session() {
             ..Default::default()
         },
     );
-    host.harvest_thread_skills("t").await.unwrap(); // no env / no store → no persist
     assert!(
         host.harvest_thread_artifacts("t")
             .await
@@ -447,6 +653,193 @@ async fn reverse_channels_are_safe_noops_without_a_live_session() {
     );
 }
 
+struct BatchArtifactContainerProvider {
+    files: Vec<awaken_sandbox_container::EnvironmentFile>,
+    scans: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct BatchArtifactContainer {
+    handle: pc::SandboxHandle,
+    files: Vec<awaken_sandbox_container::EnvironmentFile>,
+    scans: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn batch_artifact_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle {
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
+    pc::SandboxHandle::container_v2(
+        &spec.scope,
+        pc::ContainerSandboxHandleV2 {
+            previous: pc::ContainerSandboxHandleV1 {
+                container_id: format!("container-{}", spec.scope),
+                outputs_path: spec.outputs_path.clone(),
+                base_env: spec.env.clone(),
+                live_input_projection: false,
+                continuation_excluded_paths: Vec::new(),
+                runtime_handle: None,
+                sandbox_control_incarnation: None,
+                control_services: spec.control_services.clone(),
+            },
+            adoption_fingerprint: fingerprint.clone(),
+            realization_fingerprint: fingerprint,
+            owned_paths: Vec::new(),
+        },
+    )
+}
+
+#[async_trait::async_trait]
+impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactContainerProvider {
+    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
+        pc::SandboxCapabilities {
+            isolation: pc::IsolationClass::Container,
+            tool_transparent: true,
+            path_fidelity: true,
+            enforced_readonly: true,
+            network_isolation: true,
+            enforced_network_allowlist: true,
+            secret_egress_substitution: true,
+            resource_limits: true,
+            custom_rootfs: true,
+            package_provisioning: true,
+            control_services: Default::default(),
+        }
+    }
+
+    async fn probe_ready(&self) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+
+    async fn create_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        Ok(Arc::new(BatchArtifactContainer {
+            handle: batch_artifact_container_handle(spec),
+            files: self.files.clone(),
+            scans: self.scans.clone(),
+        }))
+    }
+
+    async fn adopt_environment(
+        &self,
+        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "batch Artifact fixture never adopts an Environment",
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_sandbox_container::ContainerEnvironment for BatchArtifactContainer {
+    async fn spawn_agent_process(
+        &self,
+        _command: pc::Command,
+    ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "batch Artifact fixture never spawns an Agent",
+        ))
+    }
+
+    async fn read_files(
+        &self,
+        root: &str,
+    ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+        assert_eq!(root, "/outputs", "B1/C1 canonical output root");
+        self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.files.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxControlServicePublisher for BatchArtifactContainer {
+    async fn publish_sandbox_control_service(
+        &self,
+        _kind: SandboxControlServiceKind,
+        _service: Arc<dyn SandboxControlService>,
+    ) -> Result<Box<dyn PublishedSandboxControlService>, SandboxControlPublishError> {
+        // Batch Artifact tests advertise no control service; keep the fixture's
+        // unavailable path exact and never synthesize a successful lease.
+        Err(SandboxControlPublishError)
+    }
+}
+
+#[async_trait::async_trait]
+impl pc::Sandbox for BatchArtifactContainer {
+    fn id(&self) -> &str {
+        &self.handle.sandbox_id
+    }
+
+    fn handle(&self) -> pc::SandboxHandle {
+        self.handle.clone()
+    }
+
+    async fn spawn(
+        &self,
+        _command: pc::Command,
+    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "batch Artifact fixture never spawns a process",
+        ))
+    }
+
+    async fn attach(
+        &self,
+        _requirement: pc::MountRequirement,
+    ) -> Result<pc::RealizedMount, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "batch Artifact fixture never attaches a mount",
+        ))
+    }
+
+    async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "Host batch capture must not use the Container Sandbox list port",
+        ))
+    }
+
+    async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "Host batch capture must not reread one Container Artifact",
+        ))
+    }
+
+    fn realized(&self) -> &[pc::RealizedMount] {
+        &[]
+    }
+
+    async fn process(
+        &self,
+        _process_id: &str,
+    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "batch Artifact fixture has no process",
+        ))
+    }
+
+    async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
+        Ok(pc::SandboxStatus::Ready)
+    }
+
+    async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+
+    async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+}
+
+async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, workspace: &str) {
+    host.register_thread_workspace(thread, workspace);
+    let spec = host.sandbox_spec(thread);
+    let environment = Arc::new(
+        host.create_session_environment(&host.session_provider, &spec)
+            .await
+            .expect("create batch Artifact Container Environment"),
+    );
+    host.install_test_resident_session_environment(thread, environment);
+}
+
 #[tokio::test]
 async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
@@ -455,22 +848,42 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     // require its stated effects, including each fail-closed outcome.
     use awaken_session_contract::SessionRuntime;
     // Cause/effect decision table:
-    // R1 output present + live Sandbox => harvest creates one scoped File.
+    // R1 output under the canonical layout root + live Sandbox => harvest
+    // creates one scoped File with the exact root-relative logical path.
     // R2 identical retry => same File id, no duplicate manifest row/reference.
-    // R3 terminal release => Sandbox gone while File metadata/bytes remain.
+    // R3 terminal preparation => File is durable and Sandbox remains; R4 the
+    // aggregate records that exact preparation plus its Repository participant,
+    // then and only then projects physical disposal => Sandbox gone while File
+    // metadata/bytes remain.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path()));
     host.register_thread_workspace("session-artifacts", "workspace-a");
-    let spec = agent_run_sandbox_spec("session-artifacts");
+    install_terminal_artifact_projection_before_environment(
+        host.as_ref(),
+        "session-artifacts",
+        "workspace-a",
+    )
+    .await;
+    let lease = terminal_cleanup_test_lease();
+    let spec = host.sandbox_spec("session-artifacts");
+    let create_fence = lease
+        .sandbox_effect_fence("session-artifacts-create")
+        .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        LocalProvider::new(storage.path())
-            .create_sandbox(&spec)
+        host.provider
+            .create_sandbox_for_effect(&spec, &create_fence, None)
             .await
             .unwrap(),
     ));
-    host.install_test_resident_session_environment("session-artifacts", environment.clone());
+    install_terminal_artifact_environment(
+        host.as_ref(),
+        "session-artifacts",
+        "workspace-a",
+        environment.clone(),
+    );
     let output = storage
         .path()
+        .join("sandboxes")
         .join("session-artifacts")
         .join(spec.outputs_path.trim_start_matches('/'))
         .join("report.txt");
@@ -489,9 +902,63 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     assert_eq!(retry.receipts[0].record.id, first.receipts[0].record.id);
     assert!(first.receipts[0].record.id.starts_with("file_"));
     assert!(first.receipts[0].record.downloadable);
+    assert_eq!(
+        first.receipts[0].record.logical_path.as_deref(),
+        Some("report.txt"),
+        "R1 canonical output-root projection"
+    );
 
-    crate::ManagedHost::new(host.clone())
-        .execute_terminal_cleanup(root_terminal_cleanup_command("session-artifacts"))
+    let (mut session, effect) =
+        root_terminal_cleanup_effect(host.as_ref(), "session-artifacts", lease).await;
+    let managed = crate::ManagedHost::new(host.clone());
+    let workspace_id = host
+        .session_slots
+        .read("session-artifacts", |slot| slot.workspace.clone())
+        .flatten()
+        .expect("R4 frozen aggregate Repository inputs");
+    let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
+    let preparation = managed
+        .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
+        .await
+        .unwrap();
+    assert!(
+        host.session_slots
+            .read("session-artifacts", |slot| {
+                slot.environment_owner
+                    .terminal_bound_environment()
+                    .is_some()
+            })
+            .unwrap_or(false),
+        "R3 exact owner remains Retiring until aggregate-authorized Disposal"
+    );
+    let repository_preparation = awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+        "session-artifacts",
+        &workspace_id,
+        &session.resources,
+    )
+    .unwrap();
+    session
+        .record_terminal_cleanup_preparation(
+            &workspace_id,
+            &effect.lease,
+            preparation,
+            Some(repository_preparation),
+        )
+        .unwrap();
+    let disposal_command = match session
+        .terminal_cleanup_work_action()
+        .unwrap()
+        .expect("R4 durable preparation projects disposal")
+    {
+        awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } => command,
+        action => panic!("R4 expected aggregate disposal action, got {action:?}"),
+    };
+    let disposal = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
+        disposal_command,
+        effect.lease,
+    );
+    managed
+        .dispose_terminal_cleanup_for_effect(disposal)
         .await
         .unwrap();
     assert!(
@@ -516,6 +983,47 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
             .1,
         b"durable report"
     );
+}
+
+#[derive(Default)]
+struct RecordingArtifactRecovery {
+    publish_calls: std::sync::atomic::AtomicUsize,
+    recover_calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_resource_contract::ArtifactPublisher<awaken_dispatch::ArtifactPublicationFence>
+    for RecordingArtifactRecovery
+{
+    async fn publish(
+        &self,
+        _publication: awaken_resource_contract::ArtifactPublication<
+            awaken_dispatch::ArtifactPublicationFence,
+        >,
+    ) -> Result<
+        awaken_resource_contract::ArtifactPublicationReceipt,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        self.publish_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(awaken_resource_contract::ArtifactPublicationError::new(
+            "unexpected publication",
+        ))
+    }
+
+    async fn recover(
+        &self,
+        _recovery: awaken_resource_contract::ArtifactRecovery<
+            awaken_dispatch::ArtifactPublicationFence,
+        >,
+    ) -> Result<
+        Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
+        awaken_resource_contract::ArtifactPublicationError,
+    > {
+        self.recover_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Vec::new())
+    }
 }
 
 #[tokio::test]
@@ -593,6 +1101,14 @@ impl FileCatalog for FailingFileCatalog {
         Ok(Vec::new())
     }
 
+    async fn list_files_including_deleted(
+        &self,
+        _workspace_id: &str,
+        _scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, FileCatalogError> {
+        Ok(Vec::new())
+    }
+
     async fn mark_file_deleted(
         &self,
         _workspace_id: &str,
@@ -611,12 +1127,13 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     use awaken_session_contract::SessionRuntime;
 
     // Test design. Causes: R4 has terminal output present while its durable
-    // catalog write fails. Effects: end_session fails and preserves both
-    // Environment and output for retry. Constraint/Invariant: sandbox disposal
-    // follows successful durable harvest, never precedes it. Decision rule:
-    // execute R4 and require failure with zero disposal.
+    // catalog write fails. Effects: terminal preparation fails and preserves
+    // both the exact hidden Retiring Environment and output for retry.
+    // Constraint/Invariant: sandbox disposal follows successful durable
+    // harvest, never precedes it. Decision rule: execute R4 and require failure
+    // with zero disposal.
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
+    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path());
     let catalog = Arc::new(FailingFileCatalog);
     raw_host.file_catalog = catalog.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
@@ -634,86 +1151,61 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
     );
     let host = Arc::new(raw_host);
-    let spec = agent_run_sandbox_spec("session-harvest-failure");
+    host.register_thread_workspace("session-harvest-failure", "test");
+    install_terminal_artifact_projection_before_environment(
+        host.as_ref(),
+        "session-harvest-failure",
+        "test",
+    )
+    .await;
+    let lease = terminal_cleanup_test_lease();
+    let spec = host.sandbox_spec("session-harvest-failure");
+    let create_fence = lease
+        .sandbox_effect_fence("session-harvest-failure-create")
+        .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        LocalProvider::new(storage.path())
-            .create_sandbox(&spec)
+        host.provider
+            .create_sandbox_for_effect(&spec, &create_fence, None)
             .await
             .unwrap(),
     ));
-    host.install_test_resident_session_environment("session-harvest-failure", environment);
+    install_terminal_artifact_environment(
+        host.as_ref(),
+        "session-harvest-failure",
+        "test",
+        environment,
+    );
     let output = storage
         .path()
+        .join("sandboxes")
         .join("session-harvest-failure")
         .join(spec.outputs_path.trim_start_matches('/'))
         .join("report.txt");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"retry me").unwrap();
 
+    let (cleanup, effect) =
+        root_terminal_cleanup_effect(host.as_ref(), "session-harvest-failure", lease).await;
+    let workspace_id = host
+        .registered_thread_workspace("session-harvest-failure")
+        .expect("harvest failure retains the frozen Workspace");
+    let authorization = root_terminal_preparation_authorization(&cleanup, &effect, &workspace_id);
     let error = crate::ManagedHost::new(host.clone())
-        .execute_terminal_cleanup(root_terminal_cleanup_command("session-harvest-failure"))
+        .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .unwrap_err();
     assert!(error.message.contains("injected catalog failure"));
     assert!(
-        host.session_environment("session-harvest-failure")
-            .await
-            .is_some()
+        host.session_slots
+            .read("session-harvest-failure", |slot| {
+                slot.environment_owner
+                    .terminal_bound_environment()
+                    .is_some()
+            })
+            .unwrap_or(false),
+        "R4 exact terminal owner remains hidden and retryable"
     );
     assert_eq!(std::fs::read(output).unwrap(), b"retry me");
-}
-
-#[tokio::test]
-async fn harvest_persists_an_agent_authored_skill_to_the_durable_catalog() {
-    // Hermes-style self-authoring (ADR-0036 D6/D8): a skill the agent writes under the
-    // workspace this run must be harvested into the durable catalog so the next session
-    // delivers it — the skill analogue of memory write-back.
-    let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
-    let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
-
-    // A real sandbox env with a skill authored under the workspace `skills/` dir.
-    let base = dir.join("sbx");
-    let env = crate::session_environment::SessionEnvironment::workdir(
-        LocalProvider::new(&base)
-            .create_sandbox(&agent_run_sandbox_spec("t"))
-            .await
-            .unwrap(),
-    );
-    let skill_dir = base.join("t").join("skills").join("notes");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\ndescription: authored this run\n---\nremember to hydrate",
-    )
-    .unwrap();
-
-    // The catalog is empty until the run-authored skill is harvested; after harvest it
-    // holds the skill, addressable for delivery to the next session.
-    assert!(
-        host.skills
-            .definitions(host.local_workspace())
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    host.persist_authored_skills(host.local_workspace(), &env)
-        .await
-        .unwrap();
-    let ids = host
-        .skills
-        .definitions(host.local_workspace())
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|definition| definition.id)
-        .collect::<Vec<_>>();
-    assert!(
-        ids.iter().any(|id| id.as_str().contains("notes")),
-        "the authored skill must be persisted to the durable catalog: {ids:?}"
-    );
-
-    env.dispose().await.unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

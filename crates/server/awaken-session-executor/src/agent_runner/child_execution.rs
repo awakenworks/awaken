@@ -18,16 +18,14 @@ use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::RunDelegationService;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
-use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
+use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::Backend;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::tool::{RawToolRegistry, ToolExecutor};
 
-use super::{AgentRunError, AgentRunSandbox, usage_from_committed};
-use crate::config::{
-    build_runtime_with_authorization, effective_tool_authorization, latest_assistant_text,
-};
+use super::{AgentRunBoundary, AgentRunError, AgentRunSandbox, settled_agent_boundary};
+use crate::config::{build_runtime_with_authorization, effective_tool_authorization};
 
 /// A child task must not outlive the parent future that owns its delegation
 /// boundary. Tokio's bare `JoinHandle` detaches on drop; this guard makes parent
@@ -107,44 +105,6 @@ pub(crate) struct ChildRunRequest {
     pub(crate) seed: Option<RunInput>,
     pub(crate) resume: Option<ResumeResult>,
     pub(crate) parent_thread_id: ThreadId,
-}
-
-/// One ordinary lifecycle boundary reached by an Agent Run.
-///
-/// Delegated and directly admitted Runs use the same `Runtime::execute` /
-/// `Runtime::resume` transitions. The parent only observes whether its child
-/// ended or is awaiting; the child's committed `ResumeTicket` remains the sole
-/// authority for what may resume it.
-pub(crate) enum AgentRunBoundary {
-    Ended { text: String, usage: ThreadUsage },
-    Awaiting,
-}
-
-pub(super) fn settled_agent_boundary(
-    reader: &dyn CommittedThreadView,
-    thread_id: &ThreadId,
-    state: RunState,
-) -> Result<AgentRunBoundary, AgentRunError> {
-    match state {
-        RunState::Awaiting => Ok(AgentRunBoundary::Awaiting),
-        RunState::Ended(
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd
-            | awaken_agent_contract::agent::run::EndCause::MaxSteps,
-        ) => Ok(AgentRunBoundary::Ended {
-            text: latest_assistant_text(&reader.committed_messages(thread_id)),
-            usage: usage_from_committed(reader, thread_id),
-        }),
-        RunState::Ended(cause) => Err(AgentRunError::Runtime(
-            awaken_runtime_contract::execution::Error::Execution(format!(
-                "child Agent ended unsuccessfully: {cause:?}"
-            )),
-        )),
-        RunState::Running => Err(AgentRunError::Runtime(
-            awaken_runtime_contract::execution::Error::Execution(
-                "an Agent Run escaped without reaching a settled boundary".to_string(),
-            ),
-        )),
-    }
 }
 
 impl AgentRunError {

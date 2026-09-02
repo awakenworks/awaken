@@ -14,7 +14,6 @@ use sha2::{Digest, Sha256};
 use crate::session_environment::SessionEnvironment;
 
 pub(crate) const MAX_INLINE_TOOL_OUTPUT_CHARS: usize = 100_000;
-const OUTPUT_DIRECTORY: &str = ".awaken/tool-results";
 
 pub(crate) struct SandboxToolOutputSpiller {
     environment: Arc<SessionEnvironment>,
@@ -68,7 +67,10 @@ fn stable_output_path(run_id: &RunId, call_id: &str) -> String {
         use std::fmt::Write as _;
         write!(name, "{byte:02x}").expect("writing digest into String");
     }
-    format!("{OUTPUT_DIRECTORY}/{name}.txt")
+    format!(
+        "{}/tool-results/{name}.txt",
+        awaken_provisioning_contract::WorkspaceLayout::AWAKEN_STATE_SUBDIR
+    )
 }
 
 fn truncated_preview(content: &str, visible_path: &str) -> String {
@@ -137,6 +139,7 @@ mod tests {
         let spiller = SandboxToolOutputSpiller::new(environment.clone());
         let run_id = RunId("run/untrusted".into());
         let call_id = "../../provider-call";
+        let logical = stable_output_path(&run_id, call_id);
 
         let below = "a".repeat(MAX_INLINE_TOOL_OUTPUT_CHARS - 1);
         assert_eq!(
@@ -157,8 +160,8 @@ mod tests {
             "S2 counts characters rather than UTF-8 bytes"
         );
         assert!(
-            !Path::new(&workspace).join(OUTPUT_DIRECTORY).exists(),
-            "S1/S2 do not create spill storage"
+            !Path::new(&workspace).join(&logical).exists(),
+            "S1/S2 do not create the spill file in the provider-owned layout"
         );
 
         let oversized = format!("{}界", "x".repeat(MAX_INLINE_TOOL_OUTPUT_CHARS));
@@ -166,7 +169,6 @@ mod tests {
             .spill(&run_id, call_id, oversized.clone())
             .await
             .unwrap();
-        let logical = stable_output_path(&run_id, call_id);
         let full_path = Path::new(&workspace).join(&logical);
         assert_eq!(
             std::fs::read_to_string(&full_path).unwrap(),
