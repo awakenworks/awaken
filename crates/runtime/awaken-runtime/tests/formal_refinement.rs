@@ -3,7 +3,7 @@
 //! These tests drive the real async Runtime and capture the exact ThreadCommit
 //! sequence. `scripts/ci/check_formal.sh` asks the tests to serialize the durable
 //! projection; TLC then evaluates every adjacent pair with
-//! `RustCommitSystem!NextState`. Assertions at executor entry additionally prove
+//! `ThreadCommitProjection!NextState`. Assertions at executor entry additionally prove
 //! that an `Executing` ToolBatch (and, for delegation, the relationship) was
 //! committed before an external effect is entered.
 

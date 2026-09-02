@@ -204,7 +204,7 @@ and deployment integration.
 Pure code decides an effect and emits a stable plan identity. An adapter performs
 the effect and returns an authenticated receipt. Only an exact, live, fenced
 receipt can mutate durable truth. TLA+ checks crash/retry behavior; Kani proves
-plan/receipt admission; Rust traces check selected implementation refinements.
+plan/receipt admission; production traces check selected implementation refinements.
 
 ### Durable inbox/outbox and event-sourced reducers
 

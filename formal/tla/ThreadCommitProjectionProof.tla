@@ -1,5 +1,5 @@
------------------------ MODULE RustCommitSystemProof -----------------------
-EXTENDS RustCommitSystem, TLAPS
+------------------- MODULE ThreadCommitProjectionProof --------------------
+EXTENDS ThreadCommitProjection, TLAPS
 
 LEMMA InitSafety == KernelAssumptions /\ Init => Safety(state)
 BY DEF Init, InitialState, StateValue, Safety, TypeOK, TicketCoherence,
@@ -136,7 +136,7 @@ LEMMA StepInductiveSafety ==
     InductiveSafety /\ [Next]_vars => InductiveSafety'
 BY NextSafety DEF InductiveSafety, KernelAssumptions, vars
 
-THEOREM RustCommitSafety ==
+THEOREM ThreadCommitProjectionSafety ==
     KernelAssumptions /\ Spec => []Safety(state)
 BY InitInductiveSafety, StepInductiveSafety, PTL
    DEF Spec, InductiveSafety

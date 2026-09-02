@@ -1,11 +1,11 @@
--------------------------- MODULE RustCommitSystem --------------------------
+----------------------- MODULE ThreadCommitProjection -----------------------
 EXTENDS Naturals, Sequences, FiniteSets
 
-\* Durable projection of the production Rust ThreadCommit boundary.  Unlike
+\* Durable projection of the production ThreadCommit boundary. Unlike
 \* RuntimeSystem, which also owns ingress leases and external invocation history,
 \* this model has exactly the fields reconstructible from committed Run state,
-\* ActiveToolBatch, and RunDelegations.  Rust integration tests serialize those
-\* fields after every real async commit and TLC checks the resulting trace with
+\* ActiveToolBatch, and RunDelegations. Integration tests serialize those
+\* fields after every production commit and TLC checks the resulting trace with
 \* TraceIsRefinement below.
 CONSTANTS Calls, AgentCalls, NoCall, MaxAttempts, MaxVersion
 

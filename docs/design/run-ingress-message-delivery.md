@@ -229,10 +229,11 @@ checks make the prescribed exact retry idempotent.
 
 ## Durable Semantics
 
-Durable behavior is additive:
+Durable behavior is additive around the queue-less driver:
 
-- direct ingress remains transparent and fast;
-- durable-only calls return an unsupported/fail-closed error on direct ingress;
+- `DirectAttemptDriver` remains transparent and fast for queue-less attempts;
+- durable submission is absent from the direct-driver type instead of becoming
+  an unsupported runtime branch;
 - wake hints are non-authoritative and only trigger reconciliation;
 - thread ownership is the durable input serialization boundary;
 - committed runtime facts remain the authoritative state.
@@ -242,7 +243,9 @@ Durable behavior is additive:
 This design satisfies the simple-design target only while it keeps the following
 shape:
 
-1. One public ingress port, with direct and durable implementations.
+1. One application admission boundary selects one private delivery value;
+   `DirectAttemptDriver` and `RunDispatch` remain concrete owners with no common
+   public service port.
 2. One pending input lifecycle owned by the target thread.
 3. One dispatch plane for claim, lease, retry, wake, and activation opportunity.
 4. One runtime commit boundary for messages, run projection, state, events, and
@@ -289,6 +292,54 @@ messages. `RunRecord` owns execution intent and outcome. `RunDispatch` owns only
 delivery opportunity, claim, lease, retry, and wake state. Moving message payload
 truth into dispatch makes recovery and replay ambiguous because dispatch records
 can be superseded, retried, or repaired independently from the thread log.
+
+## Internal Agent Coordination Journey
+
+Internal `send_message` is a command from the primary Thread to an ordinary
+child Thread, not externally accepted message ingress. The source and target
+have separate commit boundaries linked by stable identities; correctness comes
+from idempotent recovery, not from a cross-aggregate transaction or outbox.
+
+```text
+primary ThreadCommit
+  -> persist ActiveToolBatch call as Executing with stable operation id
+  -> Session CAS opens one activity epoch for that operation
+  -> enqueue deterministic child RunDispatch with frozen user message
+  -> parent may commit the accepted tool receipt
+
+child Worker
+  -> claim exact RunDispatch epoch
+  -> commit frozen input and Run state to the child Thread
+  -> execute zero or more ToolCalls under that Thread's physical-attempt fence
+  -> commit Awaiting or Ended boundary
+  -> Session settles the activity, or transfers it to one deterministic
+     primary report Run when a completed child has a committed report
+  -> settle child Dispatch only after the Session boundary is accepted
+```
+
+The parent receipt and the first target Thread commit are intentionally
+unordered after durable dispatch admission. In the ordinary path the parent
+receipt commits first. If the parent process crashes, the child may finish and
+settle before the parent receipt exists. Recovery reruns only the source
+operation protocol: the same Run id and full dispatch fingerprint hit the
+permanent completion tombstone, return idempotent success, and let the parent
+commit its missing receipt without creating claimable target work.
+
+| Failure window | Durable evidence | Recovery outcome |
+|---|---|---|
+| before source `Executing` commit | no accepted command | retry begins normally |
+| after source commit, before dispatch admission | source `ActiveToolBatch` plus Session activity | exact operation retry; definitive rejection alone may settle activity |
+| admission response lost | dispatch may or may not exist | exact Run/fingerprint retry; never infer rejection |
+| parent receipt committed before child starts | source receipt plus pending dispatch | child executes normally; receipt does not settle Session activity |
+| child settles before parent receipt commit | child Thread boundary plus dispatch completion tombstone | exact source retry commits only the missing receipt; no target re-execution |
+| child commits but Worker crashes before settlement | child Thread boundary plus leased dispatch | replacement Worker observes committed truth, repeats Session observation, then settles |
+
+Static ownership stays narrow: `ActiveToolBatch` owns the source request and
+receipt; `PersistedSession` owns the activity fence; `RunDispatch` owns target
+delivery and its permanent completion identity; child `ThreadCommit` owns target
+message, Run, ToolCall, and report truth; Managed Session/Event data is a
+projection only. `AgentMessageProtocol.tla` checks all ordering/failure
+interleavings and separate early- and late-receipt reachability witnesses.
 
 ## Message Input Lifecycle
 
