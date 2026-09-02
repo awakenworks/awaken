@@ -32,6 +32,20 @@ pub enum UIStreamEvent {
     ReasoningEnd {
         id: String,
     },
+    SourceUrl {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    SourceDocument {
+        #[serde(rename = "sourceId")]
+        source_id: String,
+        #[serde(rename = "mediaType")]
+        media_type: String,
+        title: String,
+    },
     /// A tool call has begun streaming its input, before any argument bytes.
     /// `useChat` opens an `input-streaming` tool part on this frame.
     ToolInputStart {
@@ -273,6 +287,47 @@ pub fn text_parts(content: &[ContentBlock]) -> Vec<Value> {
         .collect()
 }
 
+/// Project citation-capable neutral search results into standard AI SDK source
+/// parts. Search content remains runtime-owned; this adapter exposes only the
+/// committed source identity and title required by the public wire.
+pub fn assistant_parts(content: &[ContentBlock]) -> Vec<Value> {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => {
+                Some(serde_json::json!({ "type": "text", "text": text }))
+            }
+            ContentBlock::SearchResult {
+                source,
+                title,
+                citations,
+                ..
+            } if citations.enabled
+                && (source.starts_with("https://") || source.starts_with("http://")) =>
+            {
+                Some(serde_json::json!({
+                    "type": "source-url",
+                    "sourceId": source,
+                    "url": source,
+                    "title": title,
+                }))
+            }
+            ContentBlock::SearchResult {
+                source,
+                title,
+                citations,
+                ..
+            } if citations.enabled => Some(serde_json::json!({
+                "type": "source-document",
+                "sourceId": source,
+                "mediaType": "text/plain",
+                "title": title,
+            })),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod wire_tests {
     use super::*;
@@ -319,6 +374,67 @@ mod wire_tests {
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
             json!({ "type": "tool-input-start", "toolCallId": "c1", "toolName": "read" })
+        );
+    }
+
+    #[test]
+    fn standard_source_wire_shapes_are_exact() {
+        let url = UIStreamEvent::SourceUrl {
+            source_id: "source-1".into(),
+            url: "https://example.test/docs".into(),
+            title: Some("Docs".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(url).unwrap(),
+            json!({
+                "type": "source-url",
+                "sourceId": "source-1",
+                "url": "https://example.test/docs",
+                "title": "Docs",
+            })
+        );
+        let document = UIStreamEvent::SourceDocument {
+            source_id: "kb:runbook".into(),
+            media_type: "text/plain".into(),
+            title: "Runbook".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(document).unwrap(),
+            json!({
+                "type": "source-document",
+                "sourceId": "kb:runbook",
+                "mediaType": "text/plain",
+                "title": "Runbook",
+            })
+        );
+    }
+
+    #[test]
+    fn assistant_history_projects_only_citation_enabled_sources() {
+        use awaken_agent_contract::agent::content::{SearchResultCitations, SearchResultContent};
+
+        let parts = assistant_parts(&[
+            ContentBlock::SearchResult {
+                source: "https://example.test/docs".into(),
+                title: "Docs".into(),
+                content: vec![SearchResultContent::text("answer")],
+                citations: SearchResultCitations { enabled: true },
+            },
+            ContentBlock::SearchResult {
+                source: "https://example.test/private".into(),
+                title: "Private".into(),
+                content: vec![SearchResultContent::text("hidden")],
+                citations: SearchResultCitations { enabled: false },
+            },
+        ]);
+        assert_eq!(
+            parts,
+            vec![json!({
+                "type": "source-url",
+                "sourceId": "https://example.test/docs",
+                "url": "https://example.test/docs",
+                "title": "Docs",
+            })]
         );
     }
 
