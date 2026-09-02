@@ -6,7 +6,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  pass,
+  scenarioMemoryStore,
+  waitForSessionEventReceipt,
+  withScenarioServer,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
@@ -39,23 +44,21 @@ async function turn(client, sessionId, text) {
 async function main() {
   await withScenarioServer('memory', 'memory', 38197, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-    const store = await client.post('/v1/memory_stores', {
-      body: { name: 'cross-session-memory' },
-      headers: MEMORY_HEADERS,
-    });
+    const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
     const session = () => client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
       betas: BETAS,
-      resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: store.id }],
     });
 
     // Cause-effect graph / decision table:
-    // M1 published memory plugin + matching `/memory` replacement + read-write
-    // Store -> extraction runs at terminal and later recall injects the fact;
-    // M2 the same explicit binding with >12 facts -> selector bounds the recall;
-    // M3 a plain mount without the published binding -> mount only, no automatic
-    // memory effect (covered by the Host A1 rule). This e2e drives M1/M2.
+    // M1 published memory plugin + official id-only read-write Store binding ->
+    // the catalog derives the mount, extraction runs at terminal, and later
+    // recall injects the fact; M2 the same binding with >12 facts -> selector
+    // bounds the recall; M3 a plain non-Memory mount without the published
+    // binding -> mount only, no automatic memory effect (Host A1). This e2e
+    // drives M1/M2 without creating a client-side path authority.
     const a = await session();
     const first = await turn(client, a.id, 'remember the sky');
     assert.ok(first.includes('echo:remember the sky'), `probe echoes the turn: ${first}`);

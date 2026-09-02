@@ -13,6 +13,7 @@ import {
   REPO_ROOT,
   deploymentEnv,
   ensureProductionBuilt,
+  initializeE2EInstallation,
   pass,
   stopServer,
   waitForPort,
@@ -168,8 +169,10 @@ async function main() {
       acp_clis: [],
     },
   });
+  const serveEnvironment = { ...process.env, ...env, AWAKEN_HTTP_ADDR: '127.0.0.1:1' };
+  initializeE2EInstallation(serveEnvironment, { binary: bin, configPath: configPath(env) });
   const serve = spawn(bin, automatedAllInOneArgs('--config', configPath(env)), {
-    env: { ...process.env, ...env, AWAKEN_HTTP_ADDR: '127.0.0.1:1' },
+    env: serveEnvironment,
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   try {

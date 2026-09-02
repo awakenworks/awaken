@@ -6,7 +6,7 @@
 //
 // Chain per turn:
 //   POST /v1/ai-sdk/threads/T/runs  -> ProtocolHost::run_streaming -> SharedHost
-//     -> DirectRunIngress -> Runtime loop (echo) -> commit_run  (thread T)
+//     -> DirectAttemptDriver -> Runtime loop (echo) -> commit_run  (thread T)
 //   GET  /v1/ai-sdk/threads/T/messages -> rt.history(T)  (AI-SDK projection)
 //   GET  /v1/ag-ui/threads/T/messages  -> rt.history(T)  (AG-UI projection)   <-- same host, other wire
 //   POST /v1/ag-ui/agents/assistant (threadId T) -> second turn on the SAME thread

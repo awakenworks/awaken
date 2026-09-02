@@ -47,16 +47,29 @@ async function main() {
         permission_policy: { type: 'always_allow' },
       });
       // Capability-member graph: C1=the current SDK models each built-in config
-      // as a discriminated union member; C2=the official Agent-toolset default
-      // enables and auto-allows registered local members; C3=a configured plugin
-      // has no routed execution owner. E1=C2 inherits `default_config` without a
-      // redundant member override; E2=C3 emits one disabled override carrying
-      // matching `name` and `type`. K=`type` cannot identify another member.
-      // This keeps execution admission and the advertised wire policy on the one
+      // as a discriminated union member; C2=the registered local member is
+      // perception or a controlled modification; C3=a configured plugin has no
+      // routed execution owner. E1=perception inherits enabled+allow from the
+      // one toolset default; E2=controlled modification emits enabled+ask; E3=C3
+      // emits disabled+allow. K=`type` must identify the same member as `name`.
+      // This keeps execution admission and advertised wire policy on the one
       // Session-owned toolset authority.
+      //
+      // | Rule | member | classification / route | wire effect |
+      // | R1 | read/glob/grep | perception | inherit default (no config) |
+      // | R2 | bash/write/edit | controlled modification | enabled + always_ask |
+      // | R3 | web_fetch/web_search | no routed plugin | disabled + always_allow |
       const cfg = Object.fromEntries(ts.configs.map((c) => [c.name, c]));
-      for (const inherited of ['bash', 'read', 'write', 'edit', 'glob', 'grep']) {
+      for (const inherited of ['read', 'glob', 'grep']) {
         assert.ok(!(inherited in cfg), `${inherited} inherits the exact Agent-toolset default`);
+      }
+      for (const controlled of ['bash', 'write', 'edit']) {
+        assert.deepEqual(cfg[controlled], {
+          name: controlled,
+          type: controlled,
+          enabled: true,
+          permission_policy: { type: 'always_ask' },
+        });
       }
       assert.deepEqual(cfg.web_fetch, {
         name: 'web_fetch',
@@ -64,15 +77,6 @@ async function main() {
         enabled: false,
         permission_policy: { type: 'always_allow' },
       });
-      // Cause/effect graph: WebFetch and WebSearch are both configured-plugin
-      // capabilities. Without a selected routed plugin, neither has an
-      // executable owner, so the official toolset projects both as disabled
-      // members without restoring a parallel static Web path.
-      //
-      // Decision table:
-      // | Rule | official member | routed plugin selected | effect           |
-      // | C1   | web_fetch       | no                     | disabled override |
-      // | C2   | web_search      | no                     | disabled override |
       assert.deepEqual(cfg.web_search, {
         name: 'web_search',
         type: 'web_search',

@@ -11,10 +11,11 @@ import subprocess
 import sys
 import tomllib
 
+import _crate_boundary_workspace
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-TEST_MODULE = re.compile(r"^\s*#\s*\[\s*cfg\s*\([^]]*\btest\b[^]]*\)\s*\]")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 MOVED_ADDITION_PREFIXES = ("\x1b[1;36m+\x1b[m", "\x1b[36m+\x1b[m")
 
@@ -38,32 +39,23 @@ def diff_base(base: str) -> str:
 def test_only_lines(relative: str) -> set[int]:
     """Return source lines owned by Rust's compile-time test surface.
 
-    Separate ``src/tests.rs`` modules are wholly test-only. Inline test modules
-    conventionally sit at the end of their production module; once their
-    ``#[cfg(test)]`` attribute begins, no later item is part of a shipped binary.
-    Keeping these lines out of the denominator prevents adding tests from making
-    production coverage regress by construction.
+    Separate ``src/tests.rs`` modules are wholly test-only. Inline items reuse
+    the crate-boundary authority for cfg evaluation, so exact/all(test, ...)
+    items leave the denominator while any(test, feature=...) and every later
+    production item remain. Adding tests therefore cannot change production
+    coverage by construction or hide a later shipped line.
     """
 
     path = pathlib.PurePosixPath(relative)
-    source = (ROOT / relative).read_text(encoding="utf-8").splitlines()
+    source = (ROOT / relative).read_text(encoding="utf-8")
     if path.name == "tests.rs" or "tests" in path.parts:
-        return set(range(1, len(source) + 1))
-    for number, line in enumerate(source, 1):
-        if TEST_MODULE.match(line):
-            following = source[number : min(number + 5, len(source))]
-            item = next(
-                (
-                    candidate
-                    for candidate in following
-                    if candidate.strip()
-                    and not candidate.lstrip().startswith(("#", "//"))
-                ),
-                "",
-            )
-            if re.match(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{", item):
-                return set(range(number, len(source) + 1))
-    return set()
+        return set(range(1, len(source.splitlines()) + 1))
+    lines: set[int] = set()
+    for start, end in _crate_boundary_workspace.test_only_rust_ranges(source):
+        first = source.count("\n", 0, start) + 1
+        last = source.count("\n", 0, max(start, end - 1)) + 1
+        lines.update(range(first, last + 1))
+    return lines
 
 
 def added_and_moved_lines_from_diff(

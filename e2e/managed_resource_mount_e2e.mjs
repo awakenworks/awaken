@@ -60,7 +60,7 @@ async function main() {
       environment_id: 'env_local',
       resources: [
         { type: 'file', file_id: file.id, mount_path: '/workspace/doc.txt' },
-        { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' },
+        { type: 'memory_store', memory_store_id: mem.id },
       ],
       betas: BETAS,
     });
@@ -115,7 +115,7 @@ async function main() {
     const memorySession = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
-      resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' }],
+      resources: [{ type: 'memory_store', memory_store_id: mem.id }],
       betas: BETAS,
     });
     // C1=exact writable-Memory receipt; C2=reply+terminal. E1=C2 after C1.

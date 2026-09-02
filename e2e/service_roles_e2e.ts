@@ -12,7 +12,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
-import { waitForPort } from './harness.mjs';
+import { initializeE2EInstallation, waitForPort } from './harness.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
@@ -117,14 +117,20 @@ async function main() {
   assert.notEqual(localControl.status, 0, 'K4b');
   assert.match(localControl.stderr, /requires mode = "server"/, 'K4b');
 
+  const allInOneEnvironment = {
+    ...process.env,
+    HOME: home,
+    // A legacy override must not revive the removed runtime-discovery path.
+    AWAKEN_WEB_DIST: path.join(temp, 'does-not-exist'),
+  };
+  initializeE2EInstallation(allInOneEnvironment, {
+    binary: bin,
+    cwd: temp,
+    configPath: path.join(configDir, 'config.toml'),
+  });
   let server = spawn(bin, automatedAllInOneArgs(), {
     cwd: temp,
-    env: {
-      ...process.env,
-      HOME: home,
-      // A legacy override must not revive the removed runtime-discovery path.
-      AWAKEN_WEB_DIST: path.join(temp, 'does-not-exist'),
-    },
+    env: allInOneEnvironment,
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const stop = async () => {
@@ -151,13 +157,16 @@ async function main() {
     await waitForPort(PORT, 180_000, server);
     const base = `http://127.0.0.1:${PORT}`;
 
+    // Static-console cause/effect rules: C1=root document and C2=client route
+    // fallback both resolve through the one embedded Web asset owner; E1=each
+    // returns the canonical Awaken Agents brand. Rules U1=C1=>E1, U2=C2=>E1.
     let response = await fetch(`${base}/`);
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /Awaken Console/);
+    assert.match(await response.text(), /<title>Awaken Agents<\/title>/);
 
     response = await fetch(`${base}/w/default/agents/new`);
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /Awaken Console/);
+    assert.match(await response.text(), /<title>Awaken Agents<\/title>/);
 
     response = await fetch(`${base}/assets/does-not-exist`);
     assert.equal(response.status, 404);
@@ -169,12 +178,20 @@ async function main() {
     assert.equal(response.status, 404);
 
     await stop();
+    // Split-role continuity rule K5a: C10=the combined process published the
+    // installation coordinate; E10=the later Server-mode Control pins that
+    // exact value instead of inferring or replacing installation identity.
+    const expectedWorkspace = fs.readFileSync(
+      path.join(temp, 'data', 'platform-workspace-id'),
+      'utf8',
+    ).trim();
     fs.writeFileSync(path.join(configDir, 'config.toml'), [
       `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
       `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
       `internal_bind = ${JSON.stringify(`127.0.0.1:${PORT + 1}`)}`,
       'mode = "server"',
       'identity_mode = "no-login"',
+      `expected_platform_workspace_id = ${JSON.stringify(expectedWorkspace)}`,
       'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
       `control_service_token_file = ${JSON.stringify(serviceToken)}`,
       'coordinator_internal_url = "http://127.0.0.1:1"',

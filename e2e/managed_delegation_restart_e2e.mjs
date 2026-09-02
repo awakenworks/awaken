@@ -4,7 +4,7 @@
 // that same runtime truth, without a second Subagent aggregate.
 //
 // Cause graph:
-//   list_agents -> accepted send_to_agent -> completed child Thread/Run
+//   list_agents -> accepted send_message -> completed child Thread/Run
 //   -> tool-free coordinator report Run -> process loss
 //   -> runtime Thread relationship read -> typed projection
 //   -> ExistingThread follow-up -> deterministic fresh Run on the same Thread
@@ -140,7 +140,7 @@ async function main() {
       beforeEvents
         .filter((event) => event.type === 'agent.tool_use')
         .map((event) => event.name),
-      ['list_agents', 'send_to_agent'],
+      ['list_agents', 'send_message'],
       'the original process commits exactly one fixed coordination sequence',
     );
     const coordinatorMessages = beforeEvents
@@ -241,7 +241,7 @@ async function main() {
     const restoredInput = restoredEvents.find((event) => event.type === 'agent.thread_message_received');
     assert.ok(
       restoredInput.content.some((block) => block.text === 'do the research'),
-      'the recovered child input comes from committed send_to_agent message',
+      'the recovered child input comes from committed send_message message',
     );
     const restoredReply = restoredEvents.find((event) => event.type === 'agent.thread_message_sent');
     assert.ok(
@@ -275,7 +275,7 @@ async function main() {
       followUpEvents
         .filter((event) => event.type === 'agent.tool_use')
         .map((event) => event.name),
-      ['list_agents', 'send_to_agent', 'list_agents', 'send_to_agent'],
+      ['list_agents', 'send_message', 'list_agents', 'send_message'],
       'R3 the replacement uses the same fixed ExistingThread coordination path',
     );
     const afterFollowUp = await listThreads(client, session.id);

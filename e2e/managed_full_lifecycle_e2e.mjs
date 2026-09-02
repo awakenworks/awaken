@@ -176,6 +176,14 @@ async function main() {
 
       // ── 2. CREATE A SESSION THAT ASSOCIATES EVERYTHING ─────────────────────
 
+      // Resource-input cause/effect graph: C1=the official MemoryStore input
+      // contains only its identity and optional access/instructions; C2=a caller
+      // supplies the output-only mount_path. Effects: E1=C1 is admitted and the
+      // catalog-owned name derives the frozen output path; E2=C2 is rejected
+      // before a Session root is created. Decision table: R1 C1&&!C2=>E1 (this
+      // real-SDK lifecycle); R2 C2=>E2 (the ResourceInput contract test). The
+      // fixture must not duplicate server path derivation or add a compatibility
+      // request shape that no supported official SDK declares.
       const resourceSession = await client.beta.sessions.create({
         agent: {
           id: agent.id,
@@ -187,7 +195,7 @@ async function main() {
         vault_ids: [vault.id],
         resources: [
           { type: 'file', file_id: file.id, mount_path: '/notes.txt' },
-          { type: 'memory_store', memory_store_id: store.id, mount_path: '/mnt/memory/kb.md' },
+          { type: 'memory_store', memory_store_id: store.id },
           {
             type: 'github_repository',
             url: 'https://github.com/octocat/Hello-World',
@@ -214,6 +222,11 @@ async function main() {
       for (const want of ['file', 'github_repository', 'memory_store']) {
         assert.ok(resTypes.includes(want), `resources.list carries a ${want} (got ${resTypes})`);
       }
+      assert.equal(
+        resources.find((resource) => resource.type === 'memory_store')?.mount_path,
+        '/mnt/memory/kb',
+        'the server derives the immutable MemoryStore mount from its catalog name',
+      );
       pass(`session resources associated: ${resTypes.join(', ')}`);
 
       // Local is explicitly selected by the generic deterministic harness and

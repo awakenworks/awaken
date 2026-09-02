@@ -1,5 +1,5 @@
 // Real-process lifecycle coverage for a remote child Thread created through
-// the Managed coordinator's fixed `list_agents` / `send_to_agent` surface.
+// the Managed coordinator's fixed `list_agents` / `send_message` surface.
 //
 // A deterministic HTTP peer is the only test double. The coordinator, Managed
 // API, durable continuation, cancellation token, A2A adapter and parent/child Run
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
     // cleanup scope.
     await waitForPort(PORT, 180_000, server.server);
     // A remote child may pause for user input. Cause/effect decision table:
-    // C1 send_to_agent reaches remote input-required; C2 the frozen child Agent
+    // C1 send_message reaches remote input-required; C2 the frozen child Agent
     // does not declare `agent_input` as a custom client tool; C3 the aggregate
     // requires_action names the qualified child Event. Effects: E1 the public
     // Session list contains that exact `agent.tool_use` (allow) rather than an

@@ -19,7 +19,11 @@ import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
-import { FILES_BETA, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  FILES_BETA,
+  initializeE2EInstallation,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
@@ -212,15 +216,21 @@ async function startModelDirectory() {
 async function main() {
   // Test design (container projection arms). Causes: C1=Docker is reachable;
   // C2=the publication pins an ACP/model plus Environment resources; C3=MCP is
-  // anonymous or credentialed without a proven no-bypass path. Effects:
-  // E1=!C1 skips without claiming compatibility; E2=C1+C2 realizes the pinned
-  // container and preserves File/Memory/Repository/tool projections; E3=C3
-  // either runs the anonymous endpoint or fails closed before launch.
+  // anonymous or credentialed without a proven no-bypass path; C4=the canonical
+  // stage aggregate explicitly requires its container substrate. Effects:
+  // E1=!C1&&!C4 skips without claiming compatibility; E2=C1+C2 realizes the
+  // pinned container and preserves File/Memory/Repository/tool projections;
+  // E3=C3 either runs the anonymous endpoint or fails closed before launch;
+  // E4=!C1+C4 fails so the aggregate cannot count a skip as coverage.
   // Constraints/invariant: immutable publication/resource identity and the
   // container boundary remain authoritative across every arm.
-  // Decision rules: D0=!C1=>E1; D1=C1+C2+anonymous=>E2; D2=C1+C2+unsafe
-  // credential path=>E3.
+  // Decision rules: D0a=!C1&&!C4=>E1; D0b=!C1+C4=>E4;
+  // D1=C1+C2+anonymous=>E2; D2=C1+C2+unsafe credential path=>E3.
   if (!dockerAvailable()) {
+    fs.rmSync(TMP, { recursive: true, force: true });
+    if (process.env.AWAKEN_E2E_REQUIRE_CONTAINER === '1') {
+      throw new Error('required Docker runtime is unavailable');
+    }
     console.log('E2E SKIP: no reachable Docker daemon.');
     return;
   }
@@ -251,16 +261,18 @@ async function main() {
     `container_image = ${JSON.stringify(IMAGE)}`,
     'acp_clis = ["gemini"]',
   ].join('\n'));
+  const childEnvironment = {
+    ...environment,
+    // Non-secret ambient values are discovery hints only. Provider API keys
+    // are deliberately absent because production rejects them at startup;
+    // the published endpoint, model, and credential revision below must be
+    // the realized runtime inputs.
+    GOOGLE_GEMINI_BASE_URL: 'http://ambient-container.invalid/v1',
+    GEMINI_MODEL: 'environment-fallback-must-not-win',
+  };
+  initializeE2EInstallation(childEnvironment, { binary, configPath });
   const server = spawn(binary, automatedAllInOneArgs('--config', configPath), {
-    env: {
-      ...environment,
-      // Non-secret ambient values are discovery hints only. Provider API keys
-      // are deliberately absent because production rejects them at startup;
-      // the published endpoint, model, and credential revision below must be
-      // the realized runtime inputs.
-      GOOGLE_GEMINI_BASE_URL: 'http://ambient-container.invalid/v1',
-      GEMINI_MODEL: 'environment-fallback-must-not-win',
-    },
+    env: childEnvironment,
     stdio: ['ignore', 'ignore', 'inherit'],
   });
   let client;

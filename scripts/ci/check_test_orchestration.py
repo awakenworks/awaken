@@ -36,6 +36,20 @@ REQUIRED_DETERMINISTIC_SUITES = (
 DETERMINISTIC_RUNNER = (
     "../scripts/ci/_provider_environment.sh --exec node deterministic_runner.mjs"
 )
+REQUIRED_STAGE_SCENARIOS = (
+    ("managed_full_chain", "managed_full_chain_e2e.mjs"),
+)
+REQUIRED_STAGE_ENVIRONMENTS = (
+    (
+        "acp_projected_container",
+        "acp_projected_container_e2e.mjs",
+        "AWAKEN_E2E_REQUIRE_CONTAINER",
+        "1",
+    ),
+)
+REQUIRED_DETERMINISTIC_EDGES = (
+    ("test:compatibility", "test:sdk-behavior-owners"),
+)
 SECONDARY_RUNNERS = (
     "scripts/ci/e2e-coverage.sh",
     "scripts/ci/combined-coverage.sh",
@@ -45,6 +59,7 @@ PARALLEL_COVERAGE_MARKER = re.compile(
 )
 REQUIRED_RELEASE_COMMANDS = (
     "check_test_orchestration.py",
+    "provider_environment.sh --self-test",
     "npm --prefix e2e run test:runner",
     "check_public_api.sh --require-tools",
     "cargo deny --log-level error check bans",
@@ -54,7 +69,6 @@ REQUIRED_RELEASE_COMMANDS = (
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
     "npm --prefix e2e run test:deterministic",
-    "npm --prefix e2e run test:sdk-behavior-owners",
     "npm --prefix e2e run test:sdk-latest-canary",
     "sandbox_capability_suite.sh --require-substrates",
 )
@@ -124,6 +138,10 @@ def orchestration_errors(
     for suite in REQUIRED_DETERMINISTIC_SUITES:
         if suite not in deterministic_suites:
             errors.append(f"deterministic suite order does not invoke {suite}")
+    for owner, child in REQUIRED_DETERMINISTIC_EDGES:
+        commands = re.split(r"\s*&&\s*", scripts.get(owner, ""))
+        if f"npm run {child}" not in commands:
+            errors.append(f"{owner} does not invoke {child}")
 
     expanded: list[tuple[str, str]] = []
 
@@ -181,6 +199,25 @@ def orchestration_errors(
     for relative in scenario_files:
         if relative not in files:
             errors.append(f"stage scenario file does not exist: {relative}")
+    for scenario_id, relative in REQUIRED_STAGE_SCENARIOS:
+        binding = re.compile(
+            rf"\{{\s*id:\s*'{re.escape(scenario_id)}'\s*,\s*"
+            rf"file:\s*'e2e/{re.escape(relative)}'"
+        )
+        if not binding.search(scenario_text):
+            errors.append(
+                f"stage scenario graph does not bind {scenario_id} to e2e/{relative}"
+            )
+    for scenario_id, relative, name, value in REQUIRED_STAGE_ENVIRONMENTS:
+        binding = re.compile(
+            rf"\{{\s*id:\s*'{re.escape(scenario_id)}'\s*,\s*"
+            rf"file:\s*'e2e/{re.escape(relative)}'\s*,\s*"
+            rf"environment:\s*\{{[^}}]*\b{re.escape(name)}:\s*'{re.escape(value)}'",
+        )
+        if not binding.search(scenario_text):
+            errors.append(
+                f"stage scenario {scenario_id} does not require {name}={value}"
+            )
 
     direct_scenario_files: set[str] = set()
     for command, _ in expanded:
@@ -229,7 +266,7 @@ def orchestration_errors(
     return errors
 
 
-def release_gate_errors(check_all: str, public_api: str) -> list[str]:
+def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> list[str]:
     errors = [
         f"check-all does not require: {command}"
         for command in REQUIRED_RELEASE_COMMANDS
@@ -237,11 +274,33 @@ def release_gate_errors(check_all: str, public_api: str) -> list[str]:
     ]
     if re.search(r'^excluded="[^"\n]+"', public_api, re.MULTILINE):
         errors.append("public API gate still excludes workspace crates")
+    if 'readonly PUBLIC_API_TOOL_VERSION="0.52.0"' not in public_api:
+        errors.append("public API gate does not pin cargo-public-api 0.52.0")
+    if 'readonly PUBLIC_API_NIGHTLY="nightly-2026-07-14"' not in public_api:
+        errors.append("public API gate does not pin its dated nightly")
+    if "cargo +nightly public-api" in public_api:
+        errors.append("public API gate still uses a moving nightly")
     for group in REQUIRED_RELEASE_GROUPS:
         if not re.search(rf"^run {re.escape(group)} ", check_all, re.MULTILINE):
             errors.append(f"check-all has no executable {group} group")
     if "duration_seconds" not in check_all or "AWAKEN_TEST_TIMINGS_FILE" not in check_all:
         errors.append("check-all does not publish a configurable timing artifact")
+    sdk_behavior = "npm --prefix e2e run test:sdk-behavior-owners"
+    if sdk_behavior in check_all:
+        errors.append(
+            "check-all duplicates SDK behavior already owned by deterministic compatibility"
+        )
+    authority_arithmetic = "python3 scripts/ci/check_authority_arithmetic.py"
+    if re.search(
+        r'^run \S+ "[^"]+" python3 scripts/ci/check_authority_arithmetic\.py$',
+        check_all,
+        re.MULTILINE,
+    ):
+        errors.append(
+            "check-all duplicates authority arithmetic already owned by check-rust"
+        )
+    if authority_arithmetic not in check_rust:
+        errors.append("check-rust does not own the authority-arithmetic check")
     return errors
 
 
@@ -305,6 +364,7 @@ def validate(root: Path) -> list[str]:
         release_gate_errors(
             (root / "scripts/ci/check-all.sh").read_text(encoding="utf-8"),
             (root / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8"),
+            (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
         )
     )
     errors.extend(
@@ -322,28 +382,35 @@ def validate(root: Path) -> list[str]:
 
 def self_test() -> None:
     # Cause/effect decision table for the checker itself:
-    # C1 canonical aggregate includes every required suite;
+    # C1 canonical aggregate includes every required package suite and required
+    # stage scenario, including the full-chain patch/manifest/apply/test/review-ref
+    # closure exactly once;
     # C2 every E2E belongs to package scripts or the stage cause/effect graph;
     # C3 secondary runners delegate to the aggregate; C4 secondary runners
     # preserve failure status; C5 functional obligation ids are unique; C6 the
-    # release gate requires every external/API/dependency suite without exclusions;
+    # release gate requires every external/API/dependency suite and the canonical
+    # deterministic-environment self-test without exclusions, while SDK behavior
+    # and authority arithmetic each retain exactly one nested gate owner;
     # C7 every shared conformance testkit is executed by every production backend;
-    # C8 deterministic leaf commands are unique; C9 stage scenarios have one owner.
+    # C8 deterministic leaf commands are unique; C9 stage scenarios have one owner;
+    # C10 a scenario credited with container behavior explicitly requires that
+    # substrate instead of returning a successful skip.
     # `test:compatibility` is part of C1, while the network-backed latest-SDK
     # canary is part of C6 so it runs once at the release boundary rather than
     # contaminating the hermetic deterministic runner.
     #
-    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | Effect |
-    # | R1   | T  | T  | T  | T  | T  | T  | T  | T  | T  | accept |
-    # | R2   | F  | *  | *  | *  | *  | *  | *  | *  | *  | reject missing suite |
-    # | R3   | T  | F  | *  | *  | *  | *  | *  | *  | *  | reject unclassified E2E |
-    # | R4   | T  | T  | F  | *  | *  | *  | *  | *  | *  | reject parallel runner |
-    # | R5   | T  | T  | T  | F  | *  | *  | *  | *  | *  | reject swallowed failure |
-    # | R6   | T  | T  | T  | T  | F  | *  | *  | *  | *  | reject duplicate obligation |
-    # | R7   | T  | T  | T  | T  | T  | F  | *  | *  | *  | reject incomplete release gate |
-    # | R8   | T  | T  | T  | T  | T  | T  | F  | *  | *  | reject detached testkit/backend |
-    # | R9   | T  | T  | T  | T  | T  | T  | T  | F  | *  | reject duplicate command |
-    # | R10  | T  | T  | T  | T  | T  | T  | T  | T  | F  | reject package/stage overlap |
+    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | C10 | Effect |
+    # | R1   | T  | T  | T  | T  | T  | T  | T  | T  | T  | T   | accept |
+    # | R2   | F  | *  | *  | *  | *  | *  | *  | *  | *  | *   | reject missing suite |
+    # | R3   | T  | F  | *  | *  | *  | *  | *  | *  | *  | *   | reject unclassified E2E |
+    # | R4   | T  | T  | F  | *  | *  | *  | *  | *  | *  | *   | reject parallel runner |
+    # | R5   | T  | T  | T  | F  | *  | *  | *  | *  | *  | *   | reject swallowed failure |
+    # | R6   | T  | T  | T  | T  | F  | *  | *  | *  | *  | *   | reject duplicate obligation |
+    # | R7   | T  | T  | T  | T  | T  | F  | *  | *  | *  | *   | reject incomplete release gate |
+    # | R8   | T  | T  | T  | T  | T  | T  | F  | *  | *  | *   | reject detached testkit/backend |
+    # | R9   | T  | T  | T  | T  | T  | T  | T  | F  | *  | *   | reject duplicate command |
+    # | R10  | T  | T  | T  | T  | T  | T  | T  | T  | F  | *   | reject package/stage overlap |
+    # | R14  | T  | T  | T  | T  | T  | T  | T  | T  | T  | F   | reject false-green substrate |
     package = json.loads(PACKAGE.read_text(encoding="utf-8"))
     scripts: dict[str, str] = package["scripts"]
     deterministic_suites: list[str] = package["awakenTest"]["deterministicSuites"]
@@ -386,6 +453,51 @@ def self_test() -> None:
             scripts, missing_compatibility, stage_text, files, runners
         )
     ), "R2 compatibility"
+    detached_sdk_behavior = dict(scripts)
+    detached_sdk_behavior["test:compatibility"] = detached_sdk_behavior[
+        "test:compatibility"
+    ].replace(" && npm run test:sdk-behavior-owners", "", 1)
+    assert any(
+        "test:compatibility does not invoke test:sdk-behavior-owners" in error
+        for error in orchestration_errors(
+            detached_sdk_behavior, deterministic_suites, stage_text, files, runners
+        )
+    ), "R2 SDK behavior remains under its sole deterministic compatibility owner"
+    missing_full_chain_stage = stage_text.replace(
+        "{ id: 'managed_full_chain', file: 'e2e/managed_full_chain_e2e.mjs' },",
+        "{ id: 'managed_full_chain_removed', file: 'e2e/managed_full_chain_e2e.mjs' },",
+        1,
+    )
+    assert any(
+        "does not bind managed_full_chain" in error
+        for error in orchestration_errors(
+            scripts, deterministic_suites, missing_full_chain_stage, files, runners
+        )
+    ), "R2 full-chain closure remains in the stage aggregate"
+
+    duplicate_full_chain = [*deterministic_suites, "test:full-chain"]
+    assert any(
+        "managed_full_chain_e2e.mjs" in error and "also execute" in error
+        for error in orchestration_errors(
+            scripts, duplicate_full_chain, stage_text, files, runners
+        )
+    ), "R10 full-chain closure has one stage owner"
+
+    optional_container_stage = stage_text.replace(
+        "environment: { AWAKEN_E2E_REQUIRE_CONTAINER: '1' },",
+        "",
+        1,
+    )
+    assert any(
+        "acp_projected_container does not require AWAKEN_E2E_REQUIRE_CONTAINER=1" in error
+        for error in orchestration_errors(
+            scripts,
+            deterministic_suites,
+            optional_container_stage,
+            files,
+            runners,
+        )
+    ), "R14 stage coverage cannot credit an optional container skip"
 
     unclassified = set(files)
     unclassified.add("unclassified_e2e.mjs")
@@ -481,42 +593,91 @@ def self_test() -> None:
 
     check_all = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
     public_api = (ROOT / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8")
-    assert not release_gate_errors(check_all, public_api), "R1/C6"
+    check_rust = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
+    assert not release_gate_errors(check_all, public_api, check_rust), "R1/C6"
     assert release_gate_errors(
         check_all.replace("pg_tests.sh --require-docker", "pg_tests.sh"),
         public_api,
+        check_rust,
     ), "R7 required infrastructure"
     assert release_gate_errors(
-        check_all.replace("npm --prefix e2e run test:sdk-behavior-owners", ""),
+        check_all.replace("scripts/ci/_provider_environment.sh --self-test", ""),
         public_api,
-    ), "R7 supported SDK behavior compatibility"
+        check_rust,
+    ), "R7 canonical deterministic environment cannot inherit developer opt-outs"
+    assert release_gate_errors(
+        check_all
+        + '\nrun e2e "duplicate-sdk-behavior" npm --prefix e2e run test:sdk-behavior-owners\n',
+        public_api,
+        check_rust,
+    ), "R7 SDK behavior has one deterministic compatibility owner"
     assert release_gate_errors(
         check_all.replace("npm --prefix e2e run test:sdk-latest-canary", ""),
         public_api,
+        check_rust,
     ), "R7 latest SDK compatibility"
     assert release_gate_errors(
         check_all.replace("scripts/e2e/k8s_container_e2e.sh", ""),
         public_api,
+        check_rust,
     ), "R7 required Kubernetes infrastructure"
-    assert release_gate_errors(check_all, public_api + '\nexcluded="awaken-cli"\n'), (
+    assert release_gate_errors(
+        check_all,
+        public_api + '\nexcluded="awaken-cli"\n',
+        check_rust,
+    ), (
         "R7 public API exclusion"
     )
     without_e2e_group = check_all.replace(
         'run e2e "deterministic-e2e"', 'run static "deterministic-e2e"'
-    ).replace(
-        'run e2e "managed-sdk-anchor-behavior"',
-        'run static "managed-sdk-anchor-behavior"',
     ).replace(
         'run e2e "latest-managed-sdk"', 'run static "latest-managed-sdk"'
     )
     assert release_gate_errors(
         without_e2e_group,
         public_api,
+        check_rust,
     ), "R7 independently sharded release group"
     assert release_gate_errors(
         check_all.replace("AWAKEN_TEST_TIMINGS_FILE", "REMOVED_TIMINGS_FILE"),
         public_api,
+        check_rust,
     ), "R7 timing artifact"
+    assert release_gate_errors(
+        check_all
+        + '\nrun static "duplicate-authority-arithmetic" '
+        + 'python3 scripts/ci/check_authority_arithmetic.py\n',
+        public_api,
+        check_rust,
+    ), "R7 authority arithmetic has one Rust-gate owner"
+    assert release_gate_errors(
+        check_all,
+        public_api,
+        check_rust.replace(
+            "python3 scripts/ci/check_authority_arithmetic.py",
+            "python3 scripts/ci/removed_authority_arithmetic.py",
+        ),
+    ), "R7 authority arithmetic cannot disappear from its Rust-gate owner"
+    # Public-API toolchain decision table: C1 exact generator version and C2
+    # exact dated rustdoc toolchain. E1 the release manifest is reproducible;
+    # E2 either coordinate drifting is rejected before snapshots are trusted.
+    # R11 C1+C2 -> E1; R12 !C1 -> E2; R13 !C2 -> E2.
+    assert release_gate_errors(
+        check_all,
+        public_api.replace(
+            'PUBLIC_API_TOOL_VERSION="0.52.0"',
+            'PUBLIC_API_TOOL_VERSION="0.53.0"',
+        ),
+        check_rust,
+    ), "R12 public API generator drift"
+    assert release_gate_errors(
+        check_all,
+        public_api.replace(
+            'PUBLIC_API_NIGHTLY="nightly-2026-07-14"',
+            'PUBLIC_API_NIGHTLY="nightly"',
+        ),
+        check_rust,
+    ), "R13 public API nightly drift"
 
     store_suite = (ROOT / STORE_CONFORMANCE).read_text(encoding="utf-8")
     backend_tests = {
