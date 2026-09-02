@@ -24,18 +24,42 @@ const SCENARIO_MEMORY_MOUNT_PATH: &str = "/mnt/memory/scenario-memory";
 /// Resource Registry is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
 pub(super) fn mount(platform: ScenarioPlatform) -> Router {
+    mount_on_lifecycle(platform, awaken_service_lifecycle::ServiceLifecycle::new())
+}
+
+/// Scenario composition whose process owner retains the exact lifecycle used
+/// by the Coordinator mount. Graceful shutdown can therefore drain durable
+/// claims and auxiliary Runtime work before flushing observability.
+pub(super) fn mount_on_lifecycle(
+    platform: ScenarioPlatform,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (host, resources) = platform.into_parts();
-    mount_parts(Arc::new(host), resources)
+    mount_parts_on_lifecycle(Arc::new(host), resources, lifecycle)
 }
 
 pub(super) fn mount_parts(
     host: Arc<SharedHost>,
     resources: awaken_resource_application::ResourcesApplication,
 ) -> Router {
+    mount_parts_on_lifecycle(
+        host,
+        resources,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    )
+}
+
+fn mount_parts_on_lifecycle(
+    host: Arc<SharedHost>,
+    resources: awaken_resource_application::ResourcesApplication,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone());
-    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(host, managed, catalog)
-        .0
+    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+        host, managed, catalog, lifecycle,
+    )
+    .0
 }
 
 pub(super) fn mount_parts_with_model_publication_resolver(
