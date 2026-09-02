@@ -659,4 +659,306 @@ mod tests {
             self.events.lock().unwrap().push("ack-completed".into());
         }
     }
+
+    #[tokio::test]
+    async fn one_driver_orders_durable_preparation_before_physical_disposal() {
+        // Cause/effect graph: C1 child and root preparation are pending; C2
+        // each exact receipt is accepted; C3 the aggregate then exposes its
+        // one disposal. Effects: E1 install each root snapshot; E2 authorize,
+        // prepare, record, then acknowledge each source effect; E3 physical
+        // disposal begins only after the root preparation CAS; E4 disposal is
+        // recorded before process-local retirement. Decision rule D1 is the
+        // complete success path C1+C2+C3 => E1→E2→E3→E4.
+        let lease = lease();
+        let mut cleanup = SessionCleanupOperation::default();
+        assert!(cleanup.request("session"));
+        cleanup
+            .freeze_targets("session", ["child".into()], 1, 2)
+            .unwrap();
+        let child = cleanup.command_for("session", "child").unwrap();
+        let root = cleanup.command_for("session", "session").unwrap();
+        let child_work = work(
+            SessionTerminalCleanupAction::Prepare {
+                commands: vec![child.clone()],
+            },
+            &lease,
+        );
+        cleanup
+            .record_preparation(
+                "session",
+                preparation(&SessionTerminalCleanupEffect::new(child, lease.clone())),
+                None,
+            )
+            .unwrap();
+        let root_work = work(
+            SessionTerminalCleanupAction::Prepare {
+                commands: vec![root.clone()],
+            },
+            &lease,
+        );
+        cleanup
+            .record_preparation(
+                "session",
+                preparation(&SessionTerminalCleanupEffect::new(root, lease.clone())),
+                Some(
+                    crate::SessionCleanupRepositoryPreparation::new(
+                        "session",
+                        "workspace",
+                        &crate::SessionResourceState::default(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        let provider_disposal = cleanup
+            .terminal_provider_disposal_preparation("session")
+            .unwrap();
+        let disposal_work = work(
+            cleanup
+                .terminal_work_action("session", provider_disposal.as_ref())
+                .unwrap()
+                .expect("disposal is ready"),
+            &lease,
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let control = RecordingControl {
+            work: Mutex::new(VecDeque::from([child_work, root_work, disposal_work])),
+            publication: Mutex::new(None),
+            events: Arc::clone(&events),
+        };
+        let runtime = RecordingRuntime {
+            events: Arc::clone(&events),
+            failing_thread: None,
+            publication_effect: None,
+        };
+        assert_eq!(
+            drive_session_terminal_cleanup("session", &lease, &control, &runtime)
+                .await
+                .unwrap(),
+            SessionTerminalCleanupDriveOutcome::Completed
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "poll",
+                "install",
+                "authorize:child",
+                "prepare:child",
+                "record:child",
+                "ack:child",
+                "poll",
+                "install",
+                "authorize:session",
+                "prepare:session",
+                "record:session",
+                "ack:session",
+                "poll",
+                "install",
+                "authorize-disposal",
+                "dispose",
+                "record-disposal",
+                "ack-disposal",
+                "ack-completed",
+            ],
+            "D1/E1-E4"
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_batch_attempts_every_frozen_child_before_retry() {
+        // Cause/effect graph: C1 one child preparation fails; C2 a sibling is
+        // independently valid. Effects: E1 no physical disposal; E2 attempt
+        // the sibling and durably record its preparation; E3 return the first
+        // effect error so the existing retry driver re-polls the aggregate.
+        // Decision rule F1=C1+C2 => E1+E2+E3.
+        let lease = lease();
+        let failing = SessionCleanupCommand::new("session", "failing", "root-effect");
+        let succeeding = SessionCleanupCommand::new("session", "succeeding", "root-effect");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let control = RecordingControl {
+            work: Mutex::new(VecDeque::from([work(
+                SessionTerminalCleanupAction::Prepare {
+                    commands: vec![failing, succeeding],
+                },
+                &lease,
+            )])),
+            publication: Mutex::new(None),
+            events: Arc::clone(&events),
+        };
+        let runtime = RecordingRuntime {
+            events: Arc::clone(&events),
+            failing_thread: Some("failing".into()),
+            publication_effect: None,
+        };
+        assert!(matches!(
+            drive_session_terminal_cleanup("session", &lease, &control, &runtime).await,
+            Err(SessionRealizationDriveError::Effect(_))
+        ));
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| event == "prepare:failing"), "F1");
+        assert!(
+            events.iter().any(|event| event == "record:succeeding"),
+            "F1/E2"
+        );
+        assert!(!events.iter().any(|event| event == "dispose"), "F1/E1");
+    }
+
+    #[tokio::test]
+    async fn publication_uses_current_generation_and_admits_both_terminal_outcomes() {
+        // Cause/effect graph: C1 the Waiting projection carries a monotonic
+        // same-generation lease renewal; C2 runtime returns either Published
+        // or permanent Rejected evidence. Effects: E1 execute under the
+        // projection's renewed lease, never the older assignment lease; E2
+        // admit only the matching receipt/rejection through Control; E3 re-poll
+        // after durable admission and retire the completed assignment.
+        // Decision rules: P1=C1+Published => E1+receipt/E2+E3;
+        // P2=C1+Rejected => E1+rejection/E2+E3.
+        let assigned_lease = lease();
+        let mut current_lease = assigned_lease.clone();
+        current_lease.expires_at_unix_ms = 20_000;
+        let command = publication_command();
+        let receipt = crate::SessionRepositoryPublicationReceipt::new(
+            &command,
+            awaken_provisioning_contract::RepositoryPublicationReceipt {
+                repository_id: "repository".into(),
+                source_remote_url: "https://git.invalid/repository.git".into(),
+                branch: "awf/publication".into(),
+                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            },
+        );
+        let rejection = crate::SessionRepositoryPublicationRejection::new(
+            &command,
+            awaken_provisioning_contract::RepositoryPublicationRejection::RemoteRefAbsent,
+        )
+        .unwrap();
+
+        for (rule, effect, admission) in [
+            (
+                "P1",
+                SessionRepositoryPublicationEffect::Published(receipt),
+                "record-publication-receipt:3:20000",
+            ),
+            (
+                "P2",
+                SessionRepositoryPublicationEffect::Rejected(rejection),
+                "record-publication-rejection:3:20000",
+            ),
+        ] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let control = RecordingControl {
+                work: Mutex::new(VecDeque::from([work(
+                    SessionTerminalCleanupAction::Waiting,
+                    &assigned_lease,
+                )])),
+                publication: Mutex::new(Some(
+                    crate::SessionRepositoryPublicationProjection::try_new(
+                        "workspace".into(),
+                        command.clone(),
+                        current_lease.clone(),
+                    )
+                    .unwrap(),
+                )),
+                events: Arc::clone(&events),
+            };
+            let runtime = RecordingRuntime {
+                events: Arc::clone(&events),
+                failing_thread: None,
+                publication_effect: Some(effect),
+            };
+
+            assert_eq!(
+                drive_session_terminal_cleanup("session", &assigned_lease, &control, &runtime,)
+                    .await
+                    .unwrap(),
+                SessionTerminalCleanupDriveOutcome::Completed,
+                "{rule}/E3"
+            );
+            assert_eq!(
+                *events.lock().unwrap(),
+                [
+                    "poll",
+                    "install",
+                    "project-publication",
+                    "publish:3:20000",
+                    admission,
+                    "poll",
+                    "ack-completed",
+                ],
+                "{rule}/E1-E3"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn publication_rejects_foreign_root_or_stale_generation_before_effect() {
+        // Cause/effect graph: C1 the projection targets another Session root;
+        // C2 its current lease differs from the admitted assignment by owner,
+        // runtime incarnation, or epoch, or regresses its expiry. Effect E1
+        // fail closed before Repository runtime execution and before either
+        // Control admission. Decision rule F1=any(C1,C2) => E1.
+        let assigned_lease = lease();
+        let mut owner = assigned_lease.clone();
+        owner.owner = "other-worker".into();
+        owner.expires_at_unix_ms = 20_000;
+        let mut incarnation = assigned_lease.clone();
+        incarnation.runtime_incarnation = "worker/next-boot".into();
+        incarnation.expires_at_unix_ms = 20_000;
+        let mut epoch = assigned_lease.clone();
+        epoch.epoch += 1;
+        epoch.expires_at_unix_ms = 20_000;
+        let mut regressed = assigned_lease.clone();
+        regressed.expires_at_unix_ms -= 1;
+        let command = publication_command();
+        let mut foreign_command = command.clone();
+        foreign_command.session_id = "foreign-session".into();
+        let mut renewed = assigned_lease.clone();
+        renewed.expires_at_unix_ms = 20_000;
+
+        for (rule, current_lease, projected_command) in [
+            ("foreign-root", renewed, foreign_command),
+            ("owner", owner, command.clone()),
+            ("incarnation", incarnation, command.clone()),
+            ("epoch", epoch, command.clone()),
+            ("expiry", regressed, command.clone()),
+        ] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let control = RecordingControl {
+                work: Mutex::new(VecDeque::from([work(
+                    SessionTerminalCleanupAction::Waiting,
+                    &assigned_lease,
+                )])),
+                publication: Mutex::new(Some(
+                    crate::SessionRepositoryPublicationProjection::try_new(
+                        "workspace".into(),
+                        projected_command,
+                        current_lease,
+                    )
+                    .unwrap(),
+                )),
+                events: Arc::clone(&events),
+            };
+            let runtime = RecordingRuntime {
+                events: Arc::clone(&events),
+                failing_thread: None,
+                publication_effect: None,
+            };
+
+            assert!(
+                matches!(
+                    drive_session_terminal_cleanup("session", &assigned_lease, &control, &runtime,)
+                        .await,
+                    Err(SessionRealizationDriveError::Control(
+                        SessionRealizationControlFailure::Invalid(_)
+                    ))
+                ),
+                "F1/{rule}"
+            );
+            assert_eq!(
+                *events.lock().unwrap(),
+                ["poll", "install", "project-publication"],
+                "F1/{rule}/E1"
+            );
+        }
+    }
 }

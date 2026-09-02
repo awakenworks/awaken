@@ -258,6 +258,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn restoring_target_is_an_exact_completion_axis() {
+        // Cause/effect table: T1 root command has no restore target => legacy
+        // completion domain; T2 it carries the exact durable Restoring tuple =>
+        // target-bound receipt; T3 either receipt is checked against the other
+        // command => reject. This prevents a Phase-A Worker from acknowledging
+        // cleanup without disposing the already-created exact target.
+        let base = SessionCleanupCommand::new("session", "session", "root");
+        let exact = base
+            .clone()
+            .with_restore_target(crate::SandboxRestoreRequest {
+                workspace_id: "workspace".into(),
+                session_id: "session".into(),
+                effect_id: awaken_agent_contract::collision_resistant_fingerprint(
+                    "awaken-terminal-restore-test-v1",
+                    &[b"effect"],
+                ),
+                generation_id: "generation".into(),
+                checkpoint: crate::SandboxCheckpointRef {
+                    id: "checkpoint".into(),
+                    format: "test".into(),
+                    digest: "digest".into(),
+                    size_bytes: 1,
+                    created_at_unix_ms: 1,
+                    expires_at_unix_ms: 2,
+                    environment_fingerprint: "environment".into(),
+                    base_image_fingerprint: "image".into(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: "suspend".into(),
+                },
+            })
+            .unwrap();
+        let legacy = SessionCleanupCompletion::new(&base, Vec::new());
+        let bound = SessionCleanupCompletion::new(&exact, Vec::new());
+        assert_ne!(
+            legacy.receipt_fingerprint, bound.receipt_fingerprint,
+            "T1/T2"
+        );
+        assert!(legacy.verify(&exact).is_err(), "T3");
+        assert!(bound.verify(&base).is_err(), "T3");
+        bound.verify(&exact).expect("T2");
+    }
+
     fn removed_bundle(fingerprint: &str) -> serde_json::Value {
         json!({
             "purpose": "patch_bundle",
@@ -422,5 +465,37 @@ mod tests {
             serde_json::from_value::<SessionCleanupCompletion>(unknown_purpose).is_err(),
             "D3/E3 closed historical purpose",
         );
+    }
+
+    #[test]
+    fn multi_artifact_live_and_recovery_orders_share_one_canonical_receipt_policy() {
+        // Cause/effect decision table:
+        // C1 live harvest and durable recovery return the same distinct effects
+        // in different orders => E1 one canonical order and identical completion
+        // fingerprint; C2 either path carries duplicate effect identity => E2
+        // completion verification rejects. ArtifactPublicationReceipt owns both
+        // sorting and duplicate classification; Session cleanup only consumes it.
+        let command = SessionCleanupCommand {
+            session_id: "session".into(),
+            thread_id: "thread".into(),
+            effect_id: "cleanup".into(),
+            restore_target: None,
+        };
+        let live = SessionCleanupCompletion::new(
+            &command,
+            vec![artifact("b", "sha256:b"), artifact("a", "sha256:a")],
+        );
+        let recovered = SessionCleanupCompletion::new(
+            &command,
+            vec![artifact("a", "sha256:a"), artifact("b", "sha256:b")],
+        );
+        assert_eq!(live, recovered, "E1 order-independent completion");
+        live.verify(&command).expect("E1 canonical completion");
+
+        let duplicate = SessionCleanupCompletion::new(
+            &command,
+            vec![artifact("a", "sha256:a"), artifact("a", "sha256:other")],
+        );
+        assert!(duplicate.verify(&command).is_err(), "E2 duplicate rejected");
     }
 }

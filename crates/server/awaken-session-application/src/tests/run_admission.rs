@@ -230,6 +230,111 @@ async fn background_attention_uses_canonical_session_admission_without_observing
     );
 }
 
+#[tokio::test]
+async fn public_run_reserves_then_restores_and_projects_before_activation() {
+    // Hibernated public-admission cause/effect graph: C1 a nonterminal local
+    // Session carries one live Hibernated checkpoint; C2 realization rejects
+    // continuation phases as physical effects; C3 the durable Run reservation
+    // succeeds; C4 restore commits Resident; C5 activation follows. Effects:
+    // E1 install only the existing non-physical Dispatch projection before the
+    // reservation; E2 reserve before restore; E3 after the Resident CAS install
+    // the complete Realization(prepare=true) projection with the current exact
+    // lease and adopt its exact binding; E4 activate only after E3; E5 one
+    // restore and no parallel queue.
+    //
+    // | Rule | phase at recovery | pre-reserve projection | restore | Effect |
+    // | H1 | Hibernated | Dispatch only | succeeds | E1-E5 |
+    // | H2 | Unmaterialized/Resident | canonical realization | n/a | adjacent realization tests |
+    // | H3 | terminal/invalid | none | none | reject through existing gates |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repository.as_ref(),
+        super::continuation::hibernated_session("public-restore", u64::MAX),
+    )
+    .await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let sessions = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let protocol = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        sessions,
+        |_| "workspace".into(),
+        |_| Some("agent".into()),
+    );
+
+    awaken_session_contract::RunApplication::run(
+        &protocol,
+        "public-restore-operation",
+        "public-restore",
+        None,
+        vec![awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id("public-restore-input".into()),
+            awaken_agent_contract::agent::message::Role::User,
+            "resume",
+        )],
+    )
+    .await
+    .expect("H1 public driving Run");
+
+    assert_eq!(
+        runtime.events.lock().unwrap().as_slice(),
+        [
+            "dispatch_projection",
+            "reserve",
+            "restore",
+            "resident_projection",
+            "adopt",
+            "activate",
+        ],
+        "H1/E1-E4",
+    );
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "H1/E5");
+    let resident = repository.get("public-restore").await.expect("H1 root");
+    assert!(
+        matches!(
+            resident.environment,
+            awaken_session_contract::SessionEnvironmentState::Resident { .. }
+        ),
+        "H1/E3",
+    );
+    let projections = runtime.projection_installs.lock().unwrap();
+    assert_eq!(projections.len(), 2, "H1/E1+E3");
+    assert!(
+        matches!(
+            projections[0].1,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch
+        ),
+        "H1/E1",
+    );
+    assert!(
+        matches!(
+            &projections[1].1,
+            awaken_session_contract::SessionProjectionInstallMode::Realization {
+                lease,
+                prepare_session: true,
+            } if Some(lease) == resident.realization.as_ref()
+        ),
+        "H1/E3",
+    );
+    assert_eq!(projections[1].0.environment, resident.environment, "H1/E3");
+    drop(projections);
+    assert_eq!(
+        runtime.adoptions.lock().unwrap().as_slice(),
+        [(
+            "agent".into(),
+            "public-restore".into(),
+            "restored-binding".into(),
+        )],
+        "H1/E3 exact adoption precedes activation",
+    );
+}
+
 struct BlockingSessionRunRuntime {
     entered: Arc<tokio::sync::Semaphore>,
     release: Arc<tokio::sync::Semaphore>,

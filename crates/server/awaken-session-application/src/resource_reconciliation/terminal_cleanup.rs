@@ -621,6 +621,146 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn local_terminal_effect_reuses_canonical_lease_renewal_beyond_its_initial_ttl() {
+        // Dynamic cause/effect graph: C1 a co-located terminal effect remains
+        // pending beyond its initial lease TTL; C2 the canonical lease-only
+        // renewal returns the same owner, incarnation, and epoch with a
+        // monotonic expiry; C3 the effect then reaches its terminal outcome.
+        // Effects: E1 the companion invokes only RenewSessionRealization at the
+        // canonical interval; E2 every renewed lease is installed with the
+        // original frozen assignment projection and remains live after the
+        // original TTL; E3 the canonical drive continues and completes; E4
+        // completion drops the companion, so later ticks issue no renewal.
+        //
+        // | Rule | drive | renewal readback | time | Effect |
+        // |---|---|---|---|---|
+        // | L1 | pending | same generation, monotonic | <= initial TTL | E1+E2 |
+        // | L2 | pending | same generation, monotonic | > initial TTL | E2+E3 |
+        // | L3 | completed | any | later ticks | E4 |
+        let initial_now = 10_000_000_u64;
+        let clock = Arc::new(AtomicU64::new(initial_now));
+        let initial = local_assignment(initial_now);
+        let initial_expiry = initial.lease.expires_at_unix_ms;
+        let initial_owner = initial.lease.owner.clone();
+        let initial_incarnation = initial.lease.runtime_incarnation.clone();
+        let initial_epoch = initial.lease.epoch;
+        let expected_projection = initial.projection.clone();
+        let renewals = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Arc::new(RecordingTerminalProjectionRuntime::default());
+        let effect_started = Arc::new(tokio::sync::Notify::new());
+        let effect_release = Arc::new(tokio::sync::Notify::new());
+
+        let task = tokio::spawn({
+            let clock = Arc::clone(&clock);
+            let renewals = Arc::clone(&renewals);
+            let runtime = Arc::clone(&runtime);
+            let effect_started = Arc::clone(&effect_started);
+            let effect_release = Arc::clone(&effect_release);
+            async move {
+                supervise_local_terminal_cleanup_lease(
+                    "session",
+                    &initial,
+                    runtime.as_ref(),
+                    async move {
+                        effect_started.notify_one();
+                        effect_release.notified().await;
+                        Ok(SessionTerminalCleanupDriveOutcome::Completed)
+                    },
+                    move |command| {
+                        let renewals = Arc::clone(&renewals);
+                        async move {
+                            let mut renewed = command.asserted_lease.clone();
+                            renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
+                            renewals.lock().unwrap().push(command);
+                            Ok(renewed)
+                        }
+                    },
+                    move || clock.load(Ordering::SeqCst),
+                )
+                .await
+            }
+        });
+        effect_started.notified().await;
+
+        let interval_ms = crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS;
+        for _ in 0..=crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS / interval_ms {
+            clock.fetch_add(interval_ms, Ordering::SeqCst);
+            tokio::time::advance(std::time::Duration::from_millis(interval_ms)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let commands = renewals.lock().unwrap().clone();
+        assert!(
+            commands.len() >= 3,
+            "L1/E1 renew throughout the long effect"
+        );
+        assert_eq!(
+            runtime.installed.lock().unwrap().len(),
+            commands.len(),
+            "L1/E2 every authoritative renewal must refresh the Runtime projection"
+        );
+        for (installed, command) in runtime.installed.lock().unwrap().iter().zip(&commands) {
+            assert_eq!(installed.session_id, command.session_id, "L1/E2");
+            assert_eq!(
+                installed.projection, expected_projection,
+                "L1/E2 renewal must reuse the original frozen projection"
+            );
+            assert_eq!(
+                installed.lease.expires_at_unix_ms, command.requested_expires_at_unix_ms,
+                "L1/E2 Runtime receives exact renewed lease B"
+            );
+            assert!(
+                awaken_session_contract::realization_lease_generation_authorizes(
+                    &installed.lease,
+                    &command.asserted_lease,
+                ),
+                "L1/E2 Runtime renewal remains the same generation"
+            );
+        }
+        let mut previous_expiry = initial_expiry;
+        for command in &commands {
+            assert_eq!(command.session_id, "session", "L1/E1");
+            assert!(
+                command.requested_expires_at_unix_ms > previous_expiry,
+                "L1/E2 expiry must advance monotonically"
+            );
+            assert_eq!(command.asserted_lease.owner, initial_owner, "L1/E2");
+            assert_eq!(
+                command.asserted_lease.runtime_incarnation, initial_incarnation,
+                "L1/E2"
+            );
+            assert_eq!(command.asserted_lease.epoch, initial_epoch, "L1/E2");
+            previous_expiry = command.requested_expires_at_unix_ms;
+        }
+        let after_initial_ttl = clock.load(Ordering::SeqCst);
+        assert!(
+            after_initial_ttl > initial_expiry,
+            "L2 time crossed initial TTL"
+        );
+        assert!(
+            awaken_session_contract::realization_lease_is_live_at(
+                previous_expiry,
+                after_initial_ttl,
+            ),
+            "L2/E2 current same-generation renewal remains live"
+        );
+
+        effect_release.notify_one();
+        assert_eq!(
+            task.await.unwrap().unwrap(),
+            SessionTerminalCleanupDriveOutcome::Completed,
+            "L2/E3"
+        );
+        let completed_renewals = commands.len();
+        clock.fetch_add(interval_ms.saturating_mul(2), Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_millis(
+            interval_ms.saturating_mul(2),
+        ))
+        .await;
+        assert_eq!(renewals.lock().unwrap().len(), completed_renewals, "L3/E4");
+    }
+
     #[derive(Clone, Copy, Debug)]
     enum RenewalRejection {
         Error,
@@ -628,5 +768,369 @@ mod tests {
         SuccessorEpoch,
         RegressedExpiry,
         InstallationError,
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn local_terminal_companion_fails_closed_and_stops_after_authority_loss() {
+        // Dynamic cause/effect graph: C1 the canonical drive is still pending;
+        // C2 the original assignment names another Session; C3 renewal fails or
+        // returns a foreign owner, a successor epoch, or a regressed expiry; C4
+        // the original projection plus exact renewed lease cannot be installed
+        // in the Runtime; C5 the drive has already completed or failed. Effects:
+        // E1 a mismatched assignment is rejected before drive/renewal; E2 a
+        // renewal error drops the pending drive; E3 every invalid lease is
+        // rejected before it can replace the assertion; E4 installation
+        // failure also drops the drive; E5 no later tick renews after any
+        // failure or terminal outcome.
+        // The canonical response is lease-only, so the request's Session id
+        // cannot be replaced by a terminal-specific assignment response.
+        //
+        // | Rule | drive | renewal outcome | Effect |
+        // |---|---|---|---|
+        // | F1 | mismatched assignment | not called | E1+E5 |
+        // | F2 | pending | Control error | E2+E5 |
+        // | F3 | pending | foreign owner/incarnation | E3+E5 |
+        // | F4 | pending | successor epoch | E3+E5 |
+        // | F5 | pending | expiry below request | E3+E5 |
+        // | F6 | pending | same generation, install fails | E4+E5 |
+        // | F7 | completed/failed | not due | E5, zero renewals |
+        let mismatch_calls = Arc::new(AtomicUsize::new(0));
+        let mismatch_runtime = RecordingTerminalProjectionRuntime::default();
+        let mut mismatched = local_assignment(19_000_000);
+        mismatched.session_id = "other-session".into();
+        let mismatched_result = supervise_local_terminal_cleanup_lease(
+            "session",
+            &mismatched,
+            &mismatch_runtime,
+            async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
+            {
+                let mismatch_calls = Arc::clone(&mismatch_calls);
+                move |_| {
+                    mismatch_calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Err(SessionRealizationControlFailure::Unavailable(
+                            "must not renew".into(),
+                        ))
+                    }
+                }
+            },
+            || 19_000_000,
+        )
+        .await;
+        assert!(
+            matches!(
+                mismatched_result,
+                Err(SessionRealizationDriveError::Control(
+                    SessionRealizationControlFailure::Invalid(_)
+                ))
+            ),
+            "F1/E1"
+        );
+        assert_eq!(mismatch_calls.load(Ordering::SeqCst), 0, "F1/E5");
+        assert!(
+            mismatch_runtime.installed.lock().unwrap().is_empty(),
+            "F1/E1"
+        );
+
+        for rejection in [
+            RenewalRejection::Error,
+            RenewalRejection::ForeignOwner,
+            RenewalRejection::SuccessorEpoch,
+            RenewalRejection::RegressedExpiry,
+            RenewalRejection::InstallationError,
+        ] {
+            let initial_now = 20_000_000_u64;
+            let clock = Arc::new(AtomicU64::new(initial_now));
+            let initial = local_assignment(initial_now);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let runtime = Arc::new(RecordingTerminalProjectionRuntime::default());
+            runtime.fail_install.store(
+                matches!(rejection, RenewalRejection::InstallationError),
+                Ordering::SeqCst,
+            );
+            let drive_dropped = Arc::new(AtomicBool::new(false));
+            let drive_started = Arc::new(tokio::sync::Notify::new());
+            let task = tokio::spawn({
+                let clock = Arc::clone(&clock);
+                let calls = Arc::clone(&calls);
+                let runtime = Arc::clone(&runtime);
+                let drive_dropped = Arc::clone(&drive_dropped);
+                let drive_started = Arc::clone(&drive_started);
+                async move {
+                    supervise_local_terminal_cleanup_lease(
+                        "session",
+                        &initial,
+                        runtime.as_ref(),
+                        async move {
+                            let _guard = DriveDropGuard(drive_dropped);
+                            drive_started.notify_one();
+                            std::future::pending::<
+                                Result<
+                                    SessionTerminalCleanupDriveOutcome,
+                                    SessionRealizationDriveError,
+                                >,
+                            >()
+                            .await
+                        },
+                        move |command| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            async move {
+                                match rejection {
+                                    RenewalRejection::Error => {
+                                        Err(SessionRealizationControlFailure::Unavailable(
+                                            "renewal unavailable".into(),
+                                        ))
+                                    }
+                                    RenewalRejection::ForeignOwner => {
+                                        let mut foreign = command.asserted_lease;
+                                        foreign.owner = "foreign-runtime".into();
+                                        foreign.runtime_incarnation = "foreign-runtime/boot".into();
+                                        foreign.expires_at_unix_ms =
+                                            command.requested_expires_at_unix_ms;
+                                        Ok(foreign)
+                                    }
+                                    RenewalRejection::SuccessorEpoch => {
+                                        let mut successor = command.asserted_lease;
+                                        successor.epoch = successor.epoch.saturating_add(1);
+                                        successor.expires_at_unix_ms =
+                                            command.requested_expires_at_unix_ms;
+                                        Ok(successor)
+                                    }
+                                    RenewalRejection::RegressedExpiry => {
+                                        let mut regressed = command.asserted_lease;
+                                        regressed.expires_at_unix_ms =
+                                            command.requested_expires_at_unix_ms.saturating_sub(1);
+                                        Ok(regressed)
+                                    }
+                                    RenewalRejection::InstallationError => {
+                                        let mut renewed = command.asserted_lease;
+                                        renewed.expires_at_unix_ms =
+                                            command.requested_expires_at_unix_ms;
+                                        Ok(renewed)
+                                    }
+                                }
+                            }
+                        },
+                        move || clock.load(Ordering::SeqCst),
+                    )
+                    .await
+                }
+            });
+            drive_started.notified().await;
+            let interval_ms = crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS;
+            clock.fetch_add(interval_ms, Ordering::SeqCst);
+            tokio::time::advance(std::time::Duration::from_millis(interval_ms)).await;
+            tokio::task::yield_now().await;
+            assert!(
+                task.is_finished(),
+                "{rejection:?}/E1-E2 must stop the drive"
+            );
+            assert!(task.await.unwrap().is_err(), "{rejection:?}/E1-E2");
+            assert!(drive_dropped.load(Ordering::SeqCst), "{rejection:?}/E1");
+            let failed_calls = calls.load(Ordering::SeqCst);
+            assert_eq!(failed_calls, 1, "{rejection:?}/E1-E2");
+            assert!(
+                runtime.installed.lock().unwrap().is_empty(),
+                "{rejection:?}/E2-E3 no unverified projection is installed"
+            );
+            tokio::time::advance(std::time::Duration::from_millis(
+                interval_ms.saturating_mul(2),
+            ))
+            .await;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                failed_calls,
+                "{rejection:?}/E3"
+            );
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let completed_runtime = RecordingTerminalProjectionRuntime::default();
+        let result = supervise_local_terminal_cleanup_lease(
+            "session",
+            &local_assignment(30_000_000),
+            &completed_runtime,
+            async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
+            {
+                let calls = Arc::clone(&calls);
+                move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Err(SessionRealizationControlFailure::Unavailable(
+                            "must not renew".into(),
+                        ))
+                    }
+                }
+            },
+            || 30_000_000,
+        )
+        .await;
+        assert_eq!(
+            result.unwrap(),
+            SessionTerminalCleanupDriveOutcome::Completed,
+            "F7 completed"
+        );
+        tokio::time::advance(std::time::Duration::from_millis(
+            crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS.saturating_mul(2),
+        ))
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "F7/E4");
+        assert!(
+            completed_runtime.installed.lock().unwrap().is_empty(),
+            "F7/E4"
+        );
+
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let failed_runtime = RecordingTerminalProjectionRuntime::default();
+        let failed = supervise_local_terminal_cleanup_lease(
+            "session",
+            &local_assignment(40_000_000),
+            &failed_runtime,
+            async {
+                Err(SessionRealizationDriveError::Effect(RunError::internal(
+                    "drive failed",
+                )))
+            },
+            {
+                let failed_calls = Arc::clone(&failed_calls);
+                move |_| {
+                    failed_calls.fetch_add(1, Ordering::SeqCst);
+                    async {
+                        Err(SessionRealizationControlFailure::Unavailable(
+                            "must not renew".into(),
+                        ))
+                    }
+                }
+            },
+            || 40_000_000,
+        )
+        .await;
+        assert!(
+            matches!(failed, Err(SessionRealizationDriveError::Effect(_))),
+            "F7"
+        );
+        tokio::time::advance(std::time::Duration::from_millis(
+            crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS.saturating_mul(2),
+        ))
+        .await;
+        assert_eq!(failed_calls.load(Ordering::SeqCst), 0, "F7/E4");
+        assert!(failed_runtime.installed.lock().unwrap().is_empty(), "F7/E4");
+    }
+
+    #[test]
+    fn terminal_cleanup_path_is_closed_over_durable_and_topology_facts() {
+        // Cause/effect graph: C1 cleanup is already durable Completed; C2 a
+        // legacy one-stage receipt set is complete; C3 placement is local or
+        // external. Effects: E1 perform no physical work; E2 normalize only
+        // the historical receipt set; E3 leave new two-stage work to the
+        // external Worker; E4 invoke the one contract driver locally.
+        // Constraints: C1 dominates every other cause; when !C1, C2 dominates
+        // topology because those bytes already prove historical deletion.
+        //
+        // | Rule | Completed | legacy receipts | external | Effect |
+        // | L1 | yes | any | any | E1 |
+        // | L2 | no | complete | any | E2 |
+        // | L3 | no | incomplete | yes | E3 |
+        // | L4 | no | incomplete | no | E4 |
+        for legacy_complete in [false, true] {
+            for external in [false, true] {
+                assert_eq!(
+                    terminal_cleanup_path(true, legacy_complete, external),
+                    TerminalCleanupPath::Completed,
+                    "L1/E1"
+                );
+            }
+        }
+        for external in [false, true] {
+            assert_eq!(
+                terminal_cleanup_path(false, true, external),
+                TerminalCleanupPath::NormalizeLegacy,
+                "L2/E2"
+            );
+        }
+        assert_eq!(
+            terminal_cleanup_path(false, false, true),
+            TerminalCleanupPath::WaitForExternalWorker,
+            "L3/E3"
+        );
+        assert_eq!(
+            terminal_cleanup_path(false, false, false),
+            TerminalCleanupPath::DriveLocal,
+            "L4/E4"
+        );
+    }
+
+    #[test]
+    fn terminal_driver_failure_mapping_preserves_retry_and_terminal_effects() {
+        // Cause/effect graph: C1 failure comes from Runtime, Control, or the
+        // bounded driver; C2 Control says NotFound, concurrent/stale/not-ready,
+        // unavailable, or invalid. Effects: E1 preserve the Runtime RunError;
+        // E2 normalize true absence; E3 make the outer root-CAS loop re-read;
+        // E4 preserve service unavailability; E5 reject an invalid projection;
+        // E6 report bounded non-convergence without pretending it was a CAS.
+        //
+        // | Rule | source | class | Effect |
+        // | M1 | Runtime | any | E1 Rejected |
+        // | M2 | Control | NotFound | E2 NotFound |
+        // | M3 | Control | conflict/stale/not-ready/retired/terminal | E3 Conflict |
+        // | M4 | Control | Unavailable | E4 Unavailable |
+        // | M5 | Control | Invalid | E5 Rejected |
+        // | M6 | driver | DidNotConverge | E6 Unavailable |
+        assert!(matches!(
+            terminal_driver_failure(
+                awaken_session_contract::SessionRealizationDriveError::Effect(RunError::internal(
+                    "effect"
+                ),)
+            ),
+            SessionPreparationError::Rejected(_)
+        ));
+        assert!(matches!(
+            terminal_driver_failure(
+                awaken_session_contract::SessionRealizationDriveError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::NotFound,
+                )
+            ),
+            SessionPreparationError::NotFound
+        ));
+        for failure in [
+            awaken_session_contract::SessionRealizationControlFailure::Conflict,
+            awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
+            awaken_session_contract::SessionRealizationControlFailure::NotReady,
+            awaken_session_contract::SessionRealizationControlFailure::Retired,
+            awaken_session_contract::SessionRealizationControlFailure::Terminal,
+        ] {
+            assert!(matches!(
+                terminal_driver_failure(
+                    awaken_session_contract::SessionRealizationDriveError::Control(failure)
+                ),
+                SessionPreparationError::Conflict
+            ));
+        }
+        assert!(matches!(
+            terminal_driver_failure(
+                awaken_session_contract::SessionRealizationDriveError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                        "offline".into(),
+                    ),
+                )
+            ),
+            SessionPreparationError::Unavailable(message) if message == "offline"
+        ));
+        assert!(matches!(
+            terminal_driver_failure(
+                awaken_session_contract::SessionRealizationDriveError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                        "foreign".into(),
+                    ),
+                )
+            ),
+            SessionPreparationError::Rejected(_)
+        ));
+        assert!(matches!(
+            terminal_driver_failure(
+                awaken_session_contract::SessionRealizationDriveError::DidNotConverge
+            ),
+            SessionPreparationError::Unavailable(_)
+        ));
     }
 }

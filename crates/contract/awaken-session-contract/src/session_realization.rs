@@ -687,6 +687,78 @@ mod repository_publication_projection_tests {
             .expect("valid publication intent"),
         }
     }
+
+    #[test]
+    fn repository_publication_projection_wire_is_closed_and_lease_canonical() {
+        // Cause/effect graph: C1 the projection has an immutable Workspace and
+        // command; C2 current_lease has a complete canonical generation and a
+        // nonzero expiry; C3 either the outer projection or nested lease carries
+        // an unknown/missing field. Effects: E1 exact values round-trip; E2
+        // unknown or missing authority is rejected; E3 structurally unusable
+        // lease identity/expiry is rejected before reaching a transport.
+        //
+        // | Rule | command/Workspace | current lease | wire | Effect |
+        // |---|---|---|---|---|
+        // | R1 | exact | canonical | closed | E1 |
+        // | R2 | exact | canonical | outer/nested unknown | E2 |
+        // | R3 | exact | missing | closed | E2 |
+        // | R4 | exact | blank owner or zero expiry | closed | E3 |
+        let projection = SessionRepositoryPublicationProjection::try_new(
+            "workspace".into(),
+            command(),
+            SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/boot".into(),
+                epoch: 7,
+                expires_at_unix_ms: 20,
+            },
+        )
+        .expect("R1/E1 canonical projection");
+        let encoded = serde_json::to_value(&projection).expect("R1/E1 encode");
+        assert_eq!(
+            serde_json::from_value::<SessionRepositoryPublicationProjection>(encoded.clone())
+                .expect("R1/E1 decode"),
+            projection,
+            "R1/E1"
+        );
+
+        for (rule, mut invalid) in [
+            ("R2 outer", encoded.clone()),
+            ("R2 nested", encoded.clone()),
+        ] {
+            if rule == "R2 outer" {
+                invalid["parallel_authority"] = serde_json::json!(true);
+            } else {
+                invalid["current_lease"]["parallel_owner"] = serde_json::json!("other");
+            }
+            assert!(
+                serde_json::from_value::<SessionRepositoryPublicationProjection>(invalid).is_err(),
+                "{rule}/E2"
+            );
+        }
+
+        let mut missing = encoded.clone();
+        missing
+            .as_object_mut()
+            .expect("R3 object")
+            .remove("current_lease");
+        assert!(
+            serde_json::from_value::<SessionRepositoryPublicationProjection>(missing).is_err(),
+            "R3/E2"
+        );
+
+        for (rule, field, value) in [
+            ("R4 owner", "owner", serde_json::json!(" ")),
+            ("R4 expiry", "expires_at_unix_ms", serde_json::json!(0)),
+        ] {
+            let mut invalid = encoded.clone();
+            invalid["current_lease"][field] = value;
+            assert!(
+                serde_json::from_value::<SessionRepositoryPublicationProjection>(invalid).is_err(),
+                "{rule}/E3"
+            );
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1286,6 +1358,45 @@ mod tests {
 
     struct MinimalControl;
 
+    #[tokio::test]
+    async fn canonical_realization_renewal_port_is_exact_and_unsupported_by_default() {
+        // Cause/effect graph: C1 renewal names a Session and the complete
+        // owner/incarnation/epoch lease; C2 it requests only a new expiry; C3 a
+        // topology does or does not implement the aggregate renewal CAS.
+        // Effects: E1 the canonical wire round-trips every exact fact; E2 the
+        // default port fails closed and cannot manufacture a terminal-specific
+        // assignment, queue, or second renewal authority.
+        //
+        // | Rule | exact lease | expiry | implementation | Effect |
+        // |---|---|---|---|---|
+        // | R1 | present | present | any | E1 |
+        // | R2 | present | present | absent | E2 |
+        let command = RenewSessionRealization {
+            session_id: "terminal-session".into(),
+            asserted_lease: SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/boot".into(),
+                epoch: 7,
+                expires_at_unix_ms: 20,
+            },
+            requested_expires_at_unix_ms: 40,
+        };
+        let encoded = serde_json::to_value(&command).expect("R1/E1 encode");
+        assert_eq!(
+            serde_json::from_value::<RenewSessionRealization>(encoded)
+                .expect("R1/E1 exact round trip"),
+            command,
+            "R1/E1"
+        );
+        assert!(
+            matches!(
+                MinimalControl.renew_session_realization(command).await,
+                Err(SessionRealizationControlFailure::Invalid(_))
+            ),
+            "R2/E2"
+        );
+    }
+
     fn terminal_effect(
         thread_id: &str,
         epoch: u64,
@@ -1300,6 +1411,110 @@ mod tests {
                 expires_at_unix_ms,
             },
         )
+    }
+
+    #[test]
+    fn terminal_preparation_authorization_is_exact_closed_and_root_only() {
+        // Cause/effect graph: C1 the authorization echoes the exact effect; C2
+        // its Workspace is non-empty; C3 inherited provider preparation is
+        // absent, or belongs only to the root and precedes its realization
+        // fence; C4 the wire contains only the closed schema. Effects: E1 exact
+        // root/child values round-trip and verify; E2 cross-effect replay is
+        // rejected; E3 child inheritance and non-successor inheritance are
+        // rejected; E4 blank Workspace and unknown wire fields are rejected.
+        //
+        // | Rule | Effect binding | Workspace | inherited predecessor | wire | Effect |
+        // | R1 | exact root | set | valid successor | closed | E1 |
+        // | R2 | exact child | set | none | closed | E1 |
+        // | R3 | foreign effect | set | any | closed | E2 |
+        // | R4 | child | set | present | closed | E3 |
+        // | R5 | root | set | later same-epoch fence | closed | E3 |
+        // | R6 | root | blank | none | closed | E4 |
+        // | R7 | exact | set | valid | unknown sibling | E4 |
+        let root = terminal_effect("session", 4, 40);
+        let child = terminal_effect("child", 4, 40);
+        let inherited = awaken_provisioning_contract::SandboxDisposalPreparation::new(
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "continuation-preparation",
+                "worker",
+                "worker/boot",
+                3,
+                30,
+            )
+            .unwrap(),
+            "continuation-fingerprint",
+        )
+        .unwrap();
+        let root_authorization = SessionTerminalCleanupPreparationAuthorization::try_new(
+            root.clone(),
+            "workspace".into(),
+            Some(inherited.clone()),
+        )
+        .expect("R1/E1");
+        let encoded = serde_json::to_value(&root_authorization).unwrap();
+        let decoded: SessionTerminalCleanupPreparationAuthorization =
+            serde_json::from_value(encoded.clone()).expect("R1/E1 round trip");
+        assert_eq!(decoded, root_authorization, "R1/E1 bytes");
+        decoded.verify_for(&root).expect("R1/E1 exact effect");
+        assert_eq!(decoded.workspace_id(), "workspace", "R1/E1 Workspace");
+        assert_eq!(
+            decoded.inherited_provider_disposal(),
+            Some(&inherited),
+            "R1/E1 predecessor"
+        );
+
+        let child_authorization = SessionTerminalCleanupPreparationAuthorization::try_new(
+            child.clone(),
+            "workspace".into(),
+            None,
+        )
+        .expect("R2/E1");
+        child_authorization.verify_for(&child).expect("R2/E1");
+        assert!(child_authorization.inherited_provider_disposal().is_none());
+        assert!(root_authorization.verify_for(&child).is_err(), "R3/E2");
+        assert!(
+            SessionTerminalCleanupPreparationAuthorization::try_new(
+                child,
+                "workspace".into(),
+                Some(inherited),
+            )
+            .is_err(),
+            "R4/E3"
+        );
+
+        let non_predecessor = awaken_provisioning_contract::SandboxDisposalPreparation::new(
+            awaken_provisioning_contract::SandboxEffectFence::new(
+                "later-preparation",
+                "worker",
+                "worker/boot",
+                4,
+                41,
+            )
+            .unwrap(),
+            "later-fingerprint",
+        )
+        .unwrap();
+        assert!(
+            SessionTerminalCleanupPreparationAuthorization::try_new(
+                root.clone(),
+                "workspace".into(),
+                Some(non_predecessor),
+            )
+            .is_err(),
+            "R5/E3"
+        );
+        assert!(
+            SessionTerminalCleanupPreparationAuthorization::try_new(root, " ".into(), None,)
+                .is_err(),
+            "R6/E4"
+        );
+        let mut unknown = encoded;
+        unknown["parallel_authority"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<SessionTerminalCleanupPreparationAuthorization>(unknown)
+                .is_err(),
+            "R7/E4"
+        );
     }
 
     fn legacy_resource_projection(bound: bool) -> super::FrozenSessionProjection {
@@ -1360,6 +1575,65 @@ mod tests {
             tools: Default::default(),
             mcp: Vec::new(),
             request_context: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn legacy_resource_transition_decision_table_is_fail_closed_for_effects() {
+        // Cause/effect graph: C1 the legacy wire omits the aggregate-authored
+        // previous manifest; C2 the durable Environment is bound or unbound;
+        // C3 the caller either requires an effect-safe transition or proves it
+        // will only validate an already-installed projection. Effects: E1 an
+        // unbound Environment conservatively decodes empty->desired; E2 a bound
+        // validation-only projection decodes desired->desired; E3 a bound
+        // effect-capable projection fails closed. The typed use never changes
+        // the unbound result.
+        //
+        // | Rule | C2 bound | C3 transition use | Effect |
+        // |---|---|---|---|
+        // | R1 | no | apply effects | E1 |
+        // | R2 | no | validate installed | E1 |
+        // | R3 | yes | apply effects | E3 |
+        // | R4 | yes | validate installed | E2 |
+        for (rule, bound, transition_use, expected_previous_revision) in [
+            (
+                "R1",
+                false,
+                super::FrozenResourceTransitionUse::ApplyEffects,
+                Some(0),
+            ),
+            (
+                "R2",
+                false,
+                super::FrozenResourceTransitionUse::ValidateInstalled,
+                Some(0),
+            ),
+            (
+                "R3",
+                true,
+                super::FrozenResourceTransitionUse::ApplyEffects,
+                None,
+            ),
+            (
+                "R4",
+                true,
+                super::FrozenResourceTransitionUse::ValidateInstalled,
+                Some(7),
+            ),
+        ] {
+            let projection = legacy_resource_projection(bound);
+            let result = projection.resource_transition(transition_use);
+            match expected_previous_revision {
+                Some(expected) => {
+                    let transition = result.expect(rule);
+                    assert_eq!(transition.previous().revision, expected, "{rule}");
+                    assert_eq!(transition.desired().revision, 7, "{rule}");
+                }
+                None => {
+                    let error = result.expect_err(rule);
+                    assert_eq!(error.code, "session_resource_transition_missing", "{rule}");
+                }
+            }
         }
     }
 

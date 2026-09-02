@@ -213,6 +213,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_ended_committed_truth_projects_a_terminal_run() {
+        // Cause/effect graph: C1 the requested Run is present; C2 its committed
+        // thread identity is exact; C3 its state is Ended. E1 return the exact
+        // identity/cause; E2 return None. Decision table: R1 !C1 -> E2;
+        // R2 C1 && !C2 -> E2; R3 C1 && C2 && !C3 -> E2;
+        // R4 C1 && C2 && C3 -> E1. Redelivery consumes this same projection, so
+        // this table is the only terminal-admission algorithm.
+        let run_id = RunId("run".to_string());
+        let thread_id = ThreadId("thread".to_string());
+        for state in [None, Some(RunState::Running), Some(RunState::Awaiting)] {
+            let view = StateView(state.map(|state| RunRecord {
+                id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                state,
+            }));
+            assert_eq!(
+                committed_terminal_projection(&view, &run_id, &thread_id),
+                CommittedTerminalProjection::Nonterminal,
+                "R1/R3"
+            );
+        }
+
+        let foreign_thread = StateView(Some(RunRecord {
+            id: run_id.clone(),
+            thread_id: ThreadId("foreign-thread".to_string()),
+            state: RunState::Ended(EndCause::NaturalEnd),
+        }));
+        assert_eq!(
+            committed_terminal_projection(&foreign_thread, &run_id, &thread_id),
+            CommittedTerminalProjection::IdentityConflict,
+            "R2"
+        );
+
+        let view = StateView(Some(RunRecord {
+            id: run_id.clone(),
+            thread_id: thread_id.clone(),
+            state: RunState::Ended(EndCause::MaxSteps),
+        }));
+        assert_eq!(
+            committed_terminal_projection(&view, &run_id, &thread_id),
+            CommittedTerminalProjection::Exact(CommittedTerminalRun {
+                run_id,
+                thread_id,
+                cause: EndCause::MaxSteps,
+            }),
+            "R4"
+        );
+    }
+
     #[tokio::test]
     async fn a_panicking_observer_is_reported_instead_of_unwinding_delivery() {
         let terminal = CommittedTerminalRun {

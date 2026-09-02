@@ -1260,6 +1260,291 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     admin.close().await;
 }
 
+#[tokio::test]
+async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
+    /* PostgreSQL history/open cause-effect decision table. Causes: C1 the
+     * published lineage is original V1/V9/V12/V13/V22 or compacted V20; C2 a
+     * pre-V13 prefix has no canonical aggregate-bearing row; C3 a V13+ prefix
+     * has one decodable aggregate whose vault, credential source, and recovery
+     * predicates all project durable rows; C4 all current receipts and exact
+     * projections exist; C5 one row is missing from each derived projection;
+     * C6 a pre-V13 root exists and therefore cannot be reconstructed from the
+     * retired SQL columns; C7 a decodable root still uses the published
+     * pre-envelope encoding. Effects: E1 the operational opener reaches the one
+     * current lineage; E2 all three projections are rebuilt from the canonical
+     * root; E3 Server open succeeds without changing roots, projections, or
+     * receipts; E4 Server open rejects drift without repairing it; E5 rerunning
+     * the operational opener atomically repairs every projection; E6 C6 fails
+     * before convergence and never invents an aggregate; E7 Server rejects C7
+     * unchanged and operational migration canonicalizes it. Rules:
+     * PGV1..PGV3=C1+C2(V1/V9/V12)=>E1; PGV4..PGV6=C1+C3(V13/V22/V20)=>E1+E2;
+     * PGV7=C4=>E3; PGV8=C5=>E4+E5; PGV9=C6=>E6; PGV10=C7=>E7. Every prefix
+     * fixture is sliced from the canonical published bundle, so the test owns
+     * no copied DDL or checksum table. */
+    use sqlx::Executor;
+    use sqlx::postgres::PgPool;
+
+    let Some((url, admin)) = postgres_test_admin().await else {
+        return;
+    };
+    let original = original_published_session_bundle().unwrap();
+    let compacted = compacted_published_session_bundle().unwrap();
+
+    for (rule, schema, source, tail, seed_root, expected_main_receipts) in [
+        (
+            "PGV1",
+            "t_session_original_v1",
+            &original,
+            1,
+            false,
+            23_usize,
+        ),
+        ("PGV2", "t_session_original_v9", &original, 9, false, 23),
+        ("PGV3", "t_session_original_v12", &original, 12, false, 23),
+        ("PGV4", "t_session_original_v13", &original, 13, true, 23),
+        (
+            "PGV5",
+            "t_session_original_v22_matrix",
+            &original,
+            22,
+            true,
+            23,
+        ),
+        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 21),
+    ] {
+        let _ = admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await;
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .unwrap_or_else(|error| panic!("{rule} create schema: {error}"));
+        let scoped_url = scoped_postgres_url(&url, schema);
+        let pool = PgPool::connect(&scoped_url)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} connect schema: {error}"));
+        let prefix = migration_prefix_through(source, tail);
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .unwrap()
+            .run_bundle(&prefix)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} apply prefix: {error}"));
+
+        let seeded = seed_root.then(|| {
+            let mut session = sample_with_credential_source(
+                &format!("session-{rule}"),
+                &format!("credential-{rule}"),
+            );
+            let SessionBaselineState::Frozen(baseline) = &mut session.baseline else {
+                panic!("test sample must have a frozen baseline")
+            };
+            baseline.mcp_authoring.ordered_vault_ids = vec![format!("vault-{rule}")];
+            session.revision = SessionRevision(1);
+            session
+        });
+        if let Some(session) = &seeded {
+            assert!(
+                session.needs_reconciliation(),
+                "{rule} fixture precondition"
+            );
+            sqlx::query(
+                "INSERT INTO managed_session \
+                    (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
+                 VALUES ($1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,$2)",
+            )
+            .bind(&session.session_id)
+            .bind(serde_json::to_string(session).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} seed aggregate: {error}"));
+        }
+
+        let migrated = PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{rule}/E1 migrate prefix: {error}"));
+        if let Some(session) = &seeded {
+            assert_eq!(
+                migrated.get(&session.session_id).await.unwrap(),
+                session.clone(),
+                "{rule}/E1 canonical root"
+            );
+        }
+        drop(migrated);
+
+        let baseline = postgres_session_snapshot(&pool).await;
+        assert_eq!(
+            baseline
+                .receipts
+                .iter()
+                .filter(|(bundle, _, _)| bundle == BUNDLE_ID)
+                .count(),
+            expected_main_receipts,
+            "{rule}/E1 one selected lineage"
+        );
+        assert_eq!(
+            baseline
+                .receipts
+                .iter()
+                .filter(|(bundle, _, _)| bundle == CONVERGED_BUNDLE_ID)
+                .count(),
+            1,
+            "{rule}/E1 one convergence receipt"
+        );
+        let expected_projection_rows = if seed_root { 1 } else { 0 };
+        assert_eq!(
+            (
+                baseline.reconciliation.len(),
+                baseline.vaults.len(),
+                baseline.credential_sources.len(),
+            ),
+            (
+                expected_projection_rows,
+                expected_projection_rows,
+                expected_projection_rows,
+            ),
+            "{rule}/E2 all root-derived projections"
+        );
+
+        let verified = PostgresManagedSessionRepository::connect_existing(&scoped_url)
+            .await
+            .unwrap_or_else(|error| panic!("{rule}/PGV7 verify current state: {error}"));
+        verified.pool.close().await;
+        assert_eq!(
+            postgres_session_snapshot(&pool).await,
+            baseline,
+            "{rule}/PGV7/E3 read-only Server open"
+        );
+
+        if rule == "PGV6" {
+            sqlx::query("DELETE FROM managed_session_reconciliation_work")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM managed_session_vault_reference")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM managed_session_credential_source_reference")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let drifted = postgres_session_snapshot(&pool).await;
+            let error = match PostgresManagedSessionRepository::connect_existing(&scoped_url).await
+            {
+                Ok(_) => panic!("PGV8 Server open must not repair derived state"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("operational migration rebuild"),
+                "PGV8/E4: {error}"
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                drifted,
+                "PGV8/E4 rejection is read-only"
+            );
+            drop(
+                PostgresManagedSessionRepository::with_pool(pool.clone())
+                    .await
+                    .expect("PGV8/E5 operational repair"),
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                baseline,
+                "PGV8/E5 one transaction repairs all projections"
+            );
+
+            let session = seeded.as_ref().expect("PGV10 seeded Session");
+            sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
+                .bind(&session.session_id)
+                .bind(serde_json::to_string(session).unwrap())
+                .execute(&pool)
+                .await
+                .unwrap();
+            let noncanonical = postgres_session_snapshot(&pool).await;
+            let error = match PostgresManagedSessionRepository::connect_existing(&scoped_url).await
+            {
+                Ok(_) => panic!("PGV10 Server open must not normalize a root"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("operational migration normalization"),
+                "PGV10/E7: {error}"
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                noncanonical,
+                "PGV10/E7 rejection is read-only"
+            );
+            drop(
+                PostgresManagedSessionRepository::with_pool(pool.clone())
+                    .await
+                    .expect("PGV10/E7 operational normalization"),
+            );
+            assert_eq!(
+                postgres_session_snapshot(&pool).await,
+                baseline,
+                "PGV10/E7 migration restores canonical root and projections"
+            );
+        }
+
+        pool.close().await;
+        admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await
+            .unwrap_or_else(|error| panic!("{rule} drop schema: {error}"));
+    }
+
+    let schema = "t_session_original_v12_with_row";
+    let _ = admin
+        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .await;
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .unwrap();
+    let scoped_url = scoped_postgres_url(&url, schema);
+    let pool = PgPool::connect(&scoped_url).await.unwrap();
+    let v12 = migration_prefix_through(&original, 12);
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .unwrap()
+        .run_bundle(&v12)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO managed_session \
+            (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision) \
+         VALUES ('pre-aggregate','legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let error = match PostgresManagedSessionRepository::with_pool(pool.clone()).await {
+        Ok(_) => panic!("PGV9 must not reconstruct a pre-V13 root from retired columns"),
+        Err(error) => error,
+    };
+    assert!(error.contains("no canonical aggregate"), "PGV9/E6: {error}");
+    let aggregate: Option<String> =
+        sqlx::query_scalar("SELECT aggregate_json FROM managed_session WHERE session_id=$1")
+            .bind("pre-aggregate")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(aggregate, None, "PGV9/E6 no synthesized aggregate");
+    assert!(
+        PostgresManagedSessionRepository::connect_existing(&scoped_url)
+            .await
+            .is_err(),
+        "PGV9/E6 Server remains closed"
+    );
+    pool.close().await;
+    admin
+        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
 #[test]
 fn sqlite_legacy_upgrade_rejects_missing_roots_and_orphan_children_atomically() {
     // Negative rules for the legacy-upgrade cause graph. N1 a published row has
@@ -1446,6 +1731,93 @@ async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
         "sesn_source_v1",
         "B3/E4"
     );
+}
+
+#[tokio::test]
+async fn postgres_v2_dependency_backfill_and_operational_repair_use_the_same_root_decoder() {
+    // Backend-parity rules reuse B1/B3 above: P1 a V1 canonical root plus
+    // absent V2 -> apply additive DDL and rebuild; P2 V2 present plus missing
+    // derived row -> the operational migration opener rebuilds it. Effects are
+    // the same exact Workspace+source discovery and unchanged canonical
+    // aggregate. The PostgreSQL table locks additionally serialize P1/P2 with
+    // root writers. Server's read-only rejection is covered by PGV8 below.
+    use sqlx::Executor;
+    use sqlx::postgres::PgPool;
+
+    let Some((url, admin)) = postgres_test_admin().await else {
+        return;
+    };
+    let _ = admin
+        .execute("DROP SCHEMA IF EXISTS t_session_source_backfill CASCADE")
+        .await;
+    admin
+        .execute("CREATE SCHEMA t_session_source_backfill")
+        .await
+        .expect("create source-backfill schema");
+    let pool = PgPool::connect(&scoped_postgres_url(&url, "t_session_source_backfill"))
+        .await
+        .expect("connect source-backfill schema");
+    let full = session_bundle().unwrap();
+    let v1 = migration_prefix_through(&full, 1);
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .unwrap()
+        .run_bundle(&v1)
+        .await
+        .unwrap();
+    let mut session = sample_with_credential_source("sesn_pg_source_v1", "source-pg-v1");
+    session.revision = SessionRevision(1);
+    sqlx::query(
+        "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&session.session_id)
+    .bind("ws-source")
+    .bind(db_revision(session.revision).unwrap())
+    .bind(aggregate_str(&session).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .expect("P1 migrate and backfill");
+    let source_id = awaken_credential_contract::CredentialSourceId("source-pg-v1".into());
+    assert_eq!(
+        repo.sessions_referencing_credential_source("ws-source", &source_id)
+            .await
+            .unwrap()[0]
+            .session_id,
+        session.session_id,
+        "P1"
+    );
+    assert_eq!(
+        repo.get(&session.session_id).await.unwrap(),
+        session,
+        "P1 root"
+    );
+
+    sqlx::query("DELETE FROM managed_session_credential_source_reference")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restarted = PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .expect("P2 restart rebuild");
+    assert_eq!(
+        restarted
+            .sessions_referencing_credential_source("ws-source", &source_id)
+            .await
+            .unwrap()[0]
+            .session_id,
+        session.session_id,
+        "P2"
+    );
+    pool.close().await;
+    admin
+        .execute("DROP SCHEMA IF EXISTS t_session_source_backfill CASCADE")
+        .await
+        .expect("drop source-backfill schema");
+    admin.close().await;
 }
 
 fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {

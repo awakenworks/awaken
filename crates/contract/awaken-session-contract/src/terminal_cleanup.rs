@@ -195,6 +195,299 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_memory_batch_projection_is_exact_and_fail_closed() {
+        // Cause/effect decision table:
+        // | Rule | evidence -> frozen mount | source/store | access | Effect |
+        // | B1 | exactly one | exact Memory | RW | one existing single-item intent |
+        // | B2 | exactly one | exact Memory | RO | explicit skip |
+        // | B3 | zero or multiple inputs for evidence | any | any | ResourceMismatch |
+        // | B4 | no evidence for frozen input | exact Memory | RW | no intent (FUSE) |
+        // | B5 | exactly one | non-Memory or wrong store | any | ResourceMismatch |
+        // | B6 | duplicate/noncanonical or malformed evidence | any | any | reject |
+        // The batch layer owns only correlation/cardinality. Config, binding,
+        // access, materialization and root-effect validation remain in
+        // SessionTerminalMemoryIntent::try_new.
+        let effect = SessionTerminalCleanupEffect::new(
+            SessionCleanupCommand::new("session-memory", "session-memory", "cleanup-root"),
+            crate::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker:boot".into(),
+                epoch: 3,
+                expires_at_unix_ms: u64::MAX,
+            },
+        );
+        let rw = memory_input(
+            "binding-rw",
+            "store-rw",
+            "/memory/rw",
+            ResourceAccess::ReadWrite,
+        );
+        let ro = memory_input(
+            "binding-ro",
+            "store-ro",
+            "/memory/ro",
+            ResourceAccess::ReadOnly,
+        );
+        let ro_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "store-ro",
+            "/memory/ro",
+            Vec::new(),
+        )
+        .unwrap();
+        let rw_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "store-rw",
+            "/memory/rw",
+            Vec::new(),
+        )
+        .unwrap();
+
+        let intents = terminal_memory_reconciliation_intents(
+            &[rw.clone(), ro.clone()],
+            &[ro_evidence.clone(), rw_evidence.clone()],
+            &effect,
+        )
+        .expect("B1/B2 exact projection");
+        assert_eq!(intents.len(), 1, "B2 RO skipped");
+        assert_eq!(intents[0].binding_id(), &rw.binding_id, "B1 binding");
+        assert_eq!(intents[0].memory_store_id(), "store-rw", "B1 store");
+
+        assert!(
+            terminal_memory_reconciliation_intents(std::slice::from_ref(&ro), &[], &effect,)
+                .expect("B2 RO does not require evidence")
+                .is_empty()
+        );
+
+        let missing = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "store-missing",
+            "/memory/missing",
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            terminal_memory_reconciliation_intents(&[rw.clone(), ro.clone()], &[missing], &effect,),
+            Err(SessionMemoryReconciliationError::ResourceMismatch),
+            "B3 extra evidence"
+        );
+
+        let mut ambiguous = vec![rw.clone(), rw.clone()];
+        ambiguous[1].binding_id = awaken_resource_contract::BindingId::from("binding-other");
+        assert_eq!(
+            terminal_memory_reconciliation_intents(
+                &ambiguous,
+                std::slice::from_ref(&rw_evidence),
+                &effect,
+            ),
+            Err(SessionMemoryReconciliationError::ResourceMismatch),
+            "B3 ambiguous"
+        );
+
+        assert!(
+            terminal_memory_reconciliation_intents(
+                &[rw.clone(), ro.clone()],
+                std::slice::from_ref(&ro_evidence),
+                &effect,
+            )
+            .expect("B4 write-through/FUSE has no copy evidence")
+            .is_empty(),
+            "B4"
+        );
+
+        let wrong_store = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "store-other",
+            "/memory/rw",
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            terminal_memory_reconciliation_intents(
+                std::slice::from_ref(&rw),
+                std::slice::from_ref(&wrong_store),
+                &effect,
+            ),
+            Err(SessionMemoryReconciliationError::ResourceMismatch),
+            "B5 store"
+        );
+        let non_memory = crate::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::from("binding-file"),
+            source: crate::ResolvedInputSource::File {
+                file_id: awaken_resource_contract::FileId::from("file"),
+            },
+            mount_path: "/memory/rw".into(),
+            access: ResourceAccess::ReadOnly,
+            instructions: None,
+        };
+        assert_eq!(
+            terminal_memory_reconciliation_intents(
+                &[non_memory],
+                std::slice::from_ref(&rw_evidence),
+                &effect,
+            ),
+            Err(SessionMemoryReconciliationError::ResourceMismatch),
+            "B5 source"
+        );
+
+        assert!(
+            matches!(
+                terminal_memory_reconciliation_intents(
+                    &[rw.clone(), ro.clone()],
+                    &[rw_evidence.clone(), ro_evidence.clone()],
+                    &effect,
+                ),
+                Err(SessionMemoryReconciliationError::InvalidIntent(_))
+            ),
+            "B6 noncanonical"
+        );
+        assert!(
+            matches!(
+                terminal_memory_reconciliation_intents(
+                    std::slice::from_ref(&rw),
+                    &[rw_evidence.clone(), rw_evidence.clone()],
+                    &effect,
+                ),
+                Err(SessionMemoryReconciliationError::InvalidIntent(_))
+            ),
+            "B6 duplicate"
+        );
+
+        // Optional-handle terminal rules share the same private presence
+        // classifier as continuation: T1 None+RW is legacy ambiguous and fails
+        // before Artifact/provider effects; T2 Some([])+RW is explicit
+        // WTR/FUSE and returns no intent plus an ack-able empty slice; T3
+        // Some(exact RW Copy) returns the existing intent plus the exact complete
+        // slice; T4 None+RO has no write-back or acknowledgement.
+        assert_eq!(
+            terminal_memory_reconciliation_intents_from_materializations(
+                std::slice::from_ref(&rw),
+                None,
+                &effect,
+            ),
+            Err(SessionMemoryReconciliationError::WritableCopyRequiresTerminalReconciliation),
+            "T1"
+        );
+        assert_eq!(
+            terminal_memory_reconciliation_intents_from_materializations(
+                std::slice::from_ref(&rw),
+                Some(&[]),
+                &effect,
+            ),
+            Ok((Vec::new(), Some([].as_slice()))),
+            "T2"
+        );
+        let (terminal_intents, terminal_evidence) =
+            terminal_memory_reconciliation_intents_from_materializations(
+                std::slice::from_ref(&rw),
+                Some(std::slice::from_ref(&rw_evidence)),
+                &effect,
+            )
+            .expect("T3");
+        assert_eq!(terminal_intents.len(), 1, "T3 intent");
+        assert_eq!(
+            terminal_evidence,
+            Some(std::slice::from_ref(&rw_evidence)),
+            "T3 evidence"
+        );
+        assert_eq!(
+            terminal_memory_reconciliation_intents_from_materializations(
+                std::slice::from_ref(&ro),
+                None,
+                &effect,
+            ),
+            Ok((Vec::new(), None)),
+            "T4"
+        );
+
+        // Continuation reuses the exact same evidence/input join. C1 all joined
+        // copy evidence is RO / any item is RW; C2 evidence is exact / foreign.
+        // C1-RO+C2-exact => no Memory I/O is required and source release may ack
+        // the complete evidence; C1-RW+C2-exact => typed fail-closed result before
+        // provider mutation; !C2 => the same ResourceMismatch as terminal join.
+        assert_eq!(
+            validate_continuation_memory_reconciliation(
+                std::slice::from_ref(&ro),
+                std::slice::from_ref(&ro_evidence),
+            ),
+            Ok(()),
+            "C1 RO"
+        );
+        assert_eq!(
+            validate_continuation_memory_reconciliation(&[ro.clone(), rw.clone()], &[]),
+            Ok(()),
+            "C1 FUSE/no copy evidence"
+        );
+        assert_eq!(
+            validate_continuation_memory_reconciliation(
+                std::slice::from_ref(&rw),
+                std::slice::from_ref(&rw_evidence),
+            ),
+            Err(SessionMemoryReconciliationError::WritableCopyRequiresTerminalReconciliation),
+            "C1 RW copy"
+        );
+        assert_eq!(
+            validate_continuation_memory_reconciliation(
+                std::slice::from_ref(&ro),
+                std::slice::from_ref(&wrong_store),
+            ),
+            Err(SessionMemoryReconciliationError::ResourceMismatch),
+            "C2 foreign"
+        );
+
+        // The handle-level wrapper is the one None/Some authority shared by
+        // suspend admission and source disposal. `None` is legacy unknown, not
+        // equivalent to the current explicit `Some([])` WTR/FUSE evidence.
+        // | Rule | handle evidence | frozen Memory | Effect |
+        // | C3 | None | any RW | typed legacy-ambiguous rejection |
+        // | C4 | None | RO only or none | Ok(None), no acknowledgement |
+        // | C5 | Some([]) | RW | Ok(Some(empty)), acknowledge exact no-Copy |
+        // | C6 | Some(exact Copy) | RO | Ok(Some(slice)), acknowledge all |
+        // | C7 | Some(exact Copy) | RW | typed continuation rejection |
+        // | C8 | Some(foreign/noncanonical) | any | exact join rejection |
+        assert_eq!(
+            validate_continuation_memory_materializations(std::slice::from_ref(&rw), None,),
+            Err(SessionMemoryReconciliationError::WritableCopyRequiresTerminalReconciliation),
+            "C3"
+        );
+        assert_eq!(
+            validate_continuation_memory_materializations(std::slice::from_ref(&ro), None),
+            Ok(None),
+            "C4 RO"
+        );
+        assert_eq!(
+            validate_continuation_memory_materializations(&[], None),
+            Ok(None),
+            "C4 no Memory"
+        );
+        assert_eq!(
+            validate_continuation_memory_materializations(std::slice::from_ref(&rw), Some(&[]),),
+            Ok(Some([].as_slice())),
+            "C5"
+        );
+        assert_eq!(
+            validate_continuation_memory_materializations(
+                std::slice::from_ref(&ro),
+                Some(std::slice::from_ref(&ro_evidence)),
+            ),
+            Ok(Some(std::slice::from_ref(&ro_evidence))),
+            "C6"
+        );
+        assert_eq!(
+            validate_continuation_memory_materializations(
+                std::slice::from_ref(&rw),
+                Some(std::slice::from_ref(&rw_evidence)),
+            ),
+            Err(SessionMemoryReconciliationError::WritableCopyRequiresTerminalReconciliation),
+            "C7"
+        );
+        assert_eq!(
+            validate_continuation_memory_materializations(
+                std::slice::from_ref(&ro),
+                Some(std::slice::from_ref(&wrong_store)),
+            ),
+            Err(SessionMemoryReconciliationError::ResourceMismatch),
+            "C8"
+        );
+    }
+
     fn publication_receipt(
         command: &SessionRepositoryPublicationCommand,
     ) -> SessionRepositoryPublicationReceipt {
@@ -230,6 +523,85 @@ mod tests {
             runtime_commit_cursor: Option<u64>,
             receipt_fingerprint: String,
         },
+    }
+
+    #[test]
+    fn opaque_cleanup_keeps_the_private_legacy_wire_layout_exact() {
+        // Layout cause/effect decision table: C1 PersistedSession embeds the
+        // opaque cleanup operation by value; C2 the private wire state retains
+        // the four historical field sets; C3 publication is absent/present.
+        // Effects: E1 the wrapper retains the legacy size/alignment; E2 no
+        // public Rust variant can construct or destructure completion evidence;
+        // E3 publication contributes only one boxed-wrapper word; E4 serde emits
+        // the exact historical tagged payload without a newtype layer.
+        //
+        // | Rule | publication | legacy fields | Effect |
+        // | B1 | absent | private/exact | E1/E2 |
+        // | B2 | present | isolated in wrapper | E1/E3/E4 |
+        //
+        // On x86_64 the uncorrected publication layout measured 120 bytes for
+        // SessionCleanupOperation. Boxing the one additive wrapper preserves
+        // the private state's exact 104-byte layout. The whole
+        // PersistedSession size is deliberately not duplicated here: unrelated
+        // aggregate fields have their own layout evolution, while equal cleanup
+        // size and alignment prove this sidecar adds no inline bytes.
+        assert_eq!(
+            std::mem::size_of::<SessionCleanupOperation>(),
+            std::mem::size_of::<LegacySessionCleanupOperationLayout>(),
+            "B1-B2/E1 publication must not enlarge the legacy cleanup layout"
+        );
+        assert_eq!(
+            std::mem::align_of::<SessionCleanupOperation>(),
+            std::mem::align_of::<LegacySessionCleanupOperationLayout>(),
+            "B1-B2/E1 publication must not change legacy cleanup alignment"
+        );
+        assert!(
+            std::mem::size_of::<SessionCleanupOperation>()
+                < std::mem::size_of::<SessionRepositoryPublicationReceipt>(),
+            "B1-B2/E3 cleanup must not inline publication payloads"
+        );
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(std::mem::size_of::<SessionCleanupOperation>(), 104, "E1");
+        }
+        let legacy_requested =
+            SessionCleanupOperation::from_state(SessionCleanupState::Requested {
+                effect_id: String::new(),
+                thread_ids: BTreeSet::new(),
+                delegation_watermark: 0,
+                runtime_commit_cursor: None,
+                completions: BTreeMap::new(),
+            });
+        let legacy_completed =
+            SessionCleanupOperation::from_state(SessionCleanupState::Completed {
+                effect_id: String::new(),
+                thread_ids: BTreeSet::new(),
+                delegation_watermark: 0,
+                runtime_commit_cursor: None,
+                receipt_fingerprint: String::new(),
+            });
+        assert_eq!(
+            serde_json::to_value(legacy_requested).unwrap()["state"],
+            "requested",
+            "B1/E4"
+        );
+        assert_eq!(
+            serde_json::to_value(legacy_completed).unwrap()["state"],
+            "completed",
+            "B1/E4"
+        );
+
+        let intent = publication_intent();
+        let mut state = SessionCleanupOperation::default();
+        state
+            .request_with_publication("boxed-wire", intent.clone())
+            .unwrap();
+        let encoded = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            encoded.get("intent"),
+            Some(&serde_json::to_value(intent).unwrap()),
+            "B2/E4"
+        );
     }
 
     #[test]
@@ -890,6 +1262,105 @@ mod tests {
             watermark.freeze_targets("session-watermark", ["child".to_string()], 11, 0),
             Err(SessionCleanupError::FrozenTargetsMismatch),
             "T10"
+        );
+    }
+
+    #[test]
+    fn historical_completion_wire_is_read_only_exact_and_replay_safe() {
+        // Cause/effect graph: C1 an old Requested wire already contains one
+        // canonical completion; C2 the same bytes decode again; C3 a historical
+        // full row contains a conflicting completion; C4 cold recovery contains the
+        // full canonical set. Effects: E1 read projection removes only the
+        // evidenced target; E2 re-decode is identical and authors nothing; E3
+        // verification fails closed; E4 the legacy aggregate can finish its
+        // pre-existing completion transition without exposing a write API; E5
+        // Completed reprojects commands only for process-local acknowledgement.
+        //
+        // | Rule | persisted wire | restart | Effect |
+        // | R1 | one canonical child completion | no | E1 |
+        // | R2 | exact same bytes | yes | E2 |
+        // | R3 | full set, conflicting child fingerprint | yes | E3 |
+        // | R4 | canonical child + root completions | yes | E4 |
+        // | R5 | Completed after R4 | yes | E5 |
+        // Constraints/invariants: the frozen target set and canonical receipt
+        // identity never change across recovery, and no production port can
+        // author another one-stage completion.
+        let mut state = SessionCleanupOperation::default();
+        state.request("remote-session");
+        state
+            .freeze_targets("remote-session", ["remote-child".to_string()], 17, 0)
+            .unwrap();
+        let child = state.command_for("remote-session", "remote-child").unwrap();
+        let child_completion = SessionCleanupCompletion::new(&child, Vec::new());
+        install_legacy_completion_wire(&mut state, child_completion.clone());
+        assert_eq!(state.pending_commands("remote-session").unwrap().len(), 1);
+        assert_eq!(
+            state.has_complete_legacy_receipts("remote-session"),
+            Ok(false),
+            "R1/E1 partial historical evidence is read-only, not normalizable"
+        );
+
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let replayed = decode_persisted_cleanup_slice(&encoded).unwrap();
+        assert_eq!(replayed, state, "R2/E2");
+        let mut conflicting = child_completion;
+        conflicting.receipt_fingerprint.push_str("-stale");
+        let mut conflicting_wire = state.clone();
+        let conflicting_root = conflicting_wire
+            .command_for("remote-session", "remote-session")
+            .unwrap();
+        install_legacy_completion_wire(
+            &mut conflicting_wire,
+            SessionCleanupCompletion::new(&conflicting_root, Vec::new()),
+        );
+        install_legacy_completion_wire(&mut conflicting_wire, conflicting);
+        assert_eq!(
+            conflicting_wire.has_complete_legacy_receipts("remote-session"),
+            Err(SessionCleanupError::ReceiptMismatch),
+            "R3/E3"
+        );
+
+        let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
+        let root = recovered
+            .command_for("remote-session", "remote-session")
+            .unwrap();
+        install_legacy_completion_wire(
+            &mut recovered,
+            SessionCleanupCompletion::new(&root, Vec::new()),
+        );
+        assert!(
+            recovered
+                .pending_commands("remote-session")
+                .unwrap()
+                .is_empty(),
+            "R4/E4"
+        );
+        assert_eq!(
+            recovered.has_complete_legacy_receipts("remote-session"),
+            Ok(true),
+            "R4/E4 only the complete canonical persisted set is normalizable"
+        );
+        assert!(
+            recovered
+                .normalize_legacy_completion("remote-session")
+                .unwrap()
+        );
+        assert!(
+            recovered
+                .pending_commands("remote-session")
+                .unwrap()
+                .is_empty(),
+            "R5/E5 Completed never recreates provider work"
+        );
+        assert_eq!(
+            recovered.command_for("remote-session", "remote-child"),
+            Some(child),
+            "R5/E5 child acknowledgement uses the frozen target"
+        );
+        assert_eq!(
+            recovered.command_for("remote-session", "remote-session"),
+            Some(root),
+            "R5/E5 root acknowledgement uses the frozen target"
         );
     }
 
