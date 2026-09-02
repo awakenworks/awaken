@@ -68,10 +68,92 @@ where
     }
 }
 
-/// The three product service assemblies that share this lifecycle owner.
+/// Every product process role, including the authority-free Worker.
 ///
-/// `Worker` is intentionally absent: a Worker has its own authority-free
-/// executable and cannot be smuggled through a Control/Coordinator startup.
+/// This is the one closed role vocabulary consumed by CLI configuration,
+/// service startup, migration selection, and route mounting. Keeping it beside
+/// the startup manifest prevents those adapters from maintaining overlapping
+/// role tables.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ProcessRole {
+    #[default]
+    AllInOne = 0,
+    Control = 1,
+    Coordinator = 2,
+    Worker = 3,
+}
+
+impl ProcessRole {
+    /// Decode a persisted/process-boundary discriminant. Unknown values carry
+    /// no role authority.
+    #[must_use]
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::AllInOne),
+            1 => Some(Self::Control),
+            2 => Some(Self::Coordinator),
+            3 => Some(Self::Worker),
+            _ => None,
+        }
+    }
+
+    /// Project a product process onto the service-lifecycle owner. Worker is
+    /// intentionally absent: it has its own authority-free executable and
+    /// cannot be smuggled through a Control/Coordinator startup.
+    #[must_use]
+    pub const fn startup_role(self) -> Option<StartupRole> {
+        match self {
+            Self::AllInOne => Some(StartupRole::AllInOne),
+            Self::Control => Some(StartupRole::Control),
+            Self::Coordinator => Some(StartupRole::Coordinator),
+            Self::Worker => None,
+        }
+    }
+
+    /// Parse only the canonical product vocabulary. Retired overlapping names
+    /// fail closed instead of becoming compatibility aliases.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "all-in-one" => Ok(Self::AllInOne),
+            "control" => Ok(Self::Control),
+            "coordinator" => Ok(Self::Coordinator),
+            "worker" => Ok(Self::Worker),
+            other => Err(format!(
+                "invalid role={other:?}: expected all-in-one, control, coordinator, or worker"
+            )),
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AllInOne => "all-in-one",
+            Self::Control => "control",
+            Self::Coordinator => "coordinator",
+            Self::Worker => "worker",
+        }
+    }
+
+    /// Whether this process owns one service-startup component. All consumers
+    /// derive from the same startup manifest; Worker owns none here.
+    #[must_use]
+    pub const fn owns_startup_component(self, component: StartupComponent) -> bool {
+        match self.startup_role() {
+            Some(role) => startup_requires(role, component),
+            None => false,
+        }
+    }
+
+    /// Whether this process mounts the local Managed runtime/resource routers.
+    /// Hosted origin reachability remains a composition fact, not role authority.
+    #[must_use]
+    pub const fn mounts_managed_runtime(self) -> bool {
+        self.owns_startup_component(StartupComponent::LocalWorker)
+    }
+}
+
+/// The three product service assemblies that share this lifecycle owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum StartupRole {
@@ -371,7 +453,41 @@ impl ServiceLifecycle {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPOSED_ASYNC_TEST_STACK_BYTES, block_on_service, run_composed_async_test};
+    use super::{
+        COMPOSED_ASYNC_TEST_STACK_BYTES, ProcessRole, StartupComponent, block_on_service,
+        run_composed_async_test,
+    };
+
+    #[test]
+    fn process_role_owns_one_exact_startup_manifest() {
+        // Cause/effect decision table:
+        // R1 AllInOne -> Control+Resources+Coordinator+LocalWorker;
+        // R2 Control -> Control only; R3 Coordinator -> Resources+Coordinator;
+        // R4 Worker -> no service component, startup role, migration authority,
+        // or local Managed mount. Effects: every CLI/store/router consumer sees
+        // the same manifest and no role can gain an extra component through a
+        // separate mapping. Unknown discriminants fail closed (R5).
+        let components = [
+            StartupComponent::Control,
+            StartupComponent::Resources,
+            StartupComponent::Coordinator,
+            StartupComponent::LocalWorker,
+        ];
+        for (role, expected) in [
+            (ProcessRole::AllInOne, [true, true, true, true]),
+            (ProcessRole::Control, [true, false, false, false]),
+            (ProcessRole::Coordinator, [false, true, true, false]),
+            (ProcessRole::Worker, [false, false, false, false]),
+        ] {
+            for (component, expected) in components.into_iter().zip(expected) {
+                assert_eq!(role.owns_startup_component(component), expected, "R1-R4");
+            }
+        }
+        assert!(ProcessRole::Worker.startup_role().is_none(), "R4");
+        assert!(!ProcessRole::Worker.mounts_managed_runtime(), "R4");
+        assert!(ProcessRole::from_discriminant(4).is_none(), "R5");
+        assert!(ProcessRole::from_discriminant(u8::MAX).is_none(), "R5");
+    }
 
     #[test]
     fn canonical_service_runtime_polls_the_launcher_future() {
@@ -438,6 +554,10 @@ mod tests {
 mod verification {
     use super::*;
 
+    fn symbolic_process_role(value: u8) -> ProcessRole {
+        ProcessRole::from_discriminant(value % 4).expect("modulo four is a known process role")
+    }
+
     fn symbolic_role(value: u8) -> StartupRole {
         match value % 3 {
             0 => StartupRole::AllInOne,
@@ -494,5 +614,39 @@ mod verification {
             }
             None => assert!(!admitted),
         }
+    }
+
+    #[kani::proof]
+    fn process_role_projects_exact_startup_authority() {
+        let role = symbolic_process_role(kani::any());
+        let component = symbolic_component(kani::any());
+        let expected = match role {
+            ProcessRole::AllInOne => true,
+            ProcessRole::Control => component == StartupComponent::Control,
+            ProcessRole::Coordinator => matches!(
+                component,
+                StartupComponent::Resources | StartupComponent::Coordinator
+            ),
+            ProcessRole::Worker => false,
+        };
+        assert_eq!(role.owns_startup_component(component), expected);
+    }
+
+    #[kani::proof]
+    fn worker_never_acquires_service_startup_or_local_mount_authority() {
+        let component = symbolic_component(kani::any());
+        assert_eq!(ProcessRole::Worker.startup_role(), None);
+        assert!(!ProcessRole::Worker.owns_startup_component(component));
+        assert!(!ProcessRole::Worker.mounts_managed_runtime());
+    }
+
+    #[kani::proof]
+    fn local_managed_mount_is_exactly_the_local_worker_component() {
+        let role = symbolic_process_role(kani::any());
+        assert_eq!(
+            role.mounts_managed_runtime(),
+            role.owns_startup_component(StartupComponent::LocalWorker)
+        );
+        assert_eq!(role.mounts_managed_runtime(), role == ProcessRole::AllInOne);
     }
 }

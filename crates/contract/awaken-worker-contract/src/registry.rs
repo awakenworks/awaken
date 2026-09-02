@@ -225,6 +225,41 @@ pub enum RegistryMutation {
     InvalidTransition,
 }
 
+/// Whether a durable Worker slot may mint a newer incarnation/generation.
+/// Quiesced and dead records are tombstones that permit replacement; a live
+/// starting/ready/draining incarnation retains the slot until exact expiry.
+#[must_use]
+pub const fn worker_slot_is_replaceable(
+    state: WorkerState,
+    expires_at_ms: u64,
+    now_ms: u64,
+) -> bool {
+    matches!(state, WorkerState::Quiesced | WorkerState::Dead) || expires_at_ms <= now_ms
+}
+
+/// Closed admission table for a Worker heartbeat read from one atomic registry
+/// snapshot. `Applied` is the sole result that permits a record rewrite.
+#[must_use]
+pub const fn worker_heartbeat_admission(
+    record_present: bool,
+    identity_matches: bool,
+    lease_is_live: bool,
+    sequence_is_newer: bool,
+    state: WorkerState,
+) -> RegistryMutation {
+    if !record_present {
+        RegistryMutation::NotFound
+    } else if !identity_matches || !lease_is_live {
+        RegistryMutation::StaleIncarnation
+    } else if !sequence_is_newer {
+        RegistryMutation::StaleSequence
+    } else if matches!(state, WorkerState::Quiesced | WorkerState::Dead) {
+        RegistryMutation::InvalidTransition
+    } else {
+        RegistryMutation::Applied
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("worker id and incarnation id must be non-empty")]
@@ -318,5 +353,104 @@ impl WorkerSnapshot {
             credential_evidence_satisfied,
             acp_evidence_satisfied,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacement_and_heartbeat_follow_one_non_resurrection_table() {
+        // Causes: C1 record exists; C2 identity matches; C3 half-open lease is
+        // live; C4 sequence is newer; C5 state is open vs Quiesced/Dead.
+        // Effects: E1 only all-positive open facts apply; E2 missing is not
+        // found; E3 identity/expiry is stale; E4 old sequence stutters; E5 a
+        // terminal registry state is invalid; E6 every replaceable record is
+        // simultaneously non-heartbeatable.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // |---|---|---|---|---|---|---|
+        // | R1 | yes | yes | yes | yes | open | E1 applied |
+        // | R2 | no | any | any | any | any | E2 not found |
+        // | R3 | yes | no/expired | any | any | any | E3 stale |
+        // | R4 | yes | yes | yes | no | open | E4 stale sequence |
+        // | R5 | yes | yes | yes | yes | terminal | E5 invalid |
+        assert_eq!(
+            worker_heartbeat_admission(true, true, true, true, WorkerState::Ready),
+            RegistryMutation::Applied,
+            "R1/E1"
+        );
+        assert_eq!(
+            worker_heartbeat_admission(false, false, false, false, WorkerState::Dead),
+            RegistryMutation::NotFound,
+            "R2/E2"
+        );
+        assert_eq!(
+            worker_heartbeat_admission(true, false, true, true, WorkerState::Ready),
+            RegistryMutation::StaleIncarnation,
+            "R3/E3 identity"
+        );
+        assert_eq!(
+            worker_heartbeat_admission(true, true, false, true, WorkerState::Ready),
+            RegistryMutation::StaleIncarnation,
+            "R3/E3 expiry"
+        );
+        assert_eq!(
+            worker_heartbeat_admission(true, true, true, false, WorkerState::Ready),
+            RegistryMutation::StaleSequence,
+            "R4/E4"
+        );
+        assert_eq!(
+            worker_heartbeat_admission(true, true, true, true, WorkerState::Dead),
+            RegistryMutation::InvalidTransition,
+            "R5/E5"
+        );
+        for state in [
+            WorkerState::Starting,
+            WorkerState::Ready,
+            WorkerState::Draining,
+        ] {
+            assert!(worker_slot_is_replaceable(state, 10, 10), "E6 exact expiry");
+            assert_ne!(
+                worker_heartbeat_admission(true, true, false, true, state),
+                RegistryMutation::Applied,
+                "E6"
+            );
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
+    let state = match kani::any::<u8>() % 5 {
+        0 => WorkerState::Starting,
+        1 => WorkerState::Ready,
+        2 => WorkerState::Draining,
+        3 => WorkerState::Quiesced,
+        _ => WorkerState::Dead,
+    };
+    let expires_at_ms = kani::any::<u64>();
+    let now_ms = kani::any::<u64>();
+    let identity_matches = kani::any::<bool>();
+    let sequence_is_newer = kani::any::<bool>();
+    let live = expires_at_ms > now_ms;
+    let admission =
+        worker_heartbeat_admission(true, identity_matches, live, sequence_is_newer, state);
+
+    assert_eq!(
+        worker_slot_is_replaceable(state, expires_at_ms, now_ms),
+        matches!(state, WorkerState::Quiesced | WorkerState::Dead) || !live
+    );
+    assert_eq!(
+        admission == RegistryMutation::Applied,
+        identity_matches
+            && live
+            && sequence_is_newer
+            && !matches!(state, WorkerState::Quiesced | WorkerState::Dead)
+    );
+    if worker_slot_is_replaceable(state, expires_at_ms, now_ms) {
+        assert_ne!(admission, RegistryMutation::Applied);
     }
 }

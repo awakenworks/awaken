@@ -1,43 +1,7 @@
-/// The product process role. Execution-plane `hand` remains the separate
-/// `awaken-sandbox hand` binary and is deliberately not a Control role.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Role {
-    #[default]
-    AllInOne,
-    Control,
-    Coordinator,
-    Worker,
-}
-
-impl Role {
-    pub(super) fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "all-in-one" => Ok(Self::AllInOne),
-            "control" => Ok(Self::Control),
-            "coordinator" => Ok(Self::Coordinator),
-            "worker" => Ok(Self::Worker),
-            other => Err(format!(
-                "invalid role={other:?}: expected all-in-one, control, coordinator, or worker"
-            )),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::AllInOne => "all-in-one",
-            Self::Control => "control",
-            Self::Coordinator => "coordinator",
-            Self::Worker => "worker",
-        }
-    }
-
-    /// Whether this process mounts the Managed runtime/resource Routers.
-    /// Browser reachability is a separate composition fact: hosted Control may
-    /// share an origin with the canonical Coordinator without mounting it.
-    pub fn mounts_managed_runtime(self) -> bool {
-        self == Self::AllInOne
-    }
-}
+/// The canonical product role is owned by the service-lifecycle contract.
+/// Configuration re-exports it instead of maintaining a second role enum or
+/// another role-to-startup mapping.
+pub use awaken_service_lifecycle::ProcessRole as Role;
 
 #[cfg(test)]
 mod tests {

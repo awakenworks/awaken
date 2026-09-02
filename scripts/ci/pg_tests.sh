@@ -76,6 +76,10 @@ self_test() {
     echo "Postgres gate omits the authoritative model-catalog store" >&2
     return 1
   }
+  grep -Fq "concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority" "$0" || {
+    echo "Postgres gate omits Environment image-build concurrency and restart fencing" >&2
+    return 1
+  }
   grep -Fq "cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead" "$0" || {
     echo "Postgres gate omits the authoritative sealed credential store" >&2
     return 1
@@ -306,6 +310,9 @@ cargo test -p awaken-store-sqlite --features test-support --test failure_atomici
 cargo test -p awaken-sandbox-policy-store --features test-support || status=1
 cargo test -p awaken-executable-agent-catalog || status=1
 cargo test -p awaken-executable-environment-catalog || status=1
+cargo test -p awaken-environment-image-build \
+  postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
+  -- --exact --test-threads=1 || status=1
 cargo test -p awaken-work-store || status=1
 
 if [ "$status" -ne 0 ]; then

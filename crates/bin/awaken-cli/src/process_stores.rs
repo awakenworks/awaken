@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use awaken_service_lifecycle::{StartupComponent, StartupRole, startup_requires};
+use awaken_service_lifecycle::StartupComponent;
 
 use crate::config;
 
@@ -209,50 +209,40 @@ pub(super) enum MigrationComponent {
     Resources,
 }
 
-const ALL_IN_ONE_MIGRATIONS: &[MigrationComponent] = &[
-    MigrationComponent::Control,
-    MigrationComponent::Resources,
-    MigrationComponent::Coordinator,
-];
-const CONTROL_MIGRATIONS: &[MigrationComponent] = &[MigrationComponent::Control];
-const COORDINATOR_MIGRATIONS: &[MigrationComponent] = &[
-    MigrationComponent::Resources,
-    MigrationComponent::Coordinator,
-];
-const WORKER_MIGRATIONS: &[MigrationComponent] = &[];
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MigrationManifest {
+    role: config::Role,
+}
 
-pub(super) fn migration_manifest(role: config::Role) -> &'static [MigrationComponent] {
-    match role {
-        config::Role::AllInOne => ALL_IN_ONE_MIGRATIONS,
-        config::Role::Control => CONTROL_MIGRATIONS,
-        config::Role::Coordinator => COORDINATOR_MIGRATIONS,
-        config::Role::Worker => WORKER_MIGRATIONS,
+impl MigrationManifest {
+    /// Migration ownership is a projection of the canonical startup manifest,
+    /// not a second per-role table. LocalWorker deliberately has no database
+    /// migration component.
+    pub(super) const fn contains(self, component: &MigrationComponent) -> bool {
+        let startup_component = match component {
+            MigrationComponent::Control => StartupComponent::Control,
+            MigrationComponent::Coordinator => StartupComponent::Coordinator,
+            MigrationComponent::Resources => StartupComponent::Resources,
+        };
+        self.role.owns_startup_component(startup_component)
     }
 }
 
-pub(super) const fn lifecycle_startup_role(role: config::Role) -> Option<StartupRole> {
-    match role {
-        config::Role::AllInOne => Some(StartupRole::AllInOne),
-        config::Role::Control => Some(StartupRole::Control),
-        config::Role::Coordinator => Some(StartupRole::Coordinator),
-        config::Role::Worker => None,
-    }
+pub(super) const fn migration_manifest(role: config::Role) -> MigrationManifest {
+    MigrationManifest { role }
 }
 
-pub(super) fn role_owns_control_component(role: config::Role) -> bool {
-    lifecycle_startup_role(role)
-        .is_some_and(|role| startup_requires(role, StartupComponent::Control))
+pub(super) const fn role_owns_control_component(role: config::Role) -> bool {
+    role.owns_startup_component(StartupComponent::Control)
 }
 
-pub(super) fn role_owns_managed_execution(role: config::Role) -> bool {
-    lifecycle_startup_role(role)
-        .is_some_and(|role| startup_requires(role, StartupComponent::Coordinator))
+pub(super) const fn role_owns_managed_execution(role: config::Role) -> bool {
+    role.owns_startup_component(StartupComponent::Coordinator)
 }
 
 #[cfg(test)]
-pub(super) fn role_hosts_resources(role: config::Role) -> bool {
-    lifecycle_startup_role(role)
-        .is_some_and(|role| startup_requires(role, StartupComponent::Resources))
+pub(super) const fn role_hosts_resources(role: config::Role) -> bool {
+    role.owns_startup_component(StartupComponent::Resources)
 }
 
 #[cfg(test)]
@@ -269,28 +259,24 @@ mod tests {
         // R3 Worker -> no authority schema and therefore no database access.
         // R4 AllInOne -> the same three canonical units; local executable
         // projections remain in memory and never become another manifest unit.
-        assert_eq!(
-            migration_manifest(config::Role::Control),
-            &[MigrationComponent::Control],
-            "R1"
-        );
-        assert_eq!(
-            migration_manifest(config::Role::Coordinator),
-            &[
-                MigrationComponent::Resources,
-                MigrationComponent::Coordinator,
-            ],
-            "R2"
-        );
-        assert!(migration_manifest(config::Role::Worker).is_empty(), "R3");
-        assert_eq!(
-            migration_manifest(config::Role::AllInOne),
-            &[
-                MigrationComponent::Control,
-                MigrationComponent::Resources,
-                MigrationComponent::Coordinator,
-            ],
-            "R4"
-        );
+        let control = migration_manifest(config::Role::Control);
+        assert!(control.contains(&MigrationComponent::Control), "R1");
+        assert!(!control.contains(&MigrationComponent::Resources), "R1");
+        assert!(!control.contains(&MigrationComponent::Coordinator), "R1");
+
+        let coordinator = migration_manifest(config::Role::Coordinator);
+        assert!(!coordinator.contains(&MigrationComponent::Control), "R2");
+        assert!(coordinator.contains(&MigrationComponent::Resources), "R2");
+        assert!(coordinator.contains(&MigrationComponent::Coordinator), "R2");
+
+        let worker = migration_manifest(config::Role::Worker);
+        assert!(!worker.contains(&MigrationComponent::Control), "R3");
+        assert!(!worker.contains(&MigrationComponent::Resources), "R3");
+        assert!(!worker.contains(&MigrationComponent::Coordinator), "R3");
+
+        let all_in_one = migration_manifest(config::Role::AllInOne);
+        assert!(all_in_one.contains(&MigrationComponent::Control), "R4");
+        assert!(all_in_one.contains(&MigrationComponent::Resources), "R4");
+        assert!(all_in_one.contains(&MigrationComponent::Coordinator), "R4");
     }
 }
