@@ -215,6 +215,887 @@ mod mutation_tests {
     }
 
     #[test]
+    fn terminal_memory_authority_joins_cleanup_input_and_current_handle_exactly_once() {
+        // Cause/effect decision table:
+        // | Rule | cleanup | active input | current handle A | request | Effect |
+        // |---|---|---|---|---|---|
+        // | M1 | exact root pending | exact binding/store/config/path/RW | exact A | exact | admit |
+        // | M2 | exact | same store, other mount/binding | exact A | other mount | resource mismatch |
+        // | M3 | exact | exact | exact A | altered A | environment mismatch |
+        // | M4 | exact | pending replacement exists | exact A | exact | resource mismatch |
+        // | M5 | exact | exact | legacy/no evidence | exact | environment mismatch |
+        // | M6 | child command | any | any | child | constructor rejects |
+        // Constraints: caller evidence never becomes truth; only the serialized
+        // current root binding supplies A. A store mounted twice is correlated by
+        // binding id plus exact mount path, never by vector position or store id.
+        let input = crate::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::from("memory-binding"),
+            source: crate::ResolvedInputSource::MemoryStore {
+                memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
+                config: awaken_resource_contract::MemoryStoreConfigVersion {
+                    memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
+                    version: awaken_resource_contract::ConfigVersion(4),
+                    retention_policy: Default::default(),
+                },
+            },
+            mount_path: "/memory/work".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadWrite,
+            instructions: None,
+        };
+        let resources =
+            crate::ResolvedSessionResources::try_new(vec![input.clone()], Vec::new()).unwrap();
+        let evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "memory-store",
+            "/memory/work",
+            vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                path: "/note.md".into(),
+                id: "memory-note".into(),
+                content_sha256: "sha-a".into(),
+            }],
+        )
+        .unwrap();
+        let lease = crate::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            epoch: 7,
+            expires_at_unix_ms: 100,
+        };
+        let fingerprint = awaken_provisioning_contract::SandboxRealizationFingerprint::from_spec(
+            &awaken_provisioning_contract::SandboxSpec {
+                scope: "session-memory".into(),
+                isolation: awaken_provisioning_contract::IsolationClass::Workdir,
+                environment: None,
+                command: Vec::new(),
+                deny_tool_egress: false,
+                mounts: Vec::new(),
+                env: Vec::new(),
+                packages: Default::default(),
+                network: awaken_provisioning_contract::NetworkPolicy::Unrestricted,
+                outputs_path: "/mnt/session/outputs".into(),
+                requests: Default::default(),
+                limits: Default::default(),
+                filesystem_continuity: Default::default(),
+                control_services: Default::default(),
+                lease_ttl_secs: None,
+            },
+        );
+        let handle = awaken_provisioning_contract::SandboxHandle::local_v2(
+            "sandbox-memory",
+            awaken_provisioning_contract::LocalSandboxHandleV2 {
+                previous: awaken_provisioning_contract::LocalSandboxHandleV1 {
+                    outputs_path: "/mnt/session/outputs".into(),
+                    base_env: Vec::new(),
+                    continuation_excluded_paths: Vec::new(),
+                    deny_tool_egress: false,
+                },
+                realization_fingerprint: fingerprint,
+                effect_fence: lease.sandbox_effect_fence("create-memory").unwrap(),
+                physical_incarnation: "physical-memory".into(),
+                owned_paths: vec!["/memory/work".into()],
+            },
+        )
+        .with_memory_materializations(vec![evidence.clone()])
+        .unwrap();
+
+        let mut aggregate = session("session-memory", SessionRevision(1));
+        aggregate.resources = crate::SessionResourceState::from_active(resources.clone());
+        aggregate
+            .environment
+            .set_resident(serde_json::to_string(&handle).unwrap());
+        aggregate.realization = Some(lease.clone());
+        aggregate.ensure_terminal_cleanup_fence();
+        aggregate.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
+        let command = aggregate
+            .terminal_cleanup
+            .pending_commands("session-memory")
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let effect = crate::SessionTerminalCleanupEffect::new(command, lease);
+        let exact =
+            crate::terminal_memory_reconciliation_intent(&input, &evidence, &effect).unwrap();
+        assert_eq!(
+            aggregate.authorize_terminal_memory_intent(&exact),
+            Ok(()),
+            "M1"
+        );
+
+        let mut other_mount_input = input.clone();
+        other_mount_input.binding_id = awaken_resource_contract::BindingId::from("memory-other");
+        other_mount_input.mount_path = "/memory/other".into();
+        let other_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "memory-store",
+            "/memory/other",
+            evidence.heads.clone(),
+        )
+        .unwrap();
+        let other_mount = crate::terminal_memory_reconciliation_intent(
+            &other_mount_input,
+            &other_evidence,
+            &effect,
+        )
+        .unwrap();
+        assert_eq!(
+            aggregate.authorize_terminal_memory_intent(&other_mount),
+            Err(crate::SessionMemoryReconciliationError::ResourceMismatch),
+            "M2"
+        );
+
+        let altered_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
+            "memory-store",
+            "/memory/work",
+            vec![awaken_provisioning_contract::MemoryMaterializationHead {
+                path: "/note.md".into(),
+                id: "memory-note".into(),
+                content_sha256: "sha-not-a".into(),
+            }],
+        )
+        .unwrap();
+        let altered =
+            crate::terminal_memory_reconciliation_intent(&input, &altered_evidence, &effect)
+                .unwrap();
+        assert_eq!(
+            aggregate.authorize_terminal_memory_intent(&altered),
+            Err(crate::SessionMemoryReconciliationError::EnvironmentMismatch),
+            "M3"
+        );
+
+        let mut pending = aggregate.clone();
+        pending.resources.pending = Some(resources);
+        assert_eq!(
+            pending.authorize_terminal_memory_intent(&exact),
+            Err(crate::SessionMemoryReconciliationError::ResourceMismatch),
+            "M4"
+        );
+
+        let mut legacy = aggregate.clone();
+        legacy.environment.set_resident(
+            serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::local(
+                "sandbox-memory",
+                awaken_provisioning_contract::LocalSandboxHandleV1 {
+                    outputs_path: "/mnt/session/outputs".into(),
+                    base_env: Vec::new(),
+                    continuation_excluded_paths: Vec::new(),
+                    deny_tool_egress: false,
+                },
+            ))
+            .unwrap(),
+        );
+        assert_eq!(
+            legacy.authorize_terminal_memory_intent(&exact),
+            Err(crate::SessionMemoryReconciliationError::EnvironmentMismatch),
+            "M5"
+        );
+
+        let mut child_effect = effect;
+        child_effect.command.thread_id = "child-thread".into();
+        assert!(
+            matches!(
+                crate::terminal_memory_reconciliation_intent(&input, &evidence, &child_effect,),
+                Err(crate::SessionMemoryReconciliationError::InvalidIntent(_))
+            ),
+            "M6"
+        );
+    }
+
+    #[test]
+    fn terminal_preparation_and_physical_disposal_retire_one_aggregate_atomically() {
+        // Cause/effect graph: C1 the current realization lease is exact/stale;
+        // C2 root preparation is absent/durable; C3 physical disposal is
+        // absent/exact/foreign; C4 the final root-CAS response is delivered or
+        // lost. Effects: E1 preparation may advance cleanup but cannot retire
+        // Resource/Environment truth; E2 only Disposing authorizes physical
+        // work; E3 exact disposal atomically retires those projections and
+        // enters Completed; E4 exact response-loss replay is a no-op; E5 stale
+        // or foreign evidence fails closed.
+        //
+        // | Rule | lease | preparation | disposal | Effect |
+        // | A1 | exact | absent | any | no disposal authorization/E1 |
+        // | A2 | stale | exact | absent | reject preparation/E5 |
+        // | A3 | exact | exact | absent | Disposing, projections retained/E1/E2 |
+        // | A3b | successor epoch | exact A | absent | disposer carries A→B/E2 |
+        // | A4 | exact | exact | foreign | reject, projections retained/E5 |
+        // | A5 | exact | exact | exact/replay | E3/E4 |
+        let lease = crate::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:boot".into(),
+            epoch: 7,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let mut aggregate = session("prepared-root", SessionRevision(1));
+        aggregate.resources = crate::SessionResourceState::from_active(
+            crate::ResolvedSessionResources::try_new(
+                vec![crate::ResolvedInput {
+                    binding_id: awaken_resource_contract::BindingId::from("prepared-memory"),
+                    source: crate::ResolvedInputSource::MemoryStore {
+                        memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                            "prepared-store",
+                        ),
+                        config: awaken_resource_contract::MemoryStoreConfigVersion {
+                            memory_store_id: awaken_resource_contract::MemoryStoreId::from(
+                                "prepared-store",
+                            ),
+                            version: awaken_resource_contract::ConfigVersion(1),
+                            retention_policy: Default::default(),
+                        },
+                    },
+                    mount_path: "/memory/prepared".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        aggregate.realization = Some(lease.clone());
+        aggregate.environment.set_resident("sandbox-binding");
+        assert!(aggregate.ensure_terminal_cleanup_fence());
+        assert!(aggregate.freeze_terminal_cleanup_targets([], 3, 5).unwrap());
+        assert!(terminal_disposal_command(&aggregate).is_none(), "A1/E1");
+        let command = aggregate
+            .terminal_cleanup
+            .pending_preparation_commands("prepared-root")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let preparation_effect = crate::SessionTerminalCleanupEffect::new(command, lease.clone());
+        let preparation = crate::SessionCleanupPreparation::try_new(
+            &preparation_effect,
+            preparation_effect.sandbox_effect_fence().unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let repository_preparation = crate::SessionCleanupRepositoryPreparation::new(
+            "prepared-root",
+            "workspace",
+            &aggregate.resources,
+        )
+        .unwrap();
+        let mut stale = lease.clone();
+        stale.epoch -= 1;
+        assert_eq!(
+            aggregate.record_terminal_cleanup_preparation(
+                "workspace",
+                &stale,
+                preparation.clone(),
+                Some(repository_preparation.clone()),
+            ),
+            Err(crate::SessionCleanupError::RealizationMismatch),
+            "A2/E5"
+        );
+        assert!(
+            aggregate
+                .record_terminal_cleanup_preparation(
+                    "workspace",
+                    &lease,
+                    preparation,
+                    Some(repository_preparation),
+                )
+                .unwrap(),
+            "A3"
+        );
+        assert!(aggregate.terminal_cleanup.is_requested(), "A3/E1");
+        assert!(aggregate.environment.binding().is_some(), "A3/E1");
+        assert!(!aggregate.resources.active.inputs().is_empty(), "A3/E1");
+
+        let disposal = terminal_disposal_command(&aggregate).unwrap();
+        let successor = crate::SessionRealizationLease {
+            owner: "worker-b".into(),
+            runtime_incarnation: "worker-b:boot".into(),
+            epoch: lease.epoch + 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        aggregate.realization = Some(successor.clone());
+        let effect =
+            crate::SessionTerminalCleanupDisposalEffect::new(disposal.clone(), successor.clone());
+        assert_eq!(
+            aggregate.authorize_terminal_cleanup_disposal_effect("workspace", &effect),
+            Ok(()),
+            "A3b/E2"
+        );
+        let provider_effect = effect.sandbox_disposal_authorization().expect("A3b/E2");
+        assert_eq!(provider_effect.prepared_effect_fence().epoch, lease.epoch);
+        assert_eq!(provider_effect.effect_fence().epoch, successor.epoch);
+        let mut foreign = crate::SessionCleanupDisposalReceipt::new(&disposal);
+        foreign.preparation_fingerprint.push_str("-foreign");
+        assert_eq!(
+            aggregate.record_terminal_cleanup_disposal(
+                "workspace",
+                &successor,
+                foreign,
+                "released",
+            ),
+            Err(crate::SessionCleanupError::DisposalReceiptMismatch),
+            "A4/E5"
+        );
+        assert!(aggregate.environment.binding().is_some(), "A4/E5");
+
+        let exact = crate::SessionCleanupDisposalReceipt::new(&disposal);
+        assert!(
+            aggregate
+                .record_terminal_cleanup_disposal(
+                    "workspace",
+                    &successor,
+                    exact.clone(),
+                    "released",
+                )
+                .unwrap(),
+            "A5/E3"
+        );
+        assert!(aggregate.terminal_cleanup.is_completed(), "A5/E3");
+        assert!(aggregate.resources.active.inputs().is_empty(), "A5/E3");
+        assert!(aggregate.environment.binding().is_none(), "A5/E3");
+        aggregate.realization = None;
+        assert!(
+            !aggregate
+                .record_terminal_cleanup_disposal("workspace", &successor, exact, "released",)
+                .unwrap(),
+            "A5/E4"
+        );
+    }
+
+    #[test]
+    fn restoring_rejects_target_free_legacy_completion_without_mutation() {
+        // Cause/effect graph: C1 a complete historical one-stage receipt set
+        // is present; C2 the Environment is Restoring or has no unpublished
+        // restore target. Effects: E1 Restoring fails closed and retains both
+        // exact target evidence and Requested cleanup; E2 a non-Restoring
+        // historical row retains the existing decode-only normalization path.
+        //
+        // | Rule | complete legacy receipts | Environment | Effect |
+        // |---|---|---|---|
+        // | L1 | yes | Restoring | E1 ReceiptMismatch, no mutation |
+        // | L2 | yes | Unmaterialized | E2 normalize to Completed |
+        //
+        // Constraint: legacy completion has no `SandboxRestoreRequest`, so it
+        // can never prove disposal of a Phase-B unpublished physical target.
+        let session_id = "legacy-restoring";
+        let workspace_id = "workspace";
+        let lease = crate::SessionRealizationLease {
+            owner: "legacy-worker".into(),
+            runtime_incarnation: "legacy-worker:incarnation".into(),
+            epoch: 2,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let generation = crate::SandboxGeneration::new(
+            session_id,
+            1,
+            90_000,
+            "legacy-restoring-environment",
+            "legacy-restoring-image",
+        );
+        let checkpoint = crate::SandboxCheckpointRef {
+            id: "legacy-restoring-checkpoint".into(),
+            format: "awaken-fs-tar-v1".into(),
+            digest: "legacy-restoring-digest".into(),
+            size_bytes: 1,
+            created_at_unix_ms: 1,
+            expires_at_unix_ms: 90_000,
+            environment_fingerprint: generation.environment_fingerprint.clone(),
+            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: "legacy-suspend".into(),
+        };
+        let operation = crate::SessionEnvironmentOperation::new(
+            workspace_id,
+            session_id,
+            "restore",
+            &generation,
+            1,
+            Some(lease.clone()),
+            Some(&checkpoint),
+        );
+        let mut aggregate = session(session_id, SessionRevision(1));
+        aggregate.realization = Some(lease);
+        aggregate.environment = crate::SessionEnvironmentState::Restoring {
+            operation,
+            checkpoint,
+            generation,
+        };
+        assert!(aggregate.ensure_terminal_cleanup_fence());
+        assert!(aggregate.freeze_terminal_cleanup_targets([], 0, 0).unwrap());
+        let command = aggregate
+            .terminal_cleanup
+            .command_for(session_id, session_id)
+            .expect("L1 legacy root command");
+        let artifact_evidence = Vec::<(&str, &str)>::new();
+        let receipt_fingerprint = crate::stable_fingerprint(&(
+            "session-terminal-cleanup-thread-receipt-v1",
+            command.session_id.as_str(),
+            command.thread_id.as_str(),
+            command.effect_id.as_str(),
+            artifact_evidence.as_slice(),
+        ));
+        let mut wire = serde_json::to_value(&aggregate).unwrap();
+        wire["terminal_cleanup"]["completions"] = serde_json::json!({
+            (session_id): {
+                "session_id": command.session_id,
+                "thread_id": command.thread_id,
+                "effect_id": command.effect_id,
+                "artifact_receipts": [],
+                "receipt_fingerprint": receipt_fingerprint,
+            }
+        });
+        let mut recovered = serde_json::from_value::<PersistedSession>(wire)
+            .expect("L1 exact historical aggregate decodes");
+        assert_eq!(
+            recovered.has_complete_legacy_terminal_cleanup_evidence(),
+            Ok(true),
+            "L1 complete historical evidence"
+        );
+        let before = recovered.clone();
+        assert_eq!(
+            recovered.normalize_legacy_terminal_cleanup("legacy released"),
+            Err(crate::SessionCleanupError::ReceiptMismatch),
+            "L1/E1"
+        );
+        assert_eq!(recovered, before, "L1/E1 atomic rejection");
+
+        let mut ordinary = recovered;
+        ordinary.environment = crate::SessionEnvironmentState::Unmaterialized;
+        assert!(
+            ordinary
+                .normalize_legacy_terminal_cleanup("legacy released")
+                .expect("L2 compatibility normalization"),
+            "L2/E2"
+        );
+        assert!(ordinary.terminal_cleanup.is_completed(), "L2/E2");
+    }
+
+    #[test]
+    fn terminal_provider_predecessor_survives_renewal_and_both_root_cas_orders() {
+        // Provider-predecessor decision table TP1. Causes: C1 work assertion is
+        // initial A or retry D; C2 the provider durably prepared C and returns C
+        // on the D response-loss replay; C3 the A or D root CAS wins first; C4
+        // the receipt reports exact C, a foreign operation/generation, or the
+        // caller records it under a lease unequal to its work assertion.
+        // Effects: E1 either winning CAS persists its own work assertion but
+        // projects the same physical predecessor C; E2 the losing different
+        // receipt is rejected without changing that predecessor; E3 foreign or
+        // self-inconsistent evidence has zero aggregate mutation.
+        //
+        // | Rule | assertion | provider P | first CAS | Effect |
+        // | TP1a | A | C | A | A+C durable, D rejected / E1-E2 |
+        // | TP1b | D | C | D | D+C durable, A rejected / E1-E2 |
+        // | TP1c | A/D | foreign | none | reject / E3 |
+        // | TP1d | A | C | record under C | reject / E3 |
+        let lease = |expires_at_unix_ms| crate::SessionRealizationLease {
+            owner: "provider-worker".into(),
+            runtime_incarnation: "provider-runtime".into(),
+            epoch: 9,
+            expires_at_unix_ms,
+        };
+        let lease_a = lease(10_000);
+        let lease_c = lease(30_000);
+        let lease_d = lease(40_000);
+        let mut base = session("provider-race", SessionRevision(1));
+        base.realization = Some(lease_d.clone());
+        base.environment.set_resident("provider-binding");
+        assert!(base.ensure_terminal_cleanup_fence());
+        assert!(base.freeze_terminal_cleanup_targets([], 3, 5).unwrap());
+        let command = base
+            .terminal_cleanup
+            .pending_preparation_commands("provider-race")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let effect_a = crate::SessionTerminalCleanupEffect::new(command.clone(), lease_a.clone());
+        let effect_d = crate::SessionTerminalCleanupEffect::new(command, lease_d.clone());
+        let provider_c = lease_c
+            .sandbox_effect_fence(effect_a.operation_id())
+            .unwrap();
+        let receipt_a =
+            crate::SessionCleanupPreparation::try_new(&effect_a, provider_c.clone(), Vec::new())
+                .unwrap();
+        let receipt_d =
+            crate::SessionCleanupPreparation::try_new(&effect_d, provider_c.clone(), Vec::new())
+                .unwrap();
+        let repository_preparation = crate::SessionCleanupRepositoryPreparation::new(
+            "provider-race",
+            "workspace",
+            &base.resources,
+        )
+        .unwrap();
+
+        for (rule, first_lease, first, second_lease, second) in [
+            ("TP1a", &lease_a, &receipt_a, &lease_d, &receipt_d),
+            ("TP1b", &lease_d, &receipt_d, &lease_a, &receipt_a),
+        ] {
+            let mut candidate = base.clone();
+            assert!(
+                candidate
+                    .record_terminal_cleanup_preparation(
+                        "workspace",
+                        first_lease,
+                        first.clone(),
+                        Some(repository_preparation.clone()),
+                    )
+                    .unwrap(),
+                "{rule}/E1"
+            );
+            assert_eq!(
+                candidate.record_terminal_cleanup_preparation(
+                    "workspace",
+                    second_lease,
+                    second.clone(),
+                    Some(repository_preparation.clone()),
+                ),
+                Err(crate::SessionCleanupError::PreparationReceiptMismatch),
+                "{rule}/E2",
+            );
+            assert_eq!(
+                terminal_disposal_command(&candidate)
+                    .unwrap()
+                    .provider_disposal
+                    .prepared_effect_fence(),
+                &provider_c,
+                "{rule}/E1 exact provider predecessor",
+            );
+        }
+
+        let foreign = awaken_provisioning_contract::SandboxEffectFence::new(
+            "foreign-operation",
+            lease_a.owner.clone(),
+            lease_a.runtime_incarnation.clone(),
+            lease_a.epoch,
+            lease_c.expires_at_unix_ms,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::SessionCleanupPreparation::try_new(&effect_a, foreign, Vec::new()),
+            Err(crate::SessionCleanupError::PreparationReceiptMismatch),
+            "TP1c/E3",
+        );
+        let mut inconsistent = base.clone();
+        assert_eq!(
+            inconsistent.record_terminal_cleanup_preparation(
+                "workspace",
+                &lease_c,
+                receipt_a,
+                Some(repository_preparation),
+            ),
+            Err(crate::SessionCleanupError::RealizationMismatch),
+            "TP1d/E3",
+        );
+        assert!(
+            terminal_disposal_command(&inconsistent).is_none(),
+            "TP1d/E3"
+        );
+    }
+
+    #[test]
+    fn continuation_provider_predecessor_survives_renewal_and_both_root_cas_orders() {
+        // Continuation-predecessor decision table CP1. Causes: C1 source work
+        // asserts original A or retry D; C2 provider preparation C completed
+        // before its response was lost and the D retry returns immutable C; C3
+        // A-CAS or D-CAS wins first; C4 P has exact or foreign operation/
+        // generation. Effects: E1 either winner enters the one Disposing phase
+        // with physical predecessor C; E2 the losing non-identical receipt is
+        // rejected without changing C; E3 foreign P has zero aggregate mutation.
+        //
+        // | Rule | assertion | provider P | first CAS | Effect |
+        // | CP1a | A | C | A | A+C durable, D rejected / E1-E2 |
+        // | CP1b | D | C | D | D+C durable, A rejected / E1-E2 |
+        // | CP1c | A/D | foreign | none | reject / E3 |
+        let lease = |expires_at_unix_ms| crate::SessionRealizationLease {
+            owner: "continuation-worker".into(),
+            runtime_incarnation: "continuation-runtime".into(),
+            epoch: 5,
+            expires_at_unix_ms,
+        };
+        let lease_a = lease(10_000);
+        let lease_c = lease(30_000);
+        let lease_d = lease(40_000);
+        let generation = crate::SandboxGeneration::new(
+            "continuation-race",
+            1,
+            90_000,
+            "continuation-env",
+            "continuation-image",
+        );
+        let mut base = session("continuation-race", SessionRevision(1));
+        base.realization = Some(lease_d.clone());
+        base.environment = crate::SessionEnvironmentState::Resident {
+            binding: "continuation-source".into(),
+            effect_id: Some("create".into()),
+            generation: Some(generation.clone()),
+            idle_since_unix_ms: None,
+        };
+        let operation = base
+            .environment
+            .begin_suspend_at(
+                "workspace",
+                "continuation-race",
+                base.activity_epoch,
+                Some(lease_a.clone()),
+                1_000,
+            )
+            .unwrap()
+            .clone();
+        base.environment
+            .record_quiescence(
+                &crate::QuiescenceReceipt {
+                    effect_id: operation.effect_id.clone(),
+                    generation_id: generation.id.clone(),
+                    activity_epoch: base.activity_epoch,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
+            .unwrap();
+        base.environment
+            .record_checkpoint(&crate::CheckpointReceipt {
+                effect_id: operation.effect_id.clone(),
+                generation_id: generation.id.clone(),
+                checkpoint: crate::SandboxCheckpointRef {
+                    id: "continuation-checkpoint".into(),
+                    format: "awaken-fs-v1".into(),
+                    digest: "continuation-digest".into(),
+                    size_bytes: 1,
+                    created_at_unix_ms: 2_000,
+                    expires_at_unix_ms: 80_000,
+                    environment_fingerprint: generation.environment_fingerprint.clone(),
+                    base_image_fingerprint: generation.base_image_fingerprint.clone(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: operation.effect_id.clone(),
+                },
+            })
+            .unwrap();
+        let preparation_a =
+            crate::SourceReleasePreparationEffect::new(operation.clone(), lease_a.clone()).unwrap();
+        let preparation_d =
+            crate::SourceReleasePreparationEffect::new(operation.clone(), lease_d.clone()).unwrap();
+        let provider_c = lease_c
+            .sandbox_effect_fence(operation.effect_id.as_str())
+            .unwrap();
+        let receipt_a = crate::SourceReleasePreparedReceipt::try_new(
+            preparation_a.clone(),
+            provider_c.clone(),
+            &generation,
+            "continuation-source",
+        )
+        .unwrap();
+        let receipt_d = crate::SourceReleasePreparedReceipt::try_new(
+            preparation_d.clone(),
+            provider_c.clone(),
+            &generation,
+            "continuation-source",
+        )
+        .unwrap();
+
+        for (rule, first, second) in [
+            ("CP1a", &receipt_a, &receipt_d),
+            ("CP1b", &receipt_d, &receipt_a),
+        ] {
+            let mut candidate = base.clone();
+            assert!(
+                candidate.record_source_release_prepared(first).unwrap(),
+                "{rule}/E1"
+            );
+            assert_eq!(
+                candidate.record_source_release_prepared(second),
+                Err(crate::SessionEnvironmentReceiptError::Mismatch),
+                "{rule}/E2",
+            );
+            assert_eq!(
+                candidate
+                    .source_release_disposal()
+                    .unwrap()
+                    .sandbox_disposal_authorization()
+                    .unwrap()
+                    .prepared_effect_fence(),
+                &provider_c,
+                "{rule}/E1 exact provider predecessor",
+            );
+        }
+
+        let foreign = awaken_provisioning_contract::SandboxEffectFence::new(
+            "foreign-continuation",
+            lease_a.owner,
+            lease_a.runtime_incarnation,
+            lease_a.epoch,
+            lease_c.expires_at_unix_ms,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::SourceReleasePreparedReceipt::try_new(
+                preparation_a,
+                foreign,
+                &generation,
+                "continuation-source",
+            ),
+            Err(crate::SessionEnvironmentReceiptError::Mismatch),
+            "CP1c/E3",
+        );
+        assert!(base.source_release_disposal().is_err(), "CP1c/E3");
+    }
+
+    #[test]
+    fn terminal_disposal_inherits_the_exact_continuation_predecessor() {
+        // Cause/effect graph: C1 the Environment is ordinary Resident or a
+        // continuation whose source preparation A is durably Disposing; C2 the
+        // terminal root preparation T is complete; C3 the current disposer is
+        // the same generation, a higher epoch, or foreign. Effects: E1 ordinary
+        // terminal cleanup derives provider predecessor T; E2 continuation
+        // takeover derives A without copying it into terminal progress; E3 the
+        // aggregate fingerprint remains terminal-owned; E4 only a canonical
+        // A->successor authorization reaches the provider. Decision rules:
+        //
+        // | Rule | Environment | terminal prep | successor | Effect |
+        // | X1 | Resident | T complete | live | provider T / E1 |
+        // | X2 | Disposing(A) | T complete | higher epoch | provider A / E2-E4 |
+        // | X3 | Disposing(A) | T incomplete | any | no disposal command |
+        // | X4 | malformed/foreign A | T complete | any | fail before command |
+        let source_lease = crate::SessionRealizationLease {
+            owner: "source-worker".into(),
+            runtime_incarnation: "source-runtime".into(),
+            epoch: 4,
+            expires_at_unix_ms: 40_000,
+        };
+        let generation = crate::SandboxGeneration::new(
+            "takeover-session",
+            3,
+            30_000,
+            "environment-fingerprint",
+            "base-image-fingerprint",
+        );
+        let mut aggregate = session("takeover-session", SessionRevision(1));
+        aggregate.realization = Some(source_lease.clone());
+        aggregate.environment = crate::SessionEnvironmentState::Resident {
+            binding: "source-binding".into(),
+            effect_id: Some("create".into()),
+            generation: Some(generation.clone()),
+            idle_since_unix_ms: None,
+        };
+        let operation = aggregate
+            .environment
+            .begin_suspend_at(
+                "workspace",
+                "takeover-session",
+                aggregate.activity_epoch,
+                Some(source_lease.clone()),
+                1_000,
+            )
+            .unwrap()
+            .clone();
+        aggregate
+            .environment
+            .record_quiescence(
+                &crate::QuiescenceReceipt {
+                    effect_id: operation.effect_id.clone(),
+                    generation_id: generation.id.clone(),
+                    activity_epoch: aggregate.activity_epoch,
+                    live_environment_effects: 0,
+                    mcp_generations: Vec::new(),
+                },
+                &[],
+            )
+            .unwrap();
+        aggregate
+            .environment
+            .record_checkpoint(&crate::CheckpointReceipt {
+                effect_id: operation.effect_id.clone(),
+                generation_id: generation.id.clone(),
+                checkpoint: crate::SandboxCheckpointRef {
+                    id: "checkpoint".into(),
+                    format: "awaken-fs-v1".into(),
+                    digest: "digest".into(),
+                    size_bytes: 42,
+                    created_at_unix_ms: 2_000,
+                    expires_at_unix_ms: 50_000,
+                    environment_fingerprint: generation.environment_fingerprint.clone(),
+                    base_image_fingerprint: generation.base_image_fingerprint.clone(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: operation.effect_id.clone(),
+                },
+            })
+            .unwrap();
+        let source_preparation = aggregate.source_release_preparation_effect().unwrap();
+        let source_prepared_effect_fence = source_preparation.sandbox_effect_fence().unwrap();
+        let source_receipt = crate::SourceReleasePreparedReceipt::try_new(
+            source_preparation,
+            source_prepared_effect_fence,
+            &generation,
+            "source-binding",
+        )
+        .unwrap();
+        assert!(
+            aggregate
+                .record_source_release_prepared(&source_receipt)
+                .unwrap(),
+            "X2 source preparation becomes durable"
+        );
+
+        let terminal_lease = crate::SessionRealizationLease {
+            owner: "terminal-worker".into(),
+            runtime_incarnation: "terminal-runtime".into(),
+            epoch: source_lease.epoch + 1,
+            expires_at_unix_ms: 60_000,
+        };
+        aggregate.disposition = SessionDisposition::Deleting;
+        aggregate.realization = Some(terminal_lease.clone());
+        assert!(aggregate.ensure_terminal_cleanup_fence());
+        assert!(
+            aggregate
+                .freeze_terminal_cleanup_targets([], 7, 11)
+                .unwrap()
+        );
+        assert!(terminal_disposal_command(&aggregate).is_none(), "X3");
+        let root = aggregate
+            .terminal_cleanup
+            .pending_preparation_commands("takeover-session")
+            .unwrap()
+            .pop()
+            .unwrap();
+        let terminal_effect =
+            crate::SessionTerminalCleanupEffect::new(root, terminal_lease.clone());
+        assert!(
+            aggregate
+                .record_terminal_cleanup_preparation(
+                    "workspace",
+                    &terminal_lease,
+                    crate::SessionCleanupPreparation::try_new(
+                        &terminal_effect,
+                        terminal_effect.sandbox_effect_fence().unwrap(),
+                        Vec::new(),
+                    )
+                    .unwrap(),
+                    Some(
+                        crate::SessionCleanupRepositoryPreparation::new(
+                            "takeover-session",
+                            "workspace",
+                            &aggregate.resources,
+                        )
+                        .unwrap(),
+                    ),
+                )
+                .unwrap(),
+            "X2 terminal preparation becomes durable"
+        );
+        let disposal = terminal_disposal_command(&aggregate).expect("X2/E2");
+        let inherited = source_receipt.sandbox_disposal_preparation().unwrap();
+        assert_eq!(disposal.provider_disposal, inherited, "X2/E2");
+        assert_ne!(
+            disposal
+                .provider_disposal
+                .prepared_effect_fence()
+                .operation_id,
+            terminal_effect.command.effect_id,
+            "X2/E3 source and terminal preparation identities remain distinct"
+        );
+        let successor = crate::SessionRealizationLease {
+            epoch: terminal_lease.epoch + 1,
+            ..terminal_lease
+        };
+        let authorization = crate::SessionTerminalCleanupDisposalEffect::new(disposal, successor)
+            .sandbox_disposal_authorization()
+            .expect("X2/E4");
+        assert_eq!(authorization.preparation(), inherited, "X2/E4");
+    }
+
+    #[test]
     fn persisted_session_accepts_only_the_complete_canonical_grammar() {
         // Grammar cause/effect partition: C1 complete canonical aggregate;
         // C2 unknown status; C3 missing pre-existing required fact; C4 missing

@@ -424,6 +424,58 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
     }
 }
 
+#[tokio::test]
+async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
+    // Creation-topology decision table: C1 frozen placement is Local/Worker;
+    // C2 retention is Resident/CheckpointAndRelease. Only Worker+checkpoint
+    // requires a remote continuation transport that does not exist. Effect E1
+    // rejects before root insert or Runtime projection; the other three rules
+    // retain their existing create paths. Constraint K1: the registered-Worker
+    // authorize/persist channel is closed over Create/Adopt/Rebuild/Resource
+    // reservation, while claimed resume ends at realization projection/MCP and
+    // rejects continuation phases; neither is a checkpoint/restore transport.
+    //
+    // | Rule | placement | retention | Effect |
+    // | T1 | Worker | CheckpointAndRelease | E1 reject, zero root/effect |
+    // | T2 | Worker | Resident | existing external creation |
+    // | T3 | Local | CheckpointAndRelease | existing local continuation |
+    // | T4 | Local | Resident | existing local creation |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session repository"),
+    );
+    let runtime = Arc::new(RecordingCreateRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let mut command = creation_command("worker-checkpoint-retention");
+    command.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    command.intent.control.environment.idle_retention =
+        super::continuation::checkpoint_release_retention();
+
+    let error = app
+        .create_session(command)
+        .await
+        .expect_err("T1/E1 unsupported external continuation must fail before insert");
+    let SessionCreationError::Rejected(error) = error else {
+        panic!("T1/E1 expected deterministic creation rejection")
+    };
+    assert_eq!(
+        error.kind,
+        awaken_session_contract::RunErrorKind::BadRequest,
+        "T1/E1",
+    );
+    assert!(matches!(
+        repository.get("worker-checkpoint-retention").await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+    ));
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "T1/E1");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "T1/E1");
+}
+
 fn owned_repository_input(session_id: &str) -> SessionRepositoryResourceInput {
     SessionRepositoryResourceInput {
         id: format!("managed:{session_id}:repository:0"),

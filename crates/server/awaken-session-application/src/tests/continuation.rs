@@ -561,6 +561,100 @@ async fn due_idle_environment_suspends_once_in_order() {
 }
 
 #[tokio::test]
+async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
+    // Admission cause/effect table (the detailed None/Some matrix is owned by
+    // the neutral contract test): A1 active RW + legacy None => remain Resident
+    // and zero Runtime effect; A2 pending Memory generation => remain Resident
+    // because no single active input/evidence join exists; A3 active RO +
+    // legacy None => no write-back obligation, so the ordinary suspend saga may
+    // proceed. Explicit Some([]), exact RO Copy, RW Copy, and foreign evidence
+    // are delegated unchanged to the same contract wrapper (rules C5-C8).
+    for (id, mut session, should_suspend) in {
+        let mut legacy_rw = generated_session("memory-legacy-rw");
+        legacy_rw.resources = awaken_session_contract::SessionResourceState::from_active(
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![memory_input(
+                    "rw",
+                    awaken_resource_contract::ResourceAccess::ReadWrite,
+                )],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        if let awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } =
+            &mut legacy_rw.environment
+        {
+            *binding = legacy_memory_binding("memory-legacy-rw");
+        }
+
+        let mut pending = generated_session("memory-pending");
+        pending.resources.pending = Some(
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![memory_input(
+                    "pending",
+                    awaken_resource_contract::ResourceAccess::ReadOnly,
+                )],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+
+        let mut legacy_ro = generated_session("memory-legacy-ro");
+        legacy_ro.resources = awaken_session_contract::SessionResourceState::from_active(
+            awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![memory_input(
+                    "ro",
+                    awaken_resource_contract::ResourceAccess::ReadOnly,
+                )],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        if let awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } =
+            &mut legacy_ro.environment
+        {
+            *binding = legacy_memory_binding("memory-legacy-ro");
+        }
+
+        [
+            ("memory-legacy-rw", legacy_rw, false),
+            ("memory-pending", pending, false),
+            ("memory-legacy-ro", legacy_ro, true),
+        ]
+    } {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        session.session_id = id.into();
+        create(repo.as_ref(), session).await;
+        let runtime = Arc::new(ContinuationRuntime::default());
+        let app = application_with_runtime(
+            runtime.clone(),
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let result = app.reconcile_environment_continuation(id, 2_000).await;
+        if should_suspend {
+            result.expect("A3 RO suspension");
+            assert!(matches!(
+                repo.get(id).await.unwrap().environment,
+                awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+            ));
+            assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1, "A3");
+        } else {
+            assert!(result.is_err(), "A1/A2");
+            assert!(matches!(
+                repo.get(id).await.unwrap().environment,
+                awaken_session_contract::SessionEnvironmentState::Resident { .. }
+            ));
+            assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 0, "A1/A2");
+            assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 0, "A1/A2");
+            assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "A1/A2");
+        }
+    }
+}
+
+#[tokio::test]
 async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     let repo =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
@@ -868,6 +962,86 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
     }
 }
 
+#[tokio::test]
+async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
+    // Root authorization table: C1 nonterminal ReadyToDispose + exact operation
+    // + current realization => canonical Workspace; C2 altered operation/lease
+    // => StaleOwnership; C3 Resident/Uploading/Hibernated or terminal takeover
+    // => NotReady/Terminal. The read grants no receipt or state transition.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut session = generated_session("checkpoint-artifact-auth");
+    session.realization = Some(awaken_session_contract::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:boot".into(),
+        epoch: 7,
+        expires_at_unix_ms: u64::MAX,
+    });
+    create(repo.as_ref(), session).await;
+    let runtime = Arc::new(ContinuationRuntime::default());
+    runtime.fail_prepare_once.store(true, Ordering::SeqCst);
+    let app = application_with_runtime(
+        runtime,
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(
+        app.reconcile_environment_continuation("checkpoint-artifact-auth", 2_000)
+            .await
+            .is_err(),
+        "C1 fixture stops at ReadyToDispose"
+    );
+    let ready = repo.get("checkpoint-artifact-auth").await.unwrap();
+    let awaken_session_contract::SessionEnvironmentState::Suspending { operation, .. } =
+        &ready.environment
+    else {
+        panic!("C1 fixture is not suspending")
+    };
+    assert_eq!(
+        awaken_session_contract::SessionRealizationControl::authorize_checkpoint_release_artifact_effect(
+            &app,
+            "checkpoint-artifact-auth",
+            operation,
+        )
+        .await,
+        Ok("workspace".into()),
+        "C1"
+    );
+    let mut stale = operation.clone();
+    stale.effect_id.push_str("-stale");
+    assert_eq!(
+        awaken_session_contract::SessionRealizationControl::authorize_checkpoint_release_artifact_effect(
+            &app,
+            "checkpoint-artifact-auth",
+            &stale,
+        )
+        .await,
+        Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership),
+        "C2"
+    );
+
+    let resident_repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let mut resident = generated_session("checkpoint-artifact-not-ready");
+    resident.realization = ready.realization.clone();
+    create(resident_repo.as_ref(), resident).await;
+    let resident_app = application_with_runtime(
+        Arc::new(ContinuationRuntime::default()),
+        resident_repo,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert_eq!(
+        awaken_session_contract::SessionRealizationControl::authorize_checkpoint_release_artifact_effect(
+            &resident_app,
+            "checkpoint-artifact-not-ready",
+            operation,
+        )
+        .await,
+        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady),
+        "C3"
+    );
+}
+
 // Cause/effect design: C1=upload failure after Quiescing committed at T1;
 // C2=retry supervisor observes T2>T1. FMECA crash window U1 => E3 source
 // retained in Uploading; retry reuses the stable operation and its exact T1
@@ -1024,6 +1198,146 @@ async fn disposal_failure_retries_without_recheckpointing() {
     assert_eq!(authorizations[1].effect_fence().epoch, 5, "C4 B takeover");
 }
 
+#[tokio::test]
+async fn preparation_response_loss_persists_the_exact_renewed_fence() {
+    // Exact-preparation cause/effect table:
+    // | Rule | suspend A0 | aggregate lease at prep | prep CAS/result | successor | Effect |
+    // | P1 | epoch4 expiry100k | same generation expiry200k | commit then reported conflict | none | durable Disposing stores A=200k, not guessed A0 |
+    // | P2 | P1 durable | unchanged | response-loss retry | epoch5 B | zero live re-prep; one physical id uses persisted A + current B |
+    // Constraints: root admits the receipt only when its current generation
+    // authorizes the embedded preparation lease; the Runtime never rebuilds A
+    // from the mutable slot or the older suspend operation.
+    let durable =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(FaultingSessionRepository::new(durable));
+    create(repo.as_ref(), generated_session("prep-response-loss")).await;
+    let runtime = Arc::new(ContinuationRuntime::default());
+    runtime.fail_checkpoint_once.store(true, Ordering::SeqCst);
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    assert!(
+        app.reconcile_environment_continuation("prep-response-loss", 2_000)
+            .await
+            .is_err(),
+        "P1 stop after the suspend operation freezes A0",
+    );
+    let mut renewed = repo.get("prep-response-loss").await.unwrap();
+    renewed.realization.as_mut().unwrap().expires_at_unix_ms = 200_000;
+    app.commit_session_snapshot(
+        "workspace",
+        renewed,
+        "test-renew-before-source-preparation",
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    repo.commit_then_conflict_once("environment-source-release-prepared");
+    assert!(
+        app.reconcile_environment_continuation("prep-response-loss", 2_000)
+            .await
+            .is_err(),
+        "P1 aggregate commit succeeded but its response was lost",
+    );
+
+    let mut disposing = repo.get("prep-response-loss").await.unwrap();
+    let awaken_session_contract::SessionEnvironmentState::Suspending {
+        operation,
+        suspend_phase: awaken_session_contract::SuspendPhase::Disposing,
+        source_release_preparation: Some(prepared),
+        ..
+    } = &disposing.environment
+    else {
+        panic!("P1 durable preparation survives response loss")
+    };
+    assert_eq!(
+        operation.realization.as_ref().unwrap().expires_at_unix_ms,
+        100_000,
+        "P1 immutable suspend A0",
+    );
+    assert_eq!(
+        prepared.preparation().lease().expires_at_unix_ms,
+        200_000,
+        "P1 exact renewed preparation A",
+    );
+    disposing.realization = Some(awaken_session_contract::SessionRealizationLease {
+        owner: "continuation-worker-b".into(),
+        runtime_incarnation: "continuation-runtime-b".into(),
+        epoch: 5,
+        expires_at_unix_ms: 300_000,
+    });
+    app.commit_session_snapshot(
+        "workspace",
+        disposing,
+        "test-prepared-source-disposal-failover",
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    app.reconcile_environment_continuation("prep-response-loss", 2_000)
+        .await
+        .unwrap();
+
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "P2");
+    assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1, "P2");
+    let authorizations = runtime.disposal_authorizations.lock().unwrap();
+    assert_eq!(authorizations.len(), 1, "P2");
+    assert_eq!(
+        authorizations[0].prepared_effect_fence().expires_at_unix_ms,
+        200_000,
+        "P2 persisted A",
+    );
+    assert_eq!(authorizations[0].effect_fence().epoch, 5, "P2 current B");
+}
+
+#[tokio::test]
+async fn preparation_failure_has_zero_physical_disposal_and_retries_before_disposing() {
+    // C1 exact ReadyToDispose + preparation failure => E1 retain source and
+    // checkpoint, E2 zero physical disposal; C2 retry => E3 one more prep,
+    // durable Disposing, then one disposal and Hibernated. Checkpoint remains
+    // single and no caller can collapse prep+delete into one authority edge.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(repo.as_ref(), generated_session("prepare-retry")).await;
+    let runtime = Arc::new(ContinuationRuntime::default());
+    runtime.fail_prepare_once.store(true, Ordering::SeqCst);
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(
+        app.reconcile_environment_continuation("prepare-retry", 2_000)
+            .await
+            .is_err(),
+        "C1",
+    );
+    assert!(matches!(
+        repo.get("prepare-retry").await.unwrap().environment,
+        awaken_session_contract::SessionEnvironmentState::Suspending {
+            suspend_phase: awaken_session_contract::SuspendPhase::ReadyToDispose,
+            checkpoint: Some(_),
+            ..
+        }
+    ));
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "E1");
+    assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "E2");
+
+    app.reconcile_environment_continuation("prepare-retry", 2_000)
+        .await
+        .unwrap();
+    assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 1, "E3");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 2, "E3");
+    assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1, "E3");
+    assert!(matches!(
+        repo.get("prepare-retry").await.unwrap().environment,
+        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+    ));
+}
+
 // Restore-to-projection cause/effect graph: C1 the durable Environment is
 // Hibernated with a live exact realization lease; C2 restore returns the exact
 // receipt; C3 the root CAS commits Resident; C4 the same driving boundary is
@@ -1151,6 +1465,169 @@ async fn restore_failure_retries_the_committed_restore_operation() {
     );
 }
 
+#[tokio::test]
+async fn resident_projection_failure_retries_without_restoring_again() {
+    // This is F2/F3 from the adjacent decision table. The failed Runtime call
+    // occurs after the root is already Resident, making that durable phase the
+    // sole retry fact; no projection receipt, slot flag, or resume queue exists.
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repo.as_ref(),
+        hibernated_session("projection-retry", 100_000),
+    )
+    .await;
+    let runtime = Arc::new(ContinuationRuntime::default());
+    runtime.fail_adopt_once.store(true, Ordering::SeqCst);
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    assert!(
+        app.ensure_environment_resident("projection-retry", 1_000)
+            .await
+            .is_err(),
+        "F2/E2 projection failure is returned",
+    );
+    let resident = repo.get("projection-retry").await.unwrap();
+    assert!(
+        matches!(
+            resident.environment,
+            awaken_session_contract::SessionEnvironmentState::Resident { .. }
+        ),
+        "F2/E2 durable Resident is the retry fact",
+    );
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "F2/E2");
+    assert_eq!(
+        runtime.projection_attempts.load(Ordering::SeqCst),
+        1,
+        "F2/E2"
+    );
+    assert_eq!(runtime.adoption_attempts.load(Ordering::SeqCst), 1, "F2/E2");
+    assert!(
+        runtime.projection_installs.lock().unwrap().is_empty(),
+        "F2/E2"
+    );
+
+    app.ensure_environment_resident("projection-retry", 1_000)
+        .await
+        .expect("F3/E3 Resident projection retry");
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "F3/E3");
+    assert_eq!(
+        runtime.projection_attempts.load(Ordering::SeqCst),
+        2,
+        "F3/E3"
+    );
+    assert_eq!(runtime.adoption_attempts.load(Ordering::SeqCst), 2, "F3/E3");
+    let installs = runtime.projection_installs.lock().unwrap();
+    assert_eq!(installs.len(), 1, "F3/E3 one successful handoff");
+    assert_eq!(installs[0].1.environment, resident.environment, "F3/E3");
+    assert_eq!(
+        runtime.adoptions.lock().unwrap().as_slice(),
+        [(
+            "agent".into(),
+            "projection-retry".into(),
+            "restored-binding".into(),
+        )],
+        "F3/E3 exact adoption succeeds once",
+    );
+}
+
+#[tokio::test]
+async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
+    // Frozen-topology cause/effect graph: C1 placement is external Worker; C2
+    // retention is CheckpointAndRelease; C3 a historical root is Resident or
+    // Hibernated. C1+C2 means Coordinator has no claim-fenced continuation
+    // effect transport. Effects: E1 Resident remains unchanged with zero local
+    // quiesce/checkpoint; E2 Hibernated remains unchanged with zero local
+    // restore/projection. Local placement is the only supported positive rule
+    // and is covered by the adjacent restore/suspend tests.
+    //
+    // | Rule | placement | phase | Coordinator effect | durable phase |
+    // | X1 | Worker | Resident | none | Resident |
+    // | X2 | Worker | Hibernated | none | Hibernated |
+    // | X3 | Local | either | canonical continuation | adjacent tests |
+    let resident_repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        resident_repo.as_ref(),
+        externally_placed(generated_session("external-resident")),
+    )
+    .await;
+    let resident_runtime = Arc::new(ContinuationRuntime::default());
+    let resident_app = application_with_runtime(
+        resident_runtime.clone(),
+        resident_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    assert!(
+        resident_app
+            .reconcile_environment_continuation("external-resident", 2_000)
+            .await
+            .is_err(),
+        "X1 unsupported remote continuation fails closed",
+    );
+    assert!(matches!(
+        resident_repo
+            .get("external-resident")
+            .await
+            .unwrap()
+            .environment,
+        awaken_session_contract::SessionEnvironmentState::Resident { .. }
+    ));
+    assert_eq!(resident_runtime.quiesces.load(Ordering::SeqCst), 0, "X1/E1");
+    assert_eq!(
+        resident_runtime.checkpoints.load(Ordering::SeqCst),
+        0,
+        "X1/E1"
+    );
+
+    let hibernated_repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        hibernated_repo.as_ref(),
+        externally_placed(hibernated_session("external-hibernated", 100_000)),
+    )
+    .await;
+    let hibernated_runtime = Arc::new(ContinuationRuntime::default());
+    let hibernated_app = application_with_runtime(
+        hibernated_runtime.clone(),
+        hibernated_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    assert!(
+        hibernated_app
+            .ensure_environment_resident("external-hibernated", 1_000)
+            .await
+            .is_err(),
+        "X2 unsupported remote restore fails closed",
+    );
+    assert!(matches!(
+        hibernated_repo
+            .get("external-hibernated")
+            .await
+            .unwrap()
+            .environment,
+        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+    ));
+    assert_eq!(
+        hibernated_runtime.restores.load(Ordering::SeqCst),
+        0,
+        "X2/E2"
+    );
+    assert_eq!(
+        hibernated_runtime
+            .projection_attempts
+            .load(Ordering::SeqCst),
+        0,
+        "X2/E2",
+    );
+}
+
 // Cause/effect design: C1=Suspending/Uploading with the exact current
 // realization frozen into the operation; C8=driving message arrives. The
 // message joins the committed operation: complete checkpoint+prepare+dispose,
@@ -1256,4 +1733,54 @@ async fn expired_checkpoint_delete_failure_retains_reference_for_retry() {
         repo.get("delete-retry").await.unwrap().environment,
         awaken_session_contract::SessionEnvironmentState::Unmaterialized
     ));
+}
+
+// Cause/effect design: C1=terminal command races a Hibernated Session whose
+// frozen Environment projection contains a checkpoint; C2=the Runtime terminal
+// preparation and disposal effects succeed. Terminal rule R7 => E8 install the
+// frozen checkpoint projection for each closed action, execute one physical
+// disposal, never call ordinary restore or the application expiry-delete side
+// channel, and commit terminal cleanup through the two-stage protocol.
+#[tokio::test]
+async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
+    let repo =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(repo.as_ref(), hibernated_session("terminal", 100_000)).await;
+    let runtime = Arc::new(ContinuationRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    app.terminate_session(
+        "terminal",
+        "2026-08-11T00:00:00Z",
+        awaken_session_contract::ManagedLifecycleFact {
+            id: "terminal-archive".into(),
+            object_id: "terminal".into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.archived".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime
+            .terminal_checkpoint_projections
+            .load(Ordering::SeqCst),
+        2,
+        "Prepare and Dispose each install their exact aggregate snapshot"
+    );
+    assert_eq!(runtime.terminal_cleanups.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.deletes.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.restores.load(Ordering::SeqCst), 0);
+    assert!(
+        repo.get("terminal")
+            .await
+            .unwrap()
+            .terminal_cleanup
+            .is_completed()
+    );
 }

@@ -1285,4 +1285,465 @@ mod tests {
         )
         .unwrap()
     }
+
+    #[test]
+    fn preparation_is_durable_before_the_single_physical_disposal() {
+        // Cause/effect graph: C1 each frozen thread has no preparation, an
+        // exact preparation, or a historical physical completion; C2 the
+        // operation-wide physical disposal is unavailable/ready; C3 a root
+        // CAS response may be lost after the last preparation or disposal.
+        // Effects: E1 child-first preparation remains the only initial work;
+        // E2 physical disposal is absent before all preparation is durable;
+        // E3 the last preparation CAS enters Disposing; E4 exact preparation
+        // and disposal replays are no-ops; E5 disposal CAS alone enters
+        // the existing Completed phase.
+        //
+        // | Rule | thread evidence | durable phase | retry | Effect |
+        // | P1 | none | Requested | no | child prepare only/E1/E2 |
+        // | P2 | child exact | Preparing | restart | root prepare only/E2 |
+        // | P3 | all exact | Disposing | last-prep retry | E3/E4 |
+        // | P4 | all exact | Disposing | foreign dispose | reject/no change |
+        // | P5 | all exact | Completed | final-CAS retry | E4/E5 |
+        let mut state = SessionCleanupOperation::default();
+        assert!(state.request("prepared-session"));
+        assert!(
+            state
+                .freeze_targets("prepared-session", ["prepared-child".to_string()], 19, 23,)
+                .unwrap()
+        );
+        let child = state
+            .command_for("prepared-session", "prepared-child")
+            .unwrap();
+        let root = state
+            .command_for("prepared-session", "prepared-session")
+            .unwrap();
+        assert_eq!(
+            state
+                .pending_preparation_commands("prepared-session")
+                .unwrap(),
+            vec![child.clone()],
+            "P1/E1"
+        );
+        assert!(
+            disposal_command(&state, "prepared-session").is_none(),
+            "P1/E2"
+        );
+
+        let child_preparation = preparation(&child);
+        assert!(
+            state
+                .record_preparation("prepared-session", child_preparation, None)
+                .unwrap(),
+            "P2"
+        );
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
+        assert_eq!(
+            recovered
+                .pending_preparation_commands("prepared-session")
+                .unwrap(),
+            vec![root.clone()],
+            "P2/E2"
+        );
+
+        let root_preparation = preparation(&root);
+        assert!(
+            recovered
+                .record_preparation(
+                    "prepared-session",
+                    root_preparation.clone(),
+                    Some(repository_preparation("prepared-session")),
+                )
+                .unwrap(),
+            "P3"
+        );
+        assert!(
+            !recovered
+                .record_preparation(
+                    "prepared-session",
+                    root_preparation,
+                    Some(repository_preparation("prepared-session")),
+                )
+                .unwrap(),
+            "P3/E4 last preparation response loss"
+        );
+        let disposal = disposal_command(&recovered, "prepared-session").expect("P3/E3");
+        let encoded = serde_json::to_vec(&recovered).unwrap();
+        let mut recovered = decode_persisted_cleanup_slice(&encoded).unwrap();
+        assert_eq!(
+            disposal_command(&recovered, "prepared-session"),
+            Some(disposal.clone()),
+            "P3/E3"
+        );
+
+        let mut conflicting = SessionCleanupDisposalReceipt::new(&disposal);
+        conflicting.preparation_fingerprint.push_str("-foreign");
+        assert_eq!(
+            recovered.record_disposal(
+                "prepared-session",
+                Some(&disposal.provider_disposal),
+                conflicting,
+            ),
+            Err(SessionCleanupError::DisposalReceiptMismatch),
+            "P4"
+        );
+        assert!(recovered.is_requested(), "P4");
+
+        let exact = SessionCleanupDisposalReceipt::new(&disposal);
+        assert!(
+            recovered
+                .record_disposal(
+                    "prepared-session",
+                    Some(&disposal.provider_disposal),
+                    exact.clone(),
+                )
+                .unwrap(),
+            "P5/E5"
+        );
+        assert!(recovered.is_completed(), "P5/E5");
+        assert!(
+            !recovered
+                .record_disposal("prepared-session", None, exact)
+                .unwrap(),
+            "P5/E4 final CAS response loss"
+        );
+    }
+
+    #[test]
+    fn terminal_worker_action_is_closed_over_one_durable_phase() {
+        // Cause/effect graph: C1 the aggregate is fenced, preparing children,
+        // waiting for Repository publication, fully prepared, historically
+        // complete, or durably Completed; C2 only one root snapshot may project
+        // Worker work. Effects: E1 retain the assignment without I/O; E2 expose
+        // only pending preparation commands; E3 expose one physical disposer;
+        // E4 expose no v2 Worker work for legacy/completed rows. Decision rules:
+        //
+        // | Rule | durable state | Effect |
+        // | A1 | Fenced | Waiting / E1 |
+        // | A2 | Requested, child missing | Prepare(child) / E2 |
+        // | A3 | child prepared, publication missing | Waiting / E1 |
+        // | A4 | all prepared | Dispose(root aggregate) / E3 |
+        // | A5 | historical or new Completed | None / E4 |
+        let mut state = SessionCleanupOperation::default();
+        assert!(state.request("action-session"));
+        assert_eq!(
+            terminal_action(&state, "action-session"),
+            Some(SessionTerminalCleanupAction::Waiting),
+            "A1/E1"
+        );
+        state
+            .freeze_targets("action-session", ["action-child".into()], 5, 8)
+            .unwrap();
+        let child = state.command_for("action-session", "action-child").unwrap();
+        assert_eq!(
+            terminal_action(&state, "action-session"),
+            Some(SessionTerminalCleanupAction::Prepare {
+                commands: vec![child.clone()]
+            }),
+            "A2/E2"
+        );
+
+        let root = state
+            .command_for("action-session", "action-session")
+            .unwrap();
+        state
+            .record_preparation("action-session", preparation(&child), None)
+            .unwrap();
+        assert_eq!(
+            terminal_action(&state, "action-session"),
+            Some(SessionTerminalCleanupAction::Prepare {
+                commands: vec![root.clone()]
+            }),
+            "A2/E2 root"
+        );
+        state
+            .record_preparation(
+                "action-session",
+                preparation(&root),
+                Some(repository_preparation("action-session")),
+            )
+            .unwrap();
+        let disposal = disposal_command(&state, "action-session").expect("A4/E3");
+        assert_eq!(
+            terminal_action(&state, "action-session"),
+            Some(SessionTerminalCleanupAction::Dispose {
+                command: disposal.clone()
+            }),
+            "A4/E3"
+        );
+        state
+            .record_disposal(
+                "action-session",
+                Some(&disposal.provider_disposal),
+                SessionCleanupDisposalReceipt::new(&disposal),
+            )
+            .unwrap();
+        assert_eq!(terminal_action(&state, "action-session"), None, "A5/E4");
+
+        let mut publication = SessionCleanupOperation::default();
+        publication
+            .request_with_publication("publication-session", publication_intent())
+            .unwrap();
+        publication
+            .freeze_targets("publication-session", ["publication-child".into()], 5, 8)
+            .unwrap();
+        let child = publication
+            .command_for("publication-session", "publication-child")
+            .unwrap();
+        publication
+            .record_preparation("publication-session", preparation(&child), None)
+            .unwrap();
+        assert_eq!(
+            terminal_action(&publication, "publication-session"),
+            Some(SessionTerminalCleanupAction::Waiting),
+            "A3/E1"
+        );
+    }
+
+    #[test]
+    fn preparation_progress_has_one_closed_wire_and_one_repository_barrier() {
+        // Cause/effect graph: C1 progress is partial/complete; C2 Repository
+        // publication is absent/durable receipt/durable CAS rejection; C3 the wire claims Preparing or
+        // Disposing; C4 the wrapped operation is exact/nested. Effects: E1 a
+        // partial map decodes only as Preparing; E2 a complete map decodes only
+        // as Disposing; E3 child preparation exposes the existing publication
+        // command, while root preparation remains withheld until either verified outcome;
+        // E4 invalid phase/map combinations fail decode without a fallback; E5
+        // only the private aggregate-field codec can decode these wire states;
+        // E6 either verified outcome is bound into disposal completion and exact
+        // final-CAS replay without invoking publication again.
+        //
+        // | Rule | coverage | publication | wire state | Effect |
+        // | W1 | child partial | absent | Preparing | E1/E3 |
+        // | W2 | child partial | receipt | Preparing | root prepare next/E3 |
+        // | W2R | child partial | rejection | Preparing -> Completed | E3/E6 |
+        // | W3 | complete | exact | Disposing | E2 |
+        // | W4 | partial | any | Disposing | E4 |
+        // | W5 | complete | any | Preparing | E4 |
+        // | W6 | complete | exact | Disposing + unknown sibling | E4/E5 |
+        let mut state = SessionCleanupOperation::default();
+        state
+            .request_with_publication("repo-session", publication_intent())
+            .unwrap();
+        state
+            .freeze_targets("repo-session", ["repo-child".into()], 4, 8)
+            .unwrap();
+        let child = state.command_for("repo-session", "repo-child").unwrap();
+        state
+            .record_preparation("repo-session", preparation(&child), None)
+            .unwrap();
+        let partial = serde_json::to_value(&state).unwrap();
+        assert_eq!(partial["state"], "preparing", "W1/E1");
+        assert!(decode_persisted_cleanup(partial.clone()).is_ok(), "W1/E1");
+        let publication = state
+            .publication_command("repo-session")
+            .unwrap()
+            .expect("W1/E3");
+        let mut rejected = state.clone();
+        rejected
+            .record_repository_publication_rejection(
+                "repo-session",
+                publication_rejection(&publication),
+            )
+            .unwrap();
+        let rejected_root = rejected
+            .command_for("repo-session", "repo-session")
+            .unwrap();
+        rejected
+            .record_preparation(
+                "repo-session",
+                preparation(&rejected_root),
+                Some(repository_preparation("repo-session")),
+            )
+            .unwrap();
+        let rejected_disposal = disposal_command(&rejected, "repo-session").expect("W2R disposal");
+        let rejected_disposal_receipt = SessionCleanupDisposalReceipt::new(&rejected_disposal);
+        assert!(
+            rejected
+                .record_disposal(
+                    "repo-session",
+                    Some(&rejected_disposal.provider_disposal),
+                    rejected_disposal_receipt.clone(),
+                )
+                .unwrap(),
+            "W2R/E6 rejection reaches the one Completed phase"
+        );
+        assert!(
+            !rejected
+                .record_disposal(
+                    "repo-session",
+                    Some(&rejected_disposal.provider_disposal),
+                    rejected_disposal_receipt,
+                )
+                .unwrap(),
+            "W2R/E6 exact final-CAS replay is absorbed"
+        );
+        assert!(
+            rejected
+                .repository_publication_rejection("repo-session")
+                .unwrap()
+                .is_some(),
+            "W2R/E6 rejection remains the verified sidecar outcome"
+        );
+        let root = state.command_for("repo-session", "repo-session").unwrap();
+        assert_eq!(
+            state.record_preparation("repo-session", preparation(&root), None),
+            Err(SessionCleanupError::CommandNotPending),
+            "W1/E3"
+        );
+        state
+            .record_repository_publication_receipt(
+                "repo-session",
+                publication_receipt(&publication),
+            )
+            .unwrap();
+        assert_eq!(
+            state.pending_preparation_commands("repo-session").unwrap(),
+            vec![root.clone()],
+            "W2/E3"
+        );
+        state
+            .record_preparation(
+                "repo-session",
+                preparation(&root),
+                Some(repository_preparation("repo-session")),
+            )
+            .unwrap();
+        let complete = serde_json::to_value(&state).unwrap();
+        assert_eq!(complete["state"], "disposing", "W3/E2");
+        assert!(decode_persisted_cleanup(complete.clone()).is_ok(), "W3/E2");
+
+        let mut partial_as_disposing = partial;
+        partial_as_disposing["state"] = serde_json::json!("disposing");
+        assert!(
+            decode_persisted_cleanup(partial_as_disposing).is_err(),
+            "W4/E4"
+        );
+        let mut complete_as_preparing = complete.clone();
+        complete_as_preparing["state"] = serde_json::json!("preparing");
+        assert!(
+            decode_persisted_cleanup(complete_as_preparing).is_err(),
+            "W5/E4"
+        );
+        let mut unknown_sibling = complete;
+        unknown_sibling["progress"]["parallel_provider_preparation"] =
+            serde_json::json!({"forged": true});
+        assert!(
+            decode_persisted_cleanup(unknown_sibling).is_err(),
+            "W6/E4 closed progress rejects a parallel authority field"
+        );
+    }
+
+    #[test]
+    fn physical_disposal_carries_the_exact_durable_preparation_effect() {
+        // Cause/effect graph: C1 the root preparation ran under lease A; C2 the
+        // current disposer has lease A, a monotonic renewal, or reassigned
+        // lease B; C3 the disposal command is exact or was forged without
+        // the durable predecessor. Effects: E1 preparation persists its exact
+        // command+lease; E2 Disposing projects that predecessor plus the
+        // complete preparation fingerprint; E3 current ownership remains a
+        // separate successor fence; E4 a raw preparation operation never
+        // becomes a physical-disposal command.
+        //
+        // | Rule | prepared evidence | current lease | Effect |
+        // | F1 | exact root effect A | A | command embeds A / E1-E3 |
+        // | F2 | exact root effect A | renewed/reassigned | command still embeds A / E2-E3 |
+        // | F3 | command only, no stored lease | any | cannot construct / E4 |
+        let prepared_lease = crate::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "runtime-a".into(),
+            epoch: 4,
+            expires_at_unix_ms: 40_000,
+        };
+        let mut state = SessionCleanupOperation::default();
+        assert!(state.request("prepared-root"));
+        state.freeze_targets("prepared-root", [], 7, 11).unwrap();
+        let command = state.command_for("prepared-root", "prepared-root").unwrap();
+        let prepared_effect = SessionTerminalCleanupEffect::new(command, prepared_lease.clone());
+        state
+            .record_preparation(
+                "prepared-root",
+                SessionCleanupPreparation::try_new(
+                    &prepared_effect,
+                    prepared_effect.sandbox_effect_fence().unwrap(),
+                    Vec::new(),
+                )
+                .unwrap(),
+                Some(repository_preparation("prepared-root")),
+            )
+            .unwrap();
+
+        let disposal = disposal_command(&state, "prepared-root").expect("F1/E2");
+        assert_eq!(
+            disposal.provider_disposal.prepared_effect_fence(),
+            &prepared_lease
+                .sandbox_effect_fence(prepared_effect.command.effect_id.clone())
+                .unwrap(),
+            "F2/E2 predecessor cannot be reconstructed from a successor lease"
+        );
+        assert_ne!(
+            disposal.effect_id, prepared_effect.command.effect_id,
+            "F3/E4 preparation and physical disposal are distinct effects"
+        );
+    }
+
+    #[test]
+    fn preparation_wire_closes_provider_predecessor_while_decoding_exact_legacy_bytes() {
+        // Wire decision table W1. Causes: C1 P is present/omitted; C2 P equals
+        // the work fence or is a distinct same-generation renewal; C3 the
+        // fingerprint uses legacy v1 or current v2. Effects: E1 omitted P plus
+        // v1 decodes as exact P=effect for old writers; E2 current v2 binds
+        // explicit P; E3 v1 with explicit distinct P is rejected. No Option is
+        // retained in the domain value or emitted by a current writer.
+        let mut operation = SessionCleanupOperation::default();
+        assert!(operation.request("wire-session"));
+        operation.freeze_targets("wire-session", [], 1, 1).unwrap();
+        let command = operation
+            .command_for("wire-session", "wire-session")
+            .unwrap();
+        let lease = crate::SessionRealizationLease {
+            owner: "wire-owner".into(),
+            runtime_incarnation: "wire-runtime".into(),
+            epoch: 3,
+            expires_at_unix_ms: 10_000,
+        };
+        let effect = SessionTerminalCleanupEffect::new(command, lease.clone());
+        let asserted = effect.sandbox_effect_fence().unwrap();
+        let mut legacy =
+            SessionCleanupPreparation::try_new(&effect, asserted.clone(), Vec::new()).unwrap();
+        let mut receipts = Vec::new();
+        let (_, artifact_fingerprint) = canonical_thread_artifact_receipt_fingerprint(
+            "session-terminal-cleanup-thread-preparation-v1",
+            &effect.command,
+            &mut receipts,
+        );
+        legacy.receipt_fingerprint = crate::stable_fingerprint(&(
+            "session-terminal-cleanup-thread-preparation-effect-v1",
+            artifact_fingerprint.as_str(),
+            lease.owner.as_str(),
+            lease.runtime_incarnation.as_str(),
+            lease.epoch,
+            lease.expires_at_unix_ms,
+        ));
+        let mut legacy_wire = serde_json::to_value(&legacy).unwrap();
+        legacy_wire
+            .as_object_mut()
+            .unwrap()
+            .remove("provider_prepared_effect_fence");
+        let decoded: SessionCleanupPreparation = serde_json::from_value(legacy_wire).unwrap();
+        assert_eq!(decoded.provider_prepared_effect_fence(), &asserted, "W1/E1",);
+
+        let renewed = crate::SessionRealizationLease {
+            expires_at_unix_ms: 20_000,
+            ..lease
+        }
+        .sandbox_effect_fence(effect.operation_id())
+        .unwrap();
+        let mut forged = serde_json::to_value(&legacy).unwrap();
+        forged["provider_prepared_effect_fence"] = serde_json::to_value(renewed).unwrap();
+        assert!(
+            serde_json::from_value::<SessionCleanupPreparation>(forged).is_err(),
+            "W1/E3",
+        );
+    }
 }
