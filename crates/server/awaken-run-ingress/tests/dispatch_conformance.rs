@@ -10,7 +10,7 @@ use awaken_run_ingress_testkit::{
 };
 use awaken_run_ingress_testkit::{
     assert_dispatch_operational_feed_conformance,
-    assert_dispatch_operational_feed_conformance_with_clock,
+    assert_dispatch_operational_feed_conformance_with_clock, record_dispatch_recovery_history,
 };
 
 mod harness;
@@ -95,6 +95,30 @@ async fn sqlite_session_reply_activity_rotation_conforms() {
     // rule: matrix row S1 delegates once to the canonical AR0-AR9 table.
     let store = SqliteDispatchStore::open_in_memory().expect("open sqlite reply conformance store");
     assert_session_reply_activity_rotation_conformance(&store, "conformance-sqlite-reply").await;
+}
+
+#[tokio::test]
+async fn memory_and_sqlite_refine_the_same_crash_recovery_history() {
+    /* Differential/metamorphic design: C1 one canonical predecessor-crash
+     * scenario runs against Memory; C2 the same normalized scenario runs
+     * against SQLite. E1 each history independently satisfies the fenced
+     * recovery oracle; E2 the normalized histories are identical. Constraint:
+     * namespace and physical timestamps are excluded from the comparison, but
+     * epochs, admissions, fencing, settlement and final liveness are retained.
+     * Decision D1=C1+C2->E1+E2. */
+    let memory_clock = Arc::new(ManualClock::new(0));
+    let sqlite_clock = Arc::new(ManualClock::new(0));
+    let memory = MemoryDispatchStore::new().with_clock(memory_clock.clone());
+    let sqlite = SqliteDispatchStore::open_in_memory()
+        .expect("open SQLite history store")
+        .with_clock(sqlite_clock.clone());
+    let set_memory_clock = |now_ms| memory_clock.set(now_ms);
+    let set_sqlite_clock = |now_ms| sqlite_clock.set(now_ms);
+    let memory_history =
+        record_dispatch_recovery_history(&memory, "history-memory", &set_memory_clock).await;
+    let sqlite_history =
+        record_dispatch_recovery_history(&sqlite, "history-sqlite", &set_sqlite_clock).await;
+    assert_eq!(memory_history, sqlite_history, "D1/E2 backend refinement");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

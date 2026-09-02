@@ -1,8 +1,7 @@
 //! SQLite process-death and capacity-failure refinement tests.
 
 use std::io::{Seek, SeekFrom, Write};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
@@ -10,6 +9,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_reliability_testkit::CrashProcess;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use rusqlite::Connection;
 
@@ -59,34 +59,21 @@ fn run_uncommitted_child_if_requested() -> Result<bool, Box<dyn std::error::Erro
     Err("parent did not terminate SQLite crash child".into())
 }
 
-fn spawn_uncommitted_child(
+fn crash_uncommitted_child(
     test_name: &str,
     database: &std::path::Path,
     ready: &std::path::Path,
     sequence: u64,
-) -> Result<Child, Box<dyn std::error::Error>> {
-    Ok(Command::new(std::env::current_exe()?)
-        .arg("--exact")
-        .arg(test_name)
-        .arg("--nocapture")
+) -> Result<(), Box<dyn std::error::Error>> {
+    let status = CrashProcess::new(test_name, ready)
         .env(CRASH_CHILD, "1")
         .env(CRASH_SEQUENCE, sequence.to_string())
         .env(DATABASE_PATH, database)
         .env(READY_PATH, ready)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?)
-}
-
-fn wait_for_open_transaction(ready: &std::path::Path) -> Result<(), std::io::Error> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ready
-        .exists()
-        .then_some(())
-        .ok_or_else(|| std::io::Error::other("child never reached the open transaction"))
+        .run()
+        .map_err(std::io::Error::other)?;
+    assert!(!status.success());
+    Ok(())
 }
 
 #[tokio::test]
@@ -106,15 +93,12 @@ async fn uncommitted_transaction_is_rolled_back_after_process_kill()
     let ready = directory.path().join("transaction.ready");
     drop(SqliteCommitCoordinator::open(path_text(&database)?)?);
 
-    let mut child = spawn_uncommitted_child(
+    crash_uncommitted_child(
         "uncommitted_transaction_is_rolled_back_after_process_kill",
         &database,
         &ready,
         1,
     )?;
-    wait_for_open_transaction(&ready)?;
-    child.kill()?;
-    assert!(!child.wait()?.success());
 
     let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
     assert_eq!(store.commit_count(), 0, "uncommitted row is invisible");
@@ -179,15 +163,12 @@ async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
     );
     drop(store);
 
-    let mut child = spawn_uncommitted_child(
+    crash_uncommitted_child(
         "corrupt_uncommitted_wal_never_projects_a_partial_commit",
         &database,
         &ready,
         2,
     )?;
-    wait_for_open_transaction(&ready)?;
-    child.kill()?;
-    assert!(!child.wait()?.success());
 
     let mut wal_name = database.as_os_str().to_os_string();
     wal_name.push("-wal");

@@ -1,0 +1,31 @@
+[package]
+name = "awaken-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+awaken-agent-contract = { path = "../crates/contract/awaken-agent-contract" }
+awaken-mcp-wire = { path = "../crates/runtime/awaken-mcp-wire" }
+
+[[bin]]
+name = "sse_chunks"
+path = "fuzz_targets/sse_chunks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "thread_commit_wire"
+path = "fuzz_targets/thread_commit_wire.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

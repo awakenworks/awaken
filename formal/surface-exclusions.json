@@ -326,6 +326,12 @@
       "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
     },
     {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/reliability.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: normalized crash-recovery history for adapter differential tests. Dynamic path: the tooling-only testkit drives production DispatchStore implementations and records observations; it neither transitions nor persists product state itself. Evidence: run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing.",
+      "evidence": ["crates/server/awaken-run-ingress/tests/dispatch_conformance.rs"]
+    },
+    {
       "path": "crates/server/awaken-run-ingress-testkit/src/conformance/reservations.rs",
       "boundary": "test_support_crate",
       "reason": "Static owner: dispatch-reservation conformance cases. Dynamic path: the tooling-only testkit includes this exact file to assert store behavior; it does not reserve product work itself. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",

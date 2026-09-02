@@ -29,6 +29,7 @@ awaken-sqlite-runtime = { workspace = true, optional = true }
 [dev-dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
+awaken-reliability-testkit.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support", "oauth-command"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
 tempfile = "3"

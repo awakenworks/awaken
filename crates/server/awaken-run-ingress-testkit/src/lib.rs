@@ -11,10 +11,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::SessionRunReplacement;
 use awaken_run_ingress_contract::dispatch::{
-    CasOutcome, ContinuationAdmission, CredentialRealizationReceipt, Dispatch, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchState, PendingInput, RunClaim, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions,
+    AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt, Dispatch,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, PendingInput, RunClaim,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
@@ -356,3 +356,5 @@ include!("conformance/operations_claims.rs");
 include!("conformance/reservations.rs");
 
 include!("conformance/fixtures.rs");
+
+include!("conformance/reliability.rs");

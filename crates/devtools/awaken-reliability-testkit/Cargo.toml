@@ -1,0 +1,15 @@
+[package]
+name = "awaken-reliability-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.awaken]
+context = "devtools"
+layer = "tooling"
+authority = "reliability-test-evidence"
+description = "Test-only shared process-crash evidence primitive"
+
+[lints]
+workspace = true

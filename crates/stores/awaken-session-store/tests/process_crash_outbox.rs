@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use awaken_reliability_testkit::CrashProcess;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     SessionExecutionState, SessionMutationPayload,
@@ -117,27 +117,15 @@ async fn session_commit_survives_process_kill_before_notification() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     let marker = dir.path().join("committed.marker");
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("session_commit_survives_process_kill_before_notification")
-        .arg("--nocapture")
-        .env(CHILD_MODE, "1")
-        .env(DB_PATH, &db)
-        .env(MARKER_PATH, &marker)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        marker.exists(),
-        "child did not reach the post-commit failpoint"
-    );
-    child.kill().unwrap();
-    let status = child.wait().unwrap();
+    let status = CrashProcess::new(
+        "session_commit_survives_process_kill_before_notification",
+        &marker,
+    )
+    .env(CHILD_MODE, "1")
+    .env(DB_PATH, &db)
+    .env(MARKER_PATH, &marker)
+    .run()
+    .expect("child reaches the post-commit boundary and is killed");
     assert!(!status.success());
 
     let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap()).unwrap();

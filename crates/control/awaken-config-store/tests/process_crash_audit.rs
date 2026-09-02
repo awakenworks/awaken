@@ -1,11 +1,11 @@
 use std::fs;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_agent_config::{
     AuditedConfigWrite, ManagementAuditRecord, ScopeId, ScopedConfigRegistry,
 };
 use awaken_config_store::SqliteConfigStore;
+use awaken_reliability_testkit::CrashProcess;
 
 const CHILD_MODE: &str = "AWAKEN_AUDIT_CRASH_CHILD";
 const DB_PATH: &str = "AWAKEN_AUDIT_CRASH_DB";
@@ -31,27 +31,16 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
     fs::create_dir_all(&root).unwrap();
     let db = root.join("config.db");
     let marker = root.join("marker");
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .arg("durable_audit_survives_process_kill_before_business_commit")
-        .arg("--exact")
-        .arg("--nocapture")
-        .env(CHILD_MODE, "1")
-        .env(DB_PATH, &db)
-        .env(MARKER_PATH, &marker)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        marker.exists(),
-        "child did not reach the post-audit failpoint"
-    );
-    child.kill().unwrap();
-    assert!(!child.wait().unwrap().success());
+    let status = CrashProcess::new(
+        "durable_audit_survives_process_kill_before_business_commit",
+        &marker,
+    )
+    .env(CHILD_MODE, "1")
+    .env(DB_PATH, &db)
+    .env(MARKER_PATH, &marker)
+    .run()
+    .expect("child reaches the durable-audit boundary and is killed");
+    assert!(!status.success());
 
     let store = SqliteConfigStore::open(db.to_str().unwrap()).unwrap();
     let entry = store

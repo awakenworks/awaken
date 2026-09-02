@@ -555,6 +555,68 @@ export function managedAgentWithAlwaysAskTools(toolNames, agentId = 'assistant')
   };
 }
 
+// One config-plane author/publish operation for E2E fixtures. Scenario helpers
+// may choose their own Agent shape, but must reuse this HTTP ownership boundary
+// instead of duplicating draft and publication error handling.
+export async function publishManagementAgent(baseUrl, agentId, config) {
+  if (typeof agentId !== 'string' || agentId.length === 0) {
+    throw new Error('publishManagementAgent requires an Agent id');
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('publishManagementAgent requires an Agent config object');
+  }
+  const request = async (method, route, body) => {
+    const response = await fetch(`${baseUrl}${route}`, {
+      method,
+      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json().catch(() => ({})) };
+  };
+  const stored = await request('PUT', `/v1/config/agents/${agentId}`, config);
+  if (stored.status !== 200) {
+    throw new Error(`store fixture Agent failed: ${JSON.stringify(stored.body)}`);
+  }
+  const published = await request('POST', `/v1/config/agents/${agentId}/publish`);
+  if (published.status !== 200) {
+    throw new Error(`publish fixture Agent failed: ${JSON.stringify(published.body)}`);
+  }
+  return published.body;
+}
+
+// Fixture owner for binding one immutable Sandbox execution policy. Endpoint
+// conformance tests continue to issue raw requests because they verify the wire;
+// behavior scenarios use this helper so policy publication is not reimplemented.
+export async function bindSandboxExecutionPolicy(
+  baseUrl,
+  environmentId,
+  { id, provisioning, config = {} },
+) {
+  const post = async (route, body) => {
+    const response = await fetch(`${baseUrl}${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const responseBody = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`${route} failed (${response.status}): ${JSON.stringify(responseBody)}`);
+    }
+    return responseBody;
+  };
+  const policy = await post('/v1/awaken/sandbox-execution-policies', {
+    id,
+    config,
+    provisioning,
+    disabled: false,
+  });
+  await post(`/v1/awaken/environments/${environmentId}/sandbox-execution-policy`, {
+    policy_id: policy.id,
+    version: policy.version,
+  });
+  return policy;
+}
+
 // One configuration-authoring fixture for ordinary durable Thread scenarios
 // that need a deterministic permission boundary. Causes: C1 Agent id and a
 // unique nonempty AlwaysAsk set plus a disjoint optional AlwaysAllow set; C2
@@ -577,15 +639,7 @@ export async function publishAlwaysAskManagementProbeAgent(
         !== toolNames.length + alwaysAllowToolNames.length) {
     throw new Error('publishAlwaysAskManagementProbeAgent requires unique tool names');
   }
-  const request = async (method, route, body) => {
-    const response = await fetch(`${baseUrl}${route}`, {
-      method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    return { status: response.status, body: await response.json().catch(() => ({})) };
-  };
-  const stored = await request('PUT', `/v1/config/agents/${agentId}`, {
+  return publishManagementAgent(baseUrl, agentId, {
     name: `AlwaysAsk fixture ${agentId}`,
     model: {
       mode: 'pinned',
@@ -609,13 +663,6 @@ export async function publishAlwaysAskManagementProbeAgent(
       ],
     }],
   });
-  if (stored.status !== 200) {
-    throw new Error(`store fixture Agent failed: ${JSON.stringify(stored.body)}`);
-  }
-  const published = await request('POST', `/v1/config/agents/${agentId}/publish`);
-  if (published.status !== 200) {
-    throw new Error(`publish fixture Agent failed: ${JSON.stringify(published.body)}`);
-  }
 }
 
 // One application-edge fixture for cross-protocol scenarios that use the real
@@ -801,6 +848,33 @@ export function onlyChildDirectory(parent, description = 'one owned directory ex
     throw new Error(`${description}: ${JSON.stringify(directories)}`);
   }
   return directories[0];
+}
+
+// Copy one quiesced storage tree for backup/restore and candidate shadow-read
+// scenarios. Runtime writers must be stopped before this boundary: a recursive
+// copy is intentionally not presented as a live database snapshot protocol.
+// Callers may exclude top-level provider realizations: inode-bound sandbox
+// directories are execution evidence, not portable backup state, and must be
+// rebuilt from the durable Session binding at the restore destination.
+export function copyQuiescentTree(
+  source,
+  destination,
+  { excludeTopLevel = [] } = {},
+) {
+  if (fs.existsSync(destination)) {
+    throw new Error(`restore destination already exists: ${destination}`);
+  }
+  const excluded = new Set(excludeTopLevel);
+  fs.cpSync(source, destination, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    preserveTimestamps: true,
+    filter: (candidate) => {
+      const relative = path.relative(source, candidate);
+      return relative === '' || !excluded.has(relative.split(path.sep)[0]);
+    },
+  });
 }
 
 function mountPointsUnder(root) {

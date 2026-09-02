@@ -28,9 +28,16 @@ impl SseParser {
     pub fn push(&mut self, chunk: &str) -> Vec<String> {
         self.line_buf.push_str(chunk);
         let mut events = Vec::new();
-        while let Some(pos) = self.line_buf.find('\n') {
-            let raw: String = self.line_buf.drain(..=pos).collect();
-            let line = raw.trim_end_matches(['\r', '\n']);
+        while let Some((pos, terminator_len)) = next_line_ending(&self.line_buf) {
+            let end = pos
+                .checked_add(terminator_len)
+                .expect("SSE line terminator offset overflowed");
+            assert!(
+                end > pos && end <= self.line_buf.len(),
+                "SSE line terminator must consume one or two bytes"
+            );
+            let raw: String = self.line_buf.drain(..end).collect();
+            let line = &raw[..pos];
             if line.is_empty() {
                 // Blank line: dispatch the accumulated event, if any.
                 if !self.data.is_empty() {
@@ -53,6 +60,21 @@ impl SseParser {
     pub fn finish(&mut self) -> Vec<String> {
         self.push("\n\n")
     }
+}
+
+/// Locate LF, CRLF, or bare CR without consuming a CR at the end of a chunk:
+/// the next chunk may begin with LF and the pair is one terminator.
+fn next_line_ending(input: &str) -> Option<(usize, usize)> {
+    let bytes = input.as_bytes();
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        match byte {
+            b'\n' => return Some((index, 1)),
+            b'\r' if index + 1 == bytes.len() => return None,
+            b'\r' => return Some((index, usize::from(bytes[index + 1] == b'\n') + 1)),
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -193,18 +215,28 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_cr_line_terminator_is_not_recognized() {
-        // Per the SSE spec a bare `\r` ends a line, but this parser scans only for
-        // `\n`. Characterize the CURRENT behavior: bare CRs neither terminate a
-        // line nor dispatch an event.
+    fn bare_cr_and_split_crlf_are_exact_line_terminators() {
+        /* Cause/effect graph: C1 SSE uses bare CR delimiters; C2 CRLF is split
+         * across chunks; C3 a CR is the final byte currently observed; C4 two
+         * data fields in one event use CRLF. Effects: E1 C1 dispatches the
+         * complete event; E2 C2 remains one delimiter; E3 C3 waits for the next
+         * byte/EOF rather than fabricating a line; E4 C4 consumes both CRLF
+         * bytes and joins the fields. Decision S1=C1->E1; S2=C2->E2;
+         * S3=C3->E3; S4=C4->E4. Losing S1/S2/S4 can turn a received MCP
+         * response into SentUnknown and cause an unsafe retry. */
         let mut parser = SseParser::new();
-        assert!(
-            parser.push("data: x\rdata: y\r\r").is_empty(),
-            "with no \\n, no line is ever completed",
+        assert!(parser.push("data: x\rdata: y\r\r").is_empty(), "S3");
+        assert_eq!(parser.finish(), vec!["x\ny"], "S1");
+
+        let mut split = SseParser::new();
+        assert!(split.push("data: z\r").is_empty(), "S3");
+        assert_eq!(split.push("\n\r\n"), vec!["z"], "S2");
+
+        let mut joined = SseParser::new();
+        assert_eq!(
+            joined.push("data: first\r\ndata: second\r\n\r\n"),
+            vec!["first\nsecond"],
+            "S4"
         );
-        // A real newline finally completes the (single, merged) line: only the
-        // TRAILING CRs are trimmed, so the mid-line bare CR stays in the payload
-        // and the second `data:` never became its own field.
-        assert_eq!(parser.push("\n\n"), vec!["x\rdata: y".to_string()]);
     }
 }

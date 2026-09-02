@@ -176,6 +176,7 @@ awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-coordinator = { path = "crates/server/awaken-coordinator" }
 awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }
+awaken-reliability-testkit = { path = "crates/devtools/awaken-reliability-testkit" }
 awaken-cli = { path = "crates/bin/awaken-cli" }
 awaken-worker = { path = "crates/bin/awaken-worker" }
 awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
