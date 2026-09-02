@@ -557,7 +557,7 @@ fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmEx
 /// dialect-aware executor factory used by worker materialization, exposed as a server mode
 /// so the TypeScript e2e can drive a real Run through the Managed / AI SDK / A2A
 /// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
-pub async fn build_real_router() -> Router {
+async fn real_platform() -> deployment::ScenarioPlatform {
     let key = std::env::var("ANTHROPIC_API_KEY")
         .or_else(|_| std::env::var("KIMI_API_KEY"))
         .expect("set ANTHROPIC_API_KEY or KIMI_API_KEY for AWAKEN_MODEL_MODE=real");
@@ -568,7 +568,19 @@ pub async fn build_real_router() -> Router {
         .or_else(|_| std::env::var("KIMI_MODEL"))
         .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
     let executor = anthropic_messages_executor(&base, key);
-    mount(runtime_resource_host_with_deployment(executor, model, scenario_deployment()).await)
+    runtime_resource_host_with_deployment(executor, model, scenario_deployment()).await
+}
+
+pub async fn build_real_router() -> Router {
+    mount(real_platform().await)
+}
+
+/// Real-model scenario with an outer-owned lifecycle, matching production's
+/// graceful Runtime drain before the process flushes its trace provider.
+pub async fn build_real_service() -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let router = scenario_platform::mount_on_lifecycle(real_platform().await, lifecycle.clone());
+    (router, lifecycle)
 }
 
 /// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer

@@ -200,7 +200,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
-        Ok("real") => awaken_scenario_host::build_real_router().await,
+        Ok("real") => {
+            let (router, lifecycle) = awaken_scenario_host::build_real_service().await;
+            scenario_lifecycle = Some(lifecycle);
+            router
+        }
         Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
         Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
         Ok("oauth-resolved") => awaken_scenario_host::build_oauth_resolved_router().await,
@@ -264,11 +268,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    // Shutdown decision table: C1 no auxiliary Runtime work => immediate join;
-    // C2 MemoryStore effect is visible while its extraction task remains active
-    // => the registered Host drain keeps waiting; C3 work completes => all child
-    // and aux.background spans end before exporter shutdown; C4 work never
-    // completes => the outer lifecycle deadline reports the named task. The one
+    // Shutdown decision table: C1 no Runtime work => immediate join; C2 a durable
+    // dispatch or MemoryStore extraction remains active => the registered Host
+    // drain keeps waiting; C3 work completes => all child and aux.background spans
+    // end before exporter shutdown; C4 work never completes => the outer lifecycle
+    // deadline reports the named task. The one
     // ServiceLifecycle mounted with the Router owns every rule; Router drop and
     // a timing sleep are not completion authorities.
     if let Some(lifecycle) = scenario_lifecycle {

@@ -14,7 +14,7 @@ use awaken_agent_contract::event::{
 use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::Value;
 
-use crate::types::{UIStreamEvent, assistant_parts, history_message, history_parts, text_parts};
+use crate::types::{UIStreamEvent, assistant_parts, history_message, history_parts};
 
 /// The AI SDK v6 transcoder: the one per-protocol adapter for both tiers (ADR-0058
 /// Axis 9). `fact()` projects committed whole-units (`tool-input-available`,
