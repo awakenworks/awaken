@@ -640,4 +640,53 @@ mod tests {
             "W2"
         );
     }
+
+    #[test]
+    fn gateway_actual_expiry_obeys_run_and_terminal_operation_rules() {
+        /* Dynamic expiry decision table:
+         * C1=Direct; C2=Gateway expiry absent/present; C3=present expiry live;
+         * C4=Run-bounded versus trusted exact terminal operation; C5=present
+         * expiry <= current Run claim. E1=preserve Direct and additive legacy
+         * Run host operations; E2=accept bounded Run evidence; E3=accept a live
+         * issuer-owned terminal capability beyond the heartbeat lease; E4=fail
+         * closed on a terminal capability without expiry, dead evidence, or a
+         * widened Run capability. Rules: X1 C1=>E1; X2 Run+!C1+!C2=>E1;
+         * X3 Terminal+!C1+!C2=>E4; X4 Run+C2+C3+C5=>E2;
+         * X5 Terminal+C2+C3=>E3; X6 C2+!C3 or Run+C2+!C5=>E4.
+         */
+        let gateway = |expiry: Option<u64>| RepositoryTransport::GatewayMediated {
+            remote_url: "https://gateway.invalid/git/repository".into(),
+            capability: awaken_resource_contract::RepositoryGatewayCapability::new("cap").unwrap(),
+            expires_at_unix_ms: expiry.map(|value| {
+                awaken_resource_contract::RepositoryGatewayCapabilityExpiry::new(value).unwrap()
+            }),
+        };
+        let run = RepositoryTransportExpiryRule::BoundToAuthority(200);
+        let terminal = RepositoryTransportExpiryRule::TrustedTerminalOperation;
+        assert!(transport_expiry_is_admitted(
+            &RepositoryTransport::Direct,
+            100,
+            run,
+        ));
+        assert!(transport_expiry_is_admitted(
+            &RepositoryTransport::Direct,
+            100,
+            terminal,
+        ));
+        assert!(transport_expiry_is_admitted(&gateway(None), 100, run));
+        assert!(!transport_expiry_is_admitted(&gateway(None), 100, terminal,));
+        assert!(transport_expiry_is_admitted(&gateway(Some(150)), 100, run));
+        assert!(!transport_expiry_is_admitted(&gateway(Some(100)), 100, run));
+        assert!(!transport_expiry_is_admitted(&gateway(Some(201)), 100, run));
+        assert!(transport_expiry_is_admitted(
+            &gateway(Some(225)),
+            100,
+            terminal,
+        ));
+        assert!(!transport_expiry_is_admitted(
+            &gateway(Some(100)),
+            100,
+            terminal,
+        ));
+    }
 }

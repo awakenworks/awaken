@@ -614,6 +614,182 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
     );
 }
 
+// --- 5. Reclaim after quiescence — the committed LOG stays exactly-once ------
+
+#[tokio::test]
+async fn reclaim_after_process_bound_attempt_quiesces_applies_never_replay_policy() {
+    // Test design. Causes: C1 owner A commits tool Executing then blocks; C2 its
+    // lease expires and B takes the mutation claim; C3 A's owned executor Future
+    // cooperatively returns after the release gate opens; C4 A's later commit is
+    // fenced. Effects: E1 before C3, B remains physically blocked and no second
+    // external effect enters; E2 after C3, `run_physical_attempt` records the one
+    // exact quiescence ACK and B applies NeverReplay; E3 one terminal log
+    // survives. Constraints: lease expiry is not quiescence, and abort/drop is
+    // covered separately by RG10 as a permanently occupied slot. Decision rules:
+    // R1=C1+C2+!C3 -> E1; R2=C1+C2+C3+C4 -> E2+E3.
+    // Owner A commits Requested -> Executing before entering the blocking tool.
+    // When its lease lapses, owner B recovers that durable phase. The descriptor's
+    // conservative default is NeverReplay, so B publishes an Indeterminate tool
+    // result and continues without entering the external tool a second time.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let run = RunId("run-1".to_string());
+
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    // Owner A claims explicitly and drives in the background. The only code
+    // allowed to acknowledge its physical return is the production
+    // `run_physical_attempt` scope around that drive.
+    let claimed_a = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .expect("A claim query")
+        .expect("A claims");
+    let claim_a = RunClaim::from(&claimed_a.lease);
+    let worker_a = Arc::new(
+        DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "owner-a")
+            .with_lease_ms(LEASE),
+    );
+    let a_handle = {
+        let worker_a = worker_a.clone();
+        tokio::spawn(async move { worker_a.drive_claimed(claimed_a, harness::clock(0)).await })
+    };
+
+    // Wait until A is frozen inside the tool (its first invocation).
+    let frozen = tokio::time::timeout(Duration::from_secs(5), async {
+        while ran.load(Ordering::SeqCst) < 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(frozen.is_ok(), "A reached and blocked in the tool");
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the tool ran once (owner A)");
+
+    // A is mid-flight: it committed a `Running` fact and awaiting NO awaiting ticket.
+    let record = CommittedThreadView::run(commit.as_ref(), &run).expect("record");
+    assert_eq!(
+        record.state,
+        RunState::Running,
+        "A committed a mid-flight Running fact"
+    );
+    assert!(
+        commit.resume_ticket_for(&run).is_none(),
+        "and there is no awaiting ticket — the reclaim hits the no-ticket branch"
+    );
+
+    // B may take the expired mutation claim, but its production drive must wait
+    // at physical admission while A's executor Future is still blocked.
+    let replacement = store
+        .claim("owner-b", LEASE, LEASE + 1, &Default::default())
+        .await
+        .expect("C2 B claim query")
+        .expect("C2 B replacement claim");
+    assert_eq!(
+        store
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .await
+            .expect("R1 B physical admission"),
+        AttemptAdmission::Blocked,
+        "R1/E1 B's exact durable attempt remains blocked before A returns"
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "R1/E1 replacement admission cannot enter a second external effect"
+    );
+
+    // Opening the gate makes A's owned executor Future return normally. The
+    // production scope records quiescence before its stale commit is fenced;
+    // only then may B recover the same Run without replay.
+    release.add_permits(1);
+    let a_error = tokio::time::timeout(Duration::from_secs(5), a_handle)
+        .await
+        .expect("C3 A's background task joins")
+        .expect("C3 A's task does not panic")
+        .expect_err("C4 A's stale commit is fenced");
+    assert!(
+        a_error.to_string().contains("superseded")
+            && a_error.to_string().contains("no longer holds lease epoch"),
+        "C4 stale commit has the exact authority-loss cause: {a_error}"
+    );
+    assert!(
+        !store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "R2/E2 production return recorded A's exact physical quiescence"
+    );
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
+    let processed = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker_b.drive_claimed(replacement, harness::clock(LEASE + 1)),
+    )
+    .await
+    .expect("R2 replacement unblocks")
+    .expect("R2 replacement drive succeeds");
+    assert_eq!(
+        processed,
+        Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
+        "B reclaimed the still-running run and drove it to completion"
+    );
+
+    assert_eq!(
+        store
+            .settle(&run, claim_a.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("stale settle query"),
+        awaken_dispatch::SettleOutcome::Fenced,
+        "E3 the stale predecessor cannot mutate the completed dispatch"
+    );
+
+    // The policy guarantee: the unknown external side effect is not repeated.
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "NeverReplay prevents a second external invocation"
+    );
+
+    // The committed log is also exactly-once. The recovered run has exactly ONE
+    // terminal `Ended` fact and the
+    // transcript carries exactly ONE final "all done" assistant message.
+    let committed = commit.committed();
+    let ended_facts = committed
+        .run_facts
+        .iter()
+        .filter(|fact| fact.run_id == run && matches!(fact.state, RunState::Ended(_)))
+        .count();
+    assert_eq!(
+        ended_facts, 1,
+        "recovery produced exactly one terminal Ended fact"
+    );
+    let all_done = committed
+        .messages
+        .iter()
+        .filter(|message| message_text(message).as_deref() == Some("all done"))
+        .count();
+    assert_eq!(
+        all_done, 1,
+        "exactly one final assistant message — no duplicate terminal Step"
+    );
+
+    // The reclaimed run's input is committed exactly once: A committed "go" in its
+    // first step delta, and B's re-execute seeds it from committed history and
+    // drops the activation copy (deduped by stable message id), rather than
+    // replaying it. Locks in the idempotent-input fix.
+    let go_inputs = committed
+        .messages
+        .iter()
+        .filter(|message| message_text(message).as_deref() == Some("go"))
+        .count();
+    assert_eq!(
+        go_inputs, 1,
+        "the reclaimed run's input is committed exactly once, not replayed on re-execute"
+    );
+}
+
 /// The concatenated text of a message's text blocks, if any — a small test helper
 /// for asserting on committed transcript content.
 fn message_text(message: &awaken_agent_contract::agent::message::Message) -> Option<String> {

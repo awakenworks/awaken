@@ -597,4 +597,125 @@ mod tests {
             "W2/E2"
         );
     }
+
+    /// Effect-aware write-back decision table. C1 the durable reference pins
+    /// the exact source revision; C2 the aggregate authorization fence is live;
+    /// C3 the physical Sandbox incarnation is same/different; C4 bytes are
+    /// same/different; C5 the aggregate operation is predecessor/successor.
+    /// Effects: E1 publishes one successor; E2 the same reference+physical
+    /// identity and bytes replays across C5 without another rotation; E3 an
+    /// unpinned reference, expired authorization, different physical identity,
+    /// or different bytes fails without another credential/material mutation.
+    ///
+    /// | Rule | C1 pinned | C2 live | C3 physical | C4 bytes | C5 operation | Effect |
+    /// |---|---|---|---|---|---|---|
+    /// | F1 | T | T | exact | exact | predecessor | E1 |
+    /// | F2 | T | T | exact | exact | successor | E2 |
+    /// | F3 | F | T | exact | exact | any | E3 |
+    /// | F4 | T | F | exact | exact | any | E3 |
+    /// | F5 | T | T | different | exact | successor | E3 |
+    /// | F6 | T | T | exact | different | any | E3 |
+    #[tokio::test]
+    async fn effect_write_back_is_pinned_and_idempotent_at_the_broker_boundary() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("native-cli".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("before")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .expect("F1 source");
+        let reference = format!("{}@{}", source.id.0, source.version);
+        let broker = PinnedCredentialMaterializer::new(credentials.clone(), secrets.clone());
+        let predecessor = awaken_provisioning_contract::SandboxEffectFence::new(
+            "continuation-writeback",
+            "worker-owner",
+            "worker-incarnation",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let successor = awaken_provisioning_contract::SandboxEffectFence::new(
+            "terminal-writeback",
+            "worker-owner",
+            "worker-incarnation",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let first_effect =
+            SecretWritebackEffect::new(reference.clone(), "pod-uid-a", predecessor).unwrap();
+        let successor_effect =
+            SecretWritebackEffect::new(reference.clone(), "pod-uid-a", successor.clone()).unwrap();
+
+        broker
+            .write_back_for_effect(&first_effect, b"after".to_vec())
+            .await
+            .expect("F1/E1");
+        broker
+            .write_back_for_effect(&successor_effect, b"after".to_vec())
+            .await
+            .expect("F2/E2 cross-operation replay");
+        let published = credentials.get(&source.id).await.unwrap();
+        assert_eq!(published.version, source.version + 1, "F1/F2");
+        assert_eq!(secrets.inventory().await.unwrap().len(), 1, "F1/F2");
+
+        let unpinned =
+            SecretWritebackEffect::new(source.id.0.clone(), "pod-uid-a", successor.clone())
+                .unwrap();
+        assert!(
+            broker
+                .write_back_for_effect(&unpinned, b"after".to_vec())
+                .await
+                .is_err(),
+            "F3/E3"
+        );
+        let expired = awaken_provisioning_contract::SandboxEffectFence::new(
+            "terminal-writeback-1",
+            "worker-owner",
+            "worker-incarnation",
+            7,
+            0,
+        )
+        .unwrap();
+        let expired_effect =
+            SecretWritebackEffect::new(reference.clone(), "pod-uid-a", expired).unwrap();
+        assert!(
+            broker
+                .write_back_for_effect(&expired_effect, b"after".to_vec())
+                .await
+                .is_err(),
+            "F4/E3"
+        );
+        let different_physical =
+            SecretWritebackEffect::new(reference, "pod-uid-b", successor).unwrap();
+        assert!(
+            broker
+                .write_back_for_effect(&different_physical, b"after".to_vec())
+                .await
+                .is_err(),
+            "F5/E3 physical incarnation"
+        );
+        assert!(
+            broker
+                .write_back_for_effect(&successor_effect, b"different".to_vec())
+                .await
+                .is_err(),
+            "F6/E3 material"
+        );
+        assert_eq!(
+            credentials.get(&source.id).await.unwrap(),
+            published,
+            "F3-F6"
+        );
+        assert_eq!(secrets.inventory().await.unwrap().len(), 1, "F3-F6");
+    }
 }

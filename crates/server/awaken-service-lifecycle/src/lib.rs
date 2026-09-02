@@ -382,6 +382,56 @@ mod tests {
         // terminal, so no launcher-local fallback or parallel builder exists.
         assert_eq!(block_on_service(async { "service-ready" }), "service-ready");
     }
+
+    #[test]
+    fn composed_test_executor_preserves_output_and_panic_semantics() {
+        // Cause/effect decision table: C1=the closure builds a !Send future on
+        // the dedicated thread; C2=closure/future returns or panics; C3=thread
+        // and Runtime construction succeeds or fails; C4=the single configured
+        // test policy is exactly a 32 MiB stack plus current-thread Tokio.
+        // Effects: E1=the sole composed-test Runtime polls on that named thread;
+        // E2=the exact output returns; E3=the exact panic resumes on the caller;
+        // E4=construction failure is terminal with no fallback. Rules
+        // R1=C1+C2(return)+C3(success)+C4->E1+E2,
+        // R2=C1+C2(panic)+C3(thread started)->E1+E3, and
+        // R3=C3(failure)->E4. R3 is a non-injectable resource/build boundary;
+        // the single expect/join path is its static oracle. Production keeps
+        // its separate service Runtime.
+        assert_eq!(COMPOSED_ASYNC_TEST_STACK_BYTES, 32 * 1024 * 1024, "R1/C4");
+        let (thread_name, runtime_flavor, value) = run_composed_async_test(|| {
+            let marker = std::rc::Rc::new("exact-output");
+            async move {
+                tokio::task::yield_now().await;
+                (
+                    std::thread::current()
+                        .name()
+                        .expect("composed test thread is named")
+                        .to_owned(),
+                    tokio::runtime::Handle::current().runtime_flavor(),
+                    marker.to_string(),
+                )
+            }
+        });
+        assert_eq!(thread_name, "awaken-composed-test", "R1/E1");
+        assert_eq!(
+            runtime_flavor,
+            tokio::runtime::RuntimeFlavor::CurrentThread,
+            "R1/C4"
+        );
+        assert_eq!(value, "exact-output", "R1/E2");
+
+        let panic = std::panic::catch_unwind(|| {
+            run_composed_async_test(|| async {
+                std::panic::panic_any("composed-test-panic");
+            });
+        })
+        .expect_err("R2/E3 panic must resume on the caller");
+        assert_eq!(
+            panic.downcast_ref::<&'static str>(),
+            Some(&"composed-test-panic"),
+            "R2/E3 exact panic payload"
+        );
+    }
 }
 
 #[cfg(kani)]

@@ -253,6 +253,30 @@ mod tests {
     }
 
     #[test]
+    fn hand_surface_has_one_exact_non_overlapping_command_owner() {
+        // Cause/effect graph: C1 the canonical descriptor catalog and C2 the
+        // executable Hand registry are assembled. E1 both expose the same six
+        // official execution owners; E2 no parallel move/delete or Git-specific
+        // tool can remain model-visible or executable beside Bash.
+        // Decision rule H1=C1+C2 => exact equal sets; any extra/missing id fails.
+        let descriptor_ids = builtin_tools()
+            .into_iter()
+            .filter(|tool| tool.toolset() == Toolset::Hand)
+            .map(|tool| tool.into_descriptor().id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let executable_ids = all_hand_tools()
+            .into_iter()
+            .map(|tool| tool.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = ["bash", "edit", "glob", "grep", "read", "write"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(descriptor_ids, expected, "H1/E1-E2 descriptors");
+        assert_eq!(executable_ids, expected, "H1/E1-E2 executors");
+    }
+
+    #[test]
     fn selected_hand_recovery_uses_the_canonical_catalog_membership() {
         // Cause/effect decision table: C1=selected descriptor belongs to Hand;
         // C2=selected descriptor belongs to another canonical family; C3=its

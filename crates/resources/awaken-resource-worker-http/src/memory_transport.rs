@@ -953,4 +953,90 @@ mod tests {
         let run_in_v2 = terminal.replacen("\"type\":\"terminal\"", "\"type\":\"run\"", 1);
         assert!(parse_reference(&run_in_v2).is_err(), "W3 Run-in-v2");
     }
+
+    #[test]
+    fn terminal_operation_kernel_is_closed_over_original_heads() {
+        // Mutation cause/effect decision table: O1 snapshot => allow; O2 create
+        // absent-from-A => allow, existing-in-A => deny; O3 update exact A id+sha
+        // without rename => allow, stale/rename => deny; O4 delete exact
+        // path+id+sha => allow, any mismatch => deny. These rules are evaluated
+        // before the canonical repository sees an operation.
+        let intent = terminal_intent();
+        let target =
+            SessionTerminalMemoryTarget::from_authorized_root("workspace", intent).unwrap();
+        assert!(
+            terminal_operation_allowed(&target, &MemoryOperation::Snapshot),
+            "O1"
+        );
+        assert!(
+            terminal_operation_allowed(
+                &target,
+                &MemoryOperation::Create {
+                    path: "/new.md".into(),
+                    content: "new".into(),
+                },
+            ),
+            "O2 absent"
+        );
+        assert!(
+            !terminal_operation_allowed(
+                &target,
+                &MemoryOperation::Create {
+                    path: "/note.md".into(),
+                    content: "replacement".into(),
+                },
+            ),
+            "O2 existing"
+        );
+        assert!(
+            terminal_operation_allowed(
+                &target,
+                &MemoryOperation::UpdateHead {
+                    id: "memory-note".into(),
+                    content: "B".into(),
+                    base_sha: "sha-a".into(),
+                    target_path: None,
+                },
+            ),
+            "O3 exact"
+        );
+        for operation in [
+            MemoryOperation::UpdateHead {
+                id: "memory-note".into(),
+                content: "B".into(),
+                base_sha: "sha-c".into(),
+                target_path: None,
+            },
+            MemoryOperation::UpdateHead {
+                id: "memory-note".into(),
+                content: "B".into(),
+                base_sha: "sha-a".into(),
+                target_path: Some("/renamed.md".into()),
+            },
+        ] {
+            assert!(!terminal_operation_allowed(&target, &operation), "O3 deny");
+        }
+        assert!(
+            terminal_operation_allowed(
+                &target,
+                &MemoryOperation::DeleteIfMatch {
+                    path: "/note.md".into(),
+                    base_id: "memory-note".into(),
+                    base_sha: "sha-a".into(),
+                },
+            ),
+            "O4 exact"
+        );
+        assert!(
+            !terminal_operation_allowed(
+                &target,
+                &MemoryOperation::DeleteIfMatch {
+                    path: "/note.md".into(),
+                    base_id: "memory-note".into(),
+                    base_sha: "sha-c".into(),
+                },
+            ),
+            "O4 mismatch"
+        );
+    }
 }

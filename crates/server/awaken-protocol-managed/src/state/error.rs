@@ -118,4 +118,29 @@ mod tests {
             "R4"
         );
     }
+
+    #[test]
+    fn projection_recovery_classification_is_narrow_and_caller_safe() {
+        // Cause/effect table: P1 an unreconstructable committed Awaiting
+        // projection => stable recovery classification plus caller-safe 400;
+        // P2 an ordinary bad request => not the Session-root read exception.
+        // The route-level DI table proves only P1 can leave aggregate GET
+        // readable while Events GET remains unhealthy.
+        let damaged = StateError::projection_recovery_required("damaged await");
+        assert!(damaged.is_projection_recovery_required(), "P1");
+        assert!(
+            matches!(
+                damaged,
+                StateError::Run(RunError {
+                    kind: RunErrorKind::BadRequest,
+                    ..
+                })
+            ),
+            "P1"
+        );
+        assert!(
+            !StateError::Run(RunError::bad_request("ordinary")).is_projection_recovery_required(),
+            "P2"
+        );
+    }
 }

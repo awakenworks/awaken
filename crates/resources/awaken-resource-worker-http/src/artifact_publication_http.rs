@@ -780,4 +780,53 @@ mod tests {
             "W5"
         );
     }
+
+    #[test]
+    fn artifact_recovery_wire_requires_exact_terminal_authority_fields() {
+        // Recovery wire cause/effect table: R1 every terminal effect,
+        // Workspace, Session, and scope field present => lossless decode; R2 a
+        // required authority field is absent or an unknown bypass field exists
+        // => reject before the Session/File authorities are called.
+        let request = ArtifactRecoveryRequest {
+            terminal_effect: SessionTerminalCleanupEffect::new(
+                awaken_session_contract::SessionCleanupCommand::new(
+                    "session", "session", "cleanup",
+                ),
+                awaken_session_contract::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker:incarnation".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            ),
+            identity: Some(WorkerIdentity::new("worker", "incarnation", 1)),
+            workspace_id: "workspace".into(),
+            session_id: "session".into(),
+            idempotency_scope: "cleanup".into(),
+        };
+        let encoded = serde_json::to_value(&request).expect("R1 encode");
+        let decoded: ArtifactRecoveryRequest =
+            serde_json::from_value(encoded.clone()).expect("R1 decode");
+        assert_eq!(decoded.workspace_id, request.workspace_id, "R1");
+        assert_eq!(decoded.terminal_effect, request.terminal_effect, "R1");
+
+        let mut missing = encoded.clone();
+        missing
+            .as_object_mut()
+            .expect("request object")
+            .remove("idempotency_scope");
+        assert!(
+            serde_json::from_value::<ArtifactRecoveryRequest>(missing).is_err(),
+            "R2 missing authority"
+        );
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("request object")
+            .insert("authority_bypass".into(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<ArtifactRecoveryRequest>(unknown).is_err(),
+            "R2 unknown authority"
+        );
+    }
 }

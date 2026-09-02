@@ -312,4 +312,194 @@ mod tests {
             )
         }
     }
+
+    #[tokio::test]
+    async fn terminal_artifacts_use_the_current_root_for_an_expired_asserted_generation() {
+        // Cause/effect graph: C1 the terminal effect assertion is exact but its
+        // original timestamp elapsed; C2 Control observes the current root as a
+        // live same-generation renewal, an expired predecessor, or a foreign
+        // epoch; C3 Workspace/Session/scope are exact or foreign; C4 the edge is
+        // publication or recovery. Effects: E1 C1+C2(live)+C3(exact) delegates
+        // both edges exactly once; E2 expired-current, foreign-generation, or
+        // foreign scope facts fail before either inner effect. Control remains
+        // the one current-root clock authority; this local topology wrapper
+        // must not reintroduce an asserted-expiry decision beside it.
+        //
+        // | Rule | asserted | current root | scope | Edge | Effect |
+        // |---|---|---|---|---|---|
+        // | T1 | expired | same generation live | exact | publish+recover | E1 |
+        // | T2 | expired | same generation expired | exact | publish+recover | E2 |
+        // | T3 | successor epoch | predecessor live | exact | publish+recover | E2 |
+        // | T4 | expired | same generation live | foreign | publish+recover | E2 |
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        let asserted = awaken_session_contract::SessionTerminalCleanupEffect::new(
+            awaken_session_contract::SessionCleanupCommand::new("session", "session", "cleanup"),
+            awaken_session_contract::SessionRealizationLease {
+                owner: "coordinator".into(),
+                runtime_incarnation: "coordinator:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: now_unix_ms.saturating_sub(20_001),
+            },
+        );
+        let dispatch = Arc::new(AnyDispatchStore::from_dispatch(
+            Arc::new(MemoryDispatchStore::new()) as Arc<dyn Dispatch>,
+        ));
+        let publisher_for = |asserted_effect, current_lease| {
+            let inner = Arc::new(RecordingPublisher {
+                publications: AtomicUsize::new(0),
+                recoveries: AtomicUsize::new(0),
+            });
+            let publisher = ClaimFencedArtifactPublisher::new(inner.clone(), dispatch.clone());
+            publisher
+                .install_session_control(Arc::new(ExactTerminalControl {
+                    workspace_id: "workspace".into(),
+                    asserted_effect,
+                    current_lease,
+                }))
+                .expect("install exact root authority");
+            (publisher, inner)
+        };
+        let recovery = |workspace_id: &str, scope: &str, effect| ArtifactRecovery {
+            workspace_id: workspace_id.into(),
+            session_id: "session".into(),
+            idempotency_scope: scope.into(),
+            fence: ArtifactPublicationFence::Terminal(effect),
+        };
+        let publication = |workspace_id: &str, scope: &str, effect| ArtifactPublication {
+            effect_id: "artifact-effect".into(),
+            workspace_id: workspace_id.into(),
+            session_id: "session".into(),
+            logical_path: "result.txt".into(),
+            mime_type: "text/plain".into(),
+            content_id: "artifact-content".into(),
+            bytes: b"artifact".to_vec(),
+            idempotency_scope: Some(scope.into()),
+            fence: Some(ArtifactPublicationFence::Terminal(effect)),
+        };
+
+        let renewed = awaken_session_contract::SessionRealizationLease {
+            expires_at_unix_ms: now_unix_ms.saturating_add(60_000),
+            ..asserted.lease.clone()
+        };
+        let (publisher, inner) = publisher_for(asserted.clone(), renewed.clone());
+        publisher
+            .recover(recovery(
+                "workspace",
+                asserted.operation_id(),
+                asserted.clone(),
+            ))
+            .await
+            .expect("T1/E1 exact recovery through current renewal");
+        assert!(
+            publisher
+                .publish(publication(
+                    "workspace",
+                    asserted.operation_id(),
+                    asserted.clone(),
+                ))
+                .await
+                .expect_err("T1/E1 authorized publication reaches the recording inner")
+                .to_string()
+                .contains("inner owner"),
+            "T1/E1"
+        );
+        assert_eq!(inner.recoveries.load(Ordering::SeqCst), 1, "T1/E1");
+        assert_eq!(inner.publications.load(Ordering::SeqCst), 1, "T1/E1");
+
+        assert!(
+            publisher
+                .recover(recovery(
+                    "foreign-workspace",
+                    asserted.operation_id(),
+                    asserted.clone(),
+                ))
+                .await
+                .is_err(),
+            "T4/E2 foreign Workspace"
+        );
+        assert!(
+            publisher
+                .publish(publication("workspace", "foreign-scope", asserted.clone(),))
+                .await
+                .is_err(),
+            "T4/E2 foreign scope"
+        );
+        assert_eq!(inner.recoveries.load(Ordering::SeqCst), 1, "T4/E2");
+        assert_eq!(inner.publications.load(Ordering::SeqCst), 1, "T4/E2");
+
+        let (expired_publisher, expired_inner) =
+            publisher_for(asserted.clone(), asserted.lease.clone());
+        assert!(
+            expired_publisher
+                .recover(recovery(
+                    "workspace",
+                    asserted.operation_id(),
+                    asserted.clone(),
+                ))
+                .await
+                .is_err(),
+            "T2/E2 expired current root"
+        );
+        assert!(
+            expired_publisher
+                .publish(publication(
+                    "workspace",
+                    asserted.operation_id(),
+                    asserted.clone(),
+                ))
+                .await
+                .is_err(),
+            "T2/E2 expired current root"
+        );
+        assert_eq!(expired_inner.recoveries.load(Ordering::SeqCst), 0, "T2/E2");
+        assert_eq!(
+            expired_inner.publications.load(Ordering::SeqCst),
+            0,
+            "T2/E2"
+        );
+
+        let foreign = awaken_session_contract::SessionTerminalCleanupEffect::new(
+            asserted.command.clone(),
+            awaken_session_contract::SessionRealizationLease {
+                epoch: asserted.lease.epoch + 1,
+                ..asserted.lease.clone()
+            },
+        );
+        let (foreign_publisher, foreign_inner) = publisher_for(foreign.clone(), renewed);
+        assert!(
+            foreign_publisher
+                .recover(recovery(
+                    "workspace",
+                    foreign.operation_id(),
+                    foreign.clone(),
+                ))
+                .await
+                .is_err(),
+            "T3/E2 foreign generation"
+        );
+        assert!(
+            foreign_publisher
+                .publish(publication(
+                    "workspace",
+                    foreign.operation_id(),
+                    foreign.clone(),
+                ))
+                .await
+                .is_err(),
+            "T3/E2 foreign generation"
+        );
+        assert_eq!(
+            foreign_inner.recoveries.load(Ordering::SeqCst),
+            0,
+            "T3/E2 zero delegated read"
+        );
+        assert_eq!(
+            foreign_inner.publications.load(Ordering::SeqCst),
+            0,
+            "T3/E2 zero delegated write"
+        );
+    }
 }
