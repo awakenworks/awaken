@@ -152,7 +152,7 @@ def render(
     )
     module_terminator = "=" * 77
     tla = f"""-------------------------- MODULE {module} --------------------------
-EXTENDS RustCommitSystem
+EXTENDS ThreadCommitProjection
 
 Trace == <<
     {rendered_states}
@@ -215,7 +215,7 @@ def main() -> int:
 
     traces = sorted(args.trace_dir.glob("*.json"))
     if not traces:
-        raise SystemExit(f"no Rust refinement traces in {args.trace_dir}")
+        raise SystemExit(f"no ThreadCommit refinement traces in {args.trace_dir}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     repository = Path(__file__).resolve().parents[2]
     manifest_path = args.manifest or (
@@ -228,17 +228,17 @@ def main() -> int:
     observations: dict[str, list[dict[str, Any]]] = {
         transition_id: [] for transition_id in transition_ids
     }
-    model_path = repository / "formal/tla/RustCommitSystem.tla"
+    model_path = repository / "formal/tla/ThreadCommitProjection.tla"
     model_transition_ids = transition_ids_from_model(model_path)
     if set(transition_ids) != model_transition_ids:
         raise ValueError(
-            "transition families drifted between the manifest and RustCommitSystem: "
+            "transition families drifted between the manifest and ThreadCommitProjection: "
             f"manifest_only={set(transition_ids) - model_transition_ids}, "
             f"model_only={model_transition_ids - set(transition_ids)}"
         )
     shutil.copyfile(
         model_path,
-        args.output_dir / "RustCommitSystem.tla",
+        args.output_dir / "ThreadCommitProjection.tla",
     )
     for trace in traces:
         document = json.loads(trace.read_text(encoding="utf-8"))

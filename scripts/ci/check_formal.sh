@@ -367,7 +367,7 @@ fi
 if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeSystemProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/RustCommitSystemProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/ThreadCommitProjectionProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionActivityProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionRootProof.tla
@@ -422,8 +422,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/runtime-implementation" \
     -config formal/tla/RuntimeImplementation.cfg formal/tla/RuntimeImplementation.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
-    -metadir "$tlc_state_root/rust-commit-system" \
-    -config formal/tla/RustCommitSystem.cfg formal/tla/RustCommitSystem.tla
+    -metadir "$tlc_state_root/thread-commit-projection" \
+    -config formal/tla/ThreadCommitProjection.cfg formal/tla/ThreadCommitProjection.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/remote-tool" \
     -config formal/tla/RemoteTool.cfg formal/tla/RemoteTool.tla
@@ -454,6 +454,14 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/agent-message-protocol" \
     -config formal/tla/AgentMessageProtocol.cfg \
+    formal/tla/AgentMessageProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/agent-message-protocol-early-receipt" \
+    -config formal/tla/AgentMessageProtocolEarlyReceipt.cfg \
+    formal/tla/AgentMessageProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/agent-message-protocol-late-receipt-recovery" \
+    -config formal/tla/AgentMessageProtocolLateReceiptRecovery.cfg \
     formal/tla/AgentMessageProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-permission-policy" \
