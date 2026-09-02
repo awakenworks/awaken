@@ -20,7 +20,8 @@ use tokio::runtime::Handle;
 use crate::schema::{NS, REGISTRY_NS, resource_reclamation_bundle, resource_registry_bundle};
 use crate::{
     decode_intent, encode_intent, kind_name, parse_reference_kind, prepare_replacement,
-    reference_kind_name, status_name, storage, to_i64, validate_fence_request, validate_reference,
+    reference_kind_name, replacement_coordinates, status_name, storage, to_i64,
+    validate_fence_request, validate_reference,
 };
 
 /// Multi-node durable resource lifecycle state.
@@ -508,6 +509,32 @@ impl ResourceReferenceIndex for PostgresResourceStore {
                 .expect("identity came from records");
             ensure_unfenced(&mut transaction, target).await?;
         }
+        let existing = sqlx::query(&format!(
+            "SELECT workspace_id, resource_kind, resource_id
+             FROM {NS}_references
+             WHERE reference_kind = $1 AND reference_id = $2"
+        ))
+        .bind(reference_kind_name(kind))
+        .bind(reference_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|error| storage(error.to_string()))?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                row.try_get("workspace_id").map_err(storage)?,
+                row.try_get("resource_kind").map_err(storage)?,
+                row.try_get("resource_id").map_err(storage)?,
+            ))
+        })
+        .collect::<Result<BTreeSet<_>, ResourcePurgeError>>()?;
+        if existing == replacement_coordinates(&records) {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| storage(error.to_string()))?;
+            return Ok(());
+        }
         sqlx::query(&format!(
             "DELETE FROM {NS}_references WHERE reference_kind = $1 AND reference_id = $2"
         ))
@@ -720,6 +747,79 @@ mod tests {
                 other => panic!("reference/fence race admitted an invalid result: {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn live_postgres_identical_reference_replacement_is_a_storage_noop() {
+        /* PostgreSQL replacement cause/effect graph: C1 one holder has an exact
+         * durable set; C2 the caller repeats the normalized set; C3 no
+         * reclamation fence conflicts. Effects: E1 the existing MVCC row keeps
+         * its xmin/ctid identity; E2 reads retain the same safety edge. This is
+         * the PostgreSQL realization of N1-N2 in the adapter conformance test,
+         * not a second replacement policy.
+         *
+         * | Rule | requested set | fence | Effect |
+         * |---|---|---|---|
+         * | P1 | exact repeat | absent | E1 + E2 |
+         */
+        let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+            return;
+        };
+        let store = PostgresResourceStore::connect(&url).await.unwrap();
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let holder = format!("stable-session-{suffix}");
+        let row = ResourceReferenceRecord {
+            target: ResourceTarget::new("workspace-noop", ResourceKind::File, &suffix),
+            reference: ResourceReference {
+                kind: ResourceReferenceKind::SessionBinding,
+                reference_id: holder.clone(),
+            },
+        };
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                &holder,
+                vec![row.clone()],
+            )
+            .await
+            .expect("P1 initial set");
+        let identity_query = format!(
+            "SELECT xmin::text, ctid::text FROM {NS}_references
+             WHERE reference_kind = $1 AND reference_id = $2"
+        );
+        let before = sqlx::query_as::<_, (String, String)>(&identity_query)
+            .bind(reference_kind_name(ResourceReferenceKind::SessionBinding))
+            .bind(&holder)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        store
+            .replace_references(
+                ResourceReferenceKind::SessionBinding,
+                &holder,
+                vec![row.clone()],
+            )
+            .await
+            .expect("P1 exact repeat");
+        let after = sqlx::query_as::<_, (String, String)>(&identity_query)
+            .bind(reference_kind_name(ResourceReferenceKind::SessionBinding))
+            .bind(&holder)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(after, before, "P1/E1");
+        assert_eq!(
+            store.references(&row.target).await.unwrap(),
+            vec![row.reference],
+            "P1/E2"
+        );
     }
 
     #[tokio::test]

@@ -10,8 +10,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::{
     SqliteResourceStore, decode_intent, encode_intent, kind_name, parse_reference_kind,
-    prepare_replacement, reference_kind_name, reference_params, status_name, storage, to_i64,
-    validate_fence_request, validate_reference,
+    prepare_replacement, reference_kind_name, reference_params, replacement_coordinates,
+    status_name, storage, to_i64, validate_fence_request, validate_reference,
 };
 
 #[async_trait]
@@ -346,6 +346,28 @@ impl ResourceReferenceIndex for SqliteResourceStore {
                 .map_err(|error| storage(error.to_string()))?;
             for record in &records {
                 sqlite_ensure_unfenced(&transaction, &record.target)?;
+            }
+            let existing = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT workspace_id, resource_kind, resource_id
+                         FROM resource_lifecycle_references
+                         WHERE reference_kind = ?1 AND reference_id = ?2",
+                    )
+                    .map_err(|error| storage(error.to_string()))?;
+                statement
+                    .query_map(params![reference_kind_name(kind), reference_id], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })
+                    .map_err(|error| storage(error.to_string()))?
+                    .collect::<Result<std::collections::BTreeSet<_>, _>>()
+                    .map_err(|error| storage(error.to_string()))?
+            };
+            if existing == replacement_coordinates(&records) {
+                transaction
+                    .commit()
+                    .map_err(|error| storage(error.to_string()))?;
+                return Ok(());
             }
             transaction
                 .execute(
