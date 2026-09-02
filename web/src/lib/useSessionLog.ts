@@ -13,6 +13,7 @@ import {
   mergeCommittedEvents,
   projectManagedSessionRuntime,
   type ManagedSessionAdmission,
+  type ManagedSessionRuntimePhase,
   type ManagedSessionRuntimeProjection,
   type ManagedSessionStatus,
   type ManagedStreamEvent,
@@ -30,18 +31,36 @@ export interface SessionLog {
   log: SessionEvent[];
   results: Map<string, SessionEvent>;
   runtime: ManagedSessionRuntimeProjection;
-  admission: ManagedSessionAdmission;
-  pendingIds: Set<string>;
-  running: boolean;
+  presentation: SessionLogPresentation;
   freshCount: number;
   applyPending: () => void;
   send: (events: InboundEvent[]) => Promise<SendEventsResponse>;
-  /** True from local submit until the Events POST settles. */
-  sendPending: boolean;
   sendError: Error | null;
   loadError: Error | null;
   projectionError: Error | null;
   refetch: () => void;
+}
+
+export type SessionLogPresentationPhase = ManagedSessionRuntimePhase | "submitting";
+
+/** One transient presentation over committed Runtime/Aggregate truth and the
+ * existing Events POST mutation. This is derived data, never another pending or
+ * lifecycle state owner. */
+export interface SessionLogPresentation {
+  phase: SessionLogPresentationPhase;
+  admission: ManagedSessionAdmission;
+  active: boolean;
+  sending: boolean;
+  needsRecovery: boolean;
+  pendingToolIds: ReadonlySet<string>;
+}
+
+export interface SessionLogPresentationInput {
+  runtime: ManagedSessionRuntimeProjection;
+  sessionStatus?: ManagedSessionStatus;
+  projectionHealthy: boolean;
+  initialPreparation: boolean;
+  sendPending: boolean;
 }
 
 export interface SessionLogOptions {
@@ -122,14 +141,37 @@ function orderByAuthoritativeHistory(
     : ordered;
 }
 
-/** Local transport admission cannot fork from the committed projection. */
-export function gateManagedSessionAdmissionWhileSending(
-  admission: ManagedSessionAdmission,
-  sendPending: boolean,
-): ManagedSessionAdmission {
-  return sendPending
+/** Derive the single SessionLog presentation consumed by detail status,
+ * Transcript, approval controls, and Stop/Recover. Terminal committed truth is
+ * absorbing; a local submit overlays `submitting` only while nonterminal. */
+export function projectSessionLogPresentation({
+  runtime,
+  sessionStatus,
+  projectionHealthy,
+  initialPreparation,
+  sendPending,
+}: SessionLogPresentationInput): SessionLogPresentation {
+  const durablePhase = initialPreparation
+    ? "idle"
+    : managedSessionPresentationPhase(runtime, sessionStatus);
+  const terminal = durablePhase === "terminated" || durablePhase === "deleted";
+  const projectedAdmission = initialPreparation
+    ? { canSendMessage: true, canResolveTools: false, canInterrupt: false }
+    : managedSessionAdmission(runtime, sessionStatus, projectionHealthy);
+  const admission = sendPending
     ? { canSendMessage: false, canResolveTools: false, canInterrupt: false }
-    : admission;
+    : projectedAdmission;
+  return {
+    phase: sendPending && !terminal ? "submitting" : durablePhase,
+    admission,
+    active: !terminal
+      && (sendPending || durablePhase === "running" || durablePhase === "rescheduling"),
+    sending: sendPending,
+    needsRecovery: !terminal
+      && !initialPreparation
+      && (!projectionHealthy || runtime.pendingToolIds.size > 0),
+    pendingToolIds: runtime.pendingToolIds,
+  };
 }
 
 /** A worker-backed Session is initially reported as `rescheduling` until its
@@ -279,13 +321,6 @@ export function useSessionLog(
     runtime,
     sessionStatus,
   );
-  const projectedAdmission = initialPreparation
-    ? { canSendMessage: true, canResolveTools: false, canInterrupt: false }
-    : managedSessionAdmission(runtime, sessionStatus, loadError == null);
-  const presentation = initialPreparation
-    ? "idle"
-    : managedSessionPresentationPhase(runtime, sessionStatus);
-
   const applyPending = () => {
     try {
       mergeCommittedSessionCache(qc, queryKey, pendingRef.current);
@@ -316,25 +351,25 @@ export function useSessionLog(
       await reconcileSessionSendResponse(qc, queryKey, result, () => events.refetch());
     },
   });
-  const admission = gateManagedSessionAdmissionWhileSending(
-    projectedAdmission,
-    sendMutation.isPending,
-  );
+  const presentation = projectSessionLogPresentation({
+    runtime,
+    sessionStatus,
+    projectionHealthy: loadError == null,
+    initialPreparation,
+    sendPending: sendMutation.isPending,
+  });
 
   return {
     log,
     results: pairToolResults(log),
     runtime,
-    admission,
-    pendingIds: runtime.pendingToolIds,
-    running: presentation === "running" || presentation === "rescheduling",
+    presentation,
     freshCount: pendingProjection.count,
     applyPending,
     send: (inbound) => sendMutation.mutateAsync({
       inbound,
       identity: sendIdentity.current!.scope,
     }),
-    sendPending: sendMutation.isPending,
     sendError: sendMutation.error instanceof Error ? sendMutation.error : null,
     loadError,
     projectionError,

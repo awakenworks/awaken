@@ -341,6 +341,15 @@ export function managedSessionAdmission(
   const eventAllowsMessage = runtime.phase === "unknown"
     || runtime.phase === "idle"
     || runtime.phase === "error";
+  const aggregateIsKnownNonterminal = aggregateStatus === "idle"
+    || aggregateStatus === "running"
+    || aggregateStatus === "rescheduling";
+  const hasActiveOrRecoverableWork = aggregateStatus === "running"
+    || aggregateStatus === "rescheduling"
+    || runtime.phase === "running"
+    || runtime.phase === "rescheduling"
+    || hasPending
+    || hasResolving;
   return {
     canSendMessage: projectionHealthy
       && aggregateStatus === "idle"
@@ -351,14 +360,14 @@ export function managedSessionAdmission(
       && aggregateStatus === "idle"
       && runtime.phase === "idle"
       && hasPending,
-    canInterrupt: projectionHealthy
-      && !terminal
-      && (aggregateStatus === "running"
-        || aggregateStatus === "rescheduling"
-        || runtime.phase === "running"
-        || runtime.phase === "rescheduling"
-        || hasPending
-        || hasResolving),
+    // A damaged Event projection cannot authorize message or reply input, but
+    // it must not hide the protocol's control-only recovery path. The aggregate
+    // must still prove a known nonterminal Session; unknown and terminal state
+    // remain fail-closed.
+    canInterrupt: !terminal
+      && (projectionHealthy
+        ? hasActiveOrRecoverableWork
+        : aggregateIsKnownNonterminal),
   };
 }
 
