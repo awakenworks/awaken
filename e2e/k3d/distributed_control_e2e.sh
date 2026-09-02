@@ -443,23 +443,30 @@ RESTORED_NODE="$STOPPED_NODE"
 STOPPED_NODE=""
 kubectl wait --for=condition=Ready "node/$RESTORED_NODE" --timeout=180s
 
-log "9/10 promote the replayed PostgreSQL standby behind the stable service"
-# D1 standby has replayed the observed writer LSN -> promotion is lossless for
-# accepted durable facts; D2 writer Pod removed + promoted standby atomically
-# relabelled as the one primary -> the unchanged Service and NetworkPolicy both
-# retarget to the same new writer; D3 API write/read -> no stale truth; D4
-# promotion recovery still has an in-flight checkpoint -> wait for the
-# database's own synchronous checkpoint barrier before the separate steady-state
-# latency phase. Decision rules: D1+D2+D3 prove lossless failover;
-# D1+D2+D3+D4 fence recovery I/O before load.
-PRIMARY_LSN=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d awaken -tAc 'SELECT pg_current_wal_lsn()' | tr -d '[:space:]')
-for _ in $(seq 1 120); do
-  REPLAYED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d awaken -tAc \
-    "SELECT COALESCE(pg_last_wal_replay_lsn() >= '$PRIMARY_LSN'::pg_lsn, false)" | tr -d '[:space:]')
-  [ "$REPLAYED" = "t" ] && break
-  sleep 1
-done
-[ "${REPLAYED:-f}" = "t" ] || { err "standby did not replay writer LSN $PRIMARY_LSN"; exit 1; }
+log "9/10 hard-crash the synchronous PostgreSQL writer and promote its standby"
+# Database failover cause/effect graph:
+# D1 the API acknowledged the preceding durable marker; D2 PostgreSQL reports
+# exactly one synchronous remote_apply standby; D3 the primary container dies
+# without a graceful database shutdown; D4 the standby is promoted and the
+# stable Service is relabelled to it. Effects: E1 every acknowledged fact is
+# present after promotion (RPO=0); E2 application pools reconnect through the
+# same database name; E3 no request is replayed merely because a transport
+# response was ambiguous; E4 a synchronous checkpoint joins promotion before
+# pressure testing. Rules: F1=D1+D2+D3+D4=>E1-E4; F2=!D2 fails before the crash
+# because asynchronous replication cannot support the claimed RPO.
+SYNC_STANDBYS=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d awaken -tAc \
+  "SELECT count(*) FROM pg_stat_replication WHERE application_name = 'awaken_standby' AND sync_state = 'sync'" \
+  | tr -d '[:space:]')
+[ "$SYNC_STANDBYS" = "1" ] \
+  || { err "expected one synchronous remote_apply standby, got ${SYNC_STANDBYS:-none}"; exit 1; }
+PRIMARY_NODE=$(kubectl -n "$NS" get pod postgres-primary-0 -o jsonpath='{.spec.nodeName}')
+PRIMARY_CONTAINER=$(kubectl -n "$NS" get pod postgres-primary-0 \
+  -o jsonpath='{.status.containerStatuses[0].containerID}')
+PRIMARY_CONTAINER=${PRIMARY_CONTAINER#containerd://}
+[[ "$PRIMARY_NODE" == "k3d-${CLUSTER}-"* ]] \
+  && [[ "$PRIMARY_CONTAINER" =~ ^[0-9a-f]{64}$ ]] \
+  || { err "invalid PostgreSQL CRI crash target"; exit 1; }
+docker exec "$PRIMARY_NODE" crictl stop --timeout 0 "$PRIMARY_CONTAINER" >/dev/null
 kubectl -n "$NS" scale statefulset/postgres-primary --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/postgres-primary-0 --timeout=120s
 kubectl -n "$NS" exec postgres-standby-0 -- \

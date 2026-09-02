@@ -25,6 +25,7 @@ REQUIRED_SURFACES = (
     "crates/control/awaken-config-store/tests/process_crash_audit.rs",
     "e2e/managed_session_config_restart_e2e.mjs",
     "e2e/durable_soak_fairness_e2e.mjs",
+    "scripts/ci/postgres_recovery_drill.sh",
     "fuzz/fuzz_targets/sse_chunks.rs",
     "fuzz/fuzz_targets/thread_commit_wire.rs",
 )

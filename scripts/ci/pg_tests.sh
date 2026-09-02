@@ -20,6 +20,8 @@ source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 
 require_docker=0
+RECOVERY_PARENT=${TMPDIR:-/tmp}
+[ "$RECOVERY_PARENT" = "/" ] || RECOVERY_PARENT=${RECOVERY_PARENT%/}
 
 published_port() {
   local binding="$1"
@@ -29,6 +31,13 @@ published_port() {
     return 0
   fi
   return 1
+}
+
+valid_recovery_root() {
+  case "$1" in
+    "$RECOVERY_PARENT"/awaken-pg-recovery.??????) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 self_test() {
@@ -44,6 +53,14 @@ self_test() {
   test "$(published_port '127.0.0.1:49152')" = "49152" || return 1
   ! published_port 'invalid-binding' >/dev/null || return 1
   ! published_port '127.0.0.1:0' >/dev/null || return 1
+  # Cleanup cause/effect rules: C4 only the exact mktemp-owned six-character
+  # suffix is present => E4 cleanup may remove it. C5 empty, caller-owned, or
+  # structurally broader paths => E5 cleanup refuses them. This keeps a failed
+  # allocation from falling back to an inherited AWAKEN_RECOVERY_ROOT.
+  valid_recovery_root "$RECOVERY_PARENT/awaken-pg-recovery.A1b2C3" || return 1
+  ! valid_recovery_root "" || return 1
+  ! valid_recovery_root "$RECOVERY_PARENT/caller-owned" || return 1
+  ! valid_recovery_root "$RECOVERY_PARENT/awaken-pg-recovery.A1b2C3/child" || return 1
   # P5: every feature-gated Postgres adapter is compiled as such. P6: test
   # targets whose volatile fixtures are isolated behind `test-support` enable
   # that feature explicitly; Cargo refusing to start a target is a red gate,
@@ -111,6 +128,18 @@ self_test() {
     echo "Postgres gate omits the composed Resources restart matrix" >&2
     return 1
   }
+  grep -Fq "archive_mode=on" "$0" || {
+    echo "Postgres gate omits WAL archiving for physical recovery" >&2
+    return 1
+  }
+  grep -Fq 'scripts/ci/postgres_recovery_drill.sh "$NAME" "$OBJECT_NAME" "$MC_IMAGE"' "$0" || {
+    echo "Postgres gate omits the PostgreSQL/object-store recovery drill" >&2
+    return 1
+  }
+  test -x scripts/ci/postgres_recovery_drill.sh || {
+    echo "Postgres recovery drill is not executable" >&2
+    return 1
+  }
   grep -Fq "cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity" "$0" || {
     echo "Durable backend gate omits SQLite crash and injected fault atomicity" >&2
     return 1
@@ -139,11 +168,24 @@ REQUESTED_PORT="${AWAKEN_CI_PG_PORT:-}"
 PASSWORD="ci" # awaken-allow: secret (throwaway ephemeral container, torn down on exit)
 DB="awaken"
 POSTGRES_CONTAINER_ENV=("POSTGRES_PASSWORD=$PASSWORD" "POSTGRES_DB=$DB") # awaken-allow: secret
+RECOVERY_ROOT=""
 
 cleanup() {
   docker rm -f "$NAME" "$OBJECT_NAME" >/dev/null 2>&1 || true
+  if valid_recovery_root "$RECOVERY_ROOT"; then
+    [ ! -d "$RECOVERY_ROOT" ] || rm -rf -- "$RECOVERY_ROOT"
+  elif [ -n "$RECOVERY_ROOT" ]; then
+    echo "refusing unexpected PostgreSQL recovery cleanup target: $RECOVERY_ROOT" >&2
+  fi
 }
 trap cleanup EXIT
+
+RECOVERY_ROOT=$(mktemp -d "$RECOVERY_PARENT/awaken-pg-recovery.XXXXXX")
+valid_recovery_root "$RECOVERY_ROOT" \
+  || { echo "mktemp returned an unexpected PostgreSQL recovery path: $RECOVERY_ROOT" >&2; exit 1; }
+export AWAKEN_RECOVERY_ROOT="$RECOVERY_ROOT"
+mkdir -p "$RECOVERY_ROOT/base" "$RECOVERY_ROOT/wal"
+chmod 0777 "$RECOVERY_ROOT/base" "$RECOVERY_ROOT/wal"
 
 if [ -n "$REQUESTED_PORT" ]; then
   if ! PORT="$(published_port "127.0.0.1:$REQUESTED_PORT")"; then
@@ -158,7 +200,14 @@ else
 fi
 if ! docker run -d --name "$NAME" \
   -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
-  -p "$PUBLISH" postgres:16-alpine >/dev/null; then
+  -v "$RECOVERY_ROOT/base:/recovery-base" \
+  -v "$RECOVERY_ROOT/wal:/wal-archive" \
+  -p "$PUBLISH" postgres:16-alpine \
+  -c wal_level=replica \
+  -c archive_mode=on \
+  -c archive_timeout=1s \
+  -c "archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f" \
+  >/dev/null; then
   echo "✗ Docker could not create the ephemeral Postgres container" >&2
   exit 1
 fi
@@ -314,6 +363,11 @@ cargo test -p awaken-environment-image-build \
   postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
   -- --exact --test-threads=1 || status=1
 cargo test -p awaken-work-store || status=1
+
+# The same live PostgreSQL and object-store substrates finish with a physical
+# point-in-time restore. This is a recovery drill, not another repository or
+# an independent test graph.
+scripts/ci/postgres_recovery_drill.sh "$NAME" "$OBJECT_NAME" "$MC_IMAGE" || status=1
 
 if [ "$status" -ne 0 ]; then
   echo "✗ Postgres-backed tests failed (see above)"; exit 1

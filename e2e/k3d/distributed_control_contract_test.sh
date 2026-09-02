@@ -32,6 +32,10 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # remains owned by WorkerUpstream; the manifest only supplies deployment facts.
 # D7-D1=C1+C2+C3=>E1+E2; missing TLS inputs, health/resources, or the exact edge
 # fails this contract before the live distributed rule runs.
+# D8 acknowledged-write RPO=0 requires one named remote_apply standby and the
+# live scenario must stop the primary CRI container before promotion. Omitting
+# either condition turns the test back into a planned asynchronous switchover
+# which cannot establish the advertised recovery point.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
@@ -115,6 +119,12 @@ grep -q 'create configmap adr71-worker-upstream-ca' "$REPO_ROOT/e2e/k3d/distribu
 grep -q 'create secret tls adr71-worker-upstream-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'name: worker-kube-api' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'crictl stop --timeout 0 "$WORKER_ZERO_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'synchronous_commit=remote_apply' "$RENDERED"
+grep -q 'synchronous_standby_names=FIRST 1 (awaken_standby)' "$RENDERED"
+grep -q 'application_name=awaken_standby' "$RENDERED"
+grep -q 'connect_timeout=2' "$RENDERED"
+grep -q 'crictl stop --timeout 0 "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'label pod postgres-standby-0 database-role=primary --overwrite' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 ! grep -q 'patch service postgres' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"

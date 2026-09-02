@@ -45,7 +45,12 @@ pub async fn record_dispatch_recovery_history(
         .await
         .expect("R1 begin attempt");
     let recovery_now = first.lease.expires_ms.saturating_add(1);
-    clock.set(recovery_now);
+    // Deterministic adapters advance immediately; a live PostgreSQL adapter
+    // waits for its authoritative database/wall clock to cross the persisted
+    // deadline. Keeping that distinction behind ConformanceClock lets every
+    // backend execute this one history without giving PostgreSQL a test-only
+    // clock or duplicating the recovery oracle.
+    clock.advance_past(first.lease.expires_ms).await;
     let recovered = store
         .claim_run(
             &run_id,

@@ -4,7 +4,7 @@ use awaken_run_ingress::{
     ManualClock, MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore,
 };
 use awaken_run_ingress_testkit::{
-    ConformanceCapabilities, assert_atomic_report_continuation_conformance,
+    AuthoritativeWallClock, ConformanceCapabilities, assert_atomic_report_continuation_conformance,
     assert_dispatch_conformance, assert_dispatch_conformance_with_clock,
     assert_session_reply_activity_rotation_conformance,
 };
@@ -119,6 +119,38 @@ async fn memory_and_sqlite_refine_the_same_crash_recovery_history() {
     let sqlite_history =
         record_dispatch_recovery_history(&sqlite, "history-sqlite", &set_sqlite_clock).await;
     assert_eq!(memory_history, sqlite_history, "D1/E2 backend refinement");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_refines_the_same_crash_recovery_history() {
+    /* Cross-substrate refinement design: C1 the canonical crash history runs
+     * against deterministic Memory; C2 a live PostgreSQL schema is reachable;
+     * C3 the same history crosses PostgreSQL's authoritative moving clock.
+     * E1 each backend independently satisfies the claim/attempt/fence oracle;
+     * E2 their normalized histories are identical. Constraint: PostgreSQL is
+     * allowed to wait for the persisted lease deadline but receives no
+     * test-only clock or alternate transition implementation. Rules:
+     * P1=C1+!C2 -> local environmental skip; P2=C1+C2+C3 -> E1+E2. */
+    let Some(pool) = harness::schema_pool("t_dispatch_recovery_refinement").await else {
+        return;
+    };
+    let memory_clock = Arc::new(ManualClock::new(0));
+    let memory = MemoryDispatchStore::new().with_clock(memory_clock.clone());
+    let set_memory_clock = |now_ms| memory_clock.set(now_ms);
+    let postgres = PostgresDispatchStore::with_pool(pool)
+        .await
+        .expect("open PostgreSQL history store");
+
+    let memory_history =
+        record_dispatch_recovery_history(&memory, "history-memory-pg", &set_memory_clock).await;
+    let postgres_history =
+        record_dispatch_recovery_history(&postgres, "history-postgres", &AuthoritativeWallClock)
+            .await;
+
+    assert_eq!(
+        memory_history, postgres_history,
+        "P2/E2 PostgreSQL refines the canonical crash history"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

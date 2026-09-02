@@ -188,6 +188,13 @@ async fn postgres_one_running_per_thread_under_concurrent_claimers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
+    // Cause/effect graph: C1 owner A holds the database epoch guard after its
+    // lease expires; C2 owner B attempts reclaim; C3 the guard is released.
+    // Effects: E1 B cannot receive the row while C1 holds; E2 after C3, either
+    // B's already-running attempt claims it or one retry does. Decision rules:
+    // R1 C2 returns before C3 => it must be None, then retry; R2 C2 is still
+    // pending at C3 => accept its post-release result or retry when it skipped.
+    // The rule intentionally has no wall-clock threshold deciding correctness.
     let Some(pool) = harness::schema_pool("t_pg_commit_epoch_guard").await else {
         return;
     };
@@ -227,27 +234,31 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     // waits for the guard's transaction or immediately reports no claim; both
     // are safe, but it must never hand the guarded row to owner-b.
     let early = tokio::time::timeout(std::time::Duration::from_millis(50), &mut reclaiming).await;
-    let skipped_locked_row = match early {
+    let early_result = match early {
         Ok(result) => {
+            let result = result.unwrap().unwrap();
             assert!(
-                result.unwrap().unwrap().is_none(),
+                result.is_none(),
                 "the guarded row cannot be reclaimed before its commit returns"
             );
-            true
+            Some(result)
         }
-        Err(_) => false,
+        Err(_) => None,
     };
 
     inner.release.notify_one();
     committing.await.unwrap().expect("commit");
-    let reclaimed = if skipped_locked_row {
-        store
+    let first_after_release = match early_result {
+        Some(result) => result,
+        None => reclaiming.await.unwrap().unwrap(),
+    };
+    let reclaimed = match first_after_release {
+        Some(reclaimed) => reclaimed,
+        None => store
             .claim("owner-b", 100, 200, &Default::default())
             .await
             .unwrap()
-            .expect("reclaim after the guard releases")
-    } else {
-        reclaiming.await.unwrap().unwrap().expect("reclaim")
+            .expect("reclaim after the guard releases"),
     };
     assert_eq!(reclaimed.lease.epoch, lease.epoch + 1);
 }
