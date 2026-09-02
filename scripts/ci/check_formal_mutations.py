@@ -153,12 +153,33 @@ def mutate_reopened_external_assumption(case_root: Path) -> None:
     )
 
 
+def mutate_disconnected_product_feature(case_root: Path) -> None:
+    path = case_root / "formal" / "features.json"
+    ledger = json.loads(path.read_text())
+    target = "runtime.parallel_tool_conflicts"
+    removed = False
+    for journey in ledger["product_journeys"]:
+        if target in journey["stages"]:
+            journey["stages"].remove(target)
+            removed = True
+    if not removed:
+        raise SystemExit(f"mutation fixture has no product journey stage {target}")
+    write_json(path, ledger)
+    must_fail(
+        case_root,
+        "check_feature_coverage.py",
+        "product feature disconnected from every assurance journey",
+        "--require-complete",
+    )
+
+
 def main() -> None:
     # Cause/effect decision table: removing a strict-CI proof, downgrading a
     # claim, detaching a model, omitting/inventing a residual boundary,
-    # orphaning a formal obligation, or reopening an external assumption must
-    # each make its existing authoritative gate fail. No mutant may introduce a
-    # second ledger or a test-only acceptance path.
+    # orphaning a formal obligation, reopening an external assumption, or
+    # disconnecting a product feature from every end-to-end assurance journey
+    # must each make its existing authoritative gate fail. No mutant may
+    # introduce a second ledger or a test-only acceptance path.
     mutations = (
         mutate_removed_harness,
         mutate_downgraded_claim,
@@ -167,6 +188,7 @@ def main() -> None:
         mutate_invented_boundary,
         mutate_unlinked_product_obligation,
         mutate_reopened_external_assumption,
+        mutate_disconnected_product_feature,
     )
     with tempfile.TemporaryDirectory(prefix="awaken-formal-mutations-") as temp:
         temp_root = Path(temp)

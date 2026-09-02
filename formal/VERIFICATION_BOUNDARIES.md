@@ -24,6 +24,31 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- The canonical product denominator now carries five end-to-end assurance
+  journeys. Strict feature coverage requires every product feature to appear in
+  at least one journey and every journey to cite formal anchors actually
+  consumed by its stages. This connects the obligation families into complete
+  managed-execution, multi-agent/background recovery, Control publication,
+  extension/protocol, and storage/evidence paths without pretending that one
+  monolithic model proves external systems. A mutation that disconnects a
+  feature from every journey must fail the gate.
+- Tool-call concurrency now has one production scheduler beside the canonical
+  `ToolConcurrency` algebra. Runtime consumes its stable contiguous wave plan;
+  Kani proves the production one-step extension guard and positive bound while
+  `ToolSchedule.tla` exhausts every four-call claim assignment and bound to
+  check exact stable partition, serial singleton behavior, pairwise
+  compatibility, and the maximal-prefix/no-bypass composition rules.
+- Product process Role, service-startup Role, migration ownership, and local
+  Managed mounting no longer maintain separate role tables. CLI re-exports the
+  lifecycle-owned `ProcessRole`, and Kani proves its exact projection including
+  the Worker's absence of service-startup authority.
+- Commit backends retain their existing ports and shared conformance suite. The
+  new `StoreHistory` model composes dense commit order, terminal fencing,
+  operation receipts, exact retry/rejection stuttering, and one CAS winner per
+  Thread version. Memory, filesystem, SQLite, and PostgreSQL are linked to this
+  one abstract history; database/driver durability and a mechanically checked
+  Rust-to-model trace remain explicit adapter boundaries.
+
 - Workspace path projection now has one provider-independent logical root.
   `WorkspacePathProjection.tla` proves that only path-fidelitous providers may
   satisfy Repository admission and that read/edit/bash/Git observations cannot

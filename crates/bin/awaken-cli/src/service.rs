@@ -14,11 +14,9 @@ pub enum ServiceRole {
 
 impl ServiceRole {
     fn startup_role(self) -> awaken_service_lifecycle::StartupRole {
-        match self {
-            Self::AllInOne => awaken_service_lifecycle::StartupRole::AllInOne,
-            Self::Control => awaken_service_lifecycle::StartupRole::Control,
-            Self::Coordinator => awaken_service_lifecycle::StartupRole::Coordinator,
-        }
+        self.deployment_role()
+            .startup_role()
+            .expect("every service binary role owns one service startup role")
     }
 
     fn deployment_role(self) -> Role {

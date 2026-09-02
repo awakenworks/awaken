@@ -698,7 +698,16 @@ in the canonical functional coverage matrix has exactly one machine-readable
 feature, entrypoint list, criticality, and requirement classification. The
 feature gate rejects orphaned formal obligations and external assumptions, so a
 high claim-oriented ratio cannot hide a product area that was omitted from the
-denominator. `formal/assumptions.json` records the environmental contracts that
+denominator. The same file owns the ordered product-assurance journeys that
+compose those features into managed execution, multi-agent/background
+recovery, Control publication, extension/protocol, and storage/evidence paths.
+The gate requires every feature, formal obligation, and external assumption to
+be reachable from at least one journey and requires every declared formal
+anchor to be consumed by a journey stage. This is the product-wide composition
+contract: local proofs remain small and independently checkable, while the
+journey graph makes their end-to-end coverage and every environmental cut
+explicit. It is not a claim that a single monolithic state space or theorem
+proves third-party systems. `formal/assumptions.json` records the environmental contracts that
 repository-owned proofs consume, including their integration and runtime
 evidence. An `evidenced` external assumption means its boundary has executable
 or operational detection evidence; it does not promote third-party correctness

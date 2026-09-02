@@ -294,6 +294,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness retry_is_authorized_only_inside_the_exact_bounded_budget \
     --harness every_u8_is_admitted_exactly_when_it_is_within_the_search_limit \
     --harness same_resource_conflict_is_symmetric_and_exactly_one_write_or_more \
+    --harness tool_wave_extension_requires_every_exact_guard \
+    --harness tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial \
     --harness non_retryable_failure_is_immediately_terminal \
     --harness terminal_retry_state_never_reopens \
     --harness unknown_retry_state_fails_closed \
@@ -335,7 +337,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-service-lifecycle \
     --harness startup_wiring_is_exact_for_every_service_role \
     --harness startup_wiring_requires_every_role_owned_component \
-    --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+    --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority \
+    --harness process_role_projects_exact_startup_authority \
+    --harness worker_never_acquires_service_startup_or_local_mount_authority \
+    --harness local_managed_mount_is_exactly_the_local_worker_component
   run_kani awaken-resource-contract \
     --harness artifact_publication_receipt_requires_every_identity_axis \
     --harness resource_config_publication_is_exact_and_never_wraps \
@@ -405,6 +410,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/thread-state" \
     -config formal/tla/ThreadState.cfg formal/tla/ThreadState.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/store-history" \
+    -config formal/tla/StoreHistory.cfg formal/tla/StoreHistory.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/work-queue" \
     -config formal/tla/WorkQueue.cfg formal/tla/WorkQueue.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
@@ -423,6 +431,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-batch" \
     -config formal/tla/ToolBatch.cfg formal/tla/ToolBatch.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/tool-schedule" \
+    -config formal/tla/ToolSchedule.cfg formal/tla/ToolSchedule.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/runtime-system" \
     -config formal/tla/RuntimeSystem.cfg formal/tla/RuntimeSystem.tla

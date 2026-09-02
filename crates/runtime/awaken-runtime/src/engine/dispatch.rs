@@ -8,42 +8,6 @@
 use super::delegation::is_resolved_advisor_call;
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExecutionWave {
-    start: usize,
-    end: usize,
-}
-
-impl ExecutionWave {
-    fn len(self) -> usize {
-        self.end - self.start
-    }
-}
-
-/// Build stable, contiguous waves. A later call never jumps over a conflicting
-/// predecessor, so concurrency changes elapsed time but not observable ordering.
-fn execution_waves(claims: &[ToolConcurrency], max_parallel_tools: usize) -> Vec<ExecutionWave> {
-    let limit = max_parallel_tools.max(1);
-    let mut waves = Vec::new();
-    let mut start = 0;
-    while start < claims.len() {
-        let mut end = start + 1;
-        if !matches!(claims[start], ToolConcurrency::Serial) {
-            while end < claims.len()
-                && end - start < limit
-                && claims[start..end]
-                    .iter()
-                    .all(|existing| existing.compatible_with(&claims[end]))
-            {
-                end += 1;
-            }
-        }
-        waves.push(ExecutionWave { start, end });
-        start = end;
-    }
-    waves
-}
-
 fn call_concurrency(
     runtime: &Runtime,
     context: &RuntimeRunContext,
@@ -161,7 +125,8 @@ pub(super) async fn run_tool_calls(
         .iter()
         .map(|call| call_concurrency(runtime, context, delegation_origin, resolved, env, call))
         .collect::<Vec<_>>();
-    let waves = execution_waves(&claims, context.max_parallel_tools());
+    let waves =
+        awaken_runtime_contract::tool_execution_waves(&claims, context.max_parallel_tools());
     let has_parallel_wave = waves.iter().any(|wave| wave.len() > 1);
     let supports_concurrent_path = calls.iter().all(|call| {
         !requires_sequential_dispatch(resolved, call)
@@ -475,13 +440,13 @@ async fn run_concurrent_tool_calls(
     thread_id: &ThreadId,
     step: usize,
     calls: Vec<ToolCall>,
-    waves: Vec<ExecutionWave>,
+    waves: Vec<ToolExecutionWave>,
     mut batch: ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
 ) -> Result<Option<RunDisposition>> {
     for wave in waves {
-        let wave_calls = &calls[wave.start..wave.end];
+        let wave_calls = &calls[wave.range()];
         let mut immediate_outputs = (0..wave_calls.len())
             .map(|_| None)
             .collect::<Vec<Option<ToolOutput>>>();
