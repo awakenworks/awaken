@@ -464,3 +464,66 @@ async fn deployment_repository_credentials_fail_closed_before_persistence() {
     let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
     assert!(page["data"].as_array().unwrap().is_empty(), "R2 no state");
 }
+
+#[tokio::test]
+async fn deployment_repository_paths_fail_closed_before_persistence() {
+    // Durable path decision table: D1 explicit canonical `/workspace/repo` ->
+    // persist and echo unchanged; D2 invalid explicit path on create -> 400 and
+    // zero Deployment state; D3 invalid explicit path on update -> 400 and the
+    // prior aggregate remains byte-for-byte authoritative. A missing path keeps
+    // the official launch-time `/workspace/<repo-name>` default and is covered by
+    // the ordinary Deployment launch tests.
+    let app = app();
+    let request = |mount_path: &str| {
+        json!({
+            "agent":"agent_x",
+            "environment_id":"env_1",
+            "name":"repository-path",
+            "initial_events":[{"type":"user.message","content":[{"type":"text","text":"go"}]}],
+            "resources":[{
+                "type":"github_repository",
+                "url":"https://github.com/acme/repo.git",
+                "mount_path":mount_path
+            }]
+        })
+    };
+
+    let (status, _) = call(&app, "POST", "/v1/deployments", Some(request("/repo"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "D2");
+    let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
+    assert!(page["data"].as_array().unwrap().is_empty(), "D2 no state");
+
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/deployments",
+        Some(request("/workspace/repo")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "D1");
+    assert_eq!(
+        created["resources"][0]["mount_path"], "/workspace/repo",
+        "D1 exact wire"
+    );
+    let id = created["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/deployments/{id}"),
+        Some(json!({
+            "resources":[{
+                "type":"github_repository",
+                "url":"https://github.com/acme/repo.git",
+                "mount_path":"/workspace/.skills/repo"
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "D3");
+    let (status, retained) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "D3");
+    assert_eq!(
+        retained["resources"][0]["mount_path"], "/workspace/repo",
+        "D3 prior aggregate"
+    );
+}

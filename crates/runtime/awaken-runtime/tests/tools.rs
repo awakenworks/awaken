@@ -311,6 +311,159 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
 }
 
 #[tokio::test]
+async fn post_dispatch_invalidation_terminates_without_model_retry() {
+    /* Cause/effect graph: C1 a tool has crossed its physical effect boundary;
+     * C2 its required executor projection remains valid or becomes unavailable.
+     * Effects: E1 valid projection follows the ordinary model-visible result
+     * path (covered by allowed_tool_call...); E2 invalid projection terminates
+     * at the existing StateConflict Run boundary; E3 no Tool result, second
+     * inference, or replayed physical effect occurs. Decision table: FI1
+     * C1+valid=>ordinary result; FI2 C1+invalid=>E2+E3 (this test). */
+    let model = Arc::new(ToolThenText::new());
+    let effects = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(model.clone())
+        .with_tool(Arc::new(InvalidatesAfterEffect {
+            effects: effects.clone(),
+        }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    let outcome = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("StateConflict is a committed terminal Run state");
+
+    assert_eq!(
+        outcome,
+        RunState::Ended(EndCause::Error(Failure::StateConflict)),
+        "FI2 terminal authority"
+    );
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1, "FI2 no reinference");
+    assert_eq!(effects.load(Ordering::SeqCst), 1, "FI2 no effect replay");
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool),
+        "FI2 fatal executor state is never model-visible"
+    );
+}
+
+#[tokio::test]
+async fn detached_post_dispatch_invalidation_is_terminal_and_not_retryable() {
+    /* Cause/effect graph: C1 detached start executes an ordinary tool; C2 the
+     * tool invalidates its executor state after one effect. Effects: E1 preserve
+     * the fatal class through PreparedToolExecutor; E2 do not lower it into a
+     * completed/model-visible ToolOutput; E3 caller cannot mistake it for a
+     * poll-retryable execution outage. Decision table: DT1 start+ordinary
+     * failure=>Execution (existing paths); DT2 start+post-effect invalidation
+     * =>StateInvalidated and exactly one effect (this test). */
+    let effects = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_tool(Arc::new(InvalidatesAfterEffect {
+                effects: effects.clone(),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+    );
+    let activation = activation();
+    let prepared =
+        PreparedToolExecutor::new(runtime, &activation.snapshot, RuntimeRunContext::new())
+            .expect("resolve canonical detached tool");
+    let call = ToolCall {
+        call_id: "detached-fatal".into(),
+        tool_id: "echo".into(),
+        arguments: serde_json::json!({"text": "once"}),
+    };
+
+    let error = prepared
+        .start_task(
+            &activation.run_id,
+            &activation.thread_id,
+            "detached-fatal-operation".into(),
+            &call,
+            &Store::new(),
+        )
+        .await
+        .expect_err("DT2 cannot become a completed or pending detached result");
+
+    assert!(matches!(error, DetachedToolError::StateInvalidated), "DT2");
+    assert_eq!(effects.load(Ordering::SeqCst), 1, "DT2 no replay");
+}
+
+#[tokio::test]
+async fn detached_continuation_invalidation_is_terminal_for_poll_and_cancel() {
+    /* Cause/effect graph: C1 a detached effect already returned a durable
+     * handle; C2 its exact executor projection fails during poll or cancel.
+     * Effects: E1 preserve StateInvalidated for either continuation action;
+     * E2 call each requested action exactly once; E3 never redispatch invoke.
+     * Decision table: DC1 poll+C2=>E1+E2+E3; DC2 cancel+C2=>E1+E2+E3. */
+    let polls = Arc::new(AtomicUsize::new(0));
+    let cancellations = Arc::new(AtomicUsize::new(0));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_tool(Arc::new(InvalidatesContinuation {
+                polls: polls.clone(),
+                cancellations: cancellations.clone(),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+    );
+    let activation = activation();
+    let prepared =
+        PreparedToolExecutor::new(runtime, &activation.snapshot, RuntimeRunContext::new())
+            .expect("resolve canonical continuation tool");
+    let call = ToolCall {
+        call_id: "detached-continuation".into(),
+        tool_id: "echo".into(),
+        arguments: serde_json::json!({}),
+    };
+    let handle = ToolTaskHandle {
+        owner: "fixture".into(),
+        binding: "echo".into(),
+        task_id: "already-dispatched".into(),
+        poll_interval_ms: None,
+    };
+    let state = Store::new();
+
+    let poll = prepared
+        .poll_task(
+            &activation.run_id,
+            &activation.thread_id,
+            "detached-poll".into(),
+            &call,
+            &handle,
+            &state,
+        )
+        .await
+        .expect_err("DC1 is terminal");
+    let cancel = prepared
+        .cancel_task(
+            &activation.run_id,
+            &activation.thread_id,
+            "detached-cancel".into(),
+            &call,
+            &handle,
+            &state,
+        )
+        .await
+        .expect_err("DC2 is terminal");
+
+    assert!(matches!(poll, DetachedToolError::StateInvalidated), "DC1");
+    assert!(matches!(cancel, DetachedToolError::StateInvalidated), "DC2");
+    assert_eq!(polls.load(Ordering::SeqCst), 1, "DC1 one observation");
+    assert_eq!(
+        cancellations.load(Ordering::SeqCst),
+        1,
+        "DC2 one cancellation"
+    );
+}
+
+#[tokio::test]
 async fn forged_direct_call_to_configured_detached_target_fails_before_gate() {
     // Cause/effect decision table: R1 configured detached target in the canonical
     // catalog -> absent from the model request (covered by resolved projection);

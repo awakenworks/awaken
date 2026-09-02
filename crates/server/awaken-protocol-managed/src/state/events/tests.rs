@@ -1239,6 +1239,122 @@ fn lifecycle(
 }
 
 #[tokio::test]
+async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
+    // Cause/effect graph: C1 a keyed Event batch is already retained in the
+    // durable Session root; C2 the disposable Managed projection is absent;
+    // C3 cold Runtime recovery is unavailable; C4 the same or a conflicting
+    // request is retried. Effects: E1 same key+fingerprint returns the original
+    // receipt without a recovery read, Runtime drive, cache publication, or root
+    // mutation; E2 same key+different fingerprint returns the idempotency
+    // conflict under the same zero-effect boundary. Decision rules:
+    // IR1=C1+C2+C3+same(C4)=>E1; IR2=C1+C2+C3+different(C4)=>E2. New or
+    // unkeyed requests remain owned by the ordinary cold-admission table.
+    let runtime = LifecycleRuntime::default();
+    let repository = Arc::new(ephemeral_session_repo());
+    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository));
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .expect("IR1 Session");
+    let request = SendEventsRequest {
+        events: vec![InboundEvent::UserMessage {
+            content: vec![ContentBlock::text("accepted before response loss")],
+        }],
+    };
+    let data_subject_id = None::<String>;
+    let key = "event-replay-before-cold-recovery";
+    let fingerprint = awaken_session_contract::stable_fingerprint(&(&request, &data_subject_id));
+    let accepted = state
+        .application
+        .append_session_event_batch_idempotent(
+            &session.id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("accepted before response loss")],
+            }],
+            data_subject_id.clone(),
+            None,
+            Some((key.into(), fingerprint)),
+        )
+        .await
+        .expect("IR1 durable root receipt");
+    let revision = state
+        .application
+        .session(&session.id)
+        .await
+        .expect("IR1 root before retry")
+        .revision;
+    let expected = SendEventsResponse {
+        data: accepted_inbound_receipts(&session.id, &accepted)
+            .into_iter()
+            .map(|projection| projection.event)
+            .collect(),
+    };
+
+    state.sessions.lock().unwrap().remove(&session.id);
+    runtime.fail_recovery_snapshot.store(true, Ordering::SeqCst);
+    let reads_before = runtime.snapshot_reads.load(Ordering::SeqCst);
+    let replay = state
+        .send_events_attributed(
+            &session.id,
+            request.clone(),
+            data_subject_id.clone(),
+            Some(key.into()),
+        )
+        .await
+        .expect("IR1 exact root replay bypasses cold recovery");
+    assert_eq!(
+        serde_json::to_value(replay).unwrap(),
+        serde_json::to_value(expected).unwrap(),
+        "IR1/E1 exact receipt"
+    );
+    assert_eq!(
+        runtime.snapshot_reads.load(Ordering::SeqCst),
+        reads_before,
+        "IR1/E1 no cold Runtime read"
+    );
+    assert!(
+        !state.sessions.lock().unwrap().contains_key(&session.id),
+        "IR1/E1 no disposable cache publication"
+    );
+    let unchanged = state
+        .application
+        .session(&session.id)
+        .await
+        .expect("IR1 root after retry");
+    assert_eq!(unchanged.revision, revision, "IR1/E1 no root mutation");
+    assert_eq!(unchanged.event_batches.len(), 1, "IR1/E1 one batch");
+
+    let conflict = state
+        .send_events_attributed(
+            &session.id,
+            SendEventsRequest {
+                events: vec![InboundEvent::UserMessage {
+                    content: vec![ContentBlock::text("different intent")],
+                }],
+            },
+            data_subject_id,
+            Some(key.into()),
+        )
+        .await
+        .expect_err("IR2 conflicting retry");
+    assert!(
+        matches!(conflict, StateError::IdempotencyMismatch),
+        "IR2/E2"
+    );
+    assert_eq!(
+        runtime.snapshot_reads.load(Ordering::SeqCst),
+        reads_before,
+        "IR2/E2 conflict also precedes cold recovery"
+    );
+}
+
+#[tokio::test]
 async fn activation_failure_projects_only_the_exact_unowned_error() {
     // Cause/effect graph: C1 the Session is durably ActivationFailed; C2 its
     // realization failure has no Run source, the same root Run source, or a

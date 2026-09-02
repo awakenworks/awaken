@@ -189,6 +189,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn peer_sink_waits_for_startup_publication_and_preserves_exact_notifications() {
+        // Causes: C1 a notification starts before the peer notifier is
+        // published; C2 the unique peer notifier is then published; C3 a
+        // later notification starts after publication. Effects: E1 C1 remains
+        // pending instead of returning and dropping the message; E2 C2 resumes
+        // C1 and writes its exact method/params once; E3 C3 writes its exact
+        // method/params through the same notifier without another handshake.
+        // The peer/write channel remains open in every rule.
+        //
+        // | Rule | published at notify | publication occurs | Effect |
+        // |---|---|---|---|
+        // | N1 | no | no | E1 |
+        // | N2 | no | yes | E2 |
+        // | N3 | yes | already | E3 |
+        let (notifier_publisher, notifier) = watch::channel(None);
+        let sink = PeerSink { notifier };
+        let (client_side, server_side) = tokio::io::duplex(8192);
+        let (server_reader, server_writer) = tokio::io::split(server_side);
+        let (peer, _notifications) = JsonRpcPeer::new(server_reader, server_writer, None);
+        let (client_reader, _client_writer) = tokio::io::split(client_side);
+        let mut lines = BufReader::new(client_reader).lines();
+
+        let mut startup_notification = Box::pin(sink.notify(
+            "notifications/progress",
+            json!({ "progressToken": "startup", "progress": 1 }),
+        ));
+        let pending_before_publication = std::future::poll_fn(|context| {
+            Poll::Ready(matches!(
+                startup_notification.as_mut().poll(context),
+                Poll::Pending
+            ))
+        })
+        .await;
+        assert!(
+            pending_before_publication,
+            "N1/E1 an unpublished notifier must wait, not silently return"
+        );
+
+        notifier_publisher.send_replace(Some(peer.notifier()));
+        startup_notification.await;
+        let startup_wire = lines
+            .next_line()
+            .await
+            .expect("N2 reads the wire")
+            .expect("N2 peer remains open");
+        assert_eq!(
+            serde_json::from_str::<Value>(&startup_wire).expect("N2 valid JSON"),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": { "progressToken": "startup", "progress": 1 },
+            }),
+            "N2/E2 the startup notification is preserved exactly"
+        );
+
+        sink.notify("notifications/tools/list_changed", json!({ "revision": 2 }))
+            .await;
+        let published_wire = lines
+            .next_line()
+            .await
+            .expect("N3 reads the wire")
+            .expect("N3 peer remains open");
+        assert_eq!(
+            serde_json::from_str::<Value>(&published_wire).expect("N3 valid JSON"),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed",
+                "params": { "revision": 2 },
+            }),
+            "N3/E3 a published notifier preserves the exact notification"
+        );
+    }
+
+    #[tokio::test]
     async fn initialize_list_call_round_trip() {
         let source = StaticExports::new(vec![exported_echo()]);
         let service = Arc::new(McpToolService::new("stdio-test", "0.0.0", Arc::new(source)));

@@ -2313,6 +2313,198 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     assert_eq!(session_work.releases.load(Ordering::SeqCst), 2, "T21");
 }
 
+/// Terminal-cleanup capability cause/effect table: C1 a current registered
+/// Worker presents the historical omitted/default `VersionRange::ANY`; C2 each
+/// v2 claim, poll, preparation authorize/record, disposal authorize/record, or
+/// Repository publication edge carries a structurally valid request. Effect E1
+/// is HTTP 400 before any Session Control call. Rule V1=C1+C2=>E1 for every
+/// listed edge. Constraint: `ANY` is compatibility decode data, never explicit
+/// authority for a destructive protocol, even though its numeric range contains
+/// version 2.
+#[tokio::test]
+async fn terminal_cleanup_v2_rejects_default_any_before_every_control_edge() {
+    let identity = WorkerIdentity::new("any-worker", "any-incarnation", 1);
+    let manifest = WorkerManifest::default();
+    let directory = Arc::new(TestWorkerDirectory::default());
+    *directory.0.lock().unwrap() = Some(RegisteredWorker {
+        snapshot: WorkerSnapshot {
+            identity: identity.clone(),
+            state: WorkerState::Ready,
+            capability_fingerprint: manifest.fingerprint().unwrap(),
+            manifest,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+            expires_at_ms: u64::MAX,
+        },
+        heartbeat_sequence: 0,
+        observation_sequence: 0,
+        registered_at_ms: 0,
+        heartbeat_at_ms: 0,
+        drain_deadline_ms: None,
+    });
+    let session_control = Arc::new(RecordingSessionControl::default());
+    let service = WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new()))
+        .with_worker_directory(directory, 30_000)
+        .with_session_control(session_control.clone());
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        epoch: 1,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let command = awaken_session_contract::SessionCleanupCommand::new(
+        "any-session",
+        "any-session",
+        "any-root",
+    );
+    let preparation_effect =
+        awaken_session_contract::SessionTerminalCleanupEffect::new(command, lease.clone());
+    let preparation = awaken_session_contract::SessionCleanupPreparation::try_new(
+        &preparation_effect,
+        preparation_effect.sandbox_effect_fence().unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
+    let provider_preparation = awaken_provisioning_contract::SandboxDisposalPreparation::new(
+        awaken_provisioning_contract::SandboxEffectFence::new(
+            "any-provider-preparation",
+            identity.worker_id.clone(),
+            identity.lease_owner(),
+            0,
+            u64::MAX - 1,
+        )
+        .unwrap(),
+        "any-provider-fingerprint",
+    )
+    .unwrap();
+    let disposal_command: awaken_session_contract::SessionCleanupDisposalCommand =
+        serde_json::from_value(serde_json::json!({
+            "session_id": "any-session",
+            "effect_id": provider_preparation.operation_id().unwrap(),
+            "preparation_fingerprint": "any-complete-preparation",
+            "provider_disposal": provider_preparation,
+        }))
+        .unwrap();
+    let disposal_effect = awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(
+        disposal_command.clone(),
+        lease.clone(),
+    );
+    let disposal_receipt =
+        awaken_session_contract::SessionCleanupDisposalReceipt::new(&disposal_command);
+    let publication_receipt: awaken_session_contract::SessionRepositoryPublicationReceipt =
+        serde_json::from_value(serde_json::json!({
+            "command_fingerprint": "command",
+            "effect_receipt": {
+                "repository_id": "repository",
+                "source_remote_url": "https://example.test/repository.git",
+                "branch": "awf/work",
+                "commit": "0123456789abcdef0123456789abcdef01234567"
+            },
+            "receipt_fingerprint": "receipt"
+        }))
+        .unwrap();
+    let publication_rejection: awaken_session_contract::SessionRepositoryPublicationRejection =
+        serde_json::from_value(serde_json::json!({
+            "command_fingerprint": "command",
+            "effect_rejection": {
+                "reason": "remote_ref_absent"
+            },
+            "rejection_fingerprint": "rejection"
+        }))
+        .unwrap();
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let rules = [
+        (
+            "claim",
+            "/v1/worker/session/cleanup/claim-next",
+            serde_json::json!({ "identity": &identity, "target": target }),
+        ),
+        (
+            "poll",
+            "/v1/worker/session/cleanup/poll",
+            serde_json::json!({ "identity": &identity, "session_id": "any-session", "lease": &lease }),
+        ),
+        (
+            "preparation-authorize",
+            "/v1/worker/session/cleanup/preparation/authorize",
+            serde_json::json!({ "identity": &identity, "effect": &preparation_effect }),
+        ),
+        (
+            "preparation-record",
+            "/v1/worker/session/cleanup/preparation/record",
+            serde_json::json!({ "identity": &identity, "lease": &lease, "preparation": preparation }),
+        ),
+        (
+            "disposal-authorize",
+            "/v1/worker/session/cleanup/disposal/authorize",
+            serde_json::json!({ "identity": &identity, "effect": disposal_effect }),
+        ),
+        (
+            "disposal-record",
+            "/v1/worker/session/cleanup/disposal/record",
+            serde_json::json!({ "identity": &identity, "lease": &lease, "receipt": disposal_receipt }),
+        ),
+        (
+            "publication-poll",
+            "/v1/worker/session/cleanup/repository-publication/poll",
+            serde_json::json!({ "identity": &identity, "session_id": "any-session", "lease": &lease }),
+        ),
+        (
+            "publication-record",
+            "/v1/worker/session/cleanup/repository-publication/complete",
+            serde_json::json!({
+                "identity": &identity,
+                "session_id": "any-session",
+                "lease": &lease,
+                "receipt": publication_receipt,
+            }),
+        ),
+        (
+            "publication-reject",
+            "/v1/worker/session/cleanup/repository-publication/reject",
+            serde_json::json!({
+                "identity": &identity,
+                "session_id": "any-session",
+                "lease": &lease,
+                "rejection": publication_rejection,
+            }),
+        ),
+    ];
+    for (rule, path, body) in rules {
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}{path}"))
+            .header("x-awaken-worker-id", &identity.worker_id)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{rule}"
+        );
+    }
+    assert_eq!(
+        session_control
+            .terminal_control_calls
+            .load(Ordering::SeqCst),
+        0,
+        "V1/E1"
+    );
+}
+
 /// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id
 /// evidence but no Coordinator Worker Directory; C2 the request supplies a
 /// syntactically complete identity and target. Effect E1: fail closed before

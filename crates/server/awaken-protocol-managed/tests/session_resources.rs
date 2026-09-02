@@ -3349,6 +3349,90 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
 }
 
 #[tokio::test]
+async fn platform_repository_default_is_shared_and_replaceable_without_a_false_path_conflict() {
+    // Agent-default replacement decision table: P1 no Session attachment ->
+    // inherit the platform Repository and terminal cleanup leaves it Active;
+    // P2 an explicit Repository uses the same authored mount -> the existing
+    // SessionInputResolver replacement rule selects the Session-owned Repository
+    // rather than treating the replaced default as a second overlapping tree.
+    let catalog = resource_registry();
+    catalog
+        .register_repository(RegisterRepository {
+            definition: RepositoryDefinition {
+                id: "platform-repository".into(),
+                workspace_id: "default".into(),
+                name: "Platform Repository".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                state: ResourceState::Active,
+                current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
+            },
+            initial_config: RepositoryConfigVersion {
+                repository_id: "platform-repository".into(),
+                version: ConfigVersion::INITIAL,
+                remote_url: "https://github.com/awaken/platform.git".into(),
+                credential_binding: None,
+                initial_branch: None,
+                initial_commit: None,
+                clone_policy: ClonePolicy::default(),
+            },
+        })
+        .expect("register platform Repository");
+    let state = ManagedState::new(AcceptingFake::default())
+        .with_resource_registry(catalog.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithPlatformRepository));
+    let request = serde_json::from_value(with_session_environment(json!({
+        "agent": "repo-agent"
+    })))
+    .unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+    state.archive_session(&id).await.unwrap();
+
+    assert_eq!(
+        catalog
+            .find_repository("default", "platform-repository")
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Active
+    );
+
+    let replacement = serde_json::from_value(with_session_environment(json!({
+        "agent": "repo-agent",
+        "resources": [{
+            "type": "github_repository",
+            "url": "https://github.com/awaken/replacement.git",
+            "mount_path": "/workspace/repository"
+        }]
+    })))
+    .unwrap();
+    let replacement = state
+        .create_session(replacement, None)
+        .await
+        .expect("P2 same-mount Repository replaces the published default");
+    let replacement = state
+        .session_application()
+        .session(&replacement.id)
+        .await
+        .expect("P2 durable replacement Session");
+    assert_eq!(replacement.resources.active.inputs().len(), 1, "P2");
+    assert_eq!(
+        replacement.resources.active.inputs()[0].binding_id.as_str(),
+        "platform-repository",
+        "P2 retains the replaced logical binding identity"
+    );
+    assert!(
+        matches!(
+            &replacement.resources.active.inputs()[0].source,
+            awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. }
+                if repository_id.as_str() != "platform-repository"
+        ),
+        "P2 freezes the Session-owned compatibility Repository"
+    );
+}
+
+#[tokio::test]
 async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
@@ -3370,6 +3454,76 @@ async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
     assert!(prepared.lock().unwrap().is_empty());
+}
+
+// Test design: file_resource_attaches_to_a_live_session
+// Cause/effect graph: add on a live Session activates one File mount and durable resource projection.
+// Decision table: live+valid=attach; duplicate/conflict follows identity rule; terminal/missing=4xx/404.
+#[tokio::test]
+async fn invalid_repository_path_preflights_the_whole_create_before_resource_effects() {
+    // Whole-create cause/effect table: C1 valid File, Memory, and published Skill
+    // inputs precede C2 an invalid explicit Repository path carrying a write-only
+    // token. C1+C2 must produce E1 400 with the original path, E2 no Repository
+    // Registry/Vault participant, E3 no Session root, and E4 no Runtime staging.
+    // The order is intentional: a per-item loop would already have crossed one
+    // of those effect boundaries before discovering C2.
+    //
+    // | Rule | prior inputs | Repository path | token | Effect |
+    // |---|---|---|---|---|
+    // | R1 | File + Memory + Skill | `/repo` | present | E1+E2+E3+E4 |
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let credentials = std::sync::Arc::new(CountingCredentialMaterialIngress::default());
+    let state = ManagedState::new(runtime.clone())
+        .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
+        .with_session_repo(sessions.clone())
+        .with_resource_registry(resource_registry())
+        .with_credential_material_ingress(credentials.clone());
+    let app = router(std::sync::Arc::new(state));
+
+    let (status, error) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "integrated",
+            "resources": [
+                {"type": "file", "file_id": "file-before-invalid", "mount_path": "/workspace/shared"},
+                {"type": "memory_store", "memory_store_id": "mem_1"},
+                {
+                    "type": "github_repository",
+                    "url": "https://github.com/awaken/invalid-path.git",
+                    "mount_path": "/repo",
+                    "authorization_token": "must-never-enter-vault" // awaken-allow: secret
+                }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R1/E1: {error}");
+    assert!(error.to_string().contains("/repo"), "R1/E1: {error}");
+    assert_eq!(
+        credentials.writes.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "R1/E2 no Vault ingress"
+    );
+    assert_eq!(
+        credentials
+            .retirements
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "R1/E2 no compensation is needed"
+    );
+    assert!(
+        sessions.list_by_owner("default").await.unwrap().is_empty(),
+        "R1/E3"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "R1/E4");
+    assert!(runtime.applied.lock().unwrap().is_empty(), "R1/E4");
+    assert!(runtime.staged.lock().unwrap().is_empty(), "R1/E4");
 }
 
 #[tokio::test]
@@ -4797,6 +4951,171 @@ async fn persist_profiled_publication_source(
 }
 
 #[tokio::test]
+async fn profiled_create_accepts_the_durable_root_without_waiting_for_realization() {
+    // Profiled-create cause/effect graph: C1 the typed request and complete
+    // preflight are valid; C2 the atomic Session root/receipt is absent or an
+    // exact replay; C3 physical Runtime projection cannot complete. Effects:
+    // E1 a new request returns the stable Session id after the complete root is
+    // durable; E2 the root remains Preparing and the Runtime effect is still
+    // unentered; E3 exact replay returns the same operation identity without a
+    // second physical effect. The sole lifecycle supervisor owns later retry.
+    //
+    // | Rule | request | receipt | realization | Effect |
+    // |---|---|---|---|---|
+    // | Q1 | valid | absent | stalled | 202 + E1+E2 |
+    // | Q2 | valid | exact | stalled | 202 + E1+E2+E3 |
+    // | Q3 | invalid preflight | absent | n/a | reject and no root (adjacent admission tests) |
+    //
+    // Constraint: the Session id/root is the asynchronous operation authority;
+    // the HTTP adapter must not add a Job table or keep physical realization in
+    // its request future. This deterministic stall detects synchronous waiting
+    // without relying on a slow filesystem, network, or provider.
+    let runtime = AcceptingFake::default();
+    runtime
+        .stall_projection_install
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state.clone(), "default");
+    let request = json!({
+        "session_id": "profiled-durable-accept",
+        "mode": "work_unit",
+        "agent_id": "coder"
+    });
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request.clone())),
+    )
+    .await;
+
+    let durable = sessions.get("profiled-durable-accept").await.unwrap();
+    assert_eq!(
+        durable.execution,
+        awaken_session_contract::SessionExecutionState::Preparing,
+        "Q1/E2"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "Q1/E2");
+
+    let (status, body) = response.unwrap_or_else(|_| {
+        panic!("Q1/E1 profiled create waited on the stalled physical realization")
+    });
+    assert_eq!(status, StatusCode::ACCEPTED, "Q1/E1: {status} {body}");
+    assert_eq!(body["id"], "profiled-durable-accept", "Q1/E1");
+
+    let durable_before_replay = sessions.get("profiled-durable-accept").await.unwrap();
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request)),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("Q2/E3 exact receipt replay waited on realization"));
+    assert_eq!(replay.0, StatusCode::ACCEPTED, "Q2/E3: {}", replay.1);
+    assert_eq!(replay.1, body, "Q2/E3 same operation identity/projection");
+    assert_eq!(
+        sessions.get("profiled-durable-accept").await.unwrap(),
+        durable_before_replay,
+        "Q2/E3 replay does not mutate durable operation truth"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "Q2/E3");
+}
+
+#[tokio::test]
+async fn profiled_create_replays_activation_failed_root_without_restarting_effects() {
+    // Failed-replay cause/effect graph: C1 one atomic profiled-create receipt
+    // exists; C2 its Session root has reached ActivationFailed with a durable
+    // reason; C3 the private request fingerprint and owner are exact; C4 the
+    // target Runtime would stall if entered. Effects: E1 POST returns 202 with
+    // the same Session id; E2 failure state/reason remain byte-identical; E3 no
+    // Runtime preparation, replacement operation, or second durable mutation.
+    //
+    // | rule | receipt | owner/hash | lifecycle | effect |
+    // | F1 | failed root | exact | ActivationFailed | 202 + E1+E2+E3 |
+    // | F2 | failed root | mismatch | any | conflict, no effect (adjacent receipt tests) |
+    let request = json!({
+        "session_id": "profiled-failed-replay",
+        "mode": "work_unit",
+        "agent_id": "coder",
+        "metadata": { "case": "failed-replay" }
+    });
+
+    let seed_sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("seed Session repository"),
+    );
+    let seed_state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(seed_sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let seed_app = profiled_router(seed_state, "default");
+    let (status, body) = call(
+        &seed_app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "F1 seed: {body}");
+    let mut failed = seed_sessions
+        .get("profiled-failed-replay")
+        .await
+        .expect("seed Session root");
+    failed.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
+    failed.realization_progress.last_error = Some("sandbox realization failed".into());
+    failed.revision = Default::default();
+
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("target Session repository"),
+    );
+    let typed: awaken_protocol_awaken::ProfiledSessionCreate =
+        serde_json::from_value(request.clone()).expect("typed private request");
+    let receipt = awaken_session_contract::IdempotencyRecord {
+        key: "profiled:create:profiled-failed-replay".into(),
+        payload_hash: awaken_session_contract::stable_fingerprint(&typed),
+    };
+    sessions
+        .create("default", failed.clone(), receipt, Vec::new())
+        .await
+        .expect("seed failed root and atomic receipt");
+    // The repository, not the pre-admission candidate, owns the canonical
+    // revision used by an exact replay oracle.
+    let failed = sessions
+        .get("profiled-failed-replay")
+        .await
+        .expect("durable failed root");
+    let runtime = AcceptingFake::default();
+    runtime
+        .stall_projection_install
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state.clone(), "default");
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        call(&app, "POST", "/v1/awaken/sessions", Some(request)),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("F1 replay entered stalled physical realization"));
+    assert_eq!(replay.0, StatusCode::ACCEPTED, "F1/E1: {}", replay.1);
+    assert_eq!(replay.1["id"], "profiled-failed-replay", "F1/E1");
+    assert_eq!(
+        sessions.get("profiled-failed-replay").await.unwrap(),
+        failed,
+        "F1/E2 failure state/reason and operation root are retained"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "F1/E3");
+}
+
+#[tokio::test]
 async fn profiled_repository_binding_wire_preserves_the_historical_derivation() {
     // Binding migration cause/effect graph: C1 `binding_id` is omitted on the
     // historical private wire; C2 the Session id and Repository index make its
@@ -4903,6 +5222,113 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         ),
         "B4 no root"
     );
+}
+
+#[tokio::test]
+async fn profiled_create_receipt_replays_a_historical_repository_path_without_reauthoring() {
+    // Historical-replay cause/effect graph: C1 a durable root and its create
+    // receipt predate strict Repository-path admission; C2 the replay carries
+    // the byte-identical former request (`repo`); C3 a new request with
+    // that path would now fail admission. Effects: E1 C1+C2 returns the existing
+    // Session before lowering; E2 the stored `/repo` value is unchanged;
+    // E3 Registry, Vault, and Runtime creation effects remain zero. New-create
+    // rejection is covered by the path-admission matrix adjacent to this route.
+    //
+    // | Rule | durable receipt | request hash | new admission | Effect |
+    // |---|---|---|---|---|
+    // | H1 | historical exact | exact | bypassed | E1 + E2 + E3 |
+    let legacy_wire = json!({
+        "session_id": "profiled-legacy-path-replay",
+        "mode": "work_unit",
+        "agent_id": "coder",
+        "repositories": [{
+            "remote_url": "https://github.com/awaken/historical-path.git",
+            "mount_path": "repository"
+        }]
+    });
+
+    // Compile one otherwise-current aggregate in an isolated authority, then
+    // seed the target store with the exact shape an older compiler persisted:
+    // authored `repo` was normalized to `/repo` before storage.
+    let seed_sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("seed Session repository"),
+    );
+    let seed_state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(seed_sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let seed_app = profiled_router(seed_state.clone(), "default");
+    let mut current_wire = legacy_wire.clone();
+    current_wire["repositories"][0]["mount_path"] = json!("/workspace/repository");
+    let (status, body) = call(&seed_app, "POST", "/v1/awaken/sessions", Some(current_wire)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "H1 seed: {body}");
+    let mut historical =
+        settle_profiled_session(&seed_state, "default", "profiled-legacy-path-replay").await;
+    let (mut inputs, skills) = historical.resources.active.clone().into_parts();
+    inputs[0].mount_path = "/repo".into();
+    // Replay must use the storage-only decoder: public construction deliberately
+    // rejects `/repo`, while durable serde keeps this one historical wire value
+    // byte-exact and prevents it from becoming a new-create admission path.
+    historical.resources.active = serde_json::from_value(json!({
+        "inputs": inputs,
+        "skills": skills,
+    }))
+    .expect("historical aggregate remains durably decodable");
+    historical.revision = Default::default();
+    let historical_repository_id = match &historical.resources.active.inputs()[0].source {
+        awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } => {
+            repository_id.clone()
+        }
+        _ => panic!("historical fixture must retain its Repository input"),
+    };
+
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("target Session repository"),
+    );
+    let typed_legacy: awaken_protocol_awaken::ProfiledSessionCreate =
+        serde_json::from_value(legacy_wire.clone()).expect("legacy private wire");
+    let receipt = awaken_session_contract::IdempotencyRecord {
+        key: "profiled:create:profiled-legacy-path-replay".into(),
+        payload_hash: awaken_session_contract::stable_fingerprint(&typed_legacy),
+    };
+    sessions
+        .create("default", historical, receipt, Vec::new())
+        .await
+        .expect("seed historical root and receipt");
+
+    let runtime = AcceptingFake::default();
+    let target_registry = resource_registry();
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(target_registry.clone()),
+    );
+    let app = profiled_router(state, "default");
+    let (status, replayed) = call(&app, "POST", "/v1/awaken/sessions", Some(legacy_wire)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "H1/E1: {replayed}");
+    assert_eq!(
+        sessions
+            .get("profiled-legacy-path-replay")
+            .await
+            .unwrap()
+            .resources
+            .active
+            .inputs()[0]
+            .mount_path,
+        "/repo",
+        "H1/E2 durable path is neither rejected nor rewritten during receipt replay"
+    );
+    assert_eq!(
+        target_registry
+            .find_repository("default", historical_repository_id.as_str())
+            .expect("H1/E3 target Registry read"),
+        None,
+        "H1/E3 receipt replay creates no Repository participant"
+    );
+    assert!(runtime.prepared.lock().unwrap().is_empty(), "H1/E3");
+    assert!(runtime.applied.lock().unwrap().is_empty(), "H1/E3");
+    assert!(runtime.staged.lock().unwrap().is_empty(), "H1/E3");
 }
 
 #[tokio::test]

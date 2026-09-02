@@ -103,4 +103,77 @@ pub(crate) fn unix_now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_worker_effect_admission_has_one_closed_status_projection() {
+        // Cause/effect graph: C1 current Worker identity, C2 lease owner and
+        // incarnation, C3 asserted lease time, C4 ordinary versus terminal
+        // generation rule. Effects: E1 Exact continues to the owning Session
+        // root; E2 Expired maps 409; E3 Foreign maps 403. TerminalGeneration
+        // never grants root authority: it only lets Control decide whether the
+        // asserted generation has a current same-generation renewal.
+        //
+        // | Rule | Worker/owner/incarnation | live | temporal rule | Effect |
+        // |---|---|---|---|---|
+        // | A1 | exact | yes | ordinary | E1 |
+        // | A2 | exact | no | ordinary | E2 |
+        // | A3 | exact | any | terminal generation | E1, then root auth |
+        // | A4 | foreign in any identity fact | any | any | E3 |
+        // Foreign classification precedes expiry so an unauthorised caller
+        // cannot use the response to inspect the terminal lease clock.
+        for worker_is_current in [false, true] {
+            for owner_matches in [false, true] {
+                for incarnation_matches in [false, true] {
+                    for lease_is_live in [false, true] {
+                        for temporal_rule in [
+                            SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive,
+                            SessionWorkerEffectTemporalRule::TerminalGeneration,
+                        ] {
+                            let actual = session_worker_effect_admission_from_facts(
+                                worker_is_current,
+                                owner_matches,
+                                incarnation_matches,
+                                lease_is_live,
+                                temporal_rule,
+                            );
+                            let expected =
+                                if !worker_is_current || !owner_matches || !incarnation_matches {
+                                    SessionWorkerEffectAdmission::Foreign
+                                } else if temporal_rule
+                                    == SessionWorkerEffectTemporalRule::AssertedLeaseMustBeLive
+                                    && !lease_is_live
+                                {
+                                    SessionWorkerEffectAdmission::Expired
+                                } else {
+                                    SessionWorkerEffectAdmission::Exact
+                                };
+                            assert_eq!(actual, expected);
+                            assert_eq!(
+                                actual.rejection_status(),
+                                match expected {
+                                    SessionWorkerEffectAdmission::Exact => None,
+                                    SessionWorkerEffectAdmission::Expired => {
+                                        Some(StatusCode::CONFLICT)
+                                    }
+                                    SessionWorkerEffectAdmission::Foreign => {
+                                        Some(StatusCode::FORBIDDEN)
+                                    }
+                                }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn worker_route_clock_conversion_is_saturating() {
+        // Cause/effect rules: representable duration -> exact milliseconds;
+        // duration beyond u64 milliseconds -> u64::MAX. This keeps all five
+        // Resource routes on one overflow policy instead of cast-dependent
+        // truncation.
+        assert_eq!(duration_millis(Duration::from_millis(17)), 17);
+        assert_eq!(duration_millis(Duration::MAX), u64::MAX);
+    }
 }

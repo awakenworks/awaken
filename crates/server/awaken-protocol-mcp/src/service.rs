@@ -526,6 +526,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_dispatch_invalidation_is_terminal_over_mcp() {
+        // Cause/effect decision table: C1 dispatch has already produced an
+        // external effect; C2 the executor's catalog becomes unavailable;
+        // C3 MCP has no Run lifecycle in which to retry or repair it. M1
+        // C1+C2+C3 => one Internal response, no model-visible tool result and
+        // no retry. Ordinary pre-dispatch and Execution mappings remain owned
+        // by their adjacent tests.
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("invalidated"),
+            Arc::new(InvalidatedAfterDispatchTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source));
+
+        let err = handle(&service, "tools/call", json!({ "name": "invalidated" }))
+            .await
+            .expect_err("post-dispatch invalidation is terminal");
+        assert_eq!(err.code, -32603, "M1 protocol terminal");
+        assert!(
+            err.message.contains("skill catalog refresh failed"),
+            "M1 preserves the operator cause"
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_tool_is_invalid_params() {
         let err = handle(&service(), "tools/call", json!({ "name": "nope" }))
             .await

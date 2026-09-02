@@ -65,3 +65,40 @@ fn catalog_pairs_each_execution_family_with_its_only_legal_descriptor_kind() {
         assert_eq!(tool.descriptor().kind, expected);
     }
 }
+
+#[test]
+fn builtin_catalog_is_the_exact_non_overlapping_command_surface() {
+    // Cause/effect graph: C1 native delegation uses `agent_run`; C2 Managed
+    // coordination uses `list_agents`/`send_message`; C3 the abandoned Task
+    // model commands name overlapping ingress/control/recovery effects.
+    // Effects: E1 C1/C2 remain in the one closed catalog; E2 C3 and every
+    // Git/repository-specific command are absent because Bash is their sole owner.
+    //
+    // | Rule | command family | catalog effect |
+    // | R1 | native delegation | exactly `agent_run` |
+    // | R2 | Managed coordination | exactly list/send |
+    // | R3 | legacy Task, Git, repository, move/delete commands | none |
+    //
+    // This is a membership guard, not a string-only implementation test: the
+    // preceding exhaustive Toolset match also proves there is no Task family
+    // into which these ids could be registered.
+    let ids = builtin_tools()
+        .into_iter()
+        .map(|tool| tool.into_descriptor().id)
+        .collect::<BTreeSet<_>>();
+    let expected = [
+        "agent_run",
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "list_agents",
+        "read",
+        "send_message",
+        "write",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    assert_eq!(ids, expected, "R1-R3/E1-E2");
+}

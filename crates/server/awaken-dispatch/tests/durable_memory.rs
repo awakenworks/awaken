@@ -2156,6 +2156,88 @@ async fn a_recovered_scheduled_action_is_performed() {
 }
 
 #[tokio::test]
+async fn fresh_continuation_identity_is_stable_without_a_parallel_message_command() {
+    // Cause/effect graph: C0 the continuation has no inline input, so
+    // PendingInput is the sole message owner; C1 the same canonical PendingInput and fresh dispatch
+    // are replayed; C2 their canonical message/Run identities differ; C3 one
+    // message identity is reused with changed payload. Effects: E0 C0 admits
+    // the canonical atomic shape; E1 C1 dedupes to
+    // one pending input and dispatch; E2 C2 remains distinct; E3 C3 fails with
+    // an idempotency conflict before mutating either aggregate.
+    //
+    // | Rule | message/Run identity | payload | effect |
+    // | R0 | canonical + no inline input | any | E0 |
+    // | R1 | same | same | E1 |
+    // | R2 | different | any | E2 |
+    // | R3 | same | changed | E3 |
+    //
+    // Constraint: `Outbox::relay_and_enqueue` is the sole atomic continuation
+    // authority. The Thread-owned SEND_MESSAGE command supplies its canonical
+    // PendingInput; run-ingress owns no generic sender or identity algorithm.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let continuation = |run: &str| {
+        let mut request = RunDispatch::new(activation(run));
+        request.activation.input.clear();
+        request
+    };
+    let input = |message_id: &str, run: &str, content: &str| {
+        harness::pending(
+            message_id,
+            run,
+            "",
+            ResumeResult::Input(content.to_string()),
+        )
+    };
+
+    let stable_run = continuation("fresh-stable");
+    assert!(stable_run.activation.input.is_empty(), "R0/E0");
+    let stable_input = input("fresh-stable-message", "fresh-stable", "retry");
+    store
+        .relay_and_enqueue(
+            stable_input.clone(),
+            stable_run.clone(),
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect("R1 first admission");
+    store
+        .relay_and_enqueue(
+            stable_input.clone(),
+            stable_run,
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect("R1 exact replay");
+    store
+        .relay_and_enqueue(
+            input("fresh-different-message", "fresh-different", "second"),
+            continuation("fresh-different"),
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect("R2 distinct continuation");
+
+    let conflict = store
+        .relay_and_enqueue(
+            input("fresh-stable-message", "fresh-stable", "changed"),
+            continuation("fresh-stable"),
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect_err("R3 changed payload under one identity must conflict");
+    assert!(conflict.to_string().contains("idempotency key"), "R3/E3");
+
+    let messages = store.list(&ThreadId(THREAD.to_string())).await.unwrap();
+    assert_eq!(messages.len(), 2, "R1-R2/E1-E2 and R3 no mutation");
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.input.run_id.0.is_empty()),
+        "every continuation remains exact-Run bound"
+    );
+}
+
+#[tokio::test]
 async fn supersession_store_spec() {
     harness::assert_supersession(&MemoryDispatchStore::new()).await;
 }

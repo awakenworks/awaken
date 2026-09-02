@@ -586,4 +586,100 @@ mod tests {
         );
         assert_eq!(repository(None).to_parsed_input().access, ReadWrite);
     }
+
+    #[test]
+    fn managed_memory_replacement_uses_exact_identity_without_path_or_order_fallback() {
+        use awaken_resource_contract::{FileId, InputResourceId, MemoryStoreId};
+
+        // Managed replacement cause/effect table:
+        // | Rule | exact Memory id matches | count | input | Effect |
+        // | R1 | yes | one | Memory, different derived path | explicit replace; preserve binding_id |
+        // | R2 | no | zero | Memory, colliding path | no replace; resolver rejects collision |
+        // | R3 | yes | multiple | Memory | reject ambiguity; never select first |
+        // | R4 | n/a | n/a | File, explicit matching path | retain path replacement |
+        // Constraints: Memory wire has neither binding_id nor mount_path; array
+        // order, a sole Memory item, and a display-name path are not identity.
+        let memory_id = MemoryStoreId::from("memory-1");
+        let exact_default = binding(
+            "profile-memory",
+            InputResourceId::MemoryStore(memory_id.clone()),
+            "/agent/path",
+        );
+        let r1 = plan_session_input_attachments(
+            "session-1",
+            &[parsed_memory("memory-1", "/mnt/memory/catalog-name")],
+            std::slice::from_ref(&exact_default),
+        )
+        .expect("R1 exact identity");
+        assert_eq!(
+            r1[0].replaces.as_ref(),
+            Some(&exact_default.binding_id),
+            "R1"
+        );
+        assert_eq!(r1[0].binding.binding_id, exact_default.binding_id, "R1");
+        assert_eq!(r1[0].binding.mount_path, "/mnt/memory/catalog-name", "R1");
+
+        let different_default = binding(
+            "other-memory",
+            InputResourceId::MemoryStore(MemoryStoreId::from("memory-other")),
+            "/mnt/memory/catalog-name",
+        );
+        let r2 = plan_session_input_attachments(
+            "session-2",
+            &[parsed_memory("memory-1", "/mnt/memory/catalog-name")],
+            std::slice::from_ref(&different_default),
+        )
+        .expect("R2 remains additive");
+        assert_eq!(r2[0].replaces, None, "R2 no path fallback");
+        assert!(
+            awaken_session_contract::SessionInputResolver::effective_bindings(
+                &[different_default],
+                &r2,
+            )
+            .is_err(),
+            "R2 colliding additive Memory inputs fail closed"
+        );
+
+        let duplicate_defaults = vec![
+            exact_default.clone(),
+            binding(
+                "profile-memory-copy",
+                InputResourceId::MemoryStore(memory_id),
+                "/agent/other-path",
+            ),
+        ];
+        assert!(
+            plan_session_input_attachments(
+                "session-3",
+                &[parsed_memory("memory-1", "/mnt/memory/catalog-name")],
+                &duplicate_defaults,
+            )
+            .is_err(),
+            "R3 duplicate identity is ambiguous"
+        );
+
+        let file_default = binding(
+            "profile-file",
+            InputResourceId::File(FileId::from("file-default")),
+            "/workspace/input",
+        );
+        let file = ParsedSessionInput {
+            target: ParsedInputTarget::File(FileId::from("file-session")),
+            mount_path: "/workspace/input".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+            implicit_memory_mount: false,
+        };
+        let r4 = plan_session_input_attachments(
+            "session-4",
+            &[file],
+            std::slice::from_ref(&file_default),
+        )
+        .expect("R4 explicit File path");
+        assert_eq!(
+            r4[0].replaces.as_ref(),
+            Some(&file_default.binding_id),
+            "R4"
+        );
+    }
 }
